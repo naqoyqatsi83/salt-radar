@@ -548,11 +548,15 @@ impl App {
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(u64::MAX);
 
-        // Config refresh
+        // Config refresh + ZMQ latency ping
         self.config_tick += 1;
         if self.config_tick >= self.config.config_secs {
             self.config_tick = 0;
             self.send_agent_cmd("config_snapshot", None);
+            self.send_agent_cmd("zmq_ping", None);
+        }
+        // Also ping early on first few ticks to show data sooner
+        if self.tick_count == 0 || self.tick_count == 5 || self.tick_count == 15 {
             self.send_agent_cmd("zmq_ping", None);
         }
 

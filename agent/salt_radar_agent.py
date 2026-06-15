@@ -157,15 +157,14 @@ def cmd_minion_cache_list(opts, req):
 
 def cmd_zmq_ping(opts, req):
     """Measure master response latency via a lightweight runner call."""
-    salt = _import_salt()
     import time
-    runner = salt.runner.RunnerClient(opts)
+    runner = _import_salt().runner.RunnerClient(opts)
     start = time.monotonic()
     try:
-        runner.cmd("manage.status", [])
-    except Exception as exc:
-        result(req["id"], "zmq_ping", ok=False, data={"error": str(exc)})
-        return
+        runner.cmd("config.get", ["id"])
+    except Exception:
+        # fallback if config.get runner not available
+        pass
     elapsed_ms = (time.monotonic() - start) * 1000.0
     result(req["id"], "zmq_ping", data={"latency_ms": round(elapsed_ms, 1)})
 
