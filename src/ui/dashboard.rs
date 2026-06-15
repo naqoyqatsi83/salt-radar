@@ -144,9 +144,7 @@ fn draw_keys_row(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     eprintln!("[UI DEBUG] services count: {}, area: {}x{} pos ({}, {})", app.services.len(), area.width, area.height, area.x, area.y);
-    let block = make_block(" Processes & Services ".to_string());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = area;
 
     let total_rss_used: u64 = app.processes.iter().map(|p| p.rss_kb).sum();
     let mem_total_kb = app.system_info.mem_total_kb.max(1);
