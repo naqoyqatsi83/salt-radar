@@ -180,18 +180,30 @@ def cmd_jid_lookup(opts, req):
         result(req["id"], "jid_lookup", data={"found": False})
         return
 
+    # Some versions of Salt wrap the result with outputter metadata:
+    #   {"outputter": "nested", "data": {minion_id: {...}, ...}}
+    # Unwrap to get clean {minion_id: ..., ...}
+    if isinstance(lookup, dict) and "outputter" in lookup and "data" in lookup:
+        inner = lookup["data"]
+        if isinstance(inner, dict):
+            lookup = inner
+        # else keep original
+
     # Normalize: lookup returns {minion_id: result_data, ...}
     returns = []
     for mid, retdata in lookup.items():
         if isinstance(retdata, dict):
+            # Unwrap: Salt cache stores {"return": actual_data, "retcode": 0, ...}
+            actual = retdata.get("return", retdata)
             retcode = retdata.get("retcode", 0)
             success = not retcode
-            summary = str(retdata.get("return", retdata))[:200]
+            summary = str(actual)[:200]
+            full = actual if isinstance(actual, (dict, list)) else str(actual)
         else:
             retcode = 0
             success = True
             summary = str(retdata)[:200]
-        full = retdata if isinstance(retdata, (dict, list)) else str(retdata)
+            full = retdata if isinstance(retdata, (dict, list)) else str(retdata)
         returns.append({
             "minion_id": str(mid),
             "success": success,
