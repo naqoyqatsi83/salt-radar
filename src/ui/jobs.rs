@@ -50,9 +50,9 @@ pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App) {
             )));
         }
     } else {
-        // Header — "  " + jid(28) + fun(20) + tgt(24) + progress
+        // Header — "  " + jid(28) + fun(30) + tgt(36) + progress
         lines.push(Line::from(Span::styled(
-            format!("  {:<28}{:<20}{:<24}Progress", "JID", "Fun", "Target"),
+            format!("  {:<28}{:<30}{:<36}Progress", "JID", "Fun", "Target"),
             Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
         )));
 
@@ -80,13 +80,13 @@ pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App) {
 
             // Truncate fields to prevent column overlap
             let jid_str = if job.jid.len() > 28 { format!("{}..", &job.jid[..26]) } else { job.jid.clone() };
-            let fun_str = if job.fun.len() > 20 { format!("{}..", &job.fun[..18]) } else { job.fun.clone() };
-            let tgt_str = if job.tgt.len() > 24 { format!("{}..", &job.tgt[..22]) } else { job.tgt.clone() };
+            let fun_str = if job.fun.len() > 30 { format!("{}..", &job.fun[..28]) } else { job.fun.clone() };
+            let tgt_str = if job.tgt.len() > 36 { format!("{}..", &job.tgt[..34]) } else { job.tgt.clone() };
 
             lines.push(Line::from(vec![
                 Span::styled(format!("  {:<28}", jid_str), Style::default().fg(color::TEXT_DIM)),
-                Span::styled(format!("{:<20}", fun_str), Style::default().fg(color::CYAN)),
-                Span::styled(format!("{:<24}", tgt_str), Style::default().fg(color::YELLOW)),
+                Span::styled(format!("{:<30}", fun_str), Style::default().fg(color::CYAN)),
+                Span::styled(format!("{:<36}", tgt_str), Style::default().fg(color::YELLOW)),
                 Span::styled(progress, Style::default().fg(if job.returned >= job.target_count && job.target_count > 0 { color::GREEN } else { color::ORANGE }).add_modifier(Modifier::BOLD)),
             ]).style(sel_style));
         }
