@@ -322,12 +322,21 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         (color::ORANGE, format!("{:.0} ms", lat))
     };
 
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-        .split(inner);
+    // Responsive layout: horizontal if wide enough (>= 80 cols), vertical otherwise
+    let is_wide = inner.width >= 80;
+    let inner_layout = if is_wide {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+            .split(inner)
+    };
 
-    // Line 1: Latency sparkline (consistent with Event Rate, Minion Activity)
+    // Sparkline (left/top)
     let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
     let spark_data: Vec<u64> = app.zmq_latency_history.iter()
         .map(|v| (v / max_lat * 100.0) as u64)
@@ -338,7 +347,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         .data(&spark_data);
     f.render_widget(sparkline, inner_layout[0]);
 
-    // Line 2: connections + latency
+    // Connection info (right/bottom)
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled("  :".to_string(), Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{} pub{} ({})  ", pub_port, pub_established, pub_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
@@ -378,10 +387,19 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         format!("{}s ago", app.secs_since_last_event)
     };
 
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-        .split(inner);
+    // Responsive layout: horizontal if wide enough (>= 80 cols), vertical otherwise
+    let is_wide = inner.width >= 80;
+    let inner_layout = if is_wide {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+            .split(inner)
+    };
 
     let sparkline = Sparkline::default()
         .block(Block::default())
@@ -420,10 +438,19 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         .map(|v| (v * 100 / max_val) as u64)
         .collect();
 
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-        .split(inner);
+    // Responsive layout: horizontal if wide enough (>= 80 cols), vertical otherwise
+    let is_wide = inner.width >= 80;
+    let inner_layout = if is_wide {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+            .split(inner)
+    };
 
     let sparkline = Sparkline::default()
         .block(Block::default())
