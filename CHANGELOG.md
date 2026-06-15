@@ -8,13 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- 
+- Host uptime display in Dashboard header (shows both app and host uptime)
 
 ### Changed
-- 
+- Job detail output now uses simpler per-minion splitting by parsing `salt-run jobs.lookup_jid` CLI output instead of formatting per-minion via Salt's outputters
 
 ### Fixed
-- 
+- Dashboard header crash when only app uptime is displayed (missing host uptime)
 
 ## [0.1.0] - 2026-06-15
 

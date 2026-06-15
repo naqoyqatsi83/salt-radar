@@ -83,7 +83,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
     let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);
     let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
-    let uptime = app.session_start.elapsed().as_secs();
+    let app_uptime = app.session_start.elapsed().as_secs();
+    let host_uptime = app.system_info.uptime_secs;
+
+    let mut uptime_parts = vec![format_duration(app_uptime)];
+    if host_uptime > app_uptime {
+        uptime_parts.push(format_uptime(host_uptime - app_uptime));
+    }
+    let uptime_display = if uptime_parts.len() == 2 {
+        format!("{} | host {} ", uptime_parts[0], uptime_parts[1])
+    } else {
+        format!("{} ", uptime_parts[0])
+    };
 
     let line = Line::from(vec![
         Span::styled(" salt-radar", Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
@@ -97,7 +108,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!("P{} ", pending), Style::default().fg(if pending > 0 { color::YELLOW } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
         Span::styled(" \u{2502}", Style::default().fg(color::BORDER)),
         Span::styled(" uptime: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{}", format_duration(uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{}", uptime_display), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
     ]);
 
     f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_DARK).fg(color::TEXT)), area);
@@ -235,6 +246,18 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(load_gauge, inner_layout[0]);
     f.render_widget(mem_gauge, inner_layout[1]);
+}
+
+fn format_uptime(secs: u64) -> String {
+    if secs < 60 { return "0s".to_string(); }
+    let days = secs / 86400;
+    let hours = (secs % 86400) / 3600;
+    let minutes = (secs % 3600) / 60;
+    let mut parts = vec![];
+    if days > 0 { parts.push(format!("{}d", days)); }
+    if hours > 0 { parts.push(format!("{}h", hours)); }
+    if minutes > 0 { parts.push(format!("{}m", minutes)); }
+    parts.join(" ")
 }
 
 // ── ZMQ / Network & Latency ─────────────────────────────────────────────────

@@ -153,6 +153,7 @@ pub struct SystemInfo {
     pub mem_avail_kb: u64,
     pub cache_disk_usage_pct: f64,
     pub pki_disk_usage_pct: f64,
+    pub uptime_secs: u64,
 }
 
 // ─── Config snapshot (from agent) ──────────────────────────────────────────

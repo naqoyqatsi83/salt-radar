@@ -11,6 +11,7 @@ pub fn collect_system(cachedir: &str, pki_dir: &str) -> SystemInfo {
         mem_avail_kb: read_meminfo("MemAvailable"),
         cache_disk_usage_pct: disk_usage_pct(cachedir),
         pki_disk_usage_pct: disk_usage_pct(pki_dir),
+        uptime_secs: read_uptime_secs(),
     }
 }
 
@@ -20,6 +21,15 @@ fn read_loadavg(index: usize) -> f64 {
         .nth(index)
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(0.0)
+}
+
+fn read_uptime_secs() -> u64 {
+    let data = std::fs::read_to_string("/proc/uptime").unwrap_or_default();
+    data.split_whitespace()
+        .next()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|f| f as u64)
+        .unwrap_or(0)
 }
 
 fn read_meminfo(field: &str) -> u64 {
