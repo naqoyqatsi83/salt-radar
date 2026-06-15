@@ -79,7 +79,7 @@ pub struct App {
     last_event_time: Option<Instant>,
     /// Ring buffer of recent event rates for sparkline (60 samples = 1 min)
     pub event_rate_history: [f64; 60],
-    event_rate_idx: usize,
+    pub event_rate_idx: usize,
     /// Timestamp of last successful clipboard copy (for UI feedback)
     pub clipboard_at: Option<Instant>,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
@@ -90,12 +90,12 @@ pub struct App {
     zmq_ping_sent_at: Option<Instant>,
     /// Ring buffer of recent latency samples for sparkline (60 samples = 1 per tick)
     pub zmq_latency_history: [f64; 60],
-    zmq_latency_idx: usize,
+    pub zmq_latency_idx: usize,
 
     // ── Activity matrix (job return events per sec) ──────────────────────────
     /// Count of salt/job/*/ret/* events per second for last 60s (ring buffer)
     pub activity_matrix: [u64; 60],
-    activity_matrix_idx: usize,
+    pub activity_matrix_idx: usize,
     pub current_sec_returns: u64,
     pub last_activity_minion: String,
     pub last_activity_fun: String,

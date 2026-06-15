@@ -338,7 +338,12 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
 
     // Sparkline (left/top)
     let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
-    let spark_data: Vec<u64> = app.zmq_latency_history.iter()
+    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
+    let lat_idx = app.zmq_latency_idx;
+    let ordered_lat: Vec<f64> = (0..60)
+        .map(|i| app.zmq_latency_history[(lat_idx + i) % 60])
+        .collect();
+    let spark_data: Vec<u64> = ordered_lat.iter()
         .map(|v| (v / max_lat * 100.0) as u64)
         .collect();
     let sparkline = Sparkline::default()
@@ -377,7 +382,12 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     let max_rate = app.event_rate_history.iter().cloned().fold(0.0_f64, f64::max).max(0.1);
-    let spark_data: Vec<u64> = app.event_rate_history.iter()
+    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
+    let idx = app.event_rate_idx;
+    let ordered: Vec<f64> = (0..60)
+        .map(|i| app.event_rate_history[(idx + i) % 60])
+        .collect();
+    let spark_data: Vec<u64> = ordered.iter()
         .map(|v| (v / max_rate * 100.0) as u64)
         .collect();
 
@@ -434,7 +444,12 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     let max_val = app.activity_matrix.iter().cloned().max().unwrap_or(0).max(1);
-    let spark_data: Vec<u64> = app.activity_matrix.iter()
+    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
+    let act_idx = app.activity_matrix_idx;
+    let ordered_act: Vec<u64> = (0..60)
+        .map(|i| app.activity_matrix[(act_idx + i) % 60])
+        .collect();
+    let spark_data: Vec<u64> = ordered_act.iter()
         .map(|v| (v * 100 / max_val) as u64)
         .collect();
 
