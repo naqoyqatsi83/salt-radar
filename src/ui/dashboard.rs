@@ -343,12 +343,12 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let ordered_lat: Vec<f64> = (0..60)
         .map(|i| app.zmq_latency_history[(lat_idx + i) % 60])
         .collect();
-    // Resample to fill available sparkline width
+    // 1 data point per column (btop-style: width = time window)
     let spark_width = inner_layout[0].width.max(1) as usize;
-    let spark_data: Vec<u64> = (0..spark_width)
+    let points = spark_width.min(60);
+    let spark_data: Vec<u64> = (0..points)
         .map(|i| {
-            let src_idx = (i * 60) / spark_width;
-            let v = ordered_lat[src_idx.min(59)];
+            let v = ordered_lat[i];
             (v / max_lat * 100.0) as u64
         })
         .collect();
@@ -393,12 +393,12 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
     let ordered: Vec<f64> = (0..60)
         .map(|i| app.event_rate_history[(idx + i) % 60])
         .collect();
-    // Resample to fill available sparkline width
+    // 1 data point per column (btop-style: width = time window)
     let spark_width = inner.width.max(1) as usize;
-    let spark_data: Vec<u64> = (0..spark_width)
+    let points = spark_width.min(60);
+    let spark_data: Vec<u64> = (0..points)
         .map(|i| {
-            let src_idx = (i * 60) / spark_width;
-            let v = ordered[src_idx.min(59)];
+            let v = ordered[i];
             (v / max_rate * 100.0) as u64
         })
         .collect();
@@ -461,12 +461,12 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
     let ordered_act: Vec<u64> = (0..60)
         .map(|i| app.activity_matrix[(act_idx + i) % 60])
         .collect();
-    // Resample to fill available sparkline width
+    // 1 data point per column (btop-style: width = time window)
     let spark_width = inner.width.max(1) as usize;
-    let spark_data: Vec<u64> = (0..spark_width)
+    let points = spark_width.min(60);
+    let spark_data: Vec<u64> = (0..points)
         .map(|i| {
-            let src_idx = (i * 60) / spark_width;
-            let v = ordered_act[src_idx.min(59)];
+            let v = ordered_act[i];
             (v * 100 / max_val) as u64
         })
         .collect();
