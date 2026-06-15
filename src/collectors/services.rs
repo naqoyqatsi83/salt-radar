@@ -182,20 +182,47 @@ fn get_systemd_properties(unit: &str) -> (String, String, String, u64) {
 }
 
 fn parse_uptime(timestamp: &str) -> u64 {
-    // systemd timestamps look like: "Mon 2024-01-15 10:30:00 UTC"
     if timestamp.is_empty() { return 0; }
     let now = std::time::SystemTime::now();
-    // Try parsing systemd format first (no comma, space-separated)
-    let start = match chrono::DateTime::parse_from_str(timestamp, "%a %Y-%m-%d %H:%M:%S %Z") {
-        Ok(dt) => dt.timestamp() as u64,
-        Err(_) => {
-            // Fallback to RFC2822
-            match chrono::DateTime::parse_from_rfc2822(timestamp) {
-                Ok(dt) => dt.timestamp() as u64,
-                Err(_) => return 0,
+
+    // Try multiple systemd timestamp formats
+    let formats = [
+        "%a %Y-%m-%d %H:%M:%S %Z",
+        "%a %Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%d %H:%M:%S",
+        "%a %Y-%m-%d %H:%M:%S",
+    ];
+
+    let mut start = 0u64;
+
+    // Try each format
+    for fmt in formats {
+        if let Ok(dt) = chrono::DateTime::parse_from_str(timestamp, fmt) {
+            start = dt.timestamp() as u64;
+            break;
+        }
+    }
+
+    // Fallback to RFC2822
+    if start == 0 {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(timestamp) {
+            start = dt.timestamp() as u64;
+        }
+    }
+
+    // Last resort: try parsing just the date/time part, ignoring timezone
+    // systemd format: "Mon 2026-06-15 09:30:04 CEST" -> parts[1..4] = "2026-06-15", "09:30:04", "CEST"
+    if start == 0 {
+        let parts: Vec<&str> = timestamp.split_whitespace().collect();
+        if parts.len() >= 4 {
+            let dt_str = format!("{} {}", parts[1], parts[2]);
+            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%d %H:%M:%S") {
+                start = dt.and_utc().timestamp() as u64;
             }
         }
-    };
+    }
+
+    if start == 0 { return 0; }
     let elapsed = now.duration_since(std::time::UNIX_EPOCH).unwrap_or(std::time::Duration::from_secs(0));
     elapsed.as_secs().saturating_sub(start)
 }
