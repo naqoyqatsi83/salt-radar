@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::os::unix::fs::MetadataExt;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -500,25 +501,32 @@ impl App {
             }
         }
 
-        // 3. xclip via su as the X11 user (pushes to X11 clipboard → MobaXterm → Windows).
+        // 3. xclip (pushes to X11 clipboard → MobaXterm → Windows).
         let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
         let x11_user = Self::detect_x11_user(&display);
-        let mut xclip_ok = false;
-        if let Ok(mut child) = std::process::Command::new("su")
-            .args([
-                "-c",
-                &format!("DISPLAY={} xclip -selection clipboard", display),
-                &x11_user,
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
+
+        let users_to_try = [&x11_user[..], "vagrant", "peto"];
+        for user in users_to_try {
+            if !std::process::Command::new("id").arg(user).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+                continue;
+            }
+            let mut child = match std::process::Command::new("su")
+                .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user])
+                .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            use std::io::Read;
             let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
-            xclip_ok = child.wait().map(|s| s.success()).unwrap_or(false);
+            let mut err_buf = String::new();
+            let _ = child.stderr.take().map(|mut s| s.read_to_string(&mut err_buf));
+            let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+            let err_short = err_buf.trim().replace(' ', "_");
+            log.push_str(&format!("xclip_{}={} ", user, if ok { "ok" } else { &err_short }));
+            if ok { break; }
         }
-        log.push_str(&format!("xclip_user={} ok={} ", x11_user, xclip_ok));
 
         // 4. Write debug log
         let _ = std::fs::write("/tmp/salt-radar-clip.log", &log);
