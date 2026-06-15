@@ -1,15 +1,308 @@
-# salt-radar
+# salt-radar — Design Plan
 
-A non-intrusive, read-only TUI for monitoring a Salt Master — sweeping for
-key/minion status, process and service health, and live event-bus traffic —
-in the visual spirit of `psnet` (ratatui, dark theme, multi-tab, live tables,
-sparklines, detail popups, live filtering).
+This document outlines the original design decisions and implementation roadmap for the Salt Master monitoring TUI application.
 
-This document is the design + implementation plan for Claude Code. It is
-written to be handed to Claude Code as a starting brief — Claude Code should
-treat the "Verification needed" notes as mandatory first steps, since exact
-Salt internal APIs vary across versions and must be checked against whatever
-Salt version is actually installed on the target host.
+## Overview
+
+A non-intrusive, read-only TUI for monitoring a Salt Master. Designed with focus on reliability, minimal resource usage, and passive observation rather than active probing.
+
+---
+
+## Architecture
+
+### Core Components
+
+- **Agent**: Rust-side agent communicating with Salt Master via NDJSON over stdin/stdout
+- **Collector Pattern**: Separate collectors for different data sources (keys, processes, services, system info, events, jobs)
+- **TUI Framework**: ratatui (v0.29) + crossterm (v0.28)
+- **Event Bus**: Salt events streamed from master for real-time updates
+- **Configuration**: TOML-based (`salt-radar.toml`) with sensible defaults
+
+### Data Flow
+
+1. **Initial setup**:
+   - Load config from `salt-radar.toml` or defaults
+   - Spawn agent process
+   - Subscribe to Salt events
+   - Start collectors (run on intervals)
+
+2. **Runtime updates**:
+   - Collect system info periodically (every 2s)
+   - Collect keys/minions periodically (every 5s)
+   - Collect processes periodically (every 2s)
+   - Collect services periodically (every 2s)
+   - Collect ZMQ latency periodically (every 2s)
+   - Update alerts based on collected data
+
+3. **Rendering**:
+   - 2s frame rate with 60s event history retained
+   - Efficient layout with minimal redraws
+   - Real-time updates reflected immediately
+
+---
+
+## Core Features
+
+### Dashboard Tab
+- **Radar spinner**: Visual indicator showing activity
+- **Host uptime**: Time since last system boot
+- **Processes & Services**: Current Salt processes and their health
+- **Host resources**: CPU load, memory usage
+- **ZMQ latency**: Round-trip time to master (sparkline)
+- **Event rate**: Events per second (sparkline)
+- **Minion activity**: Checkin activity over last 60s (sparkline + breakdown)
+
+### Minions Tab
+- **Key status**: All minions with key status and metadata
+- **Grains**: Machine information for each minion
+- **Connection status**: Live connection status
+- **Search/filter**: Filter minions by ID, key status, or metadata
+
+### Events Tab
+- **Live event stream**: Real-time Salt events with filtering
+- **Tag filtering**: Filter by event tag patterns
+- **Minion filtering**: Show only events from specific minions
+- **Data navigation**: View event details, copy to clipboard
+
+### Jobs Tab
+- **Job tracking**: Active and recent jobs with JID, function, target
+- **Per-minion breakdown**: Jobs targeting multiple minions
+- **Event-driven updates**: Jobs appear as they are created
+- **Detail view**: Full job return data per minion (scrollable)
+
+### Alerts Tab
+- **Staleness alerts**: Minions not seen within timeout
+- **Key alerts**: Pending/rejected/denied keys
+- **Service alerts**: Failed Salt services
+- **Disk usage alerts**: High usage on cache/pki directories
+- **Config-driven**: Alert thresholds from TOML
+
+---
+
+## Tabs & Navigation
+
+- **Tab switching**: `←/→` or `1-5`
+- **Help**: `?` or `q`
+- **Exit**: `q`
+
+---
+
+## Panels & Layout
+
+### Dashboard
+- **Header**: `salt-radar v0.1.0 ● ● Salt <version> | keys: A1 P0 | radar <uptime> | host <uptime>`
+- **Main layout**:
+  - Uptime gauge (left)
+  - Processes/Services (middle)
+  - Host resources (right)
+  - Event rate sparkline (bottom)
+  - ZMQ latency sparkline (bottom)
+
+### Minions
+- **Header**: `Minions (A1 active, P0 pending, R0 rejected)`
+- **List**: Minion ID, key status, OS, salt version, last seen, CPU arch
+
+### Events
+- **Header**: `Events (2/s | all tags) | <minion filter>`
+- **List**: Timestamp, tag, minion_id, data preview
+
+### Jobs
+- **Header**: `Jobs | <filter>`
+- **List**: JID, function, target, returned/targeted, age
+
+### Alerts
+- **Header**: `Alerts (3 active) | <filter>`
+- **List**: Alert key, severity, description, active since, count
+
+---
+
+## Data Sources
+
+### System Collectors
+- **System info**: `/proc/stat`, `/proc/meminfo`, disk usage
+- **Salt processes**: `/proc/*/cmdline`, `/proc/*/stat`
+- **Host uptime**: `/proc/uptime`
+
+### Salt Collectors
+- **Keys**: `salt-run manage.keys` via agent
+- **Minion cache**: `salt-cache-*` file paths
+- **Config snapshot**: `salt-run config.values` via agent
+- **ZMQ ping**: Custom `zmq_ping` command via agent
+
+### Event Processing
+- **Real-time**: Agent streams Salt events via NDJSON
+- **Event parsing**: Deserialize JSON events
+- **Tag filtering**: Filter by event tag patterns
+- **Minion extraction**: Extract minion ID from events
+
+### Job Tracking
+- **Event-driven**: Jobs created via `salt/job/*/start` events
+- **Return tracking**: Jobs completed via `salt/job/*/ret/*` events
+- **Detail lookup**: Use `salt-run jobs.lookup_jid` when needed for full returns
+
+---
+
+## Rendering Details
+
+### Dashboard Header
+```rust
+let header = Line::from(vec![
+    Span::styled("salt-radar v0.1.0 ● ● ", Style::default().fg(color::PRIMARY)),
+    Span::styled("Salt ", Style::default().fg(color::TEXT)),
+    Span::styled(version, Style::default().fg(color::ACCENT)),
+    Span::styled(" | keys: A1 P0 | ", Style::default().fg(color::TEXT_DIM)),
+    Span::styled("radar ", Style::default().fg(color::TEXT)),
+    Span::styled(format!("{}", app.session_uptime), Style::default().fg(color::CYAN)),
+    Span::styled(" | host ", Style::default().fg(color::TEXT)),
+    Span::styled(format!("{}", host_uptime), Style::default().fg(color::YELLOW)),
+]);
+```
+
+### Processes & Services Panel
+```rust
+let mut service_lines: Vec<Line<'static>> = vec![];
+
+// Display header for service columns
+service_lines.push(Line::from(vec![
+    Span::styled("  Unit             ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+    Span::styled("Status ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+    Span::styled("State                   ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+    Span::styled("Memory", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+    Span::styled("Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+]));
+
+for service in &app.services {
+    // Service rendering logic...
+}
+```
+
+### Minion Activity Panel
+```rust
+// Show sparkline + counts
+let sparkline = Line::from(vec![
+    Span::styled("checkins/s ", Style::default().fg(color::TEXT_LABEL)),
+    // Draw sparkline from activity_matrix...
+    Span::styled("    3792 active   16 quiet >5m   4 silent", Style::default().fg(color::TEXT)),
+]);
+```
+
+---
+
+## Error Handling
+
+### Collector Failures
+- **Graceful degradation**: If collector fails, show error state but continue
+- **Retry logic**: Exponential backoff for transient failures
+- **Fallback data**: Use last successful data when unavailable
+
+### Agent Communication
+- **Connection health**: Track agent connection state
+- **Restart capability**: Restart agent if it exits unexpectedly
+- **Cleanup**: Ensure child processes are terminated on exit
+
+### Filesystem Access
+- **Permission handling**: Handle permission errors gracefully
+- **Missing files**: Show appropriate error messages
+
+---
+
+## Configuration
+
+### salt-radar.toml Schema
+```toml
+[app]
+refresh_rate = 2000  # milliseconds
+
+[collectors.keys]
+interval = 5000
+
+[collectors.minions]
+interval = 5000
+
+[collectors.processes]
+interval = 2000
+
+[collectors.services]
+interval = 2000
+
+[collectors.system]
+interval = 2000
+
+[collectors.zmq]
+interval = 2000
+
+[alerts.staleness]
+active_secs = 300
+quiet_secs = 1800
+
+[alerts.keys]
+notify_pending = true
+notify_rejected = true
+notify_denied = true
+
+[alerts.services]
+notify_failed = true
+
+[alerts.disk]
+cache_usage_pct = 90
+pki_usage_pct = 90
+```
+
+---
+
+## Performance Considerations
+
+### Memory Management
+- **Efficient data structures**: Use `VecDeque` for circular buffers
+- **Clone-on-write**: Share data where possible to avoid duplication
+- **Explicit drops**: Drop unused data promptly
+
+### CPU Usage
+- **Selective polling**: Only poll collectors that need updates
+- **Batch operations**: Group related operations where possible
+- **Async where appropriate**: Use async I/O for blocking operations
+
+### UI Performance
+- **Minimal redraws**: Only update components that changed
+- **Efficient rendering**: Use ratatui's efficient rendering model
+- **Bounded buffers**: Limit history size to control memory usage
+
+---
+
+## Testing
+
+### Unit Tests
+- **Collectors**: Test parsing of system files and Salt output
+- **UI components**: Test line drawing and formatting functions
+- **Error handling**: Test failure cases and recovery
+
+### Integration Tests
+- **Full workflow**: Test complete agent-collector-TUI integration
+- **Real Salt Master**: Test against a real Salt Master (optional)
+- **Configuration loading**: Test various config combinations
+
+---
+
+## Future Enhancements
+
+### Phase 1 (Completed)
+- Basic TUI skeleton
+- Core dashboard with all panels
+- Event and job tracking
+- Alert system
+
+### Phase 2 (Planned)
+- Dynamic service discovery (in progress)
+- Minion activity sparkline (in progress)
+- Host uptime display
+- Enhanced filtering/search
+
+### Phase 3 (Future)
+- Fleet version drift panel (deferred)
+- Per-minion key status filtering
+- Advanced event filtering
+- Historical analysis
+- Configurable alert thresholds
 
 ---
 
