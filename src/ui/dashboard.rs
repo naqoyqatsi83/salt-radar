@@ -15,7 +15,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(3),   // Keys & Uptime
             Constraint::Length(4),   // Processes & Services
             Constraint::Length(4),   // Host Resources
-            Constraint::Length(3),   // ZMQ
+            Constraint::Length(4),   // ZMQ (+ latency)
             Constraint::Length(3),   // Config
             Constraint::Length(4),   // Event Rate sparkline
         ])
@@ -213,7 +213,7 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Network Connections ");
+    let block = make_block(" Network & Latency ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -243,7 +243,29 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(format!(" ({})", api_total), Style::default().fg(color::TEXT_DIM)));
     }
 
-    f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(color::BG_DARK)), inner);
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Ratio(1, 2); 2])
+        .split(inner);
+
+    f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(color::BG_DARK)), inner_layout[0]);
+
+    // Line 2: Latency
+    let lat = app.zmq_latency_ms;
+    let (lat_color, lat_label) = if lat <= 0.0 {
+        (color::TEXT_DIM, "measuring...".to_string())
+    } else if lat < 10.0 {
+        (color::GREEN, format!("{:.0} ms", lat))
+    } else if lat < 50.0 {
+        (color::YELLOW, format!("{:.0} ms", lat))
+    } else {
+        (color::ORANGE, format!("{:.0} ms", lat))
+    };
+    let lat_spans = vec![
+        Span::styled("  \u{25b6} Master response: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(lat_label, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
+    ];
+    f.render_widget(Paragraph::new(Line::from(lat_spans)).style(Style::default().bg(color::BG_DARK)), inner_layout[1]);
 }
 
 fn draw_config_row(f: &mut Frame, area: Rect, app: &App) {

@@ -78,6 +78,10 @@ pub struct App {
     event_rate_idx: usize,
     /// Timestamp of last successful clipboard copy (for UI feedback)
     pub clipboard_at: Option<Instant>,
+    /// Flag for main loop to call terminal.clear() after alt-screen disruption
+    pub needs_terminal_clear: bool,
+    /// Measured ZMQ/master response latency in milliseconds (from zmq_ping agent command)
+    pub zmq_latency_ms: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -162,6 +166,8 @@ impl App {
             event_rate_history: [0.0; 60],
             event_rate_idx: 0,
             clipboard_at: None,
+            needs_terminal_clear: false,
+            zmq_latency_ms: 0.0,
         }
     }
 
@@ -184,6 +190,11 @@ impl App {
                         }
                         "minion_cache_list" => {
                             self.minion_info = parse_minion_list(&data);
+                        }
+                        "zmq_ping" => {
+                            if let Some(lat) = data["latency_ms"].as_f64() {
+                                self.zmq_latency_ms = lat;
+                            }
                         }
                         _ => {}
                     }
@@ -431,49 +442,77 @@ impl App {
         }
     }
 
-    pub fn copy_to_clipboard(text: &str) {
+    pub fn copy_to_clipboard(&mut self, text: &str) {
+        // 1. Write to local file (always works)
         let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
 
-        // 1) tmux load-buffer (Ctrl+b ] to paste when in tmux)
-        if let Ok(user) = std::env::var("SUDO_USER") {
-            let _ = std::process::Command::new("sudo")
-                .arg("-u").arg(&user)
-                .arg("tmux").arg("load-buffer").arg("/tmp/salt-radar-copy.txt")
+        // 2. tmux load-buffer (for tmux Ctrl+b ] paste)
+        if std::env::var("TMUX").is_ok() {
+            let _ = std::process::Command::new("tmux")
+                .arg("load-buffer").arg("/tmp/salt-radar-copy.txt")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status();
         }
 
-        // 2) Leave the TUI briefly and print the text to the terminal.
-        //    The text lands in terminal scrollback and the user can mouse-select
-        //    it → PRIMARY clipboard (middle-click paste). Also sends OSC 52.
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+
+        // 3. Try OSC 52 directly via /dev/tty (bypasses crossterm/stdout routing)
+        //    Send CLIPBOARD (c) for Ctrl+V and PRIMARY (p) for Shift+Insert
+        if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+            use std::io::Write;
+            if std::env::var("TMUX").is_ok() {
+                // DCS passthrough inside tmux: wrap OSC in \x1bPtmux;...\x1b\\
+                let _ = tty.write_all(b"\x1bPtmux;\x1b]52;c;");
+                let _ = tty.write_all(b64.as_bytes());
+                let _ = tty.write_all(b"\x07\x1b\\");
+                let _ = tty.write_all(b"\x1bPtmux;\x1b]52;p;");
+                let _ = tty.write_all(b64.as_bytes());
+                let _ = tty.write_all(b"\x07\x1b\\");
+            } else {
+                let _ = tty.write_all(b"\x1b]52;c;");
+                let _ = tty.write_all(b64.as_bytes());
+                let _ = tty.write_all(b"\x07");
+                let _ = tty.write_all(b"\x1b]52;p;");
+                let _ = tty.write_all(b64.as_bytes());
+                let _ = tty.write_all(b"\x07");
+            }
+            let _ = tty.flush();
+        }
+
+        // 4. Also try OSC 52 via shell printf (bypasses any Rust I/O buffering)
+        let _ = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "printf '\\033]52;c;{}\\007\\033]52;p;{}\\007' >/dev/tty",
+                b64, b64
+            ))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        // 5. Leave alt screen and show text visibly (allows manual mouse selection)
         use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
         use crossterm::execute;
         use std::io::Write;
-        use base64::Engine;
+
         let _ = disable_raw_mode();
         let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
-        // Write OSC 52 to the terminal (system clipboard via escape sequence)
-        let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-        // tmux passthrough (inside tmux, forwards to parent terminal)
-        let _ = std::io::stdout().write_all(
-            format!("\x1bPtmux;\x1b]52;c;{}\x07\x1b\\", encoded).as_bytes()
-        );
-        // Raw OSC 52 (for terminal emulators that support it directly)
-        let _ = std::io::stdout().write_all(
-            format!("\x1b]52;c;{}\x1b\\", encoded).as_bytes()
-        );
-        // Print text to terminal so it enters scrollback / can be mouse-selected
+
         println!();
         for line in text.lines() {
             println!(" {}", line);
         }
         println!();
         let _ = std::io::stdout().flush();
-        // Re-enter the TUI
+
         let _ = execute!(std::io::stdout(), EnterAlternateScreen);
         let _ = enable_raw_mode();
+
+        self.needs_terminal_clear = true;
     }
 
     /// Called every tick (1s)
@@ -514,6 +553,7 @@ impl App {
         if self.config_tick >= self.config.config_secs {
             self.config_tick = 0;
             self.send_agent_cmd("config_snapshot", None);
+            self.send_agent_cmd("zmq_ping", None);
         }
 
         // Alert engine checks
@@ -580,7 +620,7 @@ impl App {
                                     let ret = &l.returns[idx];
                                     let payload = serde_json::to_string_pretty(&ret.full_return)
                                         .unwrap_or_else(|_| ret.summary.clone());
-                                    Self::copy_to_clipboard(&payload);
+                                    self.copy_to_clipboard(&payload);
                                     self.clipboard_at = Some(Instant::now());
                                 }
                             }

@@ -43,7 +43,11 @@ fn main() -> io::Result<()> {
 
     loop {
         if needs_redraw {
-            if app.current_tab != last_tab {
+            if app.needs_terminal_clear {
+                terminal.clear()?;
+                app.needs_terminal_clear = false;
+                last_tab = app.current_tab;
+            } else if app.current_tab != last_tab {
                 terminal.clear()?;
                 last_tab = app.current_tab;
             }
