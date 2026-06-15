@@ -219,8 +219,12 @@ fn draw_job_detail(
             // Show full return data for selected minion
             if sel < l.returns.len() {
                 let ret = &l.returns[sel];
-                let console_str = App::format_return_as_console(&ret.minion_id, &ret.full_return);
-                let all_lines: Vec<&str> = console_str.lines().collect();
+                let display_str = if ret.formatted_text.is_empty() {
+                    App::format_return_as_console(&ret.minion_id, &ret.full_return)
+                } else {
+                    ret.formatted_text.clone()
+                };
+                let all_lines: Vec<&str> = display_str.lines().collect();
 
                 if scroll_mode {
                     // Show scrolled output only
@@ -228,11 +232,6 @@ fn draw_job_detail(
                         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
                     }
                 } else {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        format!(" \u{2500}\u{2500}\u{2500} {} output \u{2500}\u{2500}\u{2500}", ret.minion_id),
-                        Style::default().fg(Color::Rgb(35, 50, 80)),
-                    )));
                     for line in all_lines.iter().take(30) {
                         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
                     }

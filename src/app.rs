@@ -526,11 +526,16 @@ impl App {
                 serde_json::Value::Object(obj) => {
                     if obj.is_empty() { return format!("{}{{}}", pad); }
                     let mut out = String::new();
-                    for (i, (k, v)) in obj.iter().enumerate() {
-                        if i > 0 { out.push('\n'); }
+                    let mut first = true;
+                    for (k, v) in obj.iter() {
+                        // Skip Salt internal keys like __id__, __run_num__, __sls__
+                        if k.starts_with("__") { continue; }
+                        if !first { out.push('\n'); }
+                        first = false;
                         out.push_str(&format!("{}----------\n{}{}:\n", pad, pad, k));
                         out.push_str(&fmt_val(v, indent + 4));
                     }
+                    if first { return format!("{}{{}}", pad); }
                     out
                 }
             }
@@ -870,7 +875,11 @@ impl App {
                                     let idx = selected_return.unwrap_or(0);
                                     if idx < l.returns.len() {
                                         let ret = &l.returns[idx];
-                                        let payload = Self::format_return_as_console(&ret.minion_id, &ret.full_return);
+                                        let payload = if ret.formatted_text.is_empty() {
+                                            Self::format_return_as_console(&ret.minion_id, &ret.full_return)
+                                        } else {
+                                            ret.formatted_text.clone()
+                                        };
                                         self.copy_to_clipboard(&payload);
                                         self.clipboard_at = Some(Instant::now());
                                     }
@@ -1053,6 +1062,7 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
                 retcode: entry["retcode"].as_i64().unwrap_or(0),
                 summary: entry["summary"].as_str().unwrap_or("").to_string(),
                 full_return: entry["full_return"].clone(),
+                formatted_text: entry["formatted_text"].as_str().unwrap_or("").to_string(),
             });
         }
     }

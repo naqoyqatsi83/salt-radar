@@ -189,12 +189,20 @@ def cmd_jid_lookup(opts, req):
             lookup = inner
         # else keep original
 
+    # Load salt's nested outputter for exact CLI-identical formatting
+    try:
+        from salt.output.nested import output as nested_output
+    except ImportError:
+        nested_output = None
+
     # Normalize: lookup returns {minion_id: result_data, ...}
     returns = []
     for mid, retdata in lookup.items():
+        data_for_formatting = retdata
         if isinstance(retdata, dict):
             # Unwrap: Salt cache stores {"return": actual_data, "retcode": 0, ...}
             actual = retdata.get("return", retdata)
+            data_for_formatting = actual
             retcode = retdata.get("retcode", 0)
             success = not retcode
             summary = str(actual)[:200]
@@ -204,12 +212,20 @@ def cmd_jid_lookup(opts, req):
             success = True
             summary = str(retdata)[:200]
             full = retdata if isinstance(retdata, (dict, list)) else str(retdata)
+        # Format using salt's own nested outputter for exact CLI output
+        formatted_text = ""
+        if nested_output is not None:
+            try:
+                formatted_text = nested_output({str(mid): data_for_formatting})
+            except Exception:
+                formatted_text = ""
         returns.append({
             "minion_id": str(mid),
             "success": success,
             "retcode": retcode,
             "summary": summary,
             "full_return": full,
+            "formatted_text": formatted_text,
         })
 
     data = {

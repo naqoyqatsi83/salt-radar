@@ -220,6 +220,7 @@ pub struct JidReturn {
     pub retcode: i64,
     pub summary: String,
     pub full_return: serde_json::Value,
+    pub formatted_text: String,
 }
 
 // ─── Alert ─────────────────────────────────────────────────────────────────
