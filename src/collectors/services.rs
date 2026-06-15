@@ -185,12 +185,17 @@ fn parse_uptime(timestamp: &str) -> u64 {
     // systemd timestamps look like: "Mon 2024-01-15 10:30:00 UTC"
     if timestamp.is_empty() { return 0; }
     let now = std::time::SystemTime::now();
-    // Try to parse as UTC datetime
-    let start = match chrono::DateTime::parse_from_rfc2822(timestamp) {
+    // Try parsing systemd format first (no comma, space-separated)
+    let start = match chrono::DateTime::parse_from_str(timestamp, "%a %Y-%m-%d %H:%M:%S %Z") {
         Ok(dt) => dt.timestamp() as u64,
-        Err(_) => return 0,
+        Err(_) => {
+            // Fallback to RFC2822
+            match chrono::DateTime::parse_from_rfc2822(timestamp) {
+                Ok(dt) => dt.timestamp() as u64,
+                Err(_) => return 0,
+            }
+        }
     };
     let elapsed = now.duration_since(std::time::UNIX_EPOCH).unwrap_or(std::time::Duration::from_secs(0));
-    // Simple uptime calculation - subtract current time minus start time
     elapsed.as_secs().saturating_sub(start)
 }

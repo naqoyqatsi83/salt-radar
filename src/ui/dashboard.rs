@@ -12,17 +12,18 @@ const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
 // Frames: ◔ ◑ ◕ ◐
 
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
+    let services_height = (2 + app.services.len()) as u16; // 1 gauge + 1 header + N services
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),   // Header
-            Constraint::Length(3),   // Keys & Uptime
-            Constraint::Min(4),      // Processes & Services (grows with services)
-            Constraint::Length(4),   // Host Resources
-            Constraint::Length(4),   // ZMQ (merged connections + latency, sparkline)
-            Constraint::Length(4),   // Event Rate sparkline
-            Constraint::Length(3),   // Minion Activity Matrix
-            Constraint::Length(3),   // Job Pulse
+            Constraint::Length(1),           // Header
+            Constraint::Length(3),           // Keys & Uptime
+            Constraint::Length(services_height), // Processes & Services (exact fit)
+            Constraint::Length(4),           // Host Resources
+            Constraint::Length(4),           // ZMQ (merged connections + latency, sparkline)
+            Constraint::Length(4),           // Event Rate sparkline
+            Constraint::Length(3),           // Minion Activity Matrix
+            Constraint::Length(3),           // Job Pulse
         ])
         .split(area);
 
@@ -163,7 +164,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
     let inner_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .constraints([Constraint::Length(1), Constraint::Length(1 + app.services.len() as u16)])
         .split(inner);
 
     let gauge = Gauge::default()
@@ -179,11 +180,11 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
     // Display header for service columns
     service_lines.push(Line::from(vec![
-        Span::styled("  Unit             ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(" Status ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(" State                   ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("  Memory", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("   Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Unit            ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Status", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(" State            ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(" Memory ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(" Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
     ]));
 
     for service in &app.services {
@@ -202,22 +203,22 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         let uptime_text = if service.uptime_seconds > 0 {
             let secs = service.uptime_seconds;
             if secs >= 3600 {
-                format!("{:>5}h", secs / 3600)
+                format!("{}h", secs / 3600)
             } else if secs >= 60 {
-                format!("{:>5}m", secs / 60)
+                format!("{}m", secs / 60)
             } else {
-                format!("{:>5}s", secs)
+                format!("{}s", secs)
             }
         } else {
-            "  --  ".to_string()
+            "--".to_string()
         };
 
         service_lines.push(Line::from(vec![
-            Span::styled(format!("  {:<16}", service.unit), Style::default().fg(color::CYAN)),
-            Span::styled(format!(" {} ", status_icon), Style::default().fg(status_color)),
-            Span::styled(format!("{} ", service.state), Style::default().fg(color::TEXT)),
-            Span::styled(format!("{:<9}", memory_text), Style::default().fg(color::YELLOW)),
-            Span::styled(format!("{:>6}", uptime_text), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!("{:<16}", service.unit), Style::default().fg(color::CYAN)),
+            Span::styled(format!(" {:<6}", status_icon), Style::default().fg(status_color)),
+            Span::styled(format!(" {:<17}", service.state), Style::default().fg(color::TEXT)),
+            Span::styled(format!(" {:>6} ", memory_text), Style::default().fg(color::YELLOW)),
+            Span::styled(format!(" {:>6}", uptime_text), Style::default().fg(color::TEXT_DIM)),
         ]));
     }
 
