@@ -104,7 +104,7 @@ pub enum AgentMessage {
 pub enum DetailPopup {
     Minion(MinionInfo),
     SaltEvent(SaltEvent),
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize> },
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_mode: bool },
     Alert(AlertEntry),
 }
 
@@ -450,6 +450,8 @@ impl App {
                         jid,
                         lookup: None,
                         selected_return: None,
+                        scroll_offset: 0,
+                        scroll_mode: false,
                     });
                 }
             }
@@ -763,51 +765,87 @@ impl App {
         // Detail popup gets first crack
         if let Some(ref mut detail) = self.detail_popup {
             match *detail {
-                DetailPopup::JobDetail { ref mut selected_return, ref lookup, .. } => {
-                    match code {
-                        KeyCode::Esc | KeyCode::Char('q') => {
-                            self.detail_popup = None;
+                DetailPopup::JobDetail {
+                    ref mut selected_return,
+                    ref mut scroll_offset,
+                    ref mut scroll_mode,
+                    ref lookup, ..
+                } => {
+                    if *scroll_mode {
+                        match code {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                *scroll_mode = false;
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                *scroll_offset = scroll_offset.saturating_sub(1);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                *scroll_offset += 1;
+                            }
+                            KeyCode::PageUp => {
+                                *scroll_offset = scroll_offset.saturating_sub(10);
+                            }
+                            KeyCode::PageDown => {
+                                *scroll_offset += 10;
+                            }
+                            _ => {}
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let cur = selected_return.unwrap_or(0);
-                                    *selected_return = Some(cur.saturating_sub(1));
+                    } else {
+                        match code {
+                            KeyCode::Esc | KeyCode::Char('q') => {
+                                self.detail_popup = None;
+                            }
+                            KeyCode::Enter => {
+                                if lookup.is_some() {
+                                    *scroll_mode = true;
+                                    *scroll_offset = 0;
                                 }
                             }
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let cur = selected_return.unwrap_or(0) + 1;
-                                    *selected_return = Some(cur.min(l.returns.len().saturating_sub(1)));
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                if let Some(ref l) = lookup {
+                                    if !l.returns.is_empty() {
+                                        let cur = selected_return.unwrap_or(0);
+                                        *selected_return = Some(cur.saturating_sub(1));
+                                        *scroll_mode = false;
+                                        *scroll_offset = 0;
+                                    }
                                 }
                             }
-                        }
-                        KeyCode::Char('y') => {
-                            if let Some(ref l) = lookup {
-                                let idx = selected_return.unwrap_or(0);
-                                if idx < l.returns.len() {
-                                    let ret = &l.returns[idx];
-                                    let payload = Self::format_return_as_console(&ret.minion_id, &ret.full_return);
-                                    self.copy_to_clipboard(&payload);
-                                    self.clipboard_at = Some(Instant::now());
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if let Some(ref l) = lookup {
+                                    if !l.returns.is_empty() {
+                                        let cur = selected_return.unwrap_or(0) + 1;
+                                        *selected_return = Some(cur.min(l.returns.len().saturating_sub(1)));
+                                        *scroll_mode = false;
+                                        *scroll_offset = 0;
+                                    }
                                 }
                             }
-                        }
-                        KeyCode::Char('Y') => {
-                            if let Some(ref l) = lookup {
-                                let idx = selected_return.unwrap_or(0);
-                                if idx < l.returns.len() {
-                                    let ret = &l.returns[idx];
-                                    let payload = serde_json::to_string_pretty(&ret.full_return)
-                                        .unwrap_or_else(|_| ret.summary.clone());
-                                    self.copy_to_clipboard(&payload);
-                                    self.clipboard_at = Some(Instant::now());
+                            KeyCode::Char('y') => {
+                                if let Some(ref l) = lookup {
+                                    let idx = selected_return.unwrap_or(0);
+                                    if idx < l.returns.len() {
+                                        let ret = &l.returns[idx];
+                                        let payload = Self::format_return_as_console(&ret.minion_id, &ret.full_return);
+                                        self.copy_to_clipboard(&payload);
+                                        self.clipboard_at = Some(Instant::now());
+                                    }
                                 }
                             }
+                            KeyCode::Char('Y') => {
+                                if let Some(ref l) = lookup {
+                                    let idx = selected_return.unwrap_or(0);
+                                    if idx < l.returns.len() {
+                                        let ret = &l.returns[idx];
+                                        let payload = serde_json::to_string_pretty(&ret.full_return)
+                                            .unwrap_or_else(|_| ret.summary.clone());
+                                        self.copy_to_clipboard(&payload);
+                                        self.clipboard_at = Some(Instant::now());
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
                 _ => {

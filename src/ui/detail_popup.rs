@@ -22,10 +22,10 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             f.render_widget(Clear, area);
             draw_event_detail(f, area, evt);
         }
-        DetailPopup::JobDetail { jid, lookup, selected_return } => {
+        DetailPopup::JobDetail { jid, lookup, selected_return, scroll_offset, scroll_mode } => {
             let area = centered_rect(75, 75, f.area());
             f.render_widget(Clear, area);
-            draw_job_detail(f, area, jid, lookup, *selected_return, app.clipboard_at);
+            draw_job_detail(f, area, jid, lookup, *selected_return, *scroll_offset, *scroll_mode, app.clipboard_at);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(60, 40, f.area());
@@ -82,7 +82,7 @@ fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> 
     ])
 }
 
-fn dismiss_line(clipboard_at: Option<std::time::Instant>) -> Line<'static> {
+fn dismiss_line(clipboard_at: Option<std::time::Instant>, scroll_mode: bool) -> Line<'static> {
     let show_copied = clipboard_at
         .map(|t| t.elapsed().as_secs_f64() < 3.0)
         .unwrap_or(false);
@@ -92,10 +92,17 @@ fn dismiss_line(clipboard_at: Option<std::time::Instant>) -> Line<'static> {
             Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
         ));
     }
-    Line::from(Span::styled(
-        "  [ q/Esc close | \u{2191}\u{2193} navigate | y=copy Y=json ]",
-        Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-    ))
+    if scroll_mode {
+        Line::from(Span::styled(
+            "  [ q exit scroll | \u{2191}\u{2193} \u{21C4} page scroll output ]",
+            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
+        ))
+    } else {
+        Line::from(Span::styled(
+            "  [ q/Esc close | \u{2191}\u{2193} navigate | Enter=scroll | y=copy Y=json ]",
+            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
+        ))
+    }
 }
 
 fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>]) {
@@ -151,6 +158,8 @@ fn draw_job_detail(
     jid: &str,
     lookup: &Option<crate::types::JidLookup>,
     selected_return: Option<usize>,
+    scroll_offset: usize,
+    scroll_mode: bool,
     clipboard_at: Option<std::time::Instant>,
 ) {
     let short_jid: String = jid.chars().take(28).collect();
@@ -198,14 +207,23 @@ fn draw_job_detail(
             // Show full return data for selected minion
             if sel < l.returns.len() {
                 let ret = &l.returns[sel];
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    format!(" \u{2500}\u{2500}\u{2500} {} output \u{2500}\u{2500}\u{2500}", ret.minion_id),
-                    Style::default().fg(Color::Rgb(35, 50, 80)),
-                )));
                 let console_str = App::format_return_as_console(&ret.minion_id, &ret.full_return);
-                for line in console_str.lines().take(30) {
-                    lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
+                let all_lines: Vec<&str> = console_str.lines().collect();
+
+                if scroll_mode {
+                    // Show scrolled output only
+                    for line in all_lines.iter().skip(scroll_offset) {
+                        lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
+                    }
+                } else {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        format!(" \u{2500}\u{2500}\u{2500} {} output \u{2500}\u{2500}\u{2500}", ret.minion_id),
+                        Style::default().fg(Color::Rgb(35, 50, 80)),
+                    )));
+                    for line in all_lines.iter().take(30) {
+                        lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
+                    }
                 }
             }
         }
@@ -217,7 +235,7 @@ fn draw_job_detail(
     }
 
     lines.push(Line::from(""));
-    lines.push(dismiss_line(clipboard_at));
+    lines.push(dismiss_line(clipboard_at, scroll_mode));
     render_popup(f, area, &lines);
 }
 
