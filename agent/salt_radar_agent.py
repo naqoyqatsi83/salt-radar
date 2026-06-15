@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import traceback
+import socket
 
 # ── Salt imports (these must succeed — run with Salt's Python) ──────────────
 
@@ -101,6 +102,12 @@ def _detect_api_port(opts):
     return 0
 
 def cmd_config_snapshot(opts, req):
+    # Get actual hostname instead of just interface
+    try:
+        hostname = socket.gethostname()
+    except Exception:
+        hostname = opts.get("interface", "0.0.0.0")
+
     data = {
         "salt_version": str(getattr(_import_salt().version, "__version__", "?")),
         "python_version": "{}.{}.{}".format(
@@ -127,6 +134,7 @@ def cmd_config_snapshot(opts, req):
         "pki_dir": opts.get("pki_dir", "/etc/salt/pki/master"),
         "cachedir": opts.get("cachedir", "/var/cache/salt/master"),
         "cpu_count": opts.get("cpu_count", os.cpu_count() or 0),
+        "hostname": hostname,
     }
     result(req["id"], "config_snapshot", data=data)
 

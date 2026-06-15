@@ -1037,6 +1037,7 @@ fn parse_config_snapshot(data: &serde_json::Value) -> ConfigSnapshot {
         pki_dir: data["pki_dir"].as_str().unwrap_or("/etc/salt/pki/master").to_string(),
         cachedir: data["cachedir"].as_str().unwrap_or("/var/cache/salt/master").to_string(),
         cpu_count: data["cpu_count"].as_u64().unwrap_or(0) as u32,
+        hostname: data["hostname"].as_str().unwrap_or("?").to_string(),
     }
 }
 

@@ -83,7 +83,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .unwrap_or("?");
 
     let hostname = app.config_snapshot.as_ref()
-        .map(|c| c.interface.as_str())
+        .map(|c| c.hostname.as_str())
         .unwrap_or("?");
 
     let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);

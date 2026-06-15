@@ -180,6 +180,7 @@ pub struct ConfigSnapshot {
     pub pki_dir: String,
     pub cachedir: String,
     pub cpu_count: u32,
+    pub hostname: String,
 }
 
 // ─── Event bus event ──────────────────────────────────────────────────────
