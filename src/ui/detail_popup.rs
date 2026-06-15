@@ -22,10 +22,10 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             f.render_widget(Clear, area);
             draw_event_detail(f, area, evt);
         }
-        DetailPopup::JobDetail { jid, lookup, selected_return, scroll_offset, scroll_mode } => {
+        DetailPopup::JobDetail { jid, lookup, selected_return, scroll_offset, scroll_mode, job_fun, job_tgt, job_start_epoch } => {
             let area = centered_rect(75, 75, f.area());
             f.render_widget(Clear, area);
-            draw_job_detail(f, area, jid, lookup, *selected_return, *scroll_offset, *scroll_mode, app.clipboard_at);
+            draw_job_detail(f, area, jid, lookup, *selected_return, *scroll_offset, *scroll_mode, job_fun, job_tgt, *job_start_epoch, app.clipboard_at);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(60, 40, f.area());
@@ -160,17 +160,29 @@ fn draw_job_detail(
     selected_return: Option<usize>,
     scroll_offset: usize,
     scroll_mode: bool,
+    job_fun: &str,
+    job_tgt: &str,
+    job_start_epoch: f64,
     clipboard_at: Option<std::time::Instant>,
 ) {
     let short_jid: String = jid.chars().take(28).collect();
     let mut lines = header_lines(&format!(" Job {}", short_jid));
 
-    if let Some(ref l) = lookup {
-        lines.push(row("Function", l.fun.clone(), color::CYAN));
-        lines.push(row("Target", l.tgt.clone(), color::YELLOW));
-        lines.push(row("Start", l.start_time.clone(), color::TEXT_DIM));
-        lines.push(Line::from(""));
+    // Show job metadata from cached event data (not from lookup which may be empty)
+    lines.push(Line::from(""));
+    lines.push(row("Function", job_fun.to_string(), color::CYAN));
+    lines.push(row("Target", job_tgt.to_string(), color::YELLOW));
 
+    if job_start_epoch > 0.0 {
+        use chrono::{DateTime, Local};
+        if let Some(utc) = DateTime::from_timestamp(job_start_epoch as i64, 0) {
+            let local: DateTime<Local> = utc.into();
+            lines.push(row("Start (UTC)", utc.format("%Y-%m-%d %H:%M:%S").to_string(), color::TEXT_DIM));
+            lines.push(row("Start (local)", local.format("%Y-%m-%d %H:%M:%S").to_string(), color::TEXT_DIM));
+        }
+    }
+
+    if let Some(ref l) = lookup {
         lines.push(Line::from(Span::styled(
             format!("  Returns ({}):", l.returns.len()),
             Style::default().fg(color::TEXT_LABEL),

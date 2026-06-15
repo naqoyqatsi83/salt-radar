@@ -104,7 +104,7 @@ pub enum AgentMessage {
 pub enum DetailPopup {
     Minion(MinionInfo),
     SaltEvent(SaltEvent),
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_mode: bool },
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_mode: bool, job_fun: String, job_tgt: String, job_start_epoch: f64 },
     Alert(AlertEntry),
 }
 
@@ -444,6 +444,9 @@ impl App {
             Tab::Jobs => {
                 if let Some(job) = self.get_filtered_job(self.job_selected) {
                     let jid = job.jid.clone();
+                    let job_fun = job.fun.clone();
+                    let job_tgt = job.tgt.clone();
+                    let job_start_epoch = job.created_epoch;
                     let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": jid.clone()})));
                     self.pending_jid_lookup = Some((req_id, jid.clone()));
                     self.detail_popup = Some(DetailPopup::JobDetail {
@@ -452,6 +455,9 @@ impl App {
                         selected_return: None,
                         scroll_offset: 0,
                         scroll_mode: false,
+                        job_fun,
+                        job_tgt,
+                        job_start_epoch,
                     });
                 }
             }
