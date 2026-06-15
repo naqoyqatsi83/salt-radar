@@ -182,10 +182,10 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     // Display header for service columns
     service_lines.push(Line::from(vec![
         Span::styled("  Unit             ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("Status ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("State                   ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("Memory", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(" Status ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(" State                   ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("  Memory", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("   Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
     ]));
 
     for service in &app.services {
@@ -218,8 +218,8 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("  {:<16}", service.unit), Style::default().fg(color::CYAN)),
             Span::styled(format!(" {} ", status_icon), Style::default().fg(status_color)),
             Span::styled(format!("{} ", service.state), Style::default().fg(color::TEXT)),
-            Span::styled(format!("{:<8}", memory_text), Style::default().fg(color::YELLOW)),
-            Span::styled(format!("{}", uptime_text), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!("{:<9}", memory_text), Style::default().fg(color::YELLOW)),
+            Span::styled(format!("{:>6}", uptime_text), Style::default().fg(color::TEXT_DIM)),
         ]));
     }
 
