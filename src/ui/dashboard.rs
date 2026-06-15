@@ -8,31 +8,39 @@ use crate::app::App;
 
 use super::color;
 
+const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
+// Frames: ◔ ◑ ◕ ◐
+
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),   // Header
             Constraint::Length(3),   // Keys & Uptime
             Constraint::Length(4),   // Processes & Services
             Constraint::Length(4),   // Host Resources
-            Constraint::Length(5),   // ZMQ (+ latency sparkline)
-            Constraint::Length(3),   // Config
+            Constraint::Length(4),   // ZMQ (merged connections + latency, sparkline)
             Constraint::Length(4),   // Event Rate sparkline
+            Constraint::Length(3),   // Minion Activity Matrix
+            Constraint::Length(3),   // Job Pulse
         ])
         .split(area);
 
-    draw_keys_row(f, layout[0], app);
-    draw_proc_row(f, layout[1], app);
-    draw_host_row(f, layout[2], app);
-    draw_zmq_row(f, layout[3], app);
-    draw_config_row(f, layout[4], app);
+    draw_header(f, layout[0], app);
+    draw_keys_row(f, layout[1], app);
+    draw_proc_row(f, layout[2], app);
+    draw_host_row(f, layout[3], app);
+    draw_zmq_row(f, layout[4], app);
     draw_events_row(f, layout[5], app);
+    draw_activity_matrix(f, layout[6], app);
+    draw_job_pulse(f, layout[7], app);
 }
 
-fn make_block(_title: &str) -> Block<'static> {
+fn make_block(title: String) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
+        .title(title)
         .style(Style::default().bg(color::BG_DARK))
 }
 
@@ -61,8 +69,44 @@ fn pct_gauge_style(pct: f64) -> Style {
     ).bg(color::BG_MID)
 }
 
+// ── Header ───────────────────────────────────────────────────────────────────
+
+fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+    let connected = app.agent.connected;
+    let dot = if connected { "\u{25cf}" } else { "\u{25cb}" };
+    let dot_color = if connected { color::GREEN } else { color::RED };
+    let radar = RADAR_FRAMES[app.header_radar_frame as usize];
+
+    let version = app.config_snapshot.as_ref()
+        .map(|c| c.salt_version.as_str())
+        .unwrap_or("?");
+
+    let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);
+    let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
+    let uptime = app.session_start.elapsed().as_secs();
+
+    let line = Line::from(vec![
+        Span::styled(" salt-radar", Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(" v0.1.0 ", Style::default().fg(color::TEXT_DIM)),
+        Span::styled(format!("{}", radar), Style::default().fg(color::CYAN)),
+        Span::styled(format!(" {} ", dot), Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("Salt {}", version), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
+        Span::styled("  \u{2502}", Style::default().fg(color::BORDER)),
+        Span::styled(" keys: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("A{} ", accepted), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("P{} ", pending), Style::default().fg(if pending > 0 { color::YELLOW } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{2502}", Style::default().fg(color::BORDER)),
+        Span::styled(" uptime: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{}", format_duration(uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+    ]);
+
+    f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_DARK).fg(color::TEXT)), area);
+}
+
+// ── Keys & Uptime ────────────────────────────────────────────────────────────
+
 fn draw_keys_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Keys & Uptime ");
+    let block = make_block(" Keys & Uptime ".to_string());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -70,7 +114,6 @@ fn draw_keys_row(f: &mut Frame, area: Rect, app: &App) {
     let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
     let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected);
     let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied);
-    let uptime = app.session_start.elapsed().as_secs();
 
     let line = Line::from(vec![
         Span::styled("  Accepted: ", Style::default().fg(color::TEXT_LABEL)),
@@ -80,57 +123,49 @@ fn draw_keys_row(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("Rejected: ", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{} ", rejected), Style::default().fg(if rejected > 0 { color::RED } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
         Span::styled("Denied: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{}  ", denied), Style::default().fg(if denied > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled("\u{2502}  ", Style::default().fg(color::BORDER)),
-        Span::styled("Uptime: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{}", format_duration(uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{}", denied), Style::default().fg(if denied > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
     ]);
 
     f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_DARK)), inner);
 }
 
+// ── Processes & Services ─────────────────────────────────────────────────────
+
 fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Processes & Services ");
+    let block = make_block(" Processes & Services ".to_string());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let total_rss_used: u64 = app.processes.iter().map(|p| p.rss_kb).sum();
+    let mem_total_kb = app.system_info.mem_total_kb.max(1);
+    let mem_pct = (total_rss_used as f64 / mem_total_kb as f64) * 100.0;
+
     let mut master_rss = 0u64;
     let mut worker_count = 0usize;
-    let mut api_rss = 0u64;
-    let mut api_count = 0usize;
     for p in &app.processes {
         match p.role {
             crate::types::SaltProcessRole::Master | crate::types::SaltProcessRole::Worker => {
                 master_rss += p.rss_kb;
                 worker_count += 1;
             }
-            crate::types::SaltProcessRole::API => { api_rss += p.rss_kb; api_count += 1; }
             _ => {}
         }
     }
 
-    let total_rss_used: u64 = app.processes.iter().map(|p| p.rss_kb).sum();
-    let mem_total_kb = app.system_info.mem_total_kb.max(1);
-    let mem_pct = (total_rss_used as f64 / mem_total_kb as f64) * 100.0;
-
-    let event_worker_rss: u64 = app.processes.iter()
-        .filter(|p| matches!(p.role, crate::types::SaltProcessRole::EventPublisher | crate::types::SaltProcessRole::ReqServer))
-        .map(|p| p.rss_kb).sum();
-
-    let gauge_label = format!(
-        "Master {} MB ({} wrk)  API {} MB ({} api)  Event/Req {} MB  {} minions tracked",
-        master_rss / 1024, worker_count,
-        api_rss / 1024, api_count,
-        event_worker_rss / 1024,
-        app.minion_info.len(),
-    );
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(inner);
 
     let gauge = Gauge::default()
         .gauge_style(pct_gauge_style(mem_pct))
         .percent((mem_pct.round() as u16).min(100))
-        .label(gauge_label);
+        .label(format!(
+            "Salt RSS {} MB ({} proc)  {} minions",
+            master_rss / 1024, worker_count, app.minion_info.len(),
+        ));
 
-    // Service status line
+    // Service status
     let master_svc = app.services.iter().find(|s| s.unit == "salt-master");
     let api_svc = app.services.iter().find(|s| s.unit == "salt-api");
 
@@ -140,7 +175,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             format!("salt-master: {}", master_svc.map(|s| if s.active { "\u{25cf} active" } else { "\u{25cb} down" }).unwrap_or("\u{25cb} n/a")),
             Style::default().fg(master_svc.map(|s| if s.active { color::GREEN } else { color::RED }).unwrap_or(color::TEXT_DIM)),
         ),
-        Span::styled("  ".to_string(), Style::default().fg(color::TEXT_DIM)),
+        Span::styled("  ", Style::default().fg(color::TEXT_DIM)),
         Span::styled(
             format!("salt-api: {}", api_svc.map(|s| if s.active { "\u{25cf} active" } else { "\u{25cb} down" }).unwrap_or("\u{25cb} n/a")),
             Style::default().fg(api_svc.map(|s| if s.active { color::GREEN } else { color::RED }).unwrap_or(color::TEXT_DIM)),
@@ -150,26 +185,18 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     if app.processes.iter().any(|p| p.role == crate::types::SaltProcessRole::Syndic) {
         svc_spans.push(Span::styled("  syndic: \u{25cf} running".to_string(), Style::default().fg(color::CYAN)));
     }
-    // Add alert count on the right
-    let a = app.alert_engine.active_count();
-    svc_spans.push(Span::styled(format!("  \u{2502}  "), Style::default().fg(color::BORDER)));
-    svc_spans.push(Span::styled("Alerts: ".to_string(), Style::default().fg(color::TEXT_LABEL)));
-    svc_spans.push(Span::styled(
-        format!("{}", a),
-        Style::default().fg(if a > 0 { color::ORANGE } else { color::GREEN }).add_modifier(Modifier::BOLD),
-    ));
-
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-        .split(inner);
 
     f.render_widget(gauge, inner_layout[0]);
-    f.render_widget(Paragraph::new(Line::from(svc_spans)).style(Style::default().bg(color::BG_DARK)), inner_layout[1]);
+    f.render_widget(
+        Paragraph::new(Line::from(svc_spans)).style(Style::default().bg(color::BG_DARK)),
+        inner_layout[1],
+    );
 }
 
+// ── Host Resources ───────────────────────────────────────────────────────────
+
 fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Host Resources ");
+    let block = make_block(" Host Resources ".to_string());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -187,7 +214,6 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
         .split(inner);
 
-    // Load gauge
     let load_gauge = Gauge::default()
         .gauge_style(pct_gauge_style(load_pct as f64))
         .percent(load_pct)
@@ -197,7 +223,6 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
             cpu_count as u32, load_pct,
         ));
 
-    // Memory gauge with disk appended as text
     let mem_gauge = Gauge::default()
         .gauge_style(pct_gauge_style(mem_pct))
         .percent((mem_pct.round() as u16).min(100))
@@ -212,8 +237,10 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(mem_gauge, inner_layout[1]);
 }
 
+// ── ZMQ / Network & Latency ─────────────────────────────────────────────────
+
 fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Network & Latency ");
+    let block = make_block(" Network & Latency ".to_string());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -226,35 +253,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let ret_established = app.zmq_connections.iter().filter(|c| c.local_port == ret_port && c.state == "ESTABLISHED").count();
     let ret_total = app.zmq_connections.iter().filter(|c| c.local_port == ret_port).count();
 
-    let mut spans: Vec<Span<'static>> = vec![
-        Span::styled(format!("  :{} publish ", pub_port), Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} estab", pub_established), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" ({})  ", pub_total), Style::default().fg(color::TEXT_DIM)),
-        Span::styled(format!(":{} return ", ret_port), Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} estab", ret_established), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" ({})", ret_total), Style::default().fg(color::TEXT_DIM)),
-    ];
-
-    if api_port > 0 {
-        let api_estab = app.zmq_connections.iter().filter(|c| c.local_port == api_port && c.state == "ESTABLISHED").count();
-        let api_total = app.zmq_connections.iter().filter(|c| c.local_port == api_port).count();
-        spans.push(Span::styled(format!("  :{} api ", api_port), Style::default().fg(color::TEXT_LABEL)));
-        spans.push(Span::styled(format!("{} estab", api_estab), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
-        spans.push(Span::styled(format!(" ({})", api_total), Style::default().fg(color::TEXT_DIM)));
-    }
-
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(color::BG_DARK)), inner_layout[0]);
-
-    // Line 2: Latency text
+    // Latency info
     let lat = app.zmq_latency_ms;
     let (lat_color, lat_label) = if lat <= 0.0 {
         (color::TEXT_DIM, "measuring...".to_string())
@@ -265,13 +264,34 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     } else {
         (color::ORANGE, format!("{:.0} ms", lat))
     };
-    let lat_spans = vec![
-        Span::styled("  \u{25b6} Master response: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(lat_label, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
-    ];
-    f.render_widget(Paragraph::new(Line::from(lat_spans)).style(Style::default().bg(color::BG_DARK)), inner_layout[1]);
 
-    // Line 3: Latency sparkline
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(inner);
+
+    // Line 1: connections + latency
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled("  :".to_string(), Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{} pub{} ({})  ", pub_port, pub_established, pub_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(":".to_string(), Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{} ret{} ({})  ", ret_port, ret_established, ret_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+    ];
+    if api_port > 0 {
+        let api_estab = app.zmq_connections.iter().filter(|c| c.local_port == api_port && c.state == "ESTABLISHED").count();
+        let api_total = app.zmq_connections.iter().filter(|c| c.local_port == api_port).count();
+        spans.push(Span::styled(format!(":{} api{} ({})  ", api_port, api_estab, api_total), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
+    }
+    spans.push(Span::styled("\u{2502}  ".to_string(), Style::default().fg(color::BORDER)));
+    spans.push(Span::styled("\u{25b6} ".to_string(), Style::default().fg(color::TEXT_LABEL)));
+    spans.push(Span::styled(lat_label, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)));
+
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(color::BG_DARK)),
+        inner_layout[0],
+    );
+
+    // Line 2: Latency sparkline
     let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
     let spark_data: Vec<u64> = app.zmq_latency_history.iter()
         .map(|v| (v / max_lat * 100.0) as u64)
@@ -280,46 +300,13 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         .block(Block::default())
         .style(Style::default().fg(lat_color))
         .data(&spark_data);
-    f.render_widget(sparkline, inner_layout[2]);
+    f.render_widget(sparkline, inner_layout[1]);
 }
 
-fn draw_config_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Config ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    if let Some(ref cfg) = app.config_snapshot {
-        let reactors = if cfg.reactor_count > 0 { format!("{} reactors", cfg.reactor_count) } else { "no reactors".to_string() };
-        let fs_backends = if cfg.fileserver_backends.is_empty() { "roots".to_string() } else { cfg.fileserver_backends.join(", ") };
-
-        let text = format!(
-            "  threads: {} on {} cores  transport: {}  {}  fileserver: [{}]  job_cache: {}  pillar_cache: {}  presence: {}",
-            cfg.worker_threads.map(|v| v.to_string()).unwrap_or_else(|| "?".to_string()),
-            cfg.cpu_count,
-            cfg.transport,
-            reactors,
-            fs_backends,
-            cfg.master_job_cache,
-            if cfg.pillar_cache { "on" } else { "off" },
-            if cfg.presence_events { "enabled" } else { "disabled" },
-        );
-
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color::TEXT))))
-                .style(Style::default().bg(color::BG_DARK)),
-            inner,
-        );
-    } else {
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled("  waiting for config data...", Style::default().fg(color::TEXT_DIM))))
-                .style(Style::default().bg(color::BG_DARK)),
-            inner,
-        );
-    }
-}
+// ── Event Rate ───────────────────────────────────────────────────────────────
 
 fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Event Rate (60s) ");
+    let block = make_block(" Event Rate (60s) ".to_string());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -347,8 +334,6 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
     let stats_line = Line::from(vec![
         Span::styled("  Rate: ", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{:.1}/s  ", app.events_per_sec), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled("Peak: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{:.1}/s  ", max_rate), Style::default().fg(color::CYAN)),
         Span::styled("Total: ", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{}  ", app.events_total), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
         Span::styled("Last: ", Style::default().fg(color::TEXT_LABEL)),
@@ -360,5 +345,120 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
     ]);
 
     f.render_widget(sparkline, inner_layout[0]);
-    f.render_widget(Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)), inner_layout[1]);
+    f.render_widget(
+        Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
+        inner_layout[1],
+    );
+}
+
+// ── Minion Activity Matrix ───────────────────────────────────────────────────
+
+fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
+    let block = make_block(" Minion Activity (60s) ".to_string());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let max_val = app.activity_matrix.iter().cloned().max().unwrap_or(0).max(1);
+    let spark_data: Vec<u64> = app.activity_matrix.iter()
+        .map(|v| (v * 100 / max_val) as u64)
+        .collect();
+
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(inner);
+
+    let sparkline = Sparkline::default()
+        .block(Block::default())
+        .style(Style::default().fg(color::GREEN))
+        .data(&spark_data);
+
+    let elapsed = app.last_activity_at.elapsed().as_secs();
+    let activity_label = if app.last_activity_minion.is_empty() {
+        "  waiting for minion returns...".to_string()
+    } else if elapsed < 60 {
+        format!(
+            "  last: \u{2190} {} \u{2192} {}  ({}s ago)",
+            app.last_activity_minion, app.last_activity_fun, elapsed,
+        )
+    } else {
+        format!(
+            "  last: \u{2190} {} \u{2192} {}  ({}m ago)",
+            app.last_activity_minion, app.last_activity_fun, elapsed / 60,
+        )
+    };
+    let rate_color = if app.current_sec_returns > 0 { color::GREEN } else { color::TEXT_DIM };
+
+    let mut total_returns: u64 = 0;
+    for v in &app.activity_matrix { total_returns += v; }
+
+    let stats_line = Line::from(vec![
+        Span::styled(activity_label, Style::default().fg(rate_color)),
+        Span::styled(format!("  total: {}", total_returns), Style::default().fg(color::TEXT_DIM)),
+    ]);
+
+    f.render_widget(sparkline, inner_layout[0]);
+    f.render_widget(
+        Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
+        inner_layout[1],
+    );
+}
+
+// ── Job Pulse ────────────────────────────────────────────────────────────────
+
+fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
+    let block = make_block(" Job Pulse ".to_string());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if app.jobs.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  no active jobs",
+                Style::default().fg(color::TEXT_DIM),
+            ))).style(Style::default().bg(color::BG_DARK)),
+            inner,
+        );
+        return;
+    }
+
+    // Show up to 4 latest jobs, sorted by most recent (reverse order)
+    let count = app.jobs.len().min(4);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(count);
+    for job in app.jobs.iter().rev().take(count) {
+        let progress = if job.target_count > 0 {
+            let pct = (job.returned as f64 / job.target_count as f64).min(1.0);
+            let filled = (pct * 10.0).round() as usize;
+            let empty = 10usize.saturating_sub(filled);
+            format!(
+                "{}{} {}/{}",
+                "\u{2588}".repeat(filled),
+                "\u{2591}".repeat(empty),
+                job.returned, job.target_count,
+            )
+        } else {
+            format!("{}?", job.returned)
+        };
+        let color = if job.target_count > 0 && job.returned >= job.target_count {
+            color::GREEN
+        } else {
+            color::YELLOW
+        };
+
+        let fun_short = if job.fun.len() > 35 {
+            format!("{}..", &job.fun[..33])
+        } else {
+            job.fun.clone()
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} ", fun_short), Style::default().fg(color::CYAN)),
+            Span::styled(progress, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        inner,
+    );
 }

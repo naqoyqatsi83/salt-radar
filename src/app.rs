@@ -91,6 +91,17 @@ pub struct App {
     /// Ring buffer of recent latency samples for sparkline (60 samples = 1 per tick)
     pub zmq_latency_history: [f64; 60],
     zmq_latency_idx: usize,
+
+    // ── Activity matrix (job return events per sec) ──────────────────────────
+    /// Count of salt/job/*/ret/* events per second for last 60s (ring buffer)
+    pub activity_matrix: [u64; 60],
+    activity_matrix_idx: usize,
+    pub current_sec_returns: u64,
+    pub last_activity_minion: String,
+    pub last_activity_fun: String,
+    pub last_activity_at: Instant,
+    /// Animation frame index for radar spinner in header
+    pub header_radar_frame: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -180,6 +191,14 @@ impl App {
             zmq_ping_sent_at: None,
             zmq_latency_history: [0.0; 60],
             zmq_latency_idx: 0,
+
+            activity_matrix: [0; 60],
+            activity_matrix_idx: 0,
+            current_sec_returns: 0,
+            last_activity_minion: String::new(),
+            last_activity_fun: String::new(),
+            last_activity_at: Instant::now(),
+            header_radar_frame: 0,
         }
     }
 
@@ -239,6 +258,17 @@ impl App {
                     }
                 }
                 AgentMessage::Event { tag, data, ts } => {
+                    // Track return events for activity matrix
+                    if tag.contains("/ret/") {
+                        self.current_sec_returns += 1;
+                        if let Some(mid) = tag.rsplit('/').next() {
+                            if !mid.is_empty() {
+                                self.last_activity_minion = mid.to_string();
+                                self.last_activity_fun = data["fun"].as_str().unwrap_or("?").to_string();
+                                self.last_activity_at = Instant::now();
+                            }
+                        }
+                    }
                     let evt = SaltEvent { tag, data, ts };
                     self.events_since_last_tick.push(evt.clone());
                     if self.events.len() >= self.config.event_buffer_size {
@@ -712,6 +742,14 @@ impl App {
             // Record into ring buffer for sparkline
             self.event_rate_history[self.event_rate_idx] = self.events_per_sec;
             self.event_rate_idx = (self.event_rate_idx + 1) % 60;
+
+            // Activity matrix: store return count for this second
+            self.activity_matrix[self.activity_matrix_idx] = self.current_sec_returns;
+            self.activity_matrix_idx = (self.activity_matrix_idx + 1) % 60;
+            self.current_sec_returns = 0;
+
+            // Header radar animation cycle
+            self.header_radar_frame = (self.header_radar_frame + 1) % 4;
         }
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
         self.events_since_last_tick.clear();
