@@ -190,27 +190,39 @@ def cmd_jid_lookup(opts, req):
             if isinstance(inner, dict):
                 lookup = inner
 
-    # Pre-load outputters
+    # Get full CLI output once via salt-run
+    cli_output = ""
     try:
-        from salt.output.highstate import output as highstate_output
-    except ImportError:
-        highstate_output = None
-    try:
-        from salt.output.nested import output as nested_output
-    except ImportError:
-        nested_output = None
+        import subprocess as sp
+        cp = sp.run(
+            ["salt-run", "jobs.lookup_jid", jid],
+            capture_output=True, text=True, timeout=60,
+        )
+        if cp.returncode == 0:
+            cli_output = cp.stdout
+    except Exception:
+        pass
 
-    def fmt_per_minion(mid, data):
-        """Format one minion's return using the right outputter."""
-        try:
-            # State returns are a list; module returns are a dict
-            if isinstance(data, list) and highstate_output is not None:
-                return highstate_output({str(mid): data}).rstrip("\n")
-            elif isinstance(data, (dict, list)) and nested_output is not None:
-                return nested_output({str(mid): data}).rstrip("\n")
-            return ""
-        except Exception:
-            return ""
+    # Parse CLI output into per-minion chunks.
+    # Minion header = line starting at col 0 ending with ':' (e.g. "ol9:")
+    # All subsequent indented lines belong to that minion until next header.
+    per_minion = {}
+    if cli_output:
+        lines = cli_output.splitlines()
+        current_minion = None
+        current_lines = []
+        for line in lines:
+            # Check for minion header: starts at col 0, ends with ':', no indent
+            if line and not line[0].isspace() and line.endswith(":"):
+                if current_minion is not None:
+                    per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
+                current_minion = line[:-1].strip()  # remove trailing ':'
+                current_lines = [line]
+            elif current_minion is not None:
+                current_lines.append(line)
+        # Flush last
+        if current_minion is not None:
+            per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
 
     # Normalize: lookup returns {minion_id: result_data, ...}
     returns = []
@@ -227,7 +239,7 @@ def cmd_jid_lookup(opts, req):
             success = True
             summary = str(retdata)[:200]
             full = retdata if isinstance(retdata, (dict, list)) else str(retdata)
-        formatted_text = fmt_per_minion(mid, full)
+        formatted_text = per_minion.get(mid, "")
         returns.append({
             "minion_id": str(mid),
             "success": success,
