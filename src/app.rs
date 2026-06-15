@@ -86,6 +86,8 @@ pub struct App {
     pub needs_terminal_clear: bool,
     /// Measured ZMQ/master response latency in milliseconds (from zmq_ping agent command)
     pub zmq_latency_ms: f64,
+    /// When the last zmq_ping was sent (for Rust-side round-trip measurement)
+    zmq_ping_sent_at: Option<Instant>,
     /// Ring buffer of recent latency samples for sparkline (60 samples = 1 per tick)
     pub zmq_latency_history: [f64; 60],
     zmq_latency_idx: usize,
@@ -175,6 +177,7 @@ impl App {
             clipboard_at: None,
             needs_terminal_clear: false,
             zmq_latency_ms: 0.0,
+            zmq_ping_sent_at: None,
             zmq_latency_history: [0.0; 60],
             zmq_latency_idx: 0,
         }
@@ -201,11 +204,13 @@ impl App {
                             self.minion_info = parse_minion_list(&data);
                         }
                         "zmq_ping" => {
-                            if let Some(lat) = data["latency_ms"].as_f64() {
-                                self.zmq_latency_ms = lat;
-                                self.zmq_latency_history[self.zmq_latency_idx] = lat;
+                            if let Some(sent) = self.zmq_ping_sent_at {
+                                let elapsed_ms = sent.elapsed().as_secs_f64() * 1000.0;
+                                self.zmq_latency_ms = elapsed_ms;
+                                self.zmq_latency_history[self.zmq_latency_idx] = elapsed_ms;
                                 self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 60;
                             }
+                            self.zmq_ping_sent_at = None;
                         }
                         _ => {}
                     }
@@ -256,7 +261,8 @@ impl App {
         }
     }
 
-    /// Send a command to the agent, returns the request id
+    /// Send a command to the agent, returns the request id.
+    /// Appends to the command file (avoids overwriting a concurrently-written command).
     pub fn send_agent_cmd(&mut self, cmd: &str, extra: Option<serde_json::Value>) -> u64 {
         self.agent_req_id += 1;
         let id = self.agent_req_id;
@@ -272,7 +278,15 @@ impl App {
             }
         }
         let payload = serde_json::to_string(&req).unwrap() + "\n";
-        let _ = std::fs::write("/tmp/salt-radar-cmd", &payload);
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .write(true)
+            .open("/tmp/salt-radar-cmd")
+            .and_then(|f| {
+                let mut f = std::io::LineWriter::new(f);
+                f.write_all(payload.as_bytes())
+            });
         id
     }
 
@@ -670,10 +684,12 @@ impl App {
         if self.config_tick >= self.config.config_secs {
             self.config_tick = 0;
             self.send_agent_cmd("config_snapshot", None);
+            self.zmq_ping_sent_at = Some(Instant::now());
             self.send_agent_cmd("zmq_ping", None);
         }
         // Also ping early on first few ticks to show data sooner
         if self.tick_count == 0 || self.tick_count == 5 || self.tick_count == 15 {
+            self.zmq_ping_sent_at = Some(Instant::now());
             self.send_agent_cmd("zmq_ping", None);
         }
 

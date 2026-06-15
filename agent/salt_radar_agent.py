@@ -156,24 +156,9 @@ def cmd_minion_cache_list(opts, req):
 
 
 def cmd_zmq_ping(opts, req):
-    """Measure master response latency via a lightweight runner call."""
-    import threading
-    req_id = req["id"]
-
-    def _ping():
-        import time
-        runner = _import_salt().runner.RunnerClient(opts)
-        start = time.monotonic()
-        try:
-            runner.cmd("config.get", ["id"])
-        except Exception:
-            pass
-        elapsed_ms = (time.monotonic() - start) * 1000.0
-        result(req_id, "zmq_ping", data={"latency_ms": round(elapsed_ms, 1)})
-
-    # Run in a thread so a hanging runner doesn't block other commands
-    t = threading.Thread(target=_ping, daemon=True)
-    t.start()
+    """Respond immediately. Rust side measures full round-trip from send to
+    response receipt, so no Salt runner call is needed here."""
+    result(req["id"], "zmq_ping", data={"latency_ms": 0.0})
 
 
 def cmd_jid_lookup(opts, req):
