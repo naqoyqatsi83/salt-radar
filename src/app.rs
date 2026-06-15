@@ -759,6 +759,11 @@ impl App {
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
         self.events_since_last_tick.clear();
 
+        // Update host uptime from collector
+        if let Some(ref cfg) = self.config_snapshot {
+            self.system_info = collectors::system::collect_system(&cfg.cachedir, &cfg.pki_dir);
+        }
+
         // Seconds since last event
         self.secs_since_last_event = self.last_event_time
             .map(|t| t.elapsed().as_secs())
