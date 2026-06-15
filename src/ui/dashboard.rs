@@ -178,6 +178,16 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
     // Service status - display all discovered salt-* services with memory usage
     let mut service_lines: Vec<Line<'static>> = vec![];
+
+    // Display header for service columns
+    service_lines.push(Line::from(vec![
+        Span::styled("  Unit             ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Status ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("State                   ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Memory", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+    ]));
+
     for service in &app.services {
         let status_icon = if service.active { "●" } else { "○" };
         let status_color = if service.active { color::GREEN } else { color::RED };
@@ -212,15 +222,6 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("{}", uptime_text), Style::default().fg(color::TEXT_DIM)),
         ]));
     }
-
-    // Display header for service columns
-    service_lines.insert(0, Line::from(vec![
-        Span::styled("  Unit             ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("Status ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("State                   ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("Memory", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-    ]));
 
     f.render_widget(gauge, inner_layout[0]);
     f.render_widget(

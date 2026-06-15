@@ -161,6 +161,12 @@ fn get_systemd_properties(unit: &str) -> (String, String, String, u64) {
         }
     }
 
+    // Ensure memory_kb is set even when MemoryCurrent property doesn't exist
+    if memory_kb == 0 {
+        // Try Memory unit or fallback to 0
+        memory_kb = 0;
+    }
+
     (active_state, sub_state, timestamp, memory_kb)
 }
 
