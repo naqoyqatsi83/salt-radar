@@ -16,12 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Host uptime display in Dashboard header (shows both app and host uptime)
 - Dynamic service discovery for all salt-* services (not just hardcoded master/api/syndic)
-- Services panel now displays unit, status, uptime in separate columns
+- Services panel now displays unit, status, state, memory, and uptime in separate columns with headers
 
 ### Fixed
 - Services discovery not including disabled services (added --all flag to systemctl list-unit-files)
 - Dashboard header crash when only app uptime is displayed (missing host uptime)
 - Services collector type mismatches preventing service discovery
+- Service display missing memory usage column
 
 ## [0.1.0] - 2026-06-15
 
