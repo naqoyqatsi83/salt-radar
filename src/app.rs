@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::io::Read;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -475,64 +477,100 @@ impl App {
         None
     }
 
-    pub fn copy_to_clipboard(&mut self, text: &str) {
-        use std::io::Write;
-        let mut log = String::new();
+    /// Run a command with piped stdin and kill it after `timeout_secs`.
+    /// Returns (success, stderr_output).
+    fn run_cmd_with_stdin(
+        cmd: &mut std::process::Command,
+        text: &str,
+        timeout_secs: u64,
+    ) -> (bool, String) {
+        use std::sync::mpsc;
+        use std::time::Duration;
 
-        // 1. Write to local file (always works, easy debug)
-        let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
-        log.push_str(&format!("file={}b ", text.len()));
+        let mut child = match cmd.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return (false, String::new()),
+        };
 
-        // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux).
-        //    Must specify -S <socket> since TMUX env var may be missing as root.
-        if let Some(socket) = Self::tmux_socket_path() {
-            if let Ok(mut child) = std::process::Command::new("tmux")
-                .args(["-S", &socket, "load-buffer", "-"])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
-                let ok = child.wait().map(|s| s.success()).unwrap_or(false);
-                log.push_str(&format!("tmux={} ", if ok { "ok" } else { "fail" }));
-            } else {
-                log.push_str("tmux=spawn_err ");
+        // Write stdin in background thread
+        let text_owned = text.to_string();
+        if let Some(mut s) = child.stdin.take() {
+            std::thread::spawn(move || {
+                let _ = s.write_all(text_owned.as_bytes());
+                // drop closes stdin -> EOF to child
+            });
+        }
+
+        // Wait for child in background thread with timeout
+        let (tx, rx) = mpsc::channel();
+        let pid = child.id();
+        std::thread::spawn(move || {
+            let status = child.wait();
+            let mut err = String::new();
+            let _ = child.stderr.take().map(|mut s| s.read_to_string(&mut err));
+            let success = status.ok().map(|s| s.success()).unwrap_or(false);
+            let _ = tx.send((success, err));
+        });
+
+        match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+            Ok((ok, err)) => (ok, err),
+            Err(_) => {
+                // Timed out — kill child
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                (false, format!("timeout>{}s", timeout_secs))
             }
         }
+    }
+
+    pub fn copy_to_clipboard(&mut self, text: &str) {
+        // 1. Write to local file (always works, easy debug)
+        let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
+
+        // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux).
+        let ok_tmux = if let Some(socket) = Self::tmux_socket_path() {
+            let (ok, _) = Self::run_cmd_with_stdin(
+                std::process::Command::new("tmux").args(["-S", &socket, "load-buffer", "-"]),
+                text, 3,
+            );
+            ok
+        } else { false };
 
         // 3. xclip (pushes to X11 clipboard → MobaXterm → Windows).
         let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
         let x11_user = Self::detect_x11_user(&display);
 
+        let mut ok_xclip = false;
         let users_to_try = [&x11_user[..], "vagrant", "peto"];
         for user in users_to_try {
-            if !std::process::Command::new("id").arg(user).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+            if !std::process::Command::new("id")
+                .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false)
+            {
                 continue;
             }
-            let mut child = match std::process::Command::new("su")
-                .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user])
-                .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            use std::io::Read;
-            let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
-            let mut err_buf = String::new();
-            let _ = child.stderr.take().map(|mut s| s.read_to_string(&mut err_buf));
-            let ok = child.wait().map(|s| s.success()).unwrap_or(false);
-            let err_short = err_buf.trim().replace(' ', "_");
-            log.push_str(&format!("xclip_{}={} ", user, if ok { "ok" } else { &err_short }));
-            if ok { break; }
+            let (ok, _) = Self::run_cmd_with_stdin(
+                std::process::Command::new("su")
+                    .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
+                text, 3,
+            );
+            if ok { ok_xclip = true; break; }
         }
 
-        // 4. Write debug log
-        let _ = std::fs::write("/tmp/salt-radar-clip.log", &log);
-        log.clear();
+        // 4. Debug log
+        let _ = std::fs::write(
+            "/tmp/salt-radar-clip.log",
+            format!("file={}b tmux={} xclip={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }),
+        );
 
-        // 5. Leave alt screen and show text visibly (allows manual mouse selection)
+        // 5. Leave alt screen and show text visibly
         use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
         use crossterm::execute;
 
