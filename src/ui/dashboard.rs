@@ -15,7 +15,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(3),   // Keys & Uptime
             Constraint::Length(4),   // Processes & Services
             Constraint::Length(4),   // Host Resources
-            Constraint::Length(4),   // ZMQ (+ latency)
+            Constraint::Length(5),   // ZMQ (+ latency sparkline)
             Constraint::Length(3),   // Config
             Constraint::Length(4),   // Event Rate sparkline
         ])
@@ -245,12 +245,16 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
 
     let inner_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 2); 2])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(inner);
 
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(color::BG_DARK)), inner_layout[0]);
 
-    // Line 2: Latency
+    // Line 2: Latency text
     let lat = app.zmq_latency_ms;
     let (lat_color, lat_label) = if lat <= 0.0 {
         (color::TEXT_DIM, "measuring...".to_string())
@@ -266,6 +270,17 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(lat_label, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
     ];
     f.render_widget(Paragraph::new(Line::from(lat_spans)).style(Style::default().bg(color::BG_DARK)), inner_layout[1]);
+
+    // Line 3: Latency sparkline
+    let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+    let spark_data: Vec<u64> = app.zmq_latency_history.iter()
+        .map(|v| (v / max_lat * 100.0) as u64)
+        .collect();
+    let sparkline = Sparkline::default()
+        .block(Block::default())
+        .style(Style::default().fg(lat_color))
+        .data(&spark_data);
+    f.render_widget(sparkline, inner_layout[2]);
 }
 
 fn draw_config_row(f: &mut Frame, area: Rect, app: &App) {

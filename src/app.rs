@@ -82,6 +82,9 @@ pub struct App {
     pub needs_terminal_clear: bool,
     /// Measured ZMQ/master response latency in milliseconds (from zmq_ping agent command)
     pub zmq_latency_ms: f64,
+    /// Ring buffer of recent latency samples for sparkline (60 samples = 1 per tick)
+    pub zmq_latency_history: [f64; 60],
+    zmq_latency_idx: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -168,6 +171,8 @@ impl App {
             clipboard_at: None,
             needs_terminal_clear: false,
             zmq_latency_ms: 0.0,
+            zmq_latency_history: [0.0; 60],
+            zmq_latency_idx: 0,
         }
     }
 
@@ -194,6 +199,8 @@ impl App {
                         "zmq_ping" => {
                             if let Some(lat) = data["latency_ms"].as_f64() {
                                 self.zmq_latency_ms = lat;
+                                self.zmq_latency_history[self.zmq_latency_idx] = lat;
+                                self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 60;
                             }
                         }
                         _ => {}
