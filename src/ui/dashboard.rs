@@ -213,6 +213,15 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
+    // Display header for service columns
+    service_lines.insert(0, Line::from(vec![
+        Span::styled("  Unit             ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Status ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("State                   ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Memory", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+    ]));
+
     f.render_widget(gauge, inner_layout[0]);
     f.render_widget(
         Paragraph::new(service_lines).style(Style::default().bg(color::BG_DARK)),
