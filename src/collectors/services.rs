@@ -100,7 +100,7 @@ fn check_unit(unit: &String, proc_running: bool) -> ServiceHealth {
     let systemd_active = is_active == "active";
 
     // Get detailed properties from systemd (only if unit exists)
-    let (active_state, sub_state, timestamp, _memory_kb) = if systemd_active || is_active == "inactive" || is_active == "failed" {
+    let (active_state, sub_state, timestamp, memory_kb) = if systemd_active || is_active == "inactive" || is_active == "failed" {
         get_systemd_properties(unit_str)
     } else {
         (String::new(), String::new(), String::new(), 0)
@@ -128,6 +128,7 @@ fn check_unit(unit: &String, proc_running: bool) -> ServiceHealth {
         state,
         uptime_seconds: uptime,
         active_enter_timestamp: timestamp,
+        memory_kb,
     }
 }
 

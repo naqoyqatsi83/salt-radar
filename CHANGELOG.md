@@ -18,10 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dynamic service discovery for all salt-* services (not just hardcoded master/api/syndic)
 - Services panel now displays unit, status, uptime in separate columns
 
-### Changed
-- Job detail output now uses simpler per-minion splitting by parsing `salt-run jobs.lookup_jid` CLI output instead of formatting per-minion via Salt's outputters
-
 ### Fixed
+- Services discovery not including disabled services (added --all flag to systemctl list-unit-files)
 - Dashboard header crash when only app uptime is displayed (missing host uptime)
 - Services collector type mismatches preventing service discovery
 

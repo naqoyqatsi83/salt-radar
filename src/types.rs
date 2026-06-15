@@ -130,6 +130,7 @@ pub struct ServiceHealth {
     pub state: String,
     pub uptime_seconds: u64,
     pub active_enter_timestamp: String,
+    pub memory_kb: u64,
 }
 
 // ─── ZMQ connection ───────────────────────────────────────────────────────

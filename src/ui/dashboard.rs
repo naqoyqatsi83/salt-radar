@@ -182,8 +182,13 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         let status_icon = if service.active { "●" } else { "○" };
         let status_color = if service.active { color::GREEN } else { color::RED };
 
-        // Format memory if available from memory_kb (not stored in ServiceHealth)
-        let memory_text = String::new();
+        // Format memory usage from ServiceHealth
+        let memory_mb = service.memory_kb / 1024;
+        let memory_text = if memory_mb > 0 {
+            format!("{} MB", memory_mb)
+        } else {
+            "--".to_string()
+        };
 
         // Format uptime from service data
         let uptime_text = if service.uptime_seconds > 0 {
