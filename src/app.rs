@@ -451,12 +451,15 @@ impl App {
     }
 
     pub fn copy_to_clipboard(&mut self, text: &str) {
+        use std::io::Write;
+        let mut log = String::new();
+
         // 1. Write to local file (always works, easy debug)
         let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
+        log.push_str(&format!("file={}b ", text.len()));
 
         // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux)
         if std::env::var("TMUX").is_ok() {
-            use std::io::Write;
             if let Ok(mut child) = std::process::Command::new("tmux")
                 .args(["load-buffer", "-"])
                 .stdin(std::process::Stdio::piped())
@@ -464,45 +467,45 @@ impl App {
                 .stderr(std::process::Stdio::null())
                 .spawn()
             {
-                let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
-                let _ = child.wait();
+                let _wrote = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()).is_ok()).unwrap_or(false);
+                let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+                log.push_str(&format!("tmux={} ", if ok { "ok" } else { "fail" }));
+            } else {
+                log.push_str("tmux=spawn_err ");
             }
         }
 
-        // 3. xclip via su as the X11 user (pushes to X11 clipboard → terminal → Windows)
-        let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":1".to_string());
-        // Detect the user owning the X11 session from the socket file ownership
+        // 3. xclip via su as the X11 user (pushes to X11 clipboard → terminal → Windows).
+        //    This matches the working PoC pattern exactly.
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
         let x11_user = Self::detect_x11_user(&display);
-        let has_xclip = std::process::Command::new("sh")
-            .args(["-c", "command -v xclip"])
+
+        // Try su -c with the detected user (works when running as root)
+        if let Ok(mut child) = std::process::Command::new("su")
+            .args([
+                "-c",
+                &format!("DISPLAY={} xclip -selection clipboard", display),
+                &x11_user,
+            ])
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        if has_xclip {
-            if let Ok(mut child) = std::process::Command::new("su")
-                .args([
-                    "-c",
-                    &format!("DISPLAY={} xclip -selection clipboard", display),
-                    &x11_user,
-                ])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                use std::io::Write;
-                let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
-                let _ = child.wait();
-            }
+            .spawn()
+        {
+            let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
+            let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+            log.push_str(&format!("xclip_user={} ok={} ", x11_user, ok));
+        } else {
+            log.push_str("xclip=spawn_err ");
         }
 
-        // 4. Leave alt screen and show text visibly (allows manual mouse selection)
+        // 4. Write debug log
+        let _ = std::fs::write("/tmp/salt-radar-clip.log", &log);
+        log.clear();
+
+        // 5. Leave alt screen and show text visibly (allows manual mouse selection)
         use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
         use crossterm::execute;
-        use std::io::Write;
 
         let _ = disable_raw_mode();
         let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
@@ -523,7 +526,14 @@ impl App {
     /// Tries to find the unprivileged user that owns the X11 session by
     /// checking ownership of /tmp/.X11-unix/X<display_number>.
     fn detect_x11_user(display: &str) -> String {
-        let dnum = display.trim_start_matches(':').trim_start_matches("localhost:").trim();
+        // Extract display number from "localhost:10.0" or ":1" or "10" etc.
+        let dnum = display
+            .trim_start_matches("localhost:")
+            .trim_start_matches(':')
+            .split('.')   // strip screen number: "10.0" → "10"
+            .next()
+            .unwrap_or("")
+            .trim();
         if dnum.is_empty() {
             return "peto".to_string();
         }
