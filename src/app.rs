@@ -450,15 +450,28 @@ impl App {
         }
     }
 
-    fn in_tmux() -> bool {
-        if std::env::var("TMUX").is_ok() {
-            return true;
+    fn tmux_socket_path() -> Option<String> {
+        // Check TMUX env var first: "tmux/0" -> socket_dir = /tmp/tmux-<client_pid>
+        // TMUX format: "/tmp/tmux-1000/default,0" -> parse out the socket path
+        if let Ok(tmux_env) = std::env::var("TMUX") {
+            let path = tmux_env.split(',').next().unwrap_or("").to_string();
+            if !path.is_empty() && std::path::Path::new(&path).exists() {
+                return Some(path);
+            }
         }
-        // Also check for a tmux socket as fallback (TMUX env var may be
-        // stripped when running under sudo / root shell)
-        std::fs::read_dir("/tmp").ok().is_some_and(|mut entries| {
-            entries.any(|e| e.as_ref().is_ok_and(|e| e.file_name().to_string_lossy().starts_with("tmux-")))
-        })
+        // Fallback: find any /tmp/tmux-*/default socket
+        if let Ok(entries) = std::fs::read_dir("/tmp") {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("tmux-") {
+                    let sock = format!("/tmp/{}/default", name);
+                    if std::path::Path::new(&sock).exists() {
+                        return Some(sock);
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn copy_to_clipboard(&mut self, text: &str) {
@@ -469,16 +482,17 @@ impl App {
         let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
         log.push_str(&format!("file={}b ", text.len()));
 
-        // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux)
-        if Self::in_tmux() {
+        // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux).
+        //    Must specify -S <socket> since TMUX env var may be missing as root.
+        if let Some(socket) = Self::tmux_socket_path() {
             if let Ok(mut child) = std::process::Command::new("tmux")
-                .args(["load-buffer", "-"])
+                .args(["-S", &socket, "load-buffer", "-"])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
             {
-                let _wrote = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()).is_ok()).unwrap_or(false);
+                let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
                 let ok = child.wait().map(|s| s.success()).unwrap_or(false);
                 log.push_str(&format!("tmux={} ", if ok { "ok" } else { "fail" }));
             } else {
@@ -486,7 +500,7 @@ impl App {
             }
         }
 
-        // 3. xclip via su as the X11 user (pushes to X11 clipboard → terminal → Windows).
+        // 3. xclip via su as the X11 user (pushes to X11 clipboard → MobaXterm → Windows).
         let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
         let x11_user = Self::detect_x11_user(&display);
         let mut xclip_ok = false;
