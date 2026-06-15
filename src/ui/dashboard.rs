@@ -343,8 +343,14 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let ordered_lat: Vec<f64> = (0..60)
         .map(|i| app.zmq_latency_history[(lat_idx + i) % 60])
         .collect();
-    let spark_data: Vec<u64> = ordered_lat.iter()
-        .map(|v| (v / max_lat * 100.0) as u64)
+    // Resample to fill available sparkline width
+    let spark_width = inner_layout[0].width.max(1) as usize;
+    let spark_data: Vec<u64> = (0..spark_width)
+        .map(|i| {
+            let src_idx = (i * 60) / spark_width;
+            let v = ordered_lat[src_idx.min(59)];
+            (v / max_lat * 100.0) as u64
+        })
         .collect();
     let sparkline = Sparkline::default()
         .block(Block::default())
@@ -387,8 +393,14 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
     let ordered: Vec<f64> = (0..60)
         .map(|i| app.event_rate_history[(idx + i) % 60])
         .collect();
-    let spark_data: Vec<u64> = ordered.iter()
-        .map(|v| (v / max_rate * 100.0) as u64)
+    // Resample to fill available sparkline width
+    let spark_width = inner.width.max(1) as usize;
+    let spark_data: Vec<u64> = (0..spark_width)
+        .map(|i| {
+            let src_idx = (i * 60) / spark_width;
+            let v = ordered[src_idx.min(59)];
+            (v / max_rate * 100.0) as u64
+        })
         .collect();
 
     let last_seen = if app.secs_since_last_event == u64::MAX {
@@ -449,8 +461,14 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
     let ordered_act: Vec<u64> = (0..60)
         .map(|i| app.activity_matrix[(act_idx + i) % 60])
         .collect();
-    let spark_data: Vec<u64> = ordered_act.iter()
-        .map(|v| (v * 100 / max_val) as u64)
+    // Resample to fill available sparkline width
+    let spark_width = inner.width.max(1) as usize;
+    let spark_data: Vec<u64> = (0..spark_width)
+        .map(|i| {
+            let src_idx = (i * 60) / spark_width;
+            let v = ordered_act[src_idx.min(59)];
+            (v * 100 / max_val) as u64
+        })
         .collect();
 
     // Responsive layout: horizontal if wide enough (>= 80 cols), vertical otherwise
