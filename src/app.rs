@@ -812,6 +812,7 @@ impl App {
         }
 
         // Detail popup gets first crack
+        let mut clipboard_text: Option<String> = None;
         if let Some(ref mut detail) = self.detail_popup {
             match *detail {
                 DetailPopup::JobDetail {
@@ -872,16 +873,17 @@ impl App {
                             }
                             KeyCode::Char('y') => {
                                 if let Some(ref l) = lookup {
-                                    let idx = selected_return.unwrap_or(0);
-                                    if idx < l.returns.len() {
-                                        let ret = &l.returns[idx];
-                                        let payload = if ret.formatted_text.is_empty() {
-                                            Self::format_return_as_console(&ret.minion_id, &ret.full_return)
-                                        } else {
-                                            ret.formatted_text.clone()
-                                        };
-                                        self.copy_to_clipboard(&payload);
-                                        self.clipboard_at = Some(Instant::now());
+                                    if !l.cli_output.is_empty() {
+                                        clipboard_text = Some(l.cli_output.clone());
+                                    } else {
+                                        // Fallback: console-format the selected minion
+                                        let idx = selected_return.unwrap_or(0);
+                                        if idx < l.returns.len() {
+                                            let ret = &l.returns[idx];
+                                            clipboard_text = Some(
+                                                Self::format_return_as_console(&ret.minion_id, &ret.full_return)
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -890,10 +892,10 @@ impl App {
                                     let idx = selected_return.unwrap_or(0);
                                     if idx < l.returns.len() {
                                         let ret = &l.returns[idx];
-                                        let payload = serde_json::to_string_pretty(&ret.full_return)
-                                            .unwrap_or_else(|_| ret.summary.clone());
-                                        self.copy_to_clipboard(&payload);
-                                        self.clipboard_at = Some(Instant::now());
+                                        clipboard_text = Some(
+                                            serde_json::to_string_pretty(&ret.full_return)
+                                                .unwrap_or_else(|_| ret.summary.clone())
+                                        );
                                     }
                                 }
                             }
@@ -910,6 +912,13 @@ impl App {
                     }
                 }
             }
+        }
+        if let Some(text) = clipboard_text {
+            self.copy_to_clipboard(&text);
+            self.clipboard_at = Some(Instant::now());
+            return false;
+        }
+        if self.detail_popup.is_some() {
             return false;
         }
 
@@ -1052,6 +1061,7 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
         fun: data["fun"].as_str().unwrap_or("").to_string(),
         tgt: data["tgt"].as_str().unwrap_or("").to_string(),
         start_time: data["start_time"].as_str().unwrap_or("").to_string(),
+        cli_output: data["cli_output"].as_str().unwrap_or("").to_string(),
         returns: Vec::new(),
     };
     if let Some(arr) = data["returns"].as_array() {
@@ -1062,7 +1072,6 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
                 retcode: entry["retcode"].as_i64().unwrap_or(0),
                 summary: entry["summary"].as_str().unwrap_or("").to_string(),
                 full_return: entry["full_return"].clone(),
-                formatted_text: entry["formatted_text"].as_str().unwrap_or("").to_string(),
             });
         }
     }

@@ -167,6 +167,8 @@ def cmd_jid_lookup(opts, req):
     if not jid:
         result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "jid required"})
         return
+
+    # ── Get structured data via RunnerClient (for minion list/metadata) ────
     runner = salt.runner.RunnerClient(opts)
     try:
         lookup = runner.cmd("jobs.lookup_jid", [jid])
@@ -180,42 +182,33 @@ def cmd_jid_lookup(opts, req):
         result(req["id"], "jid_lookup", data={"found": False})
         return
 
-    # Detect outputter type from the raw lookup wrapper
-    # jobs.lookup_jid may return {"outputter": "highstate", "data": {minion: ...}}
-    # for state runs, or {"outputter": "nested", ...} for module runs
-    outputter = None
-    if isinstance(lookup, dict) and "outputter" in lookup:
-        outputter = lookup["outputter"]
+    # ── Get CLI-identical formatted output via salt-run subprocess ─────────
+    # This guarantees the exact same output as `salt-run jobs.lookup_jid <jid>`
+    cli_output = ""
+    try:
+        import subprocess as sp
+        cp = sp.run(
+            ["salt-run", "jobs.lookup_jid", jid],
+            capture_output=True, text=True, timeout=60,
+        )
+        if cp.returncode == 0:
+            cli_output = cp.stdout
+    except Exception:
+        pass
 
-    # Unwrap outputter/data wrapper to get {minion_id: ..., ...}
+    # Some versions of Salt wrap the result with outputter metadata:
+    #   {"outputter": "nested", "data": {minion_id: {...}, ...}}
     if isinstance(lookup, dict) and "outputter" in lookup and "data" in lookup:
         inner = lookup["data"]
         if isinstance(inner, dict):
             lookup = inner
 
-    # Load the right outputter for exact CLI-identical formatting
-    def format_with_salt_outputter(mid, data):
-        """Format data using the same outputter salt-run would use."""
-        try:
-            if outputter == "highstate":
-                from salt.output.highstate import output as fmt_out
-            elif outputter == "nested":
-                from salt.output.nested import output as fmt_out
-            else:
-                from salt.output.nested import output as fmt_out
-            return fmt_out({str(mid): data})
-        except Exception:
-            pass
-        return ""
-
     # Normalize: lookup returns {minion_id: result_data, ...}
     returns = []
     for mid, retdata in lookup.items():
-        data_for_formatting = retdata
         if isinstance(retdata, dict):
             # Unwrap: Salt cache stores {"return": actual_data, "retcode": 0, ...}
             actual = retdata.get("return", retdata)
-            data_for_formatting = actual
             retcode = retdata.get("retcode", 0)
             success = not retcode
             summary = str(actual)[:200]
@@ -225,15 +218,12 @@ def cmd_jid_lookup(opts, req):
             success = True
             summary = str(retdata)[:200]
             full = retdata if isinstance(retdata, (dict, list)) else str(retdata)
-        # Format using salt's own outputter for exact CLI output
-        formatted_text = format_with_salt_outputter(mid, data_for_formatting)
         returns.append({
             "minion_id": str(mid),
             "success": success,
             "retcode": retcode,
             "summary": summary,
             "full_return": full,
-            "formatted_text": formatted_text,
         })
 
     data = {
@@ -242,6 +232,7 @@ def cmd_jid_lookup(opts, req):
         "tgt": "",
         "start_time": "",
         "returns": returns,
+        "cli_output": cli_output,
     }
     result(req["id"], "jid_lookup", data=data)
 
