@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Dashboard header crash when only app uptime is displayed (missing host uptime)
 
+### Added
+- Dynamic service discovery for all salt-* services (not just hardcoded master/api/syndic)
+- Memory usage display for each service from systemd (MemoryCurrent property)
+
 ## [0.1.0] - 2026-06-15
 
 ### Added
