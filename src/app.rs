@@ -873,17 +873,16 @@ impl App {
                             }
                             KeyCode::Char('y') => {
                                 if let Some(ref l) = lookup {
-                                    if !l.cli_output.is_empty() {
-                                        clipboard_text = Some(l.cli_output.clone());
-                                    } else {
-                                        // Fallback: console-format the selected minion
-                                        let idx = selected_return.unwrap_or(0);
-                                        if idx < l.returns.len() {
-                                            let ret = &l.returns[idx];
-                                            clipboard_text = Some(
+                                    let idx = selected_return.unwrap_or(0);
+                                    if idx < l.returns.len() {
+                                        let ret = &l.returns[idx];
+                                        clipboard_text = Some(
+                                            if !ret.formatted_text.is_empty() {
+                                                ret.formatted_text.clone()
+                                            } else {
                                                 Self::format_return_as_console(&ret.minion_id, &ret.full_return)
-                                            );
-                                        }
+                                            }
+                                        );
                                     }
                                 }
                             }
@@ -1061,7 +1060,6 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
         fun: data["fun"].as_str().unwrap_or("").to_string(),
         tgt: data["tgt"].as_str().unwrap_or("").to_string(),
         start_time: data["start_time"].as_str().unwrap_or("").to_string(),
-        cli_output: data["cli_output"].as_str().unwrap_or("").to_string(),
         returns: Vec::new(),
     };
     if let Some(arr) = data["returns"].as_array() {
@@ -1072,6 +1070,7 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
                 retcode: entry["retcode"].as_i64().unwrap_or(0),
                 summary: entry["summary"].as_str().unwrap_or("").to_string(),
                 full_return: entry["full_return"].clone(),
+                formatted_text: entry["formatted_text"].as_str().unwrap_or("").to_string(),
             });
         }
     }

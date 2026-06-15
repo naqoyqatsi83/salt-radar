@@ -168,7 +168,6 @@ def cmd_jid_lookup(opts, req):
         result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "jid required"})
         return
 
-    # ── Get structured data via RunnerClient (for minion list/metadata) ────
     runner = salt.runner.RunnerClient(opts)
     try:
         lookup = runner.cmd("jobs.lookup_jid", [jid])
@@ -182,26 +181,36 @@ def cmd_jid_lookup(opts, req):
         result(req["id"], "jid_lookup", data={"found": False})
         return
 
-    # ── Get CLI-identical formatted output via salt-run subprocess ─────────
-    # This guarantees the exact same output as `salt-run jobs.lookup_jid <jid>`
-    cli_output = ""
-    try:
-        import subprocess as sp
-        cp = sp.run(
-            ["salt-run", "jobs.lookup_jid", jid],
-            capture_output=True, text=True, timeout=60,
-        )
-        if cp.returncode == 0:
-            cli_output = cp.stdout
-    except Exception:
-        pass
+    # Detect outputter from wrapper and unwrap data
+    outputter = None
+    if isinstance(lookup, dict):
+        outputter = lookup.get("outputter")
+        if outputter and "data" in lookup:
+            inner = lookup["data"]
+            if isinstance(inner, dict):
+                lookup = inner
 
-    # Some versions of Salt wrap the result with outputter metadata:
-    #   {"outputter": "nested", "data": {minion_id: {...}, ...}}
-    if isinstance(lookup, dict) and "outputter" in lookup and "data" in lookup:
-        inner = lookup["data"]
-        if isinstance(inner, dict):
-            lookup = inner
+    # Pre-load outputters
+    try:
+        from salt.output.highstate import output as highstate_output
+    except ImportError:
+        highstate_output = None
+    try:
+        from salt.output.nested import output as nested_output
+    except ImportError:
+        nested_output = None
+
+    def fmt_per_minion(mid, data):
+        """Format one minion's return using the right outputter."""
+        try:
+            # State returns are a list; module returns are a dict
+            if isinstance(data, list) and highstate_output is not None:
+                return highstate_output({str(mid): data}).rstrip("\n")
+            elif isinstance(data, (dict, list)) and nested_output is not None:
+                return nested_output({str(mid): data}).rstrip("\n")
+            return ""
+        except Exception:
+            return ""
 
     # Normalize: lookup returns {minion_id: result_data, ...}
     returns = []
@@ -218,12 +227,14 @@ def cmd_jid_lookup(opts, req):
             success = True
             summary = str(retdata)[:200]
             full = retdata if isinstance(retdata, (dict, list)) else str(retdata)
+        formatted_text = fmt_per_minion(mid, full)
         returns.append({
             "minion_id": str(mid),
             "success": success,
             "retcode": retcode,
             "summary": summary,
             "full_return": full,
+            "formatted_text": formatted_text,
         })
 
     data = {
@@ -232,7 +243,6 @@ def cmd_jid_lookup(opts, req):
         "tgt": "",
         "start_time": "",
         "returns": returns,
-        "cli_output": cli_output,
     }
     result(req["id"], "jid_lookup", data=data)
 

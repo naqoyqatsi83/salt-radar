@@ -211,7 +211,6 @@ pub struct JidLookup {
     pub tgt: String,
     pub start_time: String,
     pub returns: Vec<JidReturn>,
-    pub cli_output: String,
 }
 
 #[derive(Clone, Debug)]
@@ -221,6 +220,7 @@ pub struct JidReturn {
     pub retcode: i64,
     pub summary: String,
     pub full_return: serde_json::Value,
+    pub formatted_text: String,
 }
 
 // ─── Alert ─────────────────────────────────────────────────────────────────

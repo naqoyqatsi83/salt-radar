@@ -216,9 +216,18 @@ fn draw_job_detail(
                 ]));
             }
 
-            // Show full cli_output from salt-run
-            if !l.cli_output.is_empty() {
-                let all_lines: Vec<&str> = l.cli_output.lines().collect();
+            // Show full return data for selected minion
+            if sel < l.returns.len() {
+                let ret = &l.returns[sel];
+                let display_str = if !ret.formatted_text.is_empty() {
+                    // Salt's own outputter already includes the ----------
+                    // separator at top — no header needed
+                    ret.formatted_text.clone()
+                } else {
+                    // Fallback for non-state returns
+                    App::format_return_as_console(&ret.minion_id, &ret.full_return)
+                };
+                let all_lines: Vec<&str> = display_str.lines().collect();
                 if scroll_mode {
                     for line in all_lines.iter().skip(scroll_offset) {
                         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
