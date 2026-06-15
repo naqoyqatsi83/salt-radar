@@ -180,20 +180,33 @@ def cmd_jid_lookup(opts, req):
         result(req["id"], "jid_lookup", data={"found": False})
         return
 
-    # Some versions of Salt wrap the result with outputter metadata:
-    #   {"outputter": "nested", "data": {minion_id: {...}, ...}}
-    # Unwrap to get clean {minion_id: ..., ...}
+    # Detect outputter type from the raw lookup wrapper
+    # jobs.lookup_jid may return {"outputter": "highstate", "data": {minion: ...}}
+    # for state runs, or {"outputter": "nested", ...} for module runs
+    outputter = None
+    if isinstance(lookup, dict) and "outputter" in lookup:
+        outputter = lookup["outputter"]
+
+    # Unwrap outputter/data wrapper to get {minion_id: ..., ...}
     if isinstance(lookup, dict) and "outputter" in lookup and "data" in lookup:
         inner = lookup["data"]
         if isinstance(inner, dict):
             lookup = inner
-        # else keep original
 
-    # Load salt's nested outputter for exact CLI-identical formatting
-    try:
-        from salt.output.nested import output as nested_output
-    except ImportError:
-        nested_output = None
+    # Load the right outputter for exact CLI-identical formatting
+    def format_with_salt_outputter(mid, data):
+        """Format data using the same outputter salt-run would use."""
+        try:
+            if outputter == "highstate":
+                from salt.output.highstate import output as fmt_out
+            elif outputter == "nested":
+                from salt.output.nested import output as fmt_out
+            else:
+                from salt.output.nested import output as fmt_out
+            return fmt_out({str(mid): data})
+        except Exception:
+            pass
+        return ""
 
     # Normalize: lookup returns {minion_id: result_data, ...}
     returns = []
@@ -212,13 +225,8 @@ def cmd_jid_lookup(opts, req):
             success = True
             summary = str(retdata)[:200]
             full = retdata if isinstance(retdata, (dict, list)) else str(retdata)
-        # Format using salt's own nested outputter for exact CLI output
-        formatted_text = ""
-        if nested_output is not None:
-            try:
-                formatted_text = nested_output({str(mid): data_for_formatting})
-            except Exception:
-                formatted_text = ""
+        # Format using salt's own outputter for exact CLI output
+        formatted_text = format_with_salt_outputter(mid, data_for_formatting)
         returns.append({
             "minion_id": str(mid),
             "success": success,
