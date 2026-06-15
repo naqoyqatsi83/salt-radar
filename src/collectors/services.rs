@@ -81,6 +81,16 @@ fn find_running_salt_processes() -> Vec<String> {
         if cmdline.contains("salt-syndic") && !found.contains(&"salt-syndic".to_string()) {
             found.push("salt-syndic".to_string());
         }
+        // Look for any salt service pattern in cmdline
+        for unit in discover_salt_units() {
+            if !found.contains(&unit) {
+                let service_exe = unit.trim_start_matches("salt-");
+                let full_exe = format!("salt-{}", service_exe);
+                if cmdline.contains(&full_exe) {
+                    found.push(unit);
+                }
+            }
+        }
     }
 
     found
