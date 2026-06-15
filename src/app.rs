@@ -434,7 +434,7 @@ impl App {
     pub fn copy_to_clipboard(text: &str) {
         let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
 
-        // 1) tmux load-buffer (puts content in tmux buffer — Ctrl+b ] to paste)
+        // 1) tmux load-buffer (Ctrl+b ] to paste when in tmux)
         if let Ok(user) = std::env::var("SUDO_USER") {
             let _ = std::process::Command::new("sudo")
                 .arg("-u").arg(&user)
@@ -445,28 +445,35 @@ impl App {
                 .status();
         }
 
-        // 2) OSC 52 — system clipboard via terminal escape sequences (no X11 needed)
+        // 2) Leave the TUI briefly and print the text to the terminal.
+        //    The text lands in terminal scrollback and the user can mouse-select
+        //    it → PRIMARY clipboard (middle-click paste). Also sends OSC 52.
+        use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+        use crossterm::execute;
         use std::io::Write;
         use base64::Engine;
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        // Write OSC 52 to the terminal (system clipboard via escape sequence)
         let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-        if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-            // tmux DCS passthrough (bypasses tmux to reach the terminal emulator)
-            for sel in &["c", "p"] {
-                let _ = tty.write_all(
-                    format!("\x1bPtmux;\x1b]52;{};{}\x07\x1b\\", sel, encoded).as_bytes()
-                );
-            }
-            // Raw OSC 52 (for non-tmux terminals)
-            for sel in &["c", "p"] {
-                let _ = tty.write_all(
-                    format!("\x1b]52;{};{}\x1b\\", sel, encoded).as_bytes()
-                );
-                let _ = tty.write_all(
-                    format!("\x1b]52;{};{}\x07", sel, encoded).as_bytes()
-                );
-            }
-            let _ = tty.flush();
+        // tmux passthrough (inside tmux, forwards to parent terminal)
+        let _ = std::io::stdout().write_all(
+            format!("\x1bPtmux;\x1b]52;c;{}\x07\x1b\\", encoded).as_bytes()
+        );
+        // Raw OSC 52 (for terminal emulators that support it directly)
+        let _ = std::io::stdout().write_all(
+            format!("\x1b]52;c;{}\x1b\\", encoded).as_bytes()
+        );
+        // Print text to terminal so it enters scrollback / can be mouse-selected
+        println!();
+        for line in text.lines() {
+            println!(" {}", line);
         }
+        println!();
+        let _ = std::io::stdout().flush();
+        // Re-enter the TUI
+        let _ = execute!(std::io::stdout(), EnterAlternateScreen);
+        let _ = enable_raw_mode();
     }
 
     /// Called every tick (1s)
