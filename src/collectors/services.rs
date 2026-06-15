@@ -1,30 +1,21 @@
 use crate::types::ServiceHealth;
-use std::fs;
 
 /// Discover and check systemd service health for all salt-* services.
 /// Dynamic discovery from installed .service unit files, not hardcoded.
 pub fn collect_services() -> Vec<ServiceHealth> {
-    // Discover all installed salt-*.service unit files
+    eprintln!("[DEBUG] Starting service collection");
     let units = discover_salt_units();
-    let mut services = Vec::new();
-
-    // Snapshot which salt processes are alive in /proc right now
     let running_procs = find_running_salt_processes();
+    eprintln!("[DEBUG] Discovered {} units, {} running processes", units.len(), running_procs.len());
 
+    let mut services = Vec::new();
     for unit in &units {
         let health = check_unit(unit, running_procs.contains(unit));
+        eprintln!("[DEBUG] Service {}: active={}, state='{}', uptime={}s, memory={} KB",
+            unit, health.active, health.state, health.uptime_seconds, health.memory_kb);
         services.push(health);
     }
-
-    // Debug: write collection results to /tmp/services_debug.log
-    let debug = format!(
-        "discovered_units: {:?}\nrunning_procs: {:?}\nservices_count: {}\n",
-        units,
-        running_procs,
-        services.len()
-    );
-    let _ = fs::write("/tmp/services_debug.log", debug);
-
+    eprintln!("[DEBUG] Returning {} services", services.len());
     services
 }
 
