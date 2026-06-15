@@ -81,8 +81,8 @@ fn find_running_salt_processes() -> Vec<String> {
             found.push("salt-syndic".to_string());
         } else if cmdline.contains("salt-minion") && !found.contains(&"salt-minion".to_string()) {
             found.push("salt-minion".to_string());
-        } else if cmdline.contains("salt-proxy") && !found.contains(&"salt-proxy@.service".to_string()) {
-            found.push("salt-proxy@.service".to_string());
+        } else if cmdline.contains("salt-proxy") && !found.contains(&"salt-proxy@".to_string()) {
+            found.push("salt-proxy@".to_string());
         }
 
         // For salt-job-archive and other services, check if it's running as salt-api
