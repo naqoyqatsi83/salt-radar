@@ -327,7 +327,18 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
         .split(inner);
 
-    // Line 1: connections + latency
+    // Line 1: Latency sparkline (consistent with Event Rate, Minion Activity)
+    let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+    let spark_data: Vec<u64> = app.zmq_latency_history.iter()
+        .map(|v| (v / max_lat * 100.0) as u64)
+        .collect();
+    let sparkline = Sparkline::default()
+        .block(Block::default())
+        .style(Style::default().fg(lat_color))
+        .data(&spark_data);
+    f.render_widget(sparkline, inner_layout[0]);
+
+    // Line 2: connections + latency
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled("  :".to_string(), Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{} pub{} ({})  ", pub_port, pub_established, pub_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
@@ -345,19 +356,8 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(color::BG_DARK)),
-        inner_layout[0],
+        inner_layout[1],
     );
-
-    // Line 2: Latency sparkline
-    let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
-    let spark_data: Vec<u64> = app.zmq_latency_history.iter()
-        .map(|v| (v / max_lat * 100.0) as u64)
-        .collect();
-    let sparkline = Sparkline::default()
-        .block(Block::default())
-        .style(Style::default().fg(lat_color))
-        .data(&spark_data);
-    f.render_widget(sparkline, inner_layout[1]);
 }
 
 // ── Event Rate ───────────────────────────────────────────────────────────────
