@@ -12,7 +12,7 @@ const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
 // Frames: ◔ ◑ ◕ ◐
 
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
-    let services_height = (2 + app.services.len()) as u16; // 1 gauge + 1 header + N services
+    let services_height = (4 + app.services.len()) as u16; // 2 block borders + 1 gauge + 1 header + N services
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -82,6 +82,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .map(|c| c.salt_version.as_str())
         .unwrap_or("?");
 
+    let hostname = app.config_snapshot.as_ref()
+        .map(|c| c.interface.as_str())
+        .unwrap_or("?");
+
     let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);
     let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
     let app_uptime = app.session_start.elapsed().as_secs();
@@ -104,6 +108,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!(" {} ", dot), Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
         Span::styled(format!("Salt {}", version), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
         Span::styled("  \u{2502}", Style::default().fg(color::BORDER)),
+        Span::styled(" host: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{}  ", hostname), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled("\u{2502}", Style::default().fg(color::BORDER)),
         Span::styled(" keys: ", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("A{} ", accepted), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
         Span::styled(format!("P{} ", pending), Style::default().fg(if pending > 0 { color::YELLOW } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
@@ -144,7 +151,9 @@ fn draw_keys_row(f: &mut Frame, area: Rect, app: &App) {
 // ── Processes & Services ─────────────────────────────────────────────────────
 
 fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
-    let inner = area;
+    let block = make_block(" Services ".to_string());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let total_rss_used: u64 = app.processes.iter().map(|p| p.rss_kb).sum();
     let mem_total_kb = app.system_info.mem_total_kb.max(1);
