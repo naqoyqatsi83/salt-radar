@@ -1,0 +1,15 @@
+[salt]
+agent_path = "agent/salt_radar_agent.py"
+
+[refresh]
+dashboard_secs = 2
+minions_secs = 5
+config_secs = 60
+
+[events]
+buffer_size = 5000
+
+[alerts]
+stale_minion_secs = 3600
+pending_key_secs = 3600
+disk_usage_pct = 85.0

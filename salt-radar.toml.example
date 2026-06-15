@@ -1,0 +1,42 @@
+# salt-radar.toml — configuration file for salt-radar
+#
+# Place this file in the same directory as the salt-radar binary,
+# or at ~/.config/salt-radar/salt-radar.toml.
+# All settings are optional; defaults are shown below.
+
+[salt]
+# Path to Salt master configuration file
+# master_config = "/etc/salt/master"
+
+# Python binary that has the `salt` package installed
+# python_bin = "/opt/saltstack/salt/bin/python3"
+
+# Path to the bundled salt-radar-agent Python script
+# agent_path = "/usr/share/salt-radar/salt_radar_agent.py"
+
+[refresh]
+# How often (in seconds) to refresh dashboard collector data
+# dashboard_secs = 2
+
+# How often to refresh minion cache list from the agent
+# minions_secs = 5
+
+# How often to re-fetch config snapshot from the agent
+# config_secs = 60
+
+[events]
+# Maximum number of events to keep in the ring buffer
+# buffer_size = 5000
+
+[alerts]
+# Seconds after which a minion is considered "stale" (not seen)
+# stale_minion_secs = 3600
+
+# Seconds after which a pending key triggers an alert
+# pending_key_secs = 3600
+
+# Seconds after which a job is considered a straggler
+# job_straggler_secs = 120
+
+# Disk usage percentage threshold for alert
+# disk_usage_pct = 85.0
