@@ -17,7 +17,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
         .constraints([
             Constraint::Length(1),   // Header
             Constraint::Length(3),   // Keys & Uptime
-            Constraint::Length(4),   // Processes & Services
+            Constraint::Min(4),      // Processes & Services (grows with services)
             Constraint::Length(4),   // Host Resources
             Constraint::Length(4),   // ZMQ (merged connections + latency, sparkline)
             Constraint::Length(4),   // Event Rate sparkline
@@ -164,7 +164,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
     let inner_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(inner);
 
     let gauge = Gauge::default()
