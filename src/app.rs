@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::os::unix::fs::MetadataExt;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -450,58 +451,55 @@ impl App {
     }
 
     pub fn copy_to_clipboard(&mut self, text: &str) {
-        // 1. Write to local file (always works)
+        // 1. Write to local file (always works, easy debug)
         let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
 
-        // 2. tmux load-buffer (for tmux Ctrl+b ] paste)
+        // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux)
         if std::env::var("TMUX").is_ok() {
-            let _ = std::process::Command::new("tmux")
-                .arg("load-buffer").arg("/tmp/salt-radar-copy.txt")
-                .stdin(std::process::Stdio::null())
+            use std::io::Write;
+            if let Ok(mut child) = std::process::Command::new("tmux")
+                .args(["load-buffer", "-"])
+                .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .status();
-        }
-
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-
-        // 3. Try OSC 52 directly via /dev/tty (bypasses crossterm/stdout routing)
-        //    Send CLIPBOARD (c) for Ctrl+V and PRIMARY (p) for Shift+Insert
-        if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-            use std::io::Write;
-            if std::env::var("TMUX").is_ok() {
-                // DCS passthrough inside tmux: wrap OSC in \x1bPtmux;...\x1b\\
-                let _ = tty.write_all(b"\x1bPtmux;\x1b]52;c;");
-                let _ = tty.write_all(b64.as_bytes());
-                let _ = tty.write_all(b"\x07\x1b\\");
-                let _ = tty.write_all(b"\x1bPtmux;\x1b]52;p;");
-                let _ = tty.write_all(b64.as_bytes());
-                let _ = tty.write_all(b"\x07\x1b\\");
-            } else {
-                let _ = tty.write_all(b"\x1b]52;c;");
-                let _ = tty.write_all(b64.as_bytes());
-                let _ = tty.write_all(b"\x07");
-                let _ = tty.write_all(b"\x1b]52;p;");
-                let _ = tty.write_all(b64.as_bytes());
-                let _ = tty.write_all(b"\x07");
+                .spawn()
+            {
+                let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
+                let _ = child.wait();
             }
-            let _ = tty.flush();
         }
 
-        // 4. Also try OSC 52 via shell printf (bypasses any Rust I/O buffering)
-        let _ = std::process::Command::new("bash")
-            .arg("-c")
-            .arg(format!(
-                "printf '\\033]52;c;{}\\007\\033]52;p;{}\\007' >/dev/tty",
-                b64, b64
-            ))
-            .stdin(std::process::Stdio::null())
+        // 3. xclip via su as the X11 user (pushes to X11 clipboard → terminal → Windows)
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":1".to_string());
+        // Detect the user owning the X11 session from the socket file ownership
+        let x11_user = Self::detect_x11_user(&display);
+        let has_xclip = std::process::Command::new("sh")
+            .args(["-c", "command -v xclip"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status();
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
 
-        // 5. Leave alt screen and show text visibly (allows manual mouse selection)
+        if has_xclip {
+            if let Ok(mut child) = std::process::Command::new("su")
+                .args([
+                    "-c",
+                    &format!("DISPLAY={} xclip -selection clipboard", display),
+                    &x11_user,
+                ])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                use std::io::Write;
+                let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
+                let _ = child.wait();
+            }
+        }
+
+        // 4. Leave alt screen and show text visibly (allows manual mouse selection)
         use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
         use crossterm::execute;
         use std::io::Write;
@@ -520,6 +518,41 @@ impl App {
         let _ = enable_raw_mode();
 
         self.needs_terminal_clear = true;
+    }
+
+    /// Tries to find the unprivileged user that owns the X11 session by
+    /// checking ownership of /tmp/.X11-unix/X<display_number>.
+    fn detect_x11_user(display: &str) -> String {
+        let dnum = display.trim_start_matches(':').trim_start_matches("localhost:").trim();
+        if dnum.is_empty() {
+            return "peto".to_string();
+        }
+        if let Ok(entries) = std::fs::read_dir("/tmp/.X11-unix") {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.strip_prefix('X') == Some(dnum) {
+                    if let Ok(meta) = entry.metadata() {
+                        #[cfg(target_os = "linux")]
+                        {
+                            let uid = meta.uid();
+                            if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
+                                for line in passwd.lines() {
+                                    let parts: Vec<&str> = line.split(':').collect();
+                                    let uid_str = parts.get(2).and_then(|s| s.parse::<u32>().ok());
+                                    if uid_str == Some(uid) {
+                                        if let Some(name) = parts.first() {
+                                            return name.to_string();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        "peto".to_string()
     }
 
     /// Called every tick (1s)
