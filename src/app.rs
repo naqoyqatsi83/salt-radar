@@ -490,7 +490,7 @@ impl App {
                     let mut out = String::new();
                     for (i, (k, v)) in obj.iter().enumerate() {
                         if i > 0 { out.push('\n'); }
-                        out.push_str(&format!("{}----------\n{}:\n", pad, k));
+                        out.push_str(&format!("{}----------\n{}{}:\n", pad, pad, k));
                         out.push_str(&fmt_val(v, indent + 4));
                     }
                     out
