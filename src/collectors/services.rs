@@ -22,9 +22,10 @@ pub fn collect_services() -> Vec<ServiceHealth> {
 fn discover_salt_units() -> Vec<String> {
     let mut units = Vec::new();
 
-    // Use systemctl list-unit-files --no-legend 'salt-*.service' to list installed salt services
+    // Use systemctl list-unit-files --all --no-legend 'salt-*.service' to list all salt services
     let output = match std::process::Command::new("systemctl")
         .arg("list-unit-files")
+        .arg("--all")
         .arg("--no-legend")
         .arg("salt-*.service")
         .output()
@@ -35,6 +36,7 @@ fn discover_salt_units() -> Vec<String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
+        if line.trim().is_empty() { continue; }
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 1 {
             let unit_name = parts[0];
