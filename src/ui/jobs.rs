@@ -78,13 +78,14 @@ pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App) {
                 "?".to_string()
             };
 
-            // Truncate JID to 28, pad target to 24
+            // Truncate fields to prevent column overlap
             let jid_str = if job.jid.len() > 28 { format!("{}..", &job.jid[..26]) } else { job.jid.clone() };
+            let fun_str = if job.fun.len() > 20 { format!("{}..", &job.fun[..18]) } else { job.fun.clone() };
             let tgt_str = if job.tgt.len() > 24 { format!("{}..", &job.tgt[..22]) } else { job.tgt.clone() };
 
             lines.push(Line::from(vec![
                 Span::styled(format!("  {:<28}", jid_str), Style::default().fg(color::TEXT_DIM)),
-                Span::styled(format!("{:<20}", job.fun), Style::default().fg(color::CYAN)),
+                Span::styled(format!("{:<20}", fun_str), Style::default().fg(color::CYAN)),
                 Span::styled(format!("{:<24}", tgt_str), Style::default().fg(color::YELLOW)),
                 Span::styled(progress, Style::default().fg(if job.returned >= job.target_count && job.target_count > 0 { color::GREEN } else { color::ORANGE }).add_modifier(Modifier::BOLD)),
             ]).style(sel_style));
