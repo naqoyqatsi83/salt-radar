@@ -93,7 +93,7 @@ fn dismiss_line(clipboard_at: Option<std::time::Instant>) -> Line<'static> {
         ));
     }
     Line::from(Span::styled(
-        "  [ q/Esc close | \u{2191}\u{2193} navigate | y copy ]",
+        "  [ q/Esc close | \u{2191}\u{2193} navigate | y=copy Y=json ]",
         Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
     ))
 }
@@ -203,9 +203,8 @@ fn draw_job_detail(
                     format!(" \u{2500}\u{2500}\u{2500} {} output \u{2500}\u{2500}\u{2500}", ret.minion_id),
                     Style::default().fg(Color::Rgb(35, 50, 80)),
                 )));
-                let json_str = serde_json::to_string_pretty(&ret.full_return)
-                    .unwrap_or_else(|_| ret.summary.clone());
-                for line in json_str.lines().take(30) {
+                let console_str = App::format_return_as_console(&ret.minion_id, &ret.full_return);
+                for line in console_str.lines().take(30) {
                     lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
                 }
             }

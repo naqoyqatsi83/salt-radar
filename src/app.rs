@@ -467,6 +467,49 @@ impl App {
         }
     }
 
+    /// Format a job return value in salt-console style.
+    /// Example output:
+    ///   minion1:
+    ///       True
+    /// or:
+    ///   minion1:
+    ///       retcode: 0
+    ///       result: True
+    pub fn format_return_as_console(minion_id: &str, value: &serde_json::Value) -> String {
+        fn fmt_val(v: &serde_json::Value, depth: usize) -> String {
+            let indent = "  ".repeat(depth);
+            match v {
+                serde_json::Value::Null => format!("{}null", indent),
+                serde_json::Value::Bool(b) => format!("{}{}", indent, b),
+                serde_json::Value::Number(n) => format!("{}{}", indent, n),
+                serde_json::Value::String(s) => format!("{}{}", indent, s),
+                serde_json::Value::Array(arr) => {
+                    if arr.is_empty() { return format!("{}[]", indent); }
+                    arr.iter().map(|e| fmt_val(e, depth)).collect::<Vec<_>>().join("\n")
+                }
+                serde_json::Value::Object(obj) => {
+                    if obj.is_empty() { return format!("{}{{}}", indent); }
+                    let mut lines = Vec::new();
+                    for (k, v) in obj {
+                        let inner = fmt_val(v, depth + 1);
+                        if inner.contains('\n') {
+                            lines.push(format!("{}:\n{}", k, inner));
+                        } else {
+                            lines.push(format!("{}: {}", k, inner.trim()));
+                        }
+                    }
+                    lines.join("\n")
+                }
+            }
+        }
+        let body = fmt_val(value, 0);
+        if body.contains('\n') {
+            format!("{}:\n{}", minion_id, body.lines().map(|l| format!("    {}", l)).collect::<Vec<_>>().join("\n"))
+        } else {
+            format!("{}: {}", minion_id, body)
+        }
+    }
+
     fn tmux_socket_path() -> Option<String> {
         // Check TMUX env var first: "tmux/0" -> socket_dir = /tmp/tmux-<client_pid>
         // TMUX format: "/tmp/tmux-1000/default,0" -> parse out the socket path
@@ -750,7 +793,18 @@ impl App {
                                 }
                             }
                         }
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        KeyCode::Char('y') => {
+                            if let Some(ref l) = lookup {
+                                let idx = selected_return.unwrap_or(0);
+                                if idx < l.returns.len() {
+                                    let ret = &l.returns[idx];
+                                    let payload = Self::format_return_as_console(&ret.minion_id, &ret.full_return);
+                                    self.copy_to_clipboard(&payload);
+                                    self.clipboard_at = Some(Instant::now());
+                                }
+                            }
+                        }
+                        KeyCode::Char('Y') => {
                             if let Some(ref l) = lookup {
                                 let idx = selected_return.unwrap_or(0);
                                 if idx < l.returns.len() {
