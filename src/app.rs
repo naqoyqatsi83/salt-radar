@@ -467,47 +467,47 @@ impl App {
         }
     }
 
-    /// Format a job return value in salt-console style.
-    /// Example output:
-    ///   minion1:
-    ///       True
-    /// or:
-    ///   minion1:
-    ///       retcode: 0
-    ///       result: True
+    /// Format a job return value in salt's nested outputter format.
+    /// Example:
+    ///   ol9:
+    ///       ----------
+    ///       osfinger:
+    ///           Oracle Linux Server-9
     pub fn format_return_as_console(minion_id: &str, value: &serde_json::Value) -> String {
-        fn fmt_val(v: &serde_json::Value, depth: usize) -> String {
-            let indent = "  ".repeat(depth);
+        fn fmt_val(v: &serde_json::Value, indent: usize) -> String {
+            let pad = " ".repeat(indent);
             match v {
-                serde_json::Value::Null => format!("{}null", indent),
-                serde_json::Value::Bool(b) => format!("{}{}", indent, b),
-                serde_json::Value::Number(n) => format!("{}{}", indent, n),
-                serde_json::Value::String(s) => format!("{}{}", indent, s),
+                serde_json::Value::Null => format!("{}null", pad),
+                serde_json::Value::Bool(b) => format!("{}{}", pad, b),
+                serde_json::Value::Number(n) => format!("{}{}", pad, n),
+                serde_json::Value::String(s) => format!("{}{}", pad, s),
                 serde_json::Value::Array(arr) => {
-                    if arr.is_empty() { return format!("{}[]", indent); }
-                    arr.iter().map(|e| fmt_val(e, depth)).collect::<Vec<_>>().join("\n")
+                    if arr.is_empty() { return format!("{}[]", pad); }
+                    arr.iter().map(|e| fmt_val(e, indent)).collect::<Vec<_>>().join("\n")
                 }
                 serde_json::Value::Object(obj) => {
-                    if obj.is_empty() { return format!("{}{{}}", indent); }
-                    let mut lines = Vec::new();
-                    for (k, v) in obj {
-                        let inner = fmt_val(v, depth + 1);
+                    if obj.is_empty() { return format!("{}{{}}", pad); }
+                    let mut out = String::new();
+                    let sep = format!("{}----------", pad);
+                    for (i, (k, v)) in obj.iter().enumerate() {
+                        if i > 0 {
+                            out.push('\n');
+                        }
+                        out.push_str(&sep);
+                        out.push('\n');
+                        let inner = fmt_val(v, indent + 4);
                         if inner.contains('\n') {
-                            lines.push(format!("{}:\n{}", k, inner));
+                            out.push_str(&format!("{}:\n{}", k, inner));
                         } else {
-                            lines.push(format!("{}: {}", k, inner.trim()));
+                            out.push_str(&format!("{}: {}", k, inner.trim()));
                         }
                     }
-                    lines.join("\n")
+                    out
                 }
             }
         }
-        let body = fmt_val(value, 0);
-        if body.contains('\n') {
-            format!("{}:\n{}", minion_id, body.lines().map(|l| format!("    {}", l)).collect::<Vec<_>>().join("\n"))
-        } else {
-            format!("{}: {}", minion_id, body)
-        }
+        let body = fmt_val(value, 4);
+        format!("{}:\n{}", minion_id, body)
     }
 
     fn tmux_socket_path() -> Option<String> {
