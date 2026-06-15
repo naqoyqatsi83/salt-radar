@@ -1,25 +1,54 @@
 use crate::types::ServiceHealth;
 
-/// Check systemd service health for salt-master, salt-api, salt-syndic.
-/// Cross-references /proc processes with systemd status so processes
-/// running without a systemd unit are still reported as active.
+/// Discover and check systemd service health for all salt-* services.
+/// Dynamic discovery from installed .service unit files, not hardcoded.
 pub fn collect_services() -> Vec<ServiceHealth> {
-    let units = ["salt-master", "salt-api", "salt-syndic"];
+    // Discover all installed salt-*.service unit files
+    let units = discover_salt_units();
     let mut services = Vec::new();
 
     // Snapshot which salt processes are alive in /proc right now
     let running_procs = find_running_salt_processes();
 
-    for &unit in &units {
-        let health = check_unit(unit, running_procs.contains(&unit));
+    for unit in &units {
+        let health = check_unit(unit, running_procs.contains(unit));
         services.push(health);
     }
 
     services
 }
 
+/// Discover all installed salt-*.service unit files via systemctl list-unit-files.
+fn discover_salt_units() -> Vec<String> {
+    let mut units = Vec::new();
+
+    // Use systemctl list-unit-files --no-legend 'salt-*.service' to list installed salt services
+    let output = match std::process::Command::new("systemctl")
+        .arg("list-unit-files")
+        .arg("--no-legend")
+        .arg("salt-*.service")
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return units,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 1 {
+            let unit_name = parts[0];
+            if let Some(stripped) = unit_name.strip_suffix(".service") {
+                units.push(stripped.to_string());
+            }
+        }
+    }
+
+    units
+}
+
 /// Return the set of unit names whose processes are found in /proc.
-fn find_running_salt_processes() -> Vec<&'static str> {
+fn find_running_salt_processes() -> Vec<String> {
     let mut found = Vec::new();
     let proc_dir = match std::fs::read_dir("/proc") {
         Ok(d) => d,
@@ -40,26 +69,27 @@ fn find_running_salt_processes() -> Vec<&'static str> {
         };
 
         if cmdline.contains("salt-master") {
-            if !found.contains(&"salt-master") {
-                found.push("salt-master");
+            if !found.contains(&"salt-master".to_string()) {
+                found.push("salt-master".to_string());
             }
         }
-        if cmdline.contains("salt-api") && !found.contains(&"salt-api") {
-            found.push("salt-api");
+        if cmdline.contains("salt-api") && !found.contains(&"salt-api".to_string()) {
+            found.push("salt-api".to_string());
         }
-        if cmdline.contains("salt-syndic") && !found.contains(&"salt-syndic") {
-            found.push("salt-syndic");
+        if cmdline.contains("salt-syndic") && !found.contains(&"salt-syndic".to_string()) {
+            found.push("salt-syndic".to_string());
         }
     }
 
     found
 }
 
-fn check_unit(unit: &str, proc_running: bool) -> ServiceHealth {
+fn check_unit(unit: &String, proc_running: bool) -> ServiceHealth {
+    let unit_str = unit.as_str();
     // Try systemctl is-active
     let is_active = std::process::Command::new("systemctl")
         .arg("is-active")
-        .arg(unit)
+        .arg(unit_str)
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -68,10 +98,10 @@ fn check_unit(unit: &str, proc_running: bool) -> ServiceHealth {
     let systemd_active = is_active == "active";
 
     // Get detailed properties from systemd (only if unit exists)
-    let (active_state, sub_state, timestamp) = if systemd_active || is_active == "inactive" || is_active == "failed" {
-        get_systemd_properties(unit)
+    let (active_state, sub_state, timestamp, _memory_kb) = if systemd_active || is_active == "inactive" || is_active == "failed" {
+        get_systemd_properties(unit_str)
     } else {
-        (String::new(), String::new(), String::new())
+        (String::new(), String::new(), String::new(), 0)
     };
 
     // Cross-reference: process in /proc beats systemctl
@@ -98,7 +128,7 @@ fn check_unit(unit: &str, proc_running: bool) -> ServiceHealth {
     let uptime = parse_uptime(&timestamp);
 
     ServiceHealth {
-        unit: unit.to_string(),
+        unit: unit_str.to_string(),
         active,
         state,
         uptime_seconds: uptime,
@@ -106,11 +136,11 @@ fn check_unit(unit: &str, proc_running: bool) -> ServiceHealth {
     }
 }
 
-fn get_systemd_properties(unit: &str) -> (String, String, String) {
+fn get_systemd_properties(unit: &str) -> (String, String, String, u64) {
     let output = std::process::Command::new("systemctl")
         .arg("show")
         .arg(unit)
-        .arg("--property=ActiveState,SubState,ActiveEnterTimestamp")
+        .arg("--property=ActiveState,SubState,ActiveEnterTimestamp,MemoryCurrent")
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -119,6 +149,7 @@ fn get_systemd_properties(unit: &str) -> (String, String, String) {
     let mut active_state = String::new();
     let mut sub_state = String::new();
     let mut timestamp = String::new();
+    let mut memory_kb = 0u64;
 
     for line in output.lines() {
         if let Some(v) = line.strip_prefix("ActiveState=") {
@@ -127,14 +158,26 @@ fn get_systemd_properties(unit: &str) -> (String, String, String) {
             sub_state = v.to_string();
         } else if let Some(v) = line.strip_prefix("ActiveEnterTimestamp=") {
             timestamp = v.to_string();
+        } else if let Some(v) = line.strip_prefix("MemoryCurrent=") {
+            if let Ok(mem) = v.parse::<u64>() {
+                memory_kb = mem / 1024; // Convert bytes to KB
+            }
         }
     }
 
-    (active_state, sub_state, timestamp)
+    (active_state, sub_state, timestamp, memory_kb)
 }
 
 fn parse_uptime(timestamp: &str) -> u64 {
     // systemd timestamps look like: "Mon 2024-01-15 10:30:00 UTC"
-    let _ = timestamp;
-    0
+    if timestamp.is_empty() { return 0; }
+    let now = std::time::SystemTime::now();
+    // Try to parse as UTC datetime
+    let start = match chrono::DateTime::parse_from_rfc2822(timestamp) {
+        Ok(dt) => dt.timestamp() as u64,
+        Err(_) => return 0,
+    };
+    let elapsed = now.duration_since(std::time::UNIX_EPOCH).unwrap_or(std::time::Duration::from_secs(0));
+    // Simple uptime calculation - subtract current time minus start time
+    elapsed.as_secs().saturating_sub(start)
 }
