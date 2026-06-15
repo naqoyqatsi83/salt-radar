@@ -469,10 +469,10 @@ impl App {
 
     /// Format a job return value in salt's nested outputter format.
     /// Example:
-    ///   ol9:
+    ///   syn99a08ld015:
     ///       ----------
     ///       osfinger:
-    ///           Oracle Linux Server-9
+    ///           Ubuntu-22.04
     pub fn format_return_as_console(minion_id: &str, value: &serde_json::Value) -> String {
         fn fmt_val(v: &serde_json::Value, indent: usize) -> String {
             let pad = " ".repeat(indent);
@@ -488,26 +488,17 @@ impl App {
                 serde_json::Value::Object(obj) => {
                     if obj.is_empty() { return format!("{}{{}}", pad); }
                     let mut out = String::new();
-                    let sep = format!("{}----------", pad);
                     for (i, (k, v)) in obj.iter().enumerate() {
-                        if i > 0 {
-                            out.push('\n');
-                        }
-                        out.push_str(&sep);
-                        out.push('\n');
-                        let inner = fmt_val(v, indent + 4);
-                        if inner.contains('\n') {
-                            out.push_str(&format!("{}:\n{}", k, inner));
-                        } else {
-                            out.push_str(&format!("{}: {}", k, inner.trim()));
-                        }
+                        if i > 0 { out.push('\n'); }
+                        out.push_str(&format!("{}----------\n{}:\n", pad, k));
+                        out.push_str(&fmt_val(v, indent + 4));
                     }
                     out
                 }
             }
         }
-        let body = fmt_val(value, 4);
-        format!("{}:\n{}", minion_id, body)
+        // Top level: just the minion header then the nested body
+        format!("{}:\n{}", minion_id, fmt_val(value, 4))
     }
 
     fn tmux_socket_path() -> Option<String> {
