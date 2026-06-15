@@ -57,6 +57,23 @@ fn find_running_salt_processes() -> Vec<String> {
         Err(_) => return found,
     };
 
+    // Pre-compute all possible salt executable patterns from discovered units
+    let discovered_units = discover_salt_units();
+    let mut salt_patterns: Vec<String> = Vec::new();
+
+    // Add known service patterns
+    salt_patterns.push("salt-master".to_string());
+    salt_patterns.push("salt-api".to_string());
+    salt_patterns.push("salt-syndic".to_string());
+
+    // Extract executable patterns from discovered unit names
+    for unit in &discovered_units {
+        if unit.starts_with("salt-") {
+            let service_exe = unit.trim_start_matches("salt-");
+            salt_patterns.push(format!("salt-{}", service_exe));
+        }
+    }
+
     for entry in proc_dir.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
@@ -70,25 +87,35 @@ fn find_running_salt_processes() -> Vec<String> {
             Err(_) => continue,
         };
 
-        if cmdline.contains("salt-master") {
-            if !found.contains(&"salt-master".to_string()) {
-                found.push("salt-master".to_string());
-            }
-        }
-        if cmdline.contains("salt-api") && !found.contains(&"salt-api".to_string()) {
-            found.push("salt-api".to_string());
-        }
-        if cmdline.contains("salt-syndic") && !found.contains(&"salt-syndic".to_string()) {
-            found.push("salt-syndic".to_string());
-        }
-        // Look for any salt service pattern in cmdline
-        for unit in discover_salt_units() {
-            if !found.contains(&unit) {
-                let service_exe = unit.trim_start_matches("salt-");
-                let full_exe = format!("salt-{}", service_exe);
-                if cmdline.contains(&full_exe) {
-                    found.push(unit);
+        // Check against all salt patterns
+        for pattern in &salt_patterns {
+            if cmdline.contains(pattern) {
+                // Map process names to unit names
+                if pattern == "salt-master" {
+                    if !found.contains(&"salt-master".to_string()) {
+                        found.push("salt-master".to_string());
+                    }
+                } else if pattern == "salt-api" {
+                    if !found.contains(&"salt-api".to_string()) {
+                        found.push("salt-api".to_string());
+                    }
+                } else if pattern == "salt-syndic" {
+                    if !found.contains(&"salt-syndic".to_string()) {
+                        found.push("salt-syndic".to_string());
+                    }
+                } else {
+                    // For other services, find matching unit name
+                    for unit in &discovered_units {
+                        if unit.starts_with("salt-") {
+                            let service_exe = unit.trim_start_matches("salt-");
+                            let full_exe = format!("salt-{}", service_exe);
+                            if pattern == full_exe && !found.contains(unit) {
+                                found.push(unit.clone());
+                            }
+                        }
+                    }
                 }
+                break; // Found match for this process, move to next process
             }
         }
     }
