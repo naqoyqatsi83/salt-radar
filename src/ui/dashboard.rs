@@ -176,30 +176,41 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             master_rss / 1024, worker_count, app.minion_info.len(),
         ));
 
-    // Service status
-    let master_svc = app.services.iter().find(|s| s.unit == "salt-master");
-    let api_svc = app.services.iter().find(|s| s.unit == "salt-api");
+    // Service status - display all discovered salt-* services with memory usage
+    let mut service_lines: Vec<Line<'static>> = vec![];
+    for service in &app.services {
+        let status_icon = if service.active { "●" } else { "○" };
+        let status_color = if service.active { color::GREEN } else { color::RED };
 
-    let mut svc_spans: Vec<Span<'static>> = vec![
-        Span::styled("  ".to_string(), Style::default().fg(color::BG_DARK)),
-        Span::styled(
-            format!("salt-master: {}", master_svc.map(|s| if s.active { "\u{25cf} active" } else { "\u{25cb} down" }).unwrap_or("\u{25cb} n/a")),
-            Style::default().fg(master_svc.map(|s| if s.active { color::GREEN } else { color::RED }).unwrap_or(color::TEXT_DIM)),
-        ),
-        Span::styled("  ", Style::default().fg(color::TEXT_DIM)),
-        Span::styled(
-            format!("salt-api: {}", api_svc.map(|s| if s.active { "\u{25cf} active" } else { "\u{25cb} down" }).unwrap_or("\u{25cb} n/a")),
-            Style::default().fg(api_svc.map(|s| if s.active { color::GREEN } else { color::RED }).unwrap_or(color::TEXT_DIM)),
-        ),
-    ];
+        // Format memory if available from memory_kb (not stored in ServiceHealth)
+        let memory_text = String::new();
 
-    if app.processes.iter().any(|p| p.role == crate::types::SaltProcessRole::Syndic) {
-        svc_spans.push(Span::styled("  syndic: \u{25cf} running".to_string(), Style::default().fg(color::CYAN)));
+        // Format uptime from service data
+        let uptime_text = if service.uptime_seconds > 0 {
+            let secs = service.uptime_seconds;
+            if secs >= 3600 {
+                format!("{:>5}h", secs / 3600)
+            } else if secs >= 60 {
+                format!("{:>5}m", secs / 60)
+            } else {
+                format!("{:>5}s", secs)
+            }
+        } else {
+            "  --  ".to_string()
+        };
+
+        service_lines.push(Line::from(vec![
+            Span::styled(format!("  {:<16}", service.unit), Style::default().fg(color::CYAN)),
+            Span::styled(format!(" {} ", status_icon), Style::default().fg(status_color)),
+            Span::styled(format!("{} ", service.state), Style::default().fg(color::TEXT)),
+            Span::styled(format!("{:<8}", memory_text), Style::default().fg(color::YELLOW)),
+            Span::styled(format!("{}", uptime_text), Style::default().fg(color::TEXT_DIM)),
+        ]));
     }
 
     f.render_widget(gauge, inner_layout[0]);
     f.render_widget(
-        Paragraph::new(Line::from(svc_spans)).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(service_lines).style(Style::default().bg(color::BG_DARK)),
         inner_layout[1],
     );
 }

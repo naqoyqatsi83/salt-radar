@@ -107,22 +107,15 @@ fn check_unit(unit: &String, proc_running: bool) -> ServiceHealth {
     // Cross-reference: process in /proc beats systemctl
     let active = proc_running || systemd_active;
 
-    let state = if proc_running && !systemd_active && is_active != "active" {
-        if is_active.is_empty() || is_active == "unknown" {
-            "running (no systemd unit)".to_string()
+    // Simple state based on systemd status
+    let state = if systemd_active {
+        if !active_state.is_empty() && !sub_state.is_empty() {
+            format!("{} / {}", active_state, sub_state)
         } else {
-            format!("running (systemd: {})", is_active)
-        }
-    } else if active_state.is_empty() && sub_state.is_empty() {
-        if proc_running {
-            "running".to_string()
-        } else if is_active == "unknown" || is_active.is_empty() {
-            "not found".to_string()
-        } else {
-            is_active.clone()
+            "active".to_string()
         }
     } else {
-        format!("{}/{}", active_state, sub_state)
+        is_active.clone()
     };
 
     let uptime = parse_uptime(&timestamp);
