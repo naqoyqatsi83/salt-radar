@@ -450,6 +450,17 @@ impl App {
         }
     }
 
+    fn in_tmux() -> bool {
+        if std::env::var("TMUX").is_ok() {
+            return true;
+        }
+        // Also check for a tmux socket as fallback (TMUX env var may be
+        // stripped when running under sudo / root shell)
+        std::fs::read_dir("/tmp").ok().is_some_and(|mut entries| {
+            entries.any(|e| e.as_ref().is_ok_and(|e| e.file_name().to_string_lossy().starts_with("tmux-")))
+        })
+    }
+
     pub fn copy_to_clipboard(&mut self, text: &str) {
         use std::io::Write;
         let mut log = String::new();
@@ -459,7 +470,7 @@ impl App {
         log.push_str(&format!("file={}b ", text.len()));
 
         // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux)
-        if std::env::var("TMUX").is_ok() {
+        if Self::in_tmux() {
             if let Ok(mut child) = std::process::Command::new("tmux")
                 .args(["load-buffer", "-"])
                 .stdin(std::process::Stdio::piped())
@@ -476,11 +487,9 @@ impl App {
         }
 
         // 3. xclip via su as the X11 user (pushes to X11 clipboard → terminal → Windows).
-        //    This matches the working PoC pattern exactly.
         let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
         let x11_user = Self::detect_x11_user(&display);
-
-        // Try su -c with the detected user (works when running as root)
+        let mut xclip_ok = false;
         if let Ok(mut child) = std::process::Command::new("su")
             .args([
                 "-c",
@@ -493,11 +502,9 @@ impl App {
             .spawn()
         {
             let _ = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
-            let ok = child.wait().map(|s| s.success()).unwrap_or(false);
-            log.push_str(&format!("xclip_user={} ok={} ", x11_user, ok));
-        } else {
-            log.push_str("xclip=spawn_err ");
+            xclip_ok = child.wait().map(|s| s.success()).unwrap_or(false);
         }
+        log.push_str(&format!("xclip_user={} ok={} ", x11_user, xclip_ok));
 
         // 4. Write debug log
         let _ = std::fs::write("/tmp/salt-radar-clip.log", &log);
