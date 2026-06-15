@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard header crash when only app uptime is displayed (missing host uptime)
 - Services collector type mismatches preventing service discovery
 - Service display missing memory usage column
+- Service header placement issue (header inserted into data rows)
 
 ## [0.1.0] - 2026-06-15
 
