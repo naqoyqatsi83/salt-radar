@@ -1,4 +1,5 @@
 use crate::types::ServiceHealth;
+use std::fs;
 
 /// Discover and check systemd service health for all salt-* services.
 /// Dynamic discovery from installed .service unit files, not hardcoded.
@@ -14,6 +15,15 @@ pub fn collect_services() -> Vec<ServiceHealth> {
         let health = check_unit(unit, running_procs.contains(unit));
         services.push(health);
     }
+
+    // Debug: write collection results to /tmp/services_debug.log
+    let debug = format!(
+        "discovered_units: {:?}\nrunning_procs: {:?}\nservices_count: {}\n",
+        units,
+        running_procs,
+        services.len()
+    );
+    let _ = fs::write("/tmp/services_debug.log", debug);
 
     services
 }
