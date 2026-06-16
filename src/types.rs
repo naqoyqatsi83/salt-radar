@@ -203,6 +203,7 @@ pub struct JobEntry {
     pub returned: usize,
     pub age_seconds: u64,
     pub created_epoch: f64,
+    pub local: bool,
 }
 
 // ─── JID lookup result ────────────────────────────────────────────────────

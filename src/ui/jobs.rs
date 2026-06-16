@@ -81,12 +81,17 @@ pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App) {
             // Truncate fields to prevent column overlap
             let jid_str = if job.jid.len() > 28 { format!("{}..", &job.jid[..26]) } else { job.jid.clone() };
             let fun_str = if job.fun.len() > 30 { format!("{}..", &job.fun[..28]) } else { job.fun.clone() };
-            let tgt_str = if job.tgt.len() > 36 { format!("{}..", &job.tgt[..34]) } else { job.tgt.clone() };
+            let (tgt_str, tgt_color) = if job.local {
+                ("local".to_string(), color::PURPLE)
+            } else {
+                let s = if job.tgt.len() > 36 { format!("{}..", &job.tgt[..34]) } else { job.tgt.clone() };
+                (s, color::YELLOW)
+            };
 
             lines.push(Line::from(vec![
                 Span::styled(format!("  {:<28}", jid_str), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(format!("{:<30}", fun_str), Style::default().fg(color::CYAN)),
-                Span::styled(format!("{:<36}", tgt_str), Style::default().fg(color::YELLOW)),
+                Span::styled(format!("{:<36}", tgt_str), Style::default().fg(tgt_color)),
                 Span::styled(progress, Style::default().fg(if job.returned >= job.target_count && job.target_count > 0 { color::GREEN } else { color::ORANGE }).add_modifier(Modifier::BOLD)),
             ]).style(sel_style));
         }

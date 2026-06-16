@@ -1100,14 +1100,30 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             returned: 0,
             age_seconds: 0,
             created_epoch: evt.ts,
+            local: false,
         });
     } else if evt.tag.contains("/ret/") {
         let jid = evt.tag
             .strip_prefix("salt/job/")
             .and_then(|s| s.split("/ret/").next())
             .unwrap_or("");
+        if jid.is_empty() { return; }
         if let Some(job) = jobs.iter_mut().find(|j| j.jid == jid) {
             job.returned += 1;
+        } else {
+            // Unknown JID → salt-call / local execution (no /new event was emitted)
+            let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
+            let tgt = evt.data["id"].as_str().unwrap_or("?").to_string();
+            jobs.push(JobEntry {
+                jid: jid.to_string(),
+                fun,
+                tgt,
+                target_count: 1,
+                returned: 1,
+                age_seconds: 0,
+                created_epoch: evt.ts,
+                local: true,
+            });
         }
     }
 }
