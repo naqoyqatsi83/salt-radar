@@ -340,12 +340,12 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
     // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
     let lat_idx = app.zmq_latency_idx;
-    let ordered_lat: Vec<f64> = (0..60)
-        .map(|i| app.zmq_latency_history[(lat_idx + i) % 60])
+    let ordered_lat: Vec<f64> = (0..300)
+        .map(|i| app.zmq_latency_history[(lat_idx + i) % 300])
         .collect();
     // 1 data point per column (btop-style: width = time window)
     let spark_width = inner_layout[0].width.max(1) as usize;
-    let points = spark_width.min(60);
+    let points = spark_width.min(300);
     let spark_data: Vec<u64> = (0..points)
         .map(|i| {
             let v = ordered_lat[i];
@@ -387,28 +387,6 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let max_rate = app.event_rate_history.iter().cloned().fold(0.0_f64, f64::max).max(0.1);
-    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
-    let idx = app.event_rate_idx;
-    let ordered: Vec<f64> = (0..60)
-        .map(|i| app.event_rate_history[(idx + i) % 60])
-        .collect();
-    // 1 data point per column (btop-style: width = time window)
-    let spark_width = inner.width.max(1) as usize;
-    let points = spark_width.min(60);
-    let spark_data: Vec<u64> = (0..points)
-        .map(|i| {
-            let v = ordered[i];
-            (v / max_rate * 100.0) as u64
-        })
-        .collect();
-
-    let last_seen = if app.secs_since_last_event == u64::MAX {
-        "\u{2014}".to_string()
-    } else {
-        format!("{}s ago", app.secs_since_last_event)
-    };
-
     // Responsive layout: horizontal if wide enough (>= 80 cols), vertical otherwise
     let is_wide = inner.width >= 80;
     let inner_layout = if is_wide {
@@ -421,6 +399,28 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
             .direction(Direction::Vertical)
             .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
             .split(inner)
+    };
+
+    let max_rate = app.event_rate_history.iter().cloned().fold(0.0_f64, f64::max).max(0.1);
+    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
+    let idx = app.event_rate_idx;
+    let ordered: Vec<f64> = (0..300)
+        .map(|i| app.event_rate_history[(idx + i) % 300])
+        .collect();
+    // 1 data point per column (btop-style: width = sparkline area)
+    let spark_width = inner_layout[0].width.max(1) as usize;
+    let points = spark_width.min(300);
+    let spark_data: Vec<u64> = (0..points)
+        .map(|i| {
+            let v = ordered[i];
+            (v / max_rate * 100.0) as u64
+        })
+        .collect();
+
+    let last_seen = if app.secs_since_last_event == u64::MAX {
+        "\u{2014}".to_string()
+    } else {
+        format!("{}s ago", app.secs_since_last_event)
     };
 
     let sparkline = Sparkline::default()
@@ -455,22 +455,6 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let max_val = app.activity_matrix.iter().cloned().max().unwrap_or(0).max(1);
-    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
-    let act_idx = app.activity_matrix_idx;
-    let ordered_act: Vec<u64> = (0..60)
-        .map(|i| app.activity_matrix[(act_idx + i) % 60])
-        .collect();
-    // 1 data point per column (btop-style: width = time window)
-    let spark_width = inner.width.max(1) as usize;
-    let points = spark_width.min(60);
-    let spark_data: Vec<u64> = (0..points)
-        .map(|i| {
-            let v = ordered_act[i];
-            (v * 100 / max_val) as u64
-        })
-        .collect();
-
     // Responsive layout: horizontal if wide enough (>= 80 cols), vertical otherwise
     let is_wide = inner.width >= 80;
     let inner_layout = if is_wide {
@@ -484,6 +468,22 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
             .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
             .split(inner)
     };
+
+    let max_val = app.activity_matrix.iter().cloned().max().unwrap_or(0).max(1);
+    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
+    let act_idx = app.activity_matrix_idx;
+    let ordered_act: Vec<u64> = (0..300)
+        .map(|i| app.activity_matrix[(act_idx + i) % 300])
+        .collect();
+    // 1 data point per column (btop-style: width = sparkline area)
+    let spark_width = inner_layout[0].width.max(1) as usize;
+    let points = spark_width.min(300);
+    let spark_data: Vec<u64> = (0..points)
+        .map(|i| {
+            let v = ordered_act[i];
+            (v * 100 / max_val) as u64
+        })
+        .collect();
 
     let sparkline = Sparkline::default()
         .block(Block::default())
