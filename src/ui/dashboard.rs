@@ -36,7 +36,6 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // Keys + Minion count (compact 1-line bar)
             Constraint::Length(4),  // Host Resources
             Constraint::Length(mid_h), // Services + Key Status (exact-fit)
             Constraint::Length(3),  // Job Pulse
@@ -44,18 +43,17 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(body);
 
-    draw_keys_row(f, sections[0], app);
-    draw_host_row(f, sections[1], app);
+    draw_host_row(f, sections[0], app);
 
     // Services + Minion key status: 50/50 horizontal split
     let mid = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(sections[2]);
+        .split(sections[1]);
     draw_proc_row(f, mid[0], app);
     draw_key_status(f, mid[1], app);
 
-    draw_job_pulse(f, sections[3], app);
+    draw_job_pulse(f, sections[2], app);
 
     // Bottom: 3 stacked full-width sparklines for time-axis correlation
     let sparklines = Layout::default()
@@ -65,7 +63,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Ratio(1, 3),
             Constraint::Ratio(1, 3),
         ])
-        .split(sections[4]);
+        .split(sections[3]);
 
     draw_zmq_row(f, sparklines[0], app);
     draw_events_row(f, sparklines[1], app);
@@ -79,9 +77,8 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(services_height),
             Constraint::Length(4),
+            Constraint::Length(services_height),
             Constraint::Length(4),
             Constraint::Length(4),
             Constraint::Length(3),
@@ -90,13 +87,12 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
         .split(area);
 
     draw_header(f, layout[0], app);
-    draw_keys_row(f, layout[1], app);
+    draw_host_row(f, layout[1], app);
     draw_proc_row(f, layout[2], app);
-    draw_host_row(f, layout[3], app);
-    draw_zmq_row(f, layout[4], app);
-    draw_events_row(f, layout[5], app);
-    draw_activity_matrix(f, layout[6], app);
-    draw_job_pulse(f, layout[7], app);
+    draw_zmq_row(f, layout[3], app);
+    draw_events_row(f, layout[4], app);
+    draw_activity_matrix(f, layout[5], app);
+    draw_job_pulse(f, layout[6], app);
 }
 
 fn make_block(title: String) -> Block<'static> {
@@ -156,10 +152,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .map(|c| c.hostname.as_str())
         .unwrap_or("?");
 
-    let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);
-    let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
-    let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected);
-    let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied);
     let app_uptime = app.session_start.elapsed().as_secs();
     let host_uptime = app.system_info.uptime_secs;
 
@@ -183,40 +175,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(" host: ", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{}  ", hostname), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
         Span::styled("\u{2502}", Style::default().fg(color::BORDER)),
-        Span::styled(" keys: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("A{} ", accepted), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("P{} ", pending), Style::default().fg(if pending > 0 { color::YELLOW } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("R{} ", rejected), Style::default().fg(if rejected > 0 { color::RED } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("D{} ", denied), Style::default().fg(if denied > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled("\u{2502}", Style::default().fg(color::BORDER)),
         Span::styled(" uptime: ", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{}", uptime_display), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
     ]);
 
     f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_DARK).fg(color::TEXT)), area);
-}
-
-// ── Keys + Minions (compact 1-line bar) ──────────────────────────────────────
-
-fn draw_keys_row(f: &mut Frame, area: Rect, app: &App) {
-    let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);
-    let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
-    let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected);
-    let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied);
-    let total_minions = app.minion_info.len();
-
-    let line = Line::from(vec![
-        Span::styled(" Keys ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("A:{} ", accepted), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("P:{} ", pending), Style::default().fg(if pending > 0 { color::YELLOW } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("R:{} ", rejected), Style::default().fg(if rejected > 0 { color::RED } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("D:{}", denied), Style::default().fg(if denied > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled("  \u{2502}", Style::default().fg(color::BORDER)),
-        Span::styled("  Minions: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} ", total_minions), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-    ]);
-
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_LIGHT).fg(color::TEXT)), area);
 }
 
 // ── Minion Key Status ───────────────────────────────────────────────────────
