@@ -13,7 +13,7 @@ const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
 
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // Small terminal fallback: vertical stacked layout
-    if area.height < 14 {
+    if area.height < 26 {
         draw_dashboard_compact(f, area, app);
         return;
     }
@@ -29,14 +29,18 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     // Top section: fixed-height info panels
     // Bottom section: stacked full-width sparklines fill remaining space
+    let key_status_h = 8u16; // 4 key rows + separator + total + 2 border
+    let services_h = (5 + app.services.len() as u16).min(25); // gauge + proc line + header + N services + 2 border
+    let mid_h = key_status_h.max(services_h);
+
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),  // Keys + Minion count (compact 1-line bar)
             Constraint::Length(4),  // Host Resources
-            Constraint::Max(8),     // Services (capped at ~8 lines, stretches with more services)
+            Constraint::Length(mid_h), // Services + Key Status (exact-fit)
             Constraint::Length(3),  // Job Pulse
-            Constraint::Min(0),     // Sparklines take remaining space
+            Constraint::Min(6),     // Sparklines (at least 6 lines = 3×2 for 3 panels)
         ])
         .split(body);
 
@@ -247,7 +251,7 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
     let total_minions = app.minion_info.len();
     if total_minions > 0 {
         lines.push(Line::from(Span::styled(
-            format!("  {}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", ""),
+            "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string(),
             Style::default().fg(color::BORDER),
         )));
         lines.push(Line::from(vec![
