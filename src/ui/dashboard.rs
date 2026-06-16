@@ -297,7 +297,7 @@ fn format_uptime(secs: u64) -> String {
 // ── ZMQ / Network & Latency ─────────────────────────────────────────────────
 
 fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Network & Latency ".to_string());
+    let block = make_block(format!(" Network & Latency ({}s interval) ", app.tick_interval_ms / 1000));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -384,7 +384,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
 // ── Event Rate ───────────────────────────────────────────────────────────────
 
 fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Event Rate (60s) ".to_string());
+    let block = make_block(format!(" Event Rate (60s, {}s interval) ", app.tick_interval_ms / 1000));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -453,7 +453,7 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
 // ── Minion Activity Matrix ───────────────────────────────────────────────────
 
 fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Minion Activity (60s) ".to_string());
+    let block = make_block(format!(" Minion Activity (60s, {}s interval) ", app.tick_interval_ms / 1000));
     let inner = block.inner(area);
     f.render_widget(block, area);
 

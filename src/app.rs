@@ -102,6 +102,9 @@ pub struct App {
     pub last_activity_at: Instant,
     /// Animation frame index for radar spinner in header
     pub header_radar_frame: u8,
+
+    /// User-adjustable tick interval in milliseconds (default 2000 = 2s)
+    pub tick_interval_ms: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -199,6 +202,8 @@ impl App {
             last_activity_fun: String::new(),
             last_activity_at: Instant::now(),
             header_radar_frame: 0,
+
+            tick_interval_ms: 2000,
         }
     }
 
@@ -958,6 +963,16 @@ impl App {
 
         match code {
             KeyCode::Char('q') | KeyCode::Char('Q') => return true,
+            KeyCode::Char('=') | KeyCode::Char('+') => {
+                if self.current_tab == Tab::Dashboard {
+                    self.tick_interval_ms = (self.tick_interval_ms + 500).min(30_000);
+                }
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                if self.current_tab == Tab::Dashboard {
+                    self.tick_interval_ms = self.tick_interval_ms.saturating_sub(500).max(500);
+                }
+            }
             KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => {
                 self.show_help = true;
             }

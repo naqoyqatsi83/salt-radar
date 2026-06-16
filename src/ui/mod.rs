@@ -342,6 +342,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  Close popup / help", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
+            Span::styled("  +/-", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Adjust refresh interval (Dashboard)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
             Span::styled("  ?/h", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Toggle this help", Style::default().fg(color::TEXT)),
         ]),

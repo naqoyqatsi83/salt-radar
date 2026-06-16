@@ -35,9 +35,8 @@ fn main() -> io::Result<()> {
         ui::draw(f, &mut app);
     })?;
 
-    let tick_rate = Duration::from_millis(1000);
+    let mut last_tick = Instant::now();
     let fast_poll_interval = Duration::from_millis(200);
-    let mut last_tick = Instant::now() - tick_rate;
     let mut last_tab = app.current_tab;
     let mut needs_redraw = true;
 
@@ -58,6 +57,7 @@ fn main() -> io::Result<()> {
             needs_redraw = false;
         }
 
+        let tick_rate = Duration::from_millis(app.tick_interval_ms);
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::ZERO)
