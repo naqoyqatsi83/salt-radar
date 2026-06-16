@@ -229,6 +229,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     let tab_keys = match app.current_tab {
         Tab::Dashboard => vec![
             key::render("1-5", "Tabs"),
+            key::render("+/-", "Interval"),
         ],
         _ => vec![
             key::render("/", "Filter"),
