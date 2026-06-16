@@ -346,9 +346,10 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     // 1 data point per column (btop-style: width = time window)
     let spark_width = inner_layout[0].width.max(1) as usize;
     let points = spark_width.min(300);
+    let start = ordered_lat.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
         .map(|i| {
-            let v = ordered_lat[i];
+            let v = ordered_lat[start + i];
             (v / max_lat * 100.0) as u64
         })
         .collect();
@@ -410,9 +411,10 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
     // 1 data point per column (btop-style: width = sparkline area)
     let spark_width = inner_layout[0].width.max(1) as usize;
     let points = spark_width.min(300);
+    let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
         .map(|i| {
-            let v = ordered[i];
+            let v = ordered[start + i];
             (v / max_rate * 100.0) as u64
         })
         .collect();
@@ -478,9 +480,10 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
     // 1 data point per column (btop-style: width = sparkline area)
     let spark_width = inner_layout[0].width.max(1) as usize;
     let points = spark_width.min(300);
+    let start = ordered_act.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
         .map(|i| {
-            let v = ordered_act[i];
+            let v = ordered_act[start + i];
             (v * 100 / max_val) as u64
         })
         .collect();

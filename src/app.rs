@@ -818,6 +818,7 @@ impl App {
 
         // Detail popup gets first crack
         let mut clipboard_text: Option<String> = None;
+        let had_popup = self.detail_popup.is_some();
         if let Some(ref mut detail) = self.detail_popup {
             match *detail {
                 DetailPopup::JobDetail {
@@ -847,7 +848,7 @@ impl App {
                         }
                     } else {
                         match code {
-                            KeyCode::Esc | KeyCode::Char('q') => {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                                 self.detail_popup = None;
                             }
                             KeyCode::Enter => {
@@ -909,7 +910,7 @@ impl App {
                 }
                 _ => {
                     match code {
-                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             self.detail_popup = None;
                         }
                         _ => {}
@@ -922,7 +923,7 @@ impl App {
             self.clipboard_at = Some(Instant::now());
             return false;
         }
-        if self.detail_popup.is_some() {
+        if had_popup {
             return false;
         }
 
