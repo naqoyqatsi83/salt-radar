@@ -1,5 +1,5 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline};
 use ratatui::Frame;
@@ -12,18 +12,76 @@ const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
 // Frames: ◔ ◑ ◕ ◐
 
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
-    let services_height = (4 + app.services.len()) as u16; // 2 block borders + 1 gauge + 1 header + N services
+    // Small terminal fallback: vertical stacked layout
+    if area.height < 14 {
+        draw_dashboard_compact(f, area, app);
+        return;
+    }
+
+    // Header line at the very top
+    let header_body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+    draw_header(f, header_body[0], app);
+
+    let body = header_body[1];
+
+    // Top section: fixed-height info panels
+    // Bottom section: stacked full-width sparklines fill remaining space
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),  // Keys + Minion count (compact 1-line bar)
+            Constraint::Length(4),  // Host Resources
+            Constraint::Max(8),     // Services (capped at ~8 lines, stretches with more services)
+            Constraint::Length(3),  // Job Pulse
+            Constraint::Min(0),     // Sparklines take remaining space
+        ])
+        .split(body);
+
+    draw_keys_row(f, sections[0], app);
+    draw_host_row(f, sections[1], app);
+
+    // Services + Minion key status: 50/50 horizontal split
+    let mid = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(sections[2]);
+    draw_proc_row(f, mid[0], app);
+    draw_key_status(f, mid[1], app);
+
+    draw_job_pulse(f, sections[3], app);
+
+    // Bottom: 3 stacked full-width sparklines for time-axis correlation
+    let sparklines = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+        ])
+        .split(sections[4]);
+
+    draw_zmq_row(f, sparklines[0], app);
+    draw_events_row(f, sparklines[1], app);
+    draw_activity_matrix(f, sparklines[2], app);
+}
+
+/// Fallback for small terminals: vertical stacked layout (same as original)
+fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
+    let services_height = (4 + app.services.len()) as u16;
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),           // Header
-            Constraint::Length(3),           // Keys & Uptime
-            Constraint::Length(services_height), // Processes & Services (exact fit)
-            Constraint::Length(4),           // Host Resources
-            Constraint::Length(4),           // ZMQ (merged connections + latency, sparkline)
-            Constraint::Length(4),           // Event Rate sparkline
-            Constraint::Length(3),           // Minion Activity Matrix
-            Constraint::Length(3),           // Job Pulse
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(services_height),
+            Constraint::Length(4),
+            Constraint::Length(4),
+            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Length(3),
         ])
         .split(area);
 
@@ -38,6 +96,14 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn make_block(title: String) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::BORDER))
+        .title(title)
+        .style(Style::default().bg(color::BG_DARK))
+}
+
+fn make_block_line(title: Line<'static>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
@@ -88,6 +154,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
     let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);
     let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
+    let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected);
+    let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied);
     let app_uptime = app.session_start.elapsed().as_secs();
     let host_uptime = app.system_info.uptime_secs;
 
@@ -103,7 +171,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
     let line = Line::from(vec![
         Span::styled(" salt-radar", Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled(" v0.1.0 ", Style::default().fg(color::TEXT_DIM)),
+        Span::styled(" v0.2.0 ", Style::default().fg(color::TEXT_DIM)),
         Span::styled(format!("{}", radar), Style::default().fg(color::CYAN)),
         Span::styled(format!(" {} ", dot), Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
         Span::styled(format!("Salt {}", version), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
@@ -114,7 +182,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(" keys: ", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("A{} ", accepted), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
         Span::styled(format!("P{} ", pending), Style::default().fg(if pending > 0 { color::YELLOW } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled(" \u{2502}", Style::default().fg(color::BORDER)),
+        Span::styled(format!("R{} ", rejected), Style::default().fg(if rejected > 0 { color::RED } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("D{} ", denied), Style::default().fg(if denied > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+        Span::styled("\u{2502}", Style::default().fg(color::BORDER)),
         Span::styled(" uptime: ", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{}", uptime_display), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
     ]);
@@ -122,58 +192,94 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_DARK).fg(color::TEXT)), area);
 }
 
-// ── Keys & Uptime ────────────────────────────────────────────────────────────
+// ── Keys + Minions (compact 1-line bar) ──────────────────────────────────────
 
 fn draw_keys_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Keys & Uptime ".to_string());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);
+    let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
+    let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected);
+    let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied);
+    let total_minions = app.minion_info.len();
 
+    let line = Line::from(vec![
+        Span::styled(" Keys ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("A:{} ", accepted), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("P:{} ", pending), Style::default().fg(if pending > 0 { color::YELLOW } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("R:{} ", rejected), Style::default().fg(if rejected > 0 { color::RED } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("D:{}", denied), Style::default().fg(if denied > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+        Span::styled("  \u{2502}", Style::default().fg(color::BORDER)),
+        Span::styled("  Minions: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{} ", total_minions), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+    ]);
+
+    f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_LIGHT).fg(color::TEXT)), area);
+}
+
+// ── Minion Key Status ───────────────────────────────────────────────────────
+
+fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
     let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);
     let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
     let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected);
     let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied);
 
-    let line = Line::from(vec![
-        Span::styled("  Accepted: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} ", accepted), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled("Pending: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} ", pending), Style::default().fg(if pending > 0 { color::YELLOW } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled("Rejected: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} ", rejected), Style::default().fg(if rejected > 0 { color::RED } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled("Denied: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{}", denied), Style::default().fg(if denied > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-    ]);
+    let block = make_block(" Minion Key Status ".to_string());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_DARK)), inner);
+    let cols: [(u16, &str, usize, Color); 4] = [
+        (1, "Accepted", accepted, color::GREEN),
+        (2, "Denied", denied, if denied > 0 { color::RED } else { color::TEXT_DIM }),
+        (3, "Unaccepted", pending, if pending > 0 { color::YELLOW } else { color::TEXT_DIM }),
+        (4, "Rejected", rejected, if rejected > 0 { color::RED } else { color::TEXT_DIM }),
+    ];
+
+    let mut lines = Vec::new();
+    for (n, label, count, fg) in &cols {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} ", n), Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:<15}", *label), Style::default().fg(color::TEXT)),
+            Span::styled(format!("{}", count), Style::default().fg(*fg).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+
+    // total minions as last row
+    let total_minions = app.minion_info.len();
+    if total_minions > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  {}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", ""),
+            Style::default().fg(color::BORDER),
+        )));
+        lines.push(Line::from(vec![
+            Span::styled("    Total minions  ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{}", total_minions), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+
+    f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)), inner);
 }
 
 // ── Processes & Services ─────────────────────────────────────────────────────
 
 fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Services ".to_string());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
     let total_rss_used: u64 = app.processes.iter().map(|p| p.rss_kb).sum();
     let mem_total_kb = app.system_info.mem_total_kb.max(1);
     let mem_pct = (total_rss_used as f64 / mem_total_kb as f64) * 100.0;
 
-    let mut master_rss = 0u64;
-    let mut worker_count = 0usize;
-    for p in &app.processes {
-        match p.role {
-            crate::types::SaltProcessRole::Master | crate::types::SaltProcessRole::Worker => {
-                master_rss += p.rss_kb;
-                worker_count += 1;
-            }
-            _ => {}
-        }
-    }
+    let proc_count = app.processes.len();
+
+    let mem_gauge_fg = if mem_pct > 80.0 { color::ORANGE } else if mem_pct > 55.0 { color::YELLOW } else { color::GREEN };
+    let title = Line::from(vec![
+        Span::styled(" Services ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(format!("Mem: {:.0}% ", mem_pct), Style::default().fg(mem_gauge_fg)),
+    ]);
+    let block = make_block_line(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let inner_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1 + app.services.len() as u16)])
+        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
 
     let gauge = Gauge::default()
@@ -181,13 +287,11 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         .percent((mem_pct.round() as u16).min(100))
         .label(format!(
             "Salt RSS {} MB ({} proc)  {} minions",
-            master_rss / 1024, worker_count, app.minion_info.len(),
+            total_rss_used / 1024, proc_count, app.minion_info.len(),
         ));
 
-    // Service status - display all discovered salt-* services with memory usage
     let mut service_lines: Vec<Line<'static>> = vec![];
 
-    // Display header for service columns
     service_lines.push(Line::from(vec![
         Span::styled("Unit            ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled("Status", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
@@ -197,10 +301,9 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     ]));
 
     for service in &app.services {
-        let status_icon = if service.active { "●" } else { "○" };
+        let status_icon = if service.active { "\u{25cf}" } else { "\u{25cb}" };
         let status_color = if service.active { color::GREEN } else { color::RED };
 
-        // Format memory usage from ServiceHealth
         let memory_mb = service.memory_kb / 1024;
         let memory_text = if memory_mb > 0 {
             format!("{} MB", memory_mb)
@@ -208,7 +311,6 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             "--".to_string()
         };
 
-        // Format uptime from service data
         let uptime_text = if service.uptime_seconds > 0 {
             let secs = service.uptime_seconds;
             if secs >= 3600 {
@@ -232,27 +334,73 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     }
 
     f.render_widget(gauge, inner_layout[0]);
+
+    // Per-process memory breakdown
+    let mut proc_spans: Vec<Span<'static>> = vec![];
+    let mut proc_groups: Vec<(String, u64, usize)> = vec![]; // (role_label, total_kb, count)
+    for p in &app.processes {
+        let label = match p.role {
+            crate::types::SaltProcessRole::Master => "Master",
+            crate::types::SaltProcessRole::API => "API",
+            crate::types::SaltProcessRole::Worker => "Worker",
+            crate::types::SaltProcessRole::Syndic => "Syndic",
+            crate::types::SaltProcessRole::EventPublisher => "EventPub",
+            crate::types::SaltProcessRole::ReqServer => "ReqSrv",
+            crate::types::SaltProcessRole::Unknown => "?",
+        };
+        if let Some((_, total, count)) = proc_groups.iter_mut().find(|(l, _, _)| l == label) {
+            *total += p.rss_kb;
+            *count += 1;
+        } else {
+            proc_groups.push((label.to_string(), p.rss_kb, 1));
+        }
+    }
+    for (label, rss_kb, count) in &proc_groups {
+        let mb = rss_kb / 1024;
+        let color = match label.as_str() {
+            "API" => color::PURPLE,
+            "Master" => color::GREEN,
+            "Worker" => color::CYAN,
+            _ => color::TEXT,
+        };
+        let text = if *count > 1 {
+            format!("{} x{}: {}MB  ", label, count, mb)
+        } else {
+            format!("{}: {}MB  ", label, mb)
+        };
+        proc_spans.push(Span::styled(text, Style::default().fg(color)));
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(proc_spans)).style(Style::default().bg(color::BG_DARK)),
+        inner_layout[1],
+    );
+
     f.render_widget(
         Paragraph::new(service_lines).style(Style::default().bg(color::BG_DARK)),
-        inner_layout[1],
+        inner_layout[2],
     );
 }
 
 // ── Host Resources ───────────────────────────────────────────────────────────
 
 fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Host Resources ".to_string());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
     let mem_total_kb = app.system_info.mem_total_kb.max(1);
     let mem_avail_kb = app.system_info.mem_avail_kb;
-    let mem_used_mb = (mem_total_kb.saturating_sub(mem_avail_kb)) / 1024;
-    let mem_total_mb = mem_total_kb / 1024;
     let mem_pct = ((mem_total_kb - mem_avail_kb) as f64 / mem_total_kb as f64) * 100.0;
 
     let cpu_count = app.config_snapshot.as_ref().map(|c| c.cpu_count).unwrap_or(1) as f64;
     let load_pct = (app.system_info.load_1 / cpu_count * 100.0).min(100.0).max(0.0) as u16;
+
+    let title = Line::from(vec![
+        Span::styled(" Host Resources ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(
+            format!("Load: {:.1}/{:.1}/{:.1}  Mem: {:.0}% ", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15, mem_pct),
+            Style::default().fg(color::TEXT_DIM),
+        ),
+    ]);
+    let block = make_block_line(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let inner_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -268,6 +416,8 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
             cpu_count as u32, load_pct,
         ));
 
+    let mem_total_mb = mem_total_kb / 1024;
+    let mem_used_mb = (mem_total_kb.saturating_sub(mem_avail_kb)) / 1024;
     let mem_gauge = Gauge::default()
         .gauge_style(pct_gauge_style(mem_pct))
         .percent((mem_pct.round() as u16).min(100))
@@ -297,7 +447,37 @@ fn format_uptime(secs: u64) -> String {
 // ── ZMQ / Network & Latency ─────────────────────────────────────────────────
 
 fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(format!(" Network & Latency ({}s interval) ", app.tick_interval_ms / 1000));
+    let lat = app.zmq_latency_ms;
+    let lat_color = if lat <= 0.0 {
+        color::TEXT_DIM
+    } else if lat < 10.0 {
+        color::GREEN
+    } else if lat < 50.0 {
+        color::YELLOW
+    } else {
+        color::ORANGE
+    };
+
+    let peak_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max);
+
+    // Build title — include peak if the panel is wide enough
+    let title = if area.width >= 40 {
+        Line::from(vec![
+            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
+            Span::styled(format!("{:.1}ms ", lat.max(0.0)), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.1}ms", peak_lat), Style::default().fg(color::TEXT_DIM)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
+            Span::styled(format!("{:.1}ms", lat.max(0.0)), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
+        ])
+    };
+
+    let block = make_block_line(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -310,42 +490,25 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let ret_established = app.zmq_connections.iter().filter(|c| c.local_port == ret_port && c.state == "ESTABLISHED").count();
     let ret_total = app.zmq_connections.iter().filter(|c| c.local_port == ret_port).count();
 
-    // Latency info
-    let lat = app.zmq_latency_ms;
-    let (lat_color, lat_label) = if lat <= 0.0 {
-        (color::TEXT_DIM, "measuring...".to_string())
-    } else if lat < 10.0 {
-        (color::GREEN, format!("{:.0} ms", lat))
-    } else if lat < 50.0 {
-        (color::YELLOW, format!("{:.0} ms", lat))
+    let lat_label = if lat <= 0.0 {
+        "measuring...".to_string()
     } else {
-        (color::ORANGE, format!("{:.0} ms", lat))
+        format!("{:.0} ms", lat)
     };
 
-    // Responsive layout: horizontal if wide enough (>= 80 cols), vertical otherwise
-    let is_wide = inner.width >= 80;
-    let inner_layout = if is_wide {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(inner)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-            .split(inner)
-    };
+    // Full-width sparkline with stats bar below
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
+        .split(inner);
 
-    // Sparkline (left/top)
     let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
-    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
     let lat_idx = app.zmq_latency_idx;
-    let ordered_lat: Vec<f64> = (0..300)
-        .map(|i| app.zmq_latency_history[(lat_idx + i) % 300])
+    let ordered_lat: Vec<f64> = (0..2000)
+        .map(|i| app.zmq_latency_history[(lat_idx + i) % 2000])
         .collect();
-    // 1 data point per column (btop-style: width = time window)
     let spark_width = inner_layout[0].width.max(1) as usize;
-    let points = spark_width.min(300);
+    let points = spark_width.min(2000);
     let start = ordered_lat.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
         .map(|i| {
@@ -359,10 +522,10 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         .data(&spark_data);
     f.render_widget(sparkline, inner_layout[0]);
 
-    // Connection info (right/bottom)
+    // Stats bar below sparkline
     let mut spans: Vec<Span<'static>> = vec![
-        Span::styled("  :".to_string(), Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} pub{} ({})  ", pub_port, pub_established, pub_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled("  ".to_string(), Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!(":{} pub{} ({})  ", pub_port, pub_established, pub_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
         Span::styled(":".to_string(), Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{} ret{} ({})  ", ret_port, ret_established, ret_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
     ];
@@ -384,33 +547,43 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
 // ── Event Rate ───────────────────────────────────────────────────────────────
 
 fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(format!(" Event Rate (60s, {}s interval) ", app.tick_interval_ms / 1000));
+    let peak_rate = app.event_rate_history.iter().cloned().fold(0.0_f64, f64::max);
+
+    // Build title — include peak + total if wide enough
+    let title = if area.width >= 40 {
+        Line::from(vec![
+            Span::styled(" Events ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25b6} ", Style::default().fg(color::CYAN)),
+            Span::styled(format!("{:.1}/s ", app.events_per_sec), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.1}/s ", peak_rate), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("tot: ", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{}", app.events_total), Style::default().fg(color::TEXT_DIM)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" Events ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25b6} ", Style::default().fg(color::CYAN)),
+            Span::styled(format!("{:.1}/s", app.events_per_sec), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        ])
+    };
+
+    let block = make_block_line(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Responsive layout: horizontal if wide enough (>= 80 cols), vertical otherwise
-    let is_wide = inner.width >= 80;
-    let inner_layout = if is_wide {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(inner)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-            .split(inner)
-    };
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
+        .split(inner);
 
     let max_rate = app.event_rate_history.iter().cloned().fold(0.0_f64, f64::max).max(0.1);
-    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
     let idx = app.event_rate_idx;
-    let ordered: Vec<f64> = (0..300)
-        .map(|i| app.event_rate_history[(idx + i) % 300])
+    let ordered: Vec<f64> = (0..2000)
+        .map(|i| app.event_rate_history[(idx + i) % 2000])
         .collect();
-    // 1 data point per column (btop-style: width = sparkline area)
     let spark_width = inner_layout[0].width.max(1) as usize;
-    let points = spark_width.min(300);
+    let points = spark_width.min(2000);
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
         .map(|i| {
@@ -453,33 +626,48 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
 // ── Minion Activity Matrix ───────────────────────────────────────────────────
 
 fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(format!(" Minion Activity (60s, {}s interval) ", app.tick_interval_ms / 1000));
+    let elapsed = app.last_activity_at.elapsed().as_secs();
+    let current_rate = app.current_sec_returns;
+
+    // Build title
+    let title = if area.width >= 40 {
+        let last_str = if app.last_activity_minion.is_empty() {
+            "waiting...".to_string()
+        } else {
+            format!("{}", app.last_activity_minion)
+        };
+        Line::from(vec![
+            Span::styled(" Minions ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25c9} ", Style::default().fg(color::GREEN)),
+            Span::styled(format!("{}/s ", current_rate), Style::default().fg(if current_rate > 0 { color::GREEN } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+            Span::styled("last: ", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(last_str, Style::default().fg(color::TEXT_DIM)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" Minions ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25c9} ", Style::default().fg(color::GREEN)),
+            Span::styled(format!("{}/s", current_rate), Style::default().fg(if current_rate > 0 { color::GREEN } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+        ])
+    };
+
+    let block = make_block_line(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Responsive layout: horizontal if wide enough (>= 80 cols), vertical otherwise
-    let is_wide = inner.width >= 80;
-    let inner_layout = if is_wide {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(inner)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-            .split(inner)
-    };
+    // Full-width sparkline with stats bar below
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
+        .split(inner);
 
     let max_val = app.activity_matrix.iter().cloned().max().unwrap_or(0).max(1);
-    // Rotate ring buffer so newest data is at the end (scrolling left-to-right)
     let act_idx = app.activity_matrix_idx;
-    let ordered_act: Vec<u64> = (0..300)
-        .map(|i| app.activity_matrix[(act_idx + i) % 300])
+    let ordered_act: Vec<u64> = (0..2000)
+        .map(|i| app.activity_matrix[(act_idx + i) % 2000])
         .collect();
-    // 1 data point per column (btop-style: width = sparkline area)
     let spark_width = inner_layout[0].width.max(1) as usize;
-    let points = spark_width.min(300);
+    let points = spark_width.min(2000);
     let start = ordered_act.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
         .map(|i| {
@@ -493,7 +681,6 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         .style(Style::default().fg(color::GREEN))
         .data(&spark_data);
 
-    let elapsed = app.last_activity_at.elapsed().as_secs();
     let activity_label = if app.last_activity_minion.is_empty() {
         "  waiting for minion returns...".to_string()
     } else if elapsed < 60 {
@@ -507,7 +694,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
             app.last_activity_minion, app.last_activity_fun, elapsed / 60,
         )
     };
-    let rate_color = if app.current_sec_returns > 0 { color::GREEN } else { color::TEXT_DIM };
+    let rate_color = if current_rate > 0 { color::GREEN } else { color::TEXT_DIM };
 
     let mut total_returns: u64 = 0;
     for v in &app.activity_matrix { total_returns += v; }
@@ -527,7 +714,13 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
 // ── Job Pulse ────────────────────────────────────────────────────────────────
 
 fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Job Pulse ".to_string());
+    let active_count = app.jobs.len();
+
+    let title = Line::from(vec![
+        Span::styled(" Job Pulse ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(format!("Active: {}", active_count), Style::default().fg(if active_count > 0 { color::CYAN } else { color::TEXT_DIM })),
+    ]);
+    let block = make_block_line(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -542,7 +735,7 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Show up to 4 latest jobs, sorted by most recent (reverse order)
+    // Show up to 4 latest jobs, sorted by most recent
     let count = app.jobs.len().min(4);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(count);
     for job in app.jobs.iter().rev().take(count) {

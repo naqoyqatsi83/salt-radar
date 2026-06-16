@@ -78,7 +78,7 @@ pub struct App {
     pub secs_since_last_event: u64,
     last_event_time: Option<Instant>,
     /// Ring buffer of recent event rates for sparkline (60 samples = 1 min)
-    pub event_rate_history: [f64; 300],
+    pub event_rate_history: [f64; 2000],
     pub event_rate_idx: usize,
     /// Timestamp of last successful clipboard copy (for UI feedback)
     pub clipboard_at: Option<Instant>,
@@ -89,12 +89,12 @@ pub struct App {
     /// When the last zmq_ping was sent (for Rust-side round-trip measurement)
     zmq_ping_sent_at: Option<Instant>,
     /// Ring buffer of recent latency samples for sparkline (60 samples = 1 per tick)
-    pub zmq_latency_history: [f64; 300],
+    pub zmq_latency_history: [f64; 2000],
     pub zmq_latency_idx: usize,
 
     // ── Activity matrix (job return events per sec) ──────────────────────────
     /// Count of salt/job/*/ret/* events per second for last 60s (ring buffer)
-    pub activity_matrix: [u64; 300],
+    pub activity_matrix: [u64; 2000],
     pub activity_matrix_idx: usize,
     pub current_sec_returns: u64,
     pub last_activity_minion: String,
@@ -186,16 +186,16 @@ impl App {
             events_last_sec_time: Instant::now(),
             secs_since_last_event: 0,
             last_event_time: None,
-            event_rate_history: [0.0; 300],
+            event_rate_history: [0.0; 2000],
             event_rate_idx: 0,
             clipboard_at: None,
             needs_terminal_clear: false,
             zmq_latency_ms: 0.0,
             zmq_ping_sent_at: None,
-            zmq_latency_history: [0.0; 300],
+            zmq_latency_history: [0.0; 2000],
             zmq_latency_idx: 0,
 
-            activity_matrix: [0; 300],
+            activity_matrix: [0; 2000],
             activity_matrix_idx: 0,
             current_sec_returns: 0,
             last_activity_minion: String::new(),
@@ -232,7 +232,7 @@ impl App {
                                 let elapsed_ms = sent.elapsed().as_secs_f64() * 1000.0;
                                 self.zmq_latency_ms = elapsed_ms;
                                 self.zmq_latency_history[self.zmq_latency_idx] = elapsed_ms;
-                                self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 300;
+                                self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
                             }
                             self.zmq_ping_sent_at = None;
                         }
@@ -751,11 +751,11 @@ impl App {
             self.events_last_sec_time = now;
             // Record into ring buffer for sparkline
             self.event_rate_history[self.event_rate_idx] = self.events_per_sec;
-            self.event_rate_idx = (self.event_rate_idx + 1) % 300;
+            self.event_rate_idx = (self.event_rate_idx + 1) % 2000;
 
             // Activity matrix: store return count for this second
             self.activity_matrix[self.activity_matrix_idx] = self.current_sec_returns;
-            self.activity_matrix_idx = (self.activity_matrix_idx + 1) % 300;
+            self.activity_matrix_idx = (self.activity_matrix_idx + 1) % 2000;
             self.current_sec_returns = 0;
 
             // Header radar animation cycle
@@ -774,19 +774,16 @@ impl App {
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(u64::MAX);
 
-        // Config refresh + ZMQ latency ping
+        // Config refresh (keeps at config_secs interval)
         self.config_tick += 1;
         if self.config_tick >= self.config.config_secs {
             self.config_tick = 0;
             self.send_agent_cmd("config_snapshot", None);
-            self.zmq_ping_sent_at = Some(Instant::now());
-            self.send_agent_cmd("zmq_ping", None);
         }
-        // Also ping early on first few ticks to show data sooner
-        if self.tick_count == 0 || self.tick_count == 5 || self.tick_count == 15 {
-            self.zmq_ping_sent_at = Some(Instant::now());
-            self.send_agent_cmd("zmq_ping", None);
-        }
+
+        // ZMQ latency ping every tick (same cadence as event rate / activity)
+        self.zmq_ping_sent_at = Some(Instant::now());
+        self.send_agent_cmd("zmq_ping", None);
 
         // Alert engine checks
         self.alert_engine.tick(
