@@ -167,7 +167,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
     let line = Line::from(vec![
         Span::styled(" salt-radar", Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled(" v0.2.0 ", Style::default().fg(color::TEXT_DIM)),
+        Span::styled(" v0.3.0 ", Style::default().fg(color::TEXT_DIM)),
         Span::styled(format!("{}", radar), Style::default().fg(color::CYAN)),
         Span::styled(format!(" {} ", dot), Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
         Span::styled(format!("Salt {}", version), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),

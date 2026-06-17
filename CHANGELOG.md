@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-17
+
+### Added
+- Admin mode with danger-zone confirmation dialog (press `a` to toggle)
+- Fleet scan via Salt LocalClient (`grains.items` on all minions) — press `s` in admin mode
+- High-contrast selection mode togglable with `c` (steel-blue background + bold), works universally including inside popups
+- Advanced event sniffer: filter events by minion ID substring from Events tab (`n` key)
+- Event sniffer shows `# | Time | JID | Type` columns with full pretty-printed JSON body per event
+- Sniffer pause/resume (`p`), event detail via Enter, clipboard copy of all events (`y`)
+- Return-to-sniffer: pressing q/Esc on an event detail opened from the sniffer returns to the sniffer
+- Sniffer auto-scroll: selected event header stays at ~1/3 from viewport top
+- Event number column (`#`) in sniffer for orientation
+- Footer/dismiss line pinned to bottom of every popup (always visible regardless of content length)
+- Date formatting in clipboard copies (UTC `%Y-%m-%d %H:%M:%S` instead of raw Unix timestamps)
+
+### Changed
+- Events view date format from `%H:%M:%S` to `%Y-%m-%d %H:%M:%S` (local + UTC)
+- Minions tab redesigned: 55/45 horizontal split with minion list / fleet overview (OS Distribution, Salt Version, Architecture bars)
+- Event sniffer now shows full JSON body with no truncation (removed 5-line limit)
+- Sniffer column layout: `# | Time | JID | Type` with JSON indented below each row
+- `detail_popup::render_popup` now uses separate layout for body + pinned footer with scroll support
+- Dashboard header version bumped to v0.3.0
+
+### Fixed
+- Filter-header bug: header line now always shown when data exists (Events, Jobs, Alerts)
+- Dashboard: inactive services (e.g. salt-api when stopped) no longer show stale uptime — `uptime_seconds` set to 0 when not active
+- Column alignment between header and data rows in Minions tab
+- High contrast color with JID text: changed to steel-blue `Rgb(40,55,80)` for readability
+- Contrast toggle blocked by open popup — universal `c` handler added before popup dispatch
+- Sniffer scrolling: cursor no longer runs off-screen, uses Paragraph::scroll() with auto-scroll
+- Clipboard copy of events uses proper date format instead of Unix epoch timestamp
+
 ## [0.2.0] - 2026-06-16
 
 ### Added
