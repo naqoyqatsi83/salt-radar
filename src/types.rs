@@ -80,6 +80,7 @@ pub struct MinionInfo {
     pub key_status: Option<KeyStatus>,
     pub os: String,
     pub osrelease: String,
+    pub osfinger: String,
     pub salt_version: String,
     pub cpuarch: String,
     pub last_seen_epoch: u64,

@@ -124,10 +124,12 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                     Some(crate::types::KeyStatus::Denied) => ("denied", color::ORANGE),
                     None => ("\u{2014}", color::TEXT_DIM),
                 };
-                let os_str = if minion.osrelease.is_empty() {
-                    minion.os.clone()
-                } else {
+                let os_str = if !minion.osfinger.is_empty() {
+                    minion.osfinger.clone()
+                } else if !minion.osrelease.is_empty() {
                     format!("{} {}", minion.os, minion.osrelease)
+                } else {
+                    minion.os.clone()
                 };
 
                 let id_str = truncate(&minion.id, id_w);

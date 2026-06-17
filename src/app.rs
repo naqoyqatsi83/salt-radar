@@ -274,7 +274,7 @@ impl App {
                                 // Merge fleet scan data into minion_info
                                 for fm in &minions {
                                     if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == fm.id) {
-                                        existing.os = fm.osfinger.clone();
+                                        existing.osfinger = fm.osfinger.clone();
                                         existing.osrelease = fm.osrelease.clone();
                                         existing.salt_version = fm.saltversion.clone();
                                         existing.cpuarch = fm.cpuarch.clone();
@@ -282,7 +282,7 @@ impl App {
                                     } else if !fm.timed_out {
                                         self.minion_info.push(MinionInfo {
                                             id: fm.id.clone(),
-                                            os: fm.osfinger.clone(),
+                                            osfinger: fm.osfinger.clone(),
                                             osrelease: fm.osrelease.clone(),
                                             salt_version: fm.saltversion.clone(),
                                             cpuarch: fm.cpuarch.clone(),
