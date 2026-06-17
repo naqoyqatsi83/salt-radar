@@ -24,6 +24,7 @@ def _import_salt():
     import salt.utils.event
     import salt.cache
     import salt.runner
+    import salt.client
     return salt
 
 
@@ -328,6 +329,26 @@ def cmd_unsubscribe_events(opts, req):
     result(req["id"], "unsubscribe_events", data={"status": "unsubscribed"})
 
 
+def cmd_fleet_scan(opts, req):
+    """Run grains.items on all minions via LocalClient and return fleet data."""
+    salt = _import_salt()
+    local = salt.client.LocalClient(opts["conf_file"])
+    result_data = local.cmd("*", "grains.items", [],
+                            tgt_type="glob", timeout=30)
+
+    minions = []
+    for mid, grains in (result_data or {}).items():
+        minions.append({
+            "id": mid,
+            "osfinger": grains.get("osfinger", ""),
+            "osrelease": grains.get("osrelease", ""),
+            "saltversion": grains.get("saltversion", ""),
+            "cpuarch": grains.get("cpuarch", ""),
+        })
+
+    result(req["id"], "fleet_scan", data={"minions": minions})
+
+
 # ── Command dispatcher ──────────────────────────────────────────────────────
 
 HANDLERS = {
@@ -338,6 +359,7 @@ HANDLERS = {
     "jid_lookup": cmd_jid_lookup,
     "subscribe_events": cmd_subscribe_events,
     "unsubscribe_events": cmd_unsubscribe_events,
+    "fleet_scan": cmd_fleet_scan,
 }
 
 

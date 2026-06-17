@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -11,6 +11,16 @@ use crate::app::App;
 use super::color;
 
 pub fn draw_minions(f: &mut Frame, area: Rect, app: &App) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    draw_minion_list(f, cols[0], app);
+    draw_fleet_overview(f, cols[1], app);
+}
+
+fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
@@ -23,14 +33,12 @@ pub fn draw_minions(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     let total = app.filtered_minions_len();
     let selected = app.minion_selected.min(total.saturating_sub(1));
-    let visible = (inner.height as usize).saturating_sub(2);
 
-    // Filter bar
+    // ── Filter bar ────────────────────────────────────────────────────────
     if app.is_filtering {
         let cursor = if app.filter_text.len() % 2 == 0 { '|' } else { ' ' };
-        let filter_text = format!(" /{} {}", app.filter_text, cursor);
         lines.push(Line::from(vec![
-            Span::styled(filter_text, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
     } else if !app.filter_text.is_empty() {
@@ -39,67 +47,227 @@ pub fn draw_minions(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("   Press / to filter", Style::default().fg(color::TEXT_DIM)),
-        ]));
+        lines.push(Line::from(Span::styled("   Press / to filter", Style::default().fg(color::TEXT_DIM))));
     }
 
-    if total == 0 && app.minion_info.is_empty() && app.keys.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  No minion data available.",
-            Style::default().fg(color::TEXT_DIM),
-        )));
-    } else if total > 0 {
-        // Header
+    // ── Admin status line ─────────────────────────────────────────────────
+    if app.admin_mode {
+        if app.fleet_scanning {
+            lines.push(Line::from(Span::styled("  [Admin] Scanning fleet...", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
+        } else if app.fleet_data.is_some() {
+            lines.push(Line::from(Span::styled("  [Admin] Scan complete", Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD))));
+        } else {
+            lines.push(Line::from(Span::styled("  [Admin] Press S to scan fleet", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
+        }
+    }
+
+    let overhead = lines.len();
+
+    if app.minion_info.is_empty() && app.keys.is_empty() {
+        if overhead == 0 {
+            lines.push(Line::from(Span::styled("  No minion data available.", Style::default().fg(color::TEXT_DIM))));
+        }
+    } else {
+        // ── Column widths — total = 8 + sum = inner.width ──────────────
+        let avail = (inner.width as usize).saturating_sub(8);
+        let id_w = if avail > 24 { 18 } else { (avail / 3).max(4) };
+        let key_w = if avail > 24 { 8 } else { (avail / 6).max(3) };
+        let os_w = avail.saturating_sub(id_w + key_w + 4).min(30).max(6);
+        let sal_w = avail.saturating_sub(id_w + key_w + os_w);
+
+        // ── Table header (always shown) ───────────────────────────────────
+        let h_id = format!("  {:<id_w$}", "ID", id_w = id_w);
+        let h_key = format!("  {:<key_w$}", "Key", key_w = key_w);
+        let h_os = format!("  {:<os_w$}", "OS", os_w = os_w);
+        let h_sal = format!("  {:<sal_w$}", "Salt", sal_w = sal_w);
         lines.push(Line::from(vec![
-            Span::styled("  ID", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled("                    ", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled("Key", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled("     ", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled("OS", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled("                    ", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled("Salt", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(h_id, Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(h_key, Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(h_os, Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(h_sal, Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         ]));
 
-        // Build a map of key status
-        let mut key_map: HashMap<String, crate::types::KeyStatus> = HashMap::new();
-        for k in &app.keys {
-            key_map.insert(k.id.clone(), k.status);
+        // ── No-match message or data rows ────────────────────────────────
+        if total == 0 {
+            lines.push(Line::from(Span::styled("  (no minions match this filter)", Style::default().fg(color::TEXT_DIM))));
+        } else {
+            let available = (inner.height as usize).saturating_sub(overhead).saturating_sub(2); // -header -one row
+            let visible = available.max(1);
+
+            // Build a map of key status
+            let mut key_map: HashMap<String, crate::types::KeyStatus> = HashMap::new();
+            for k in &app.keys {
+                key_map.insert(k.id.clone(), k.status);
+            }
+
+            let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+            let scroll = scroll.min(total.saturating_sub(visible));
+
+            for idx in scroll..(scroll + visible).min(total) {
+                let minion = match app.get_filtered_minion(idx) {
+                    Some(m) => m,
+                    None => break,
+                };
+
+                let is_selected = idx == selected;
+                let sel_style = if is_selected {
+                    color::select_bg(app.high_contrast)
+                } else {
+                    Style::default().bg(color::BG_DARK)
+                };
+
+                let ks = key_map.get(&minion.id).copied();
+                let (ks_label, ks_color) = match ks {
+                    Some(crate::types::KeyStatus::Accepted) => ("accepted", color::GREEN),
+                    Some(crate::types::KeyStatus::Pending) => ("pending", color::YELLOW),
+                    Some(crate::types::KeyStatus::Rejected) => ("rejected", color::RED),
+                    Some(crate::types::KeyStatus::Denied) => ("denied", color::ORANGE),
+                    None => ("\u{2014}", color::TEXT_DIM),
+                };
+                let os_str = if minion.osrelease.is_empty() {
+                    minion.os.clone()
+                } else {
+                    format!("{} {}", minion.os, minion.osrelease)
+                };
+
+                let id_str = truncate(&minion.id, id_w);
+                let os_str = truncate(&os_str, os_w);
+                let ver_str = truncate(&minion.salt_version, sal_w);
+
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(ks_color)),
+                    Span::styled(format!("  {:<os_w$}", os_str, os_w = os_w), Style::default().fg(color::CYAN)),
+                    Span::styled(format!("  {:<sal_w$}", ver_str, sal_w = sal_w), Style::default().fg(color::TEXT_DIM)),
+                ]).style(sel_style));
+            }
         }
+    }
 
-        let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
-        let scroll = scroll.min(total.saturating_sub(visible));
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        inner,
+    );
+}
 
-        for idx in scroll..(scroll + visible).min(total) {
-            let minion = match app.get_filtered_minion(idx) {
-                Some(m) => m,
-                None => break,
-            };
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() > max && max > 3 {
+        format!("{}..", &s[..max.saturating_sub(2)])
+    } else if s.len() > max {
+        s[..max].to_string()
+    } else {
+        s.to_string()
+    }
+}
 
-            let is_selected = idx == selected;
-            let sel_style = if is_selected {
-                Style::default().bg(color::BG_LIGHT)
-            } else {
-                Style::default().bg(color::BG_DARK)
-            };
+fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::BORDER))
+        .title(" Fleet Overview ")
+        .style(Style::default().bg(color::BG_DARK));
 
-            let ks = key_map.get(&minion.id).copied();
-            let (ks_label, ks_color) = match ks {
-                Some(crate::types::KeyStatus::Accepted) => ("accepted", color::GREEN),
-                Some(crate::types::KeyStatus::Pending) => ("pending", color::YELLOW),
-                Some(crate::types::KeyStatus::Rejected) => ("rejected", color::RED),
-                Some(crate::types::KeyStatus::Denied) => ("denied", color::ORANGE),
-                None => ("\u{2014}", color::TEXT_DIM),
-            };
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {:<20}", minion.id), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{:<8}", ks_label), Style::default().fg(ks_color)),
-                Span::styled(format!("{:<8} {}", minion.os, minion.osrelease), Style::default().fg(color::CYAN)),
-                Span::raw("  "),
-                Span::styled(minion.salt_version.clone(), Style::default().fg(color::TEXT_DIM)),
-            ]).style(sel_style));
+    let mut lines: Vec<Line> = Vec::new();
+
+    if !app.admin_mode {
+        lines.push(Line::from(Span::styled("  Enable admin mode ('a')", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("  to access fleet overview.", Style::default().fg(color::TEXT_DIM))));
+    } else if app.fleet_scanning {
+        lines.push(Line::from(Span::styled("  Scanning fleet...", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
+    } else if let Some(ref fs) = app.fleet_data {
+        let bar_width = (inner.width as usize).saturating_sub(14);
+
+        lines.push(Line::from(Span::styled(
+            format!("  Total: {} minions", fs.minions.len()),
+            Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        if !fs.minions.is_empty() {
+            let total_minions = fs.minions.len();
+
+            // ── OS Distribution ───────────────────────────────────────────
+            lines.push(Line::from(Span::styled("  OS Distribution:", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))));
+
+            let mut os_counts: HashMap<&str, usize> = HashMap::new();
+            for m in &fs.minions {
+                let key = if m.osfinger.is_empty() {
+                    if m.osrelease.is_empty() { "unknown" } else { m.osrelease.as_str() }
+                } else {
+                    m.osfinger.as_str()
+                };
+                *os_counts.entry(key).or_insert(0) += 1;
+            }
+            let mut os_sorted: Vec<(&str, usize)> = os_counts.into_iter().collect();
+            os_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+            let os_max = os_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
+
+            for (os, count) in &os_sorted {
+                let bar_len = if bar_width > 0 { (*count * bar_width) / os_max } else { 0 };
+                let bar: String = (0..bar_len).map(|_| '\u{2588}').collect();
+                let pct = *count as f64 / total_minions as f64 * 100.0;
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:<22}", os), Style::default().fg(color::TEXT)),
+                    Span::styled(bar, Style::default().fg(color::CYAN)),
+                    Span::styled(format!(" {:.0}%", pct), Style::default().fg(color::TEXT_DIM)),
+                ]));
+            }
+
+            // ── Salt Version ──────────────────────────────────────────────
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("  Salt Version:", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))));
+
+            let mut ver_counts: HashMap<&str, usize> = HashMap::new();
+            for m in &fs.minions {
+                let key = if m.saltversion.is_empty() { "?" } else { m.saltversion.as_str() };
+                *ver_counts.entry(key).or_insert(0) += 1;
+            }
+            let mut ver_sorted: Vec<(&str, usize)> = ver_counts.into_iter().collect();
+            ver_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+            let ver_max = ver_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
+
+            for (ver, count) in &ver_sorted {
+                let bar_len = if bar_width > 0 { (*count * bar_width) / ver_max } else { 0 };
+                let bar: String = (0..bar_len).map(|_| '\u{2588}').collect();
+                let pct = *count as f64 / total_minions as f64 * 100.0;
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:<22}", ver), Style::default().fg(color::TEXT)),
+                    Span::styled(bar, Style::default().fg(color::YELLOW)),
+                    Span::styled(format!(" {:.0}%", pct), Style::default().fg(color::TEXT_DIM)),
+                ]));
+            }
+
+            // ── Architecture ──────────────────────────────────────────────
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("  Architecture:", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))));
+
+            let mut arch_counts: HashMap<&str, usize> = HashMap::new();
+            for m in &fs.minions {
+                let key = if m.cpuarch.is_empty() { "?" } else { m.cpuarch.as_str() };
+                *arch_counts.entry(key).or_insert(0) += 1;
+            }
+            let mut arch_sorted: Vec<(&str, usize)> = arch_counts.into_iter().collect();
+            arch_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+            let arch_max = arch_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
+
+            for (arch, count) in &arch_sorted {
+                let bar_len = if bar_width > 0 { (*count * bar_width) / arch_max } else { 0 };
+                let bar: String = (0..bar_len).map(|_| '\u{2588}').collect();
+                let pct = *count as f64 / total_minions as f64 * 100.0;
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:<22}", arch), Style::default().fg(color::TEXT)),
+                    Span::styled(bar, Style::default().fg(color::PURPLE)),
+                    Span::styled(format!(" {:.0}%", pct), Style::default().fg(color::TEXT_DIM)),
+                ]));
+            }
         }
+    } else {
+        lines.push(Line::from(Span::styled("  No fleet data.", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("  Activate admin mode and", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("  press S to scan the fleet.", Style::default().fg(color::TEXT_DIM))));
     }
 
     f.render_widget(

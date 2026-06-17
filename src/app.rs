@@ -53,6 +53,13 @@ pub struct App {
     pub last_frame_size: Rect,
     pub detail_popup: Option<DetailPopup>,
     pub show_help: bool,
+    pub high_contrast: bool,
+
+    // Admin mode
+    pub admin_mode: bool,
+    pub admin_mode_pending: bool,
+    pub fleet_scanning: bool,
+    pub fleet_data: Option<FleetScan>,
 
     // Filter state
     pub filter_text: String,
@@ -105,6 +112,13 @@ pub struct App {
 
     /// User-adjustable tick interval in milliseconds (default 2000 = 2s)
     pub tick_interval_ms: u64,
+
+    // Sniffer
+    pub sniffer_input_active: bool,
+    pub sniffer_input_text: String,
+    pub sniffer_dirty: bool,
+    /// When viewing event detail from sniffer, pressing q returns to sniffer popup
+    pub return_to_sniffer: Option<SnifferState>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +134,8 @@ pub enum DetailPopup {
     SaltEvent(SaltEvent),
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_mode: bool, job_fun: String, job_tgt: String, job_start_epoch: f64 },
     Alert(AlertEntry),
+    AdminConfirm,
+    EventSniffer(crate::types::SnifferState),
 }
 
 impl App {
@@ -168,6 +184,17 @@ impl App {
             last_frame_size: Rect::default(),
             detail_popup: None,
             show_help: false,
+            high_contrast: false,
+
+            sniffer_input_active: false,
+            sniffer_input_text: String::new(),
+            sniffer_dirty: false,
+            return_to_sniffer: None,
+
+            admin_mode: false,
+            admin_mode_pending: false,
+            fleet_scanning: false,
+            fleet_data: None,
 
             filter_text: String::new(),
             is_filtering: false,
@@ -236,6 +263,29 @@ impl App {
                             }
                             self.zmq_ping_sent_at = None;
                         }
+                        "fleet_scan" => {
+                            let minions = parse_fleet_scan(&data);
+                            self.fleet_data = Some(FleetScan { minions: minions.clone(), scanned_at: Instant::now() });
+                            self.fleet_scanning = false;
+                            // Merge fleet scan data into minion_info so columns populate
+                            for fm in &minions {
+                                if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == fm.id) {
+                                    existing.os = fm.osfinger.clone();
+                                    existing.osrelease = fm.osrelease.clone();
+                                    existing.salt_version = fm.saltversion.clone();
+                                    existing.cpuarch = fm.cpuarch.clone();
+                                } else {
+                                    self.minion_info.push(MinionInfo {
+                                        id: fm.id.clone(),
+                                        os: fm.osfinger.clone(),
+                                        osrelease: fm.osrelease.clone(),
+                                        salt_version: fm.saltversion.clone(),
+                                        cpuarch: fm.cpuarch.clone(),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                        }
                         _ => {}
                     }
                     if !ok {
@@ -287,6 +337,22 @@ impl App {
                     if let Some(evt) = self.events.back() {
                         track_job_from_event(&mut self.jobs, evt);
                     }
+
+                    // Sniffer: inject matching events into sniffer buffer
+                    if let Some(DetailPopup::EventSniffer(ref mut state)) = self.detail_popup {
+                        if let Some(evt) = self.events.back() {
+                            if Self::matches_sniffer_event(evt, &state.minion_ids) {
+                                if state.buffer.len() >= 1000 {
+                                    state.buffer.pop_front();
+                                }
+                                state.buffer.push_back(evt.clone());
+                                if !state.paused {
+                                    state.selected = 0;
+                                }
+                                self.sniffer_dirty = true;
+                            }
+                        }
+                    }
                 }
                 AgentMessage::Error { message, .. } => {
                     self.agent.last_error = Some(message);
@@ -328,7 +394,12 @@ impl App {
     /// Fast poll between ticks
     pub fn fast_poll(&mut self) -> bool {
         self.drain_agent_messages();
-        false
+        if self.sniffer_dirty {
+            self.sniffer_dirty = false;
+            true
+        } else {
+            false
+        }
     }
 
     /// Clamp all cursor selections to valid bounds
@@ -367,6 +438,29 @@ impl App {
             }
         }
         false
+    }
+
+    fn matches_sniffer_event(evt: &SaltEvent, minion_ids: &[String]) -> bool {
+        for mid in minion_ids {
+            if evt.tag.contains(mid.as_str()) { return true; }
+            if let Some(id) = evt.data["id"].as_str() {
+                if id.contains(mid.as_str()) || mid.contains(id) { return true; }
+            }
+            if let Some(tgt) = evt.data["tgt"].as_str() {
+                if tgt == "*" || tgt.contains(mid.as_str()) || mid.contains(tgt) { return true; }
+            }
+            if Self::sniffer_search_value(&evt.data, mid) { return true; }
+        }
+        false
+    }
+
+    fn sniffer_search_value(value: &serde_json::Value, pattern: &str) -> bool {
+        match value {
+            serde_json::Value::String(s) => s.contains(pattern),
+            serde_json::Value::Object(map) => map.values().any(|v| Self::sniffer_search_value(v, pattern)),
+            serde_json::Value::Array(arr) => arr.iter().any(|v| Self::sniffer_search_value(v, pattern)),
+            _ => false,
+        }
     }
 
     fn matches_job(job: &JobEntry, pat: &str, known_minions: &[String]) -> bool {
@@ -818,9 +912,58 @@ impl App {
             return false;
         }
 
+        // Sniffer input mode (text entry before launching)
+        if self.sniffer_input_active {
+            match code {
+                KeyCode::Esc => {
+                    self.sniffer_input_active = false;
+                    self.sniffer_input_text.clear();
+                }
+                KeyCode::Enter => {
+                    let ids: Vec<String> = self.sniffer_input_text
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !ids.is_empty() {
+                        self.detail_popup = Some(DetailPopup::EventSniffer(
+                            crate::types::SnifferState {
+                                minion_ids: ids,
+                                buffer: std::collections::VecDeque::with_capacity(1000),
+                                paused: false,
+                                selected: 0,
+                            }
+                        ));
+                    }
+                    self.sniffer_input_active = false;
+                    self.sniffer_input_text.clear();
+                }
+                KeyCode::Backspace => {
+                    self.sniffer_input_text.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.sniffer_input_text.push(c);
+                }
+                _ => {}
+            }
+            return false;
+        }
+
         // Detail popup gets first crack
         let mut clipboard_text: Option<String> = None;
         let had_popup = self.detail_popup.is_some();
+
+        // Contrast toggle works universally (even with popups open)
+        if had_popup {
+            match code {
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.high_contrast = !self.high_contrast;
+                    return false;
+                }
+                _ => {}
+            }
+        }
+
         if let Some(ref mut detail) = self.detail_popup {
             match *detail {
                 DetailPopup::JobDetail {
@@ -910,6 +1053,93 @@ impl App {
                         }
                     }
                 }
+                DetailPopup::AdminConfirm => {
+                    match code {
+                        KeyCode::Enter => {
+                            self.admin_mode = true;
+                            self.admin_mode_pending = false;
+                            self.detail_popup = None;
+                        }
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('a') | KeyCode::Char('A') => {
+                            self.admin_mode_pending = false;
+                            self.detail_popup = None;
+                        }
+                        _ => {}
+                    }
+                }
+                DetailPopup::EventSniffer(ref mut state) => {
+                    match code {
+                        KeyCode::Enter => {
+                            let rev_idx = state.buffer.len().saturating_sub(1).saturating_sub(state.selected);
+                            if let Some(evt) = state.buffer.get(rev_idx) {
+                                self.return_to_sniffer = Some(state.clone());
+                                self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone()));
+                            }
+                        }
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            self.detail_popup = None;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            state.selected = state.selected.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let max = state.buffer.len().saturating_sub(1);
+                            state.selected = state.selected.saturating_add(1).min(max);
+                        }
+                        KeyCode::PageUp => {
+                            state.selected = state.selected.saturating_sub(10);
+                        }
+                        KeyCode::PageDown => {
+                            let max = state.buffer.len().saturating_sub(1);
+                            state.selected = state.selected.saturating_add(10).min(max);
+                        }
+                        KeyCode::Char('p') | KeyCode::Char('P') => {
+                            state.paused = !state.paused;
+                        }
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            let mut text = String::new();
+                            for (i, evt) in state.buffer.iter().enumerate() {
+                                let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
+                                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                    .unwrap_or_else(|| evt.ts.to_string());
+                                text.push_str(&format!(
+                                    "Event {}\nTag: {}\nTimestamp: {}\nData:\n{}\n\n",
+                                    i + 1,
+                                    evt.tag,
+                                    ts,
+                                    serde_json::to_string_pretty(&evt.data).unwrap_or_default()
+                                ));
+                            }
+                            if !text.is_empty() {
+                                clipboard_text = Some(text);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                DetailPopup::SaltEvent(ref evt) => {
+                    match code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            if let Some(sniffer) = self.return_to_sniffer.take() {
+                                self.detail_popup = Some(DetailPopup::EventSniffer(sniffer));
+                            } else {
+                                self.detail_popup = None;
+                            }
+                        }
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
+                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                .unwrap_or_else(|| evt.ts.to_string());
+                            clipboard_text = Some(format!(
+                                "Tag: {}\nTimestamp: {}\n\nData:\n{}",
+                                evt.tag,
+                                ts,
+                                serde_json::to_string_pretty(&evt.data).unwrap_or_default()
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
                 _ => {
                     match code {
                         KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -970,8 +1200,31 @@ impl App {
                     self.tick_interval_ms = self.tick_interval_ms.saturating_sub(500).max(500);
                 }
             }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                if self.admin_mode {
+                    self.admin_mode = false;
+                } else if self.detail_popup.is_none() && !self.is_filtering {
+                    self.admin_mode_pending = true;
+                    self.detail_popup = Some(DetailPopup::AdminConfirm);
+                }
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                if self.admin_mode && self.current_tab == Tab::Minions && !self.fleet_scanning {
+                    self.fleet_scanning = true;
+                    self.send_agent_cmd("fleet_scan", None);
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                if self.current_tab == Tab::Events && self.detail_popup.is_none() && !self.is_filtering {
+                    self.sniffer_input_active = true;
+                    self.sniffer_input_text.clear();
+                }
+            }
             KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => {
                 self.show_help = true;
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                self.high_contrast = !self.high_contrast;
             }
             KeyCode::Char('/') => {
                 self.is_filtering = true;
@@ -1138,4 +1391,20 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             });
         }
     }
+}
+
+fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
+    let mut result = Vec::new();
+    if let Some(arr) = data["minions"].as_array() {
+        for entry in arr {
+            result.push(FleetMinion {
+                id: entry["id"].as_str().unwrap_or("?").to_string(),
+                osfinger: entry["osfinger"].as_str().unwrap_or("").to_string(),
+                osrelease: entry["osrelease"].as_str().unwrap_or("").to_string(),
+                saltversion: entry["saltversion"].as_str().unwrap_or("").to_string(),
+                cpuarch: entry["cpuarch"].as_str().unwrap_or("").to_string(),
+            });
+        }
+    }
+    result
 }

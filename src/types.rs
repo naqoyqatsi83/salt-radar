@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::Instant;
 
 // ─── Tabs ──────────────────────────────────────────────────────────────────
@@ -192,6 +193,16 @@ pub struct SaltEvent {
     pub ts: f64,
 }
 
+// ─── Event sniffer state ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SnifferState {
+    pub minion_ids: Vec<String>,
+    pub buffer: VecDeque<SaltEvent>,
+    pub paused: bool,
+    pub selected: usize,
+}
+
 // ─── Job entry (live) ─────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -254,6 +265,23 @@ impl AlertSeverity {
             Self::Crit => "crit",
         }
     }
+}
+
+// ─── Fleet scan ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct FleetMinion {
+    pub id: String,
+    pub osfinger: String,
+    pub osrelease: String,
+    pub saltversion: String,
+    pub cpuarch: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct FleetScan {
+    pub minions: Vec<FleetMinion>,
+    pub scanned_at: std::time::Instant,
 }
 
 // ─── Agent state ───────────────────────────────────────────────────────────

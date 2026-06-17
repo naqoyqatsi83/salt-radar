@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::app::DetailPopup;
 use crate::types::Tab;
 
 // ─── Theme colors (matching psnet's dark palette) ──────────────────────────
@@ -50,6 +51,14 @@ pub mod color {
     pub const TAB_ACTIVE_FG: Color = Color::Rgb(255, 220, 120);
     pub const TAB_INACTIVE: Color = Color::Rgb(80, 100, 135);
     pub const TAB_SEPARATOR: Color = Color::Rgb(40, 55, 80);
+
+    pub fn select_bg(high_contrast: bool) -> ratatui::style::Style {
+        if high_contrast {
+            ratatui::style::Style::default().bg(Color::Rgb(40, 55, 80)).add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            ratatui::style::Style::default().bg(BG_LIGHT)
+        }
+    }
 }
 
 pub mod key {
@@ -194,6 +203,23 @@ fn draw_tab_menu(f: &mut Frame, area: Rect, app: &App) {
 // ─── Key hints ─────────────────────────────────────────────────────────────
 
 fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
+    if app.sniffer_input_active {
+        let cursor = if app.sniffer_input_text.len() % 2 == 0 { '|' } else { ' ' };
+        let k1 = key::render("Esc", "Cancel");
+        let k2 = key::render("Enter", "Start");
+        let mut all_spans: Vec<Span<'static>> = Vec::new();
+        all_spans.extend(k1);
+        all_spans.extend(k2);
+        all_spans.push(Span::styled(
+            format!("  Minion IDs (comma-separated): {} {}", app.sniffer_input_text, cursor),
+            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+        ));
+        let paragraph = Paragraph::new(Line::from(all_spans))
+            .style(Style::default().bg(color::BG_LIGHT));
+        f.render_widget(paragraph, area);
+        return;
+    }
+
     if app.is_filtering {
         let spans = vec![
             key::render("Esc", "Cancel"),
@@ -212,7 +238,35 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     }
 
     if app.detail_popup.is_some() {
-        let spans = key::render("Esc", "Close");
+        if app.admin_mode_pending {
+            let mut spans = key::render("Enter", "OK");
+            spans.extend(key::render("Esc/q/a", "Cancel"));
+            let paragraph = Paragraph::new(Line::from(spans))
+                .style(Style::default().bg(color::BG_LIGHT));
+            f.render_widget(paragraph, area);
+            return;
+        }
+        if let Some(DetailPopup::EventSniffer(ref state)) = app.detail_popup {
+            let mut spans = key::render("Esc/q", "Close");
+            spans.extend(key::render("\u{2191}\u{2193}", "Scroll"));
+            spans.extend(key::render("Enter", "Detail"));
+            if state.paused {
+                spans.extend(key::render("p", "Resume"));
+            } else {
+                spans.extend(key::render("p", "Pause"));
+            }
+            spans.extend(key::render("c", "Contrast"));
+            spans.extend(key::render("y", "Copy"));
+            let paragraph = Paragraph::new(Line::from(spans))
+                .style(Style::default().bg(color::BG_LIGHT));
+            f.render_widget(paragraph, area);
+            return;
+        }
+        let is_event = matches!(app.detail_popup, Some(DetailPopup::SaltEvent(_)));
+        let mut spans = key::render("Esc", "Close");
+        if is_event {
+            spans.extend(key::render("y", "Copy"));
+        }
         let paragraph = Paragraph::new(Line::from(spans))
             .style(Style::default().bg(color::BG_LIGHT));
         f.render_widget(paragraph, area);
@@ -224,17 +278,43 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         key::render("Tab", "Switch"),
         key::render("\u{2191}\u{2193}", "Select"),
         key::render("?", "Help"),
+        key::render("c", "Contrast"),
     ];
 
     let tab_keys = match app.current_tab {
-        Tab::Dashboard => vec![
-            key::render("1-5", "Tabs"),
-            key::render("+/-", "Interval"),
-        ],
-        _ => vec![
-            key::render("/", "Filter"),
-            key::render("Enter", "Detail"),
-        ],
+        Tab::Dashboard => {
+            let mut keys = vec![
+                key::render("1-5", "Tabs"),
+                key::render("+/-", "Interval"),
+            ];
+            keys.push(key::render("a", "Admin"));
+            keys
+        }
+        Tab::Minions => {
+            let mut keys = vec![key::render("/", "Filter"), key::render("Enter", "Detail")];
+            keys.push(key::render("a", "Admin"));
+            if app.admin_mode {
+                keys.push(key::render("s", "Scan fleet"));
+            }
+            keys
+        }
+        Tab::Events => {
+            let mut keys = vec![
+                key::render("/", "Filter"),
+                key::render("Enter", "Detail"),
+                key::render("n", "Sniffer"),
+            ];
+            keys.push(key::render("a", "Admin"));
+            keys
+        }
+        _ => {
+            let mut keys = vec![
+                key::render("/", "Filter"),
+                key::render("Enter", "Detail"),
+            ];
+            keys.push(key::render("a", "Admin"));
+            keys
+        }
     };
 
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -252,6 +332,23 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(" agent: ok ", Style::default().fg(color::GREEN)));
     } else {
         spans.push(Span::styled(" agent: down ", Style::default().fg(color::RED)));
+    }
+
+    // Admin mode indicator (always visible, highlights when active)
+    spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
+    if app.admin_mode {
+        let label = if app.fleet_scanning { " ADMIN MODE: ON (scanning) " } else { " ADMIN MODE: ON " };
+        spans.push(Span::styled(label, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)));
+    } else {
+        spans.push(Span::styled(" admin mode: off ", Style::default().fg(color::TEXT_DIM)));
+    }
+
+    // Contrast indicator
+    spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
+    if app.high_contrast {
+        spans.push(Span::styled(" contrast: ON ", Style::default().fg(color::TEXT_HI).bg(Color::Rgb(80, 55, 0)).add_modifier(Modifier::BOLD)));
+    } else {
+        spans.push(Span::styled(" contrast: off ", Style::default().fg(color::TEXT_DIM)));
     }
 
     // Selection position on list tabs
@@ -349,6 +446,22 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  ?/h", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Toggle this help", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  a", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Toggle admin mode", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  c", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Toggle high-contrast selection", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  n", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Event sniffer (Events tab)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  s", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Fleet scan (admin mode, Minions tab)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled("  salt-radar v0.1.0 \u{2014} Salt Master Monitor", Style::default().fg(color::TEXT_DIM))),

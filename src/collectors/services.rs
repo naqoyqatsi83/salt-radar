@@ -131,7 +131,7 @@ fn check_unit(unit: &String, proc_running: bool) -> ServiceHealth {
         is_active.clone()
     };
 
-    let uptime = parse_uptime(&timestamp);
+    let uptime = if active { parse_uptime(&timestamp) } else { 0 };
 
     ServiceHealth {
         unit: unit_str.to_string(),

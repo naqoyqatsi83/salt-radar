@@ -42,15 +42,13 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    if total == 0 {
-        if app.alert_engine.alerts.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  No active alerts. Everything looks healthy.",
-                Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD),
-            )));
-        }
+    if app.alert_engine.alerts.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No active alerts. Everything looks healthy.",
+            Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD),
+        )));
     } else {
-        // Header
+        // Header (always shown when alerts exist)
         lines.push(Line::from(vec![
             Span::styled("  Severity", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
             Span::styled("   ", Style::default().fg(color::TEXT_LABEL)),
@@ -59,33 +57,40 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("Description", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         ]));
 
-        let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
-        let scroll = scroll.min(total.saturating_sub(visible));
+        if total == 0 {
+            lines.push(Line::from(Span::styled(
+                "  No alerts match the filter.",
+                Style::default().fg(color::TEXT_DIM),
+            )));
+        } else {
+            let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+            let scroll = scroll.min(total.saturating_sub(visible));
 
-        for idx in scroll..(scroll + visible).min(total) {
-            let alert = match app.get_filtered_alert(idx) {
-                Some(a) => a,
-                None => break,
-            };
+            for idx in scroll..(scroll + visible).min(total) {
+                let alert = match app.get_filtered_alert(idx) {
+                    Some(a) => a,
+                    None => break,
+                };
 
-            let is_selected = idx == selected;
-            let sel_style = if is_selected {
-                Style::default().bg(color::BG_LIGHT)
-            } else {
-                Style::default().bg(color::BG_DARK)
-            };
+                let is_selected = idx == selected;
+                let sel_style = if is_selected {
+                    color::select_bg(app.high_contrast)
+                } else {
+                    Style::default().bg(color::BG_DARK)
+                };
 
-            let sev_color = match alert.severity {
-                crate::types::AlertSeverity::Info => color::CYAN,
-                crate::types::AlertSeverity::Warn => color::YELLOW,
-                crate::types::AlertSeverity::Crit => color::RED,
-            };
+                let sev_color = match alert.severity {
+                    crate::types::AlertSeverity::Info => color::CYAN,
+                    crate::types::AlertSeverity::Warn => color::YELLOW,
+                    crate::types::AlertSeverity::Crit => color::RED,
+                };
 
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {:<8}", alert.severity.label()), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{:<16}", alert.rule), Style::default().fg(color::CYAN)),
-                Span::styled(alert.description.clone(), Style::default().fg(color::TEXT)),
-            ]).style(sel_style));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:<8}", alert.severity.label()), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{:<16}", alert.rule), Style::default().fg(color::CYAN)),
+                    Span::styled(alert.description.clone(), Style::default().fg(color::TEXT)),
+                ]).style(sel_style));
+            }
         }
     }
 

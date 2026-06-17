@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, DetailPopup};
+use crate::types::SnifferState;
 
 use super::color;
 
@@ -31,6 +32,16 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             let area = centered_rect(60, 40, f.area());
             f.render_widget(Clear, area);
             draw_alert_detail(f, area, alert);
+        }
+        DetailPopup::AdminConfirm => {
+            let area = centered_rect(55, 35, f.area());
+            f.render_widget(Clear, area);
+            draw_admin_confirm(f, area);
+        }
+        DetailPopup::EventSniffer(state) => {
+            let area = centered_rect(80, 85, f.area());
+            f.render_widget(Clear, area);
+            draw_event_sniffer(f, area, state, app.clipboard_at, app.high_contrast);
         }
     }
 }
@@ -105,17 +116,33 @@ fn dismiss_line(clipboard_at: Option<std::time::Instant>, scroll_mode: bool) -> 
     }
 }
 
-fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>]) {
+fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], footer: Option<Line<'static>>, scroll: u16) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER_HI))
         .style(Style::default().bg(color::BG_POPUP));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    f.render_widget(
-        Paragraph::new(lines.to_vec()).style(Style::default().bg(color::BG_POPUP)),
-        inner,
-    );
+
+    if let Some(footer_line) = footer {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        f.render_widget(
+            Paragraph::new(lines.to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::BG_POPUP)),
+            chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new(footer_line).style(Style::default().bg(color::BG_POPUP)),
+            chunks[1],
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(lines.to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::BG_POPUP)),
+            inner,
+        );
+    }
 }
 
 fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo) {
@@ -125,12 +152,11 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     lines.push(row("Salt Version", minion.salt_version.clone(), color::YELLOW));
     lines.push(row("Arch", minion.cpuarch.clone(), color::TEXT));
     lines.push(row("Last Seen", format_epoch(minion.last_seen_epoch), color::TEXT_DIM));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
+    let footer = Line::from(Span::styled(
         "  [ Esc / q to close ]",
         Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-    )));
-    render_popup(f, area, &lines);
+    ));
+    render_popup(f, area, &lines, Some(footer), 0);
 }
 
 fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent) {
@@ -144,12 +170,11 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent) {
         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  [ Esc / q to close ]",
+    let footer = Line::from(Span::styled(
+        "  [ Esc/q close | y=copy ]",
         Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-    )));
-    render_popup(f, area, &lines);
+    ));
+    render_popup(f, area, &lines, Some(footer), 0);
 }
 
 fn draw_job_detail(
@@ -247,8 +272,8 @@ fn draw_job_detail(
     }
 
     lines.push(Line::from(""));
-    lines.push(dismiss_line(clipboard_at, scroll_mode));
-    render_popup(f, area, &lines);
+    let footer = dismiss_line(clipboard_at, scroll_mode);
+    render_popup(f, area, &lines, Some(footer), 0);
 }
 
 fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry) {
@@ -261,12 +286,221 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
     lines.push(row("Severity", alert.severity.label().to_string(), sev_color));
     lines.push(row("Rule", alert.rule.to_string(), color::CYAN));
     lines.push(row("Description", alert.description.clone(), color::TEXT_HI));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
+    let footer = Line::from(Span::styled(
         "  [ Esc / q to close ]",
         Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-    )));
-    render_popup(f, area, &lines);
+    ));
+    render_popup(f, area, &lines, Some(footer), 0);
+}
+
+fn draw_admin_confirm(f: &mut Frame, area: Rect) {
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "  \u{26a0} DANGER ZONE ",
+            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ADMIN MODE",
+            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  You are about to enable admin mode.",
+            Style::default().fg(color::TEXT_HI),
+        )),
+        Line::from(Span::styled(
+            "  Actions performed in this mode may have",
+            Style::default().fg(color::TEXT),
+        )),
+        Line::from(Span::styled(
+            "  consequences on your Salt infrastructure.",
+            Style::default().fg(color::TEXT),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Only proceed if you know what you are doing.",
+            Style::default().fg(color::ORANGE).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    // Simulated buttons
+    lines.push(Line::from(vec![
+        Span::styled("     [ ", Style::default().fg(color::TEXT_DIM)),
+        Span::styled("OK", Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(" ] ", Style::default().fg(color::TEXT_DIM)),
+        Span::styled("Enter", Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
+        Span::styled("          ", Style::default().fg(color::TEXT_DIM)),
+        Span::styled("[ ", Style::default().fg(color::TEXT_DIM)),
+        Span::styled("Cancel", Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
+        Span::styled(" ] ", Style::default().fg(color::TEXT_DIM)),
+        Span::styled("Esc/q/a", Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
+    ]));
+    render_popup(f, area, &lines, None, 0);
+}
+
+fn draw_event_sniffer(
+    f: &mut Frame,
+    area: Rect,
+    state: &SnifferState,
+    clipboard_at: Option<std::time::Instant>,
+    high_contrast: bool,
+) {
+    let ids_str = state.minion_ids.join(", ");
+    let title = if ids_str.len() > 50 {
+        format!(" Event Sniffer: {}... ", &ids_str[..47])
+    } else {
+        format!(" Event Sniffer: {} ", ids_str)
+    };
+
+    let mut lines = header_lines(&title);
+
+    // Status bar
+    let (status_label, status_color) = if state.paused {
+        ("PAUSED", color::YELLOW)
+    } else {
+        ("LIVE", color::GREEN)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  Status: {}", status_label),
+            Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  Captured: {} / max 1000", state.buffer.len()),
+            Style::default().fg(color::TEXT_DIM),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    if state.buffer.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No matching events yet. Waiting for new events...",
+            Style::default().fg(color::TEXT_DIM),
+        )));
+    } else {
+        // Column widths: # | Time | JID | Type
+        let num_w: usize = 6;
+        let time_w: usize = 22;
+        let type_w: usize = 18;
+        let jid_w = (area.width as usize).saturating_sub(num_w + time_w + type_w + 5);
+
+        // Column header
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:>nw$}", "#", nw = num_w - 1), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<tw$}", "Time", tw = time_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<jw$}", "JID", jw = jid_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<tyw$}", "Type", tyw = type_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+            Style::default().fg(Color::Rgb(35, 50, 80)),
+        )));
+
+        let total = state.buffer.len();
+        let sel = state.selected.min(total.saturating_sub(1));
+        let mut event_line_starts: Vec<usize> = Vec::with_capacity(total);
+
+        for display_idx in 0..total {
+            let buf_idx = total - 1 - display_idx;
+            let evt = match state.buffer.get(buf_idx) {
+                Some(e) => e,
+                None => break,
+            };
+
+            event_line_starts.push(lines.len());
+
+            let is_sel = display_idx == sel;
+            let sel_style = if is_sel {
+                color::select_bg(high_contrast)
+            } else {
+                Style::default()
+            };
+
+            let event_num = display_idx + 1;
+            let t = sniffer_format_ts(evt.ts);
+            let etype = evt.data["fun"]
+                .as_str()
+                .or_else(|| {
+                    if evt.tag.contains("/ret/") { Some("return") } else { None }
+                })
+                .unwrap_or("");
+
+            let tag_disp = if evt.tag.len() > jid_w {
+                format!("{}..", &evt.tag[..jid_w.saturating_sub(2)])
+            } else {
+                evt.tag.clone()
+            };
+
+            // Header row: # | Time | JID | Type
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:>nw$}", event_num, nw = num_w - 1), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{:<tw$}", t, tw = time_w), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{:<jw$}", tag_disp, jw = jid_w), Style::default().fg(color::CYAN)),
+                Span::styled(format!("{:<tyw$}", etype, tyw = type_w), Style::default().fg(color::GREEN)),
+            ]).style(sel_style));
+
+            // Full JSON body (no truncation)
+            let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
+            let indent = format!("{:w$}", "", w = num_w + time_w + 3);
+            for line in json_str.lines() {
+                lines.push(Line::from(
+                    Span::styled(
+                        format!("{}{}", indent, line),
+                        Style::default().fg(color::TEXT),
+                    ),
+                ).style(sel_style));
+            }
+        }
+
+        // Auto-scroll: keep selected event header visible (at ~1/3 from top)
+        let content_height = (area.height as usize).saturating_sub(3); // borders(2) + footer(1)
+        let scroll = if sel < event_line_starts.len() {
+            let sel_line = event_line_starts[sel];
+            let max_scroll = lines.len().saturating_sub(content_height);
+            sel_line.saturating_sub(content_height / 3).min(max_scroll) as u16
+        } else {
+            0
+        };
+
+        let footer = sniffer_dismiss_line(clipboard_at, state.paused);
+        render_popup(f, area, &lines, Some(footer), scroll);
+        return;
+    }
+
+    lines.push(Line::from(""));
+    let footer = sniffer_dismiss_line(clipboard_at, state.paused);
+    render_popup(f, area, &lines, Some(footer), 0);
+}
+
+fn sniffer_format_ts(ts: f64) -> String {
+    chrono::DateTime::from_timestamp(ts as i64, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "--:--:--".to_string())
+}
+
+fn sniffer_dismiss_line(
+    clipboard_at: Option<std::time::Instant>,
+    paused: bool,
+) -> Line<'static> {
+    let show_copied = clipboard_at
+        .map(|t| t.elapsed().as_secs_f64() < 3.0)
+        .unwrap_or(false);
+    if show_copied {
+        return Line::from(Span::styled(
+            "  \u{2713} Copied                                ",
+            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let hint = if paused {
+        "  [ q/Esc close | \u{2191}\u{2193} | Enter=detail | p=resume | y=copy ]"
+    } else {
+        "  [ q/Esc close | \u{2191}\u{2193} | Enter=detail | p=pause | y=copy ]"
+    };
+    Line::from(Span::styled(
+        hint,
+        Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
+    ))
 }
 
 fn format_epoch(secs: u64) -> String {

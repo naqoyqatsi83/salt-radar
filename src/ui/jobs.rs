@@ -42,55 +42,60 @@ pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    if total == 0 {
-        if app.jobs.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  No active jobs.",
-                Style::default().fg(color::TEXT_DIM),
-            )));
-        }
+    if app.jobs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No active jobs.",
+            Style::default().fg(color::TEXT_DIM),
+        )));
     } else {
-        // Header — "  " + jid(24) + fun(26) + tgt(30) + source(8) + progress
+        // Header (always shown when jobs exist)
         lines.push(Line::from(Span::styled(
             format!("  {:<24}{:<26}{:<30}{:<8}Progress", "JID", "Fun", "Target", "Source"),
             Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
         )));
 
-        let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
-        let scroll = scroll.min(total.saturating_sub(visible));
+        if total == 0 {
+            lines.push(Line::from(Span::styled(
+                "  No jobs match the filter.",
+                Style::default().fg(color::TEXT_DIM),
+            )));
+        } else {
+            let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+            let scroll = scroll.min(total.saturating_sub(visible));
 
-        for idx in scroll..(scroll + visible).min(total) {
-            let job = match app.get_filtered_job(idx) {
-                Some(j) => j,
-                None => break,
-            };
+            for idx in scroll..(scroll + visible).min(total) {
+                let job = match app.get_filtered_job(idx) {
+                    Some(j) => j,
+                    None => break,
+                };
 
-            let is_selected = idx == selected;
-            let sel_style = if is_selected {
-                Style::default().bg(color::BG_LIGHT)
-            } else {
-                Style::default().bg(color::BG_DARK)
-            };
+                let is_selected = idx == selected;
+                let sel_style = if is_selected {
+                    color::select_bg(app.high_contrast)
+                } else {
+                    Style::default().bg(color::BG_DARK)
+                };
 
-            let progress = if job.target_count > 0 {
-                format!("{}/{}", job.returned, job.target_count)
-            } else {
-                "?".to_string()
-            };
+                let progress = if job.target_count > 0 {
+                    format!("{}/{}", job.returned, job.target_count)
+                } else {
+                    "?".to_string()
+                };
 
-            // Truncate fields to prevent column overlap
-            let jid_str = if job.jid.len() > 24 { format!("{}..", &job.jid[..22]) } else { job.jid.clone() };
-            let fun_str = if job.fun.len() > 26 { format!("{}..", &job.fun[..24]) } else { job.fun.clone() };
-            let tgt_str = if job.tgt.len() > 30 { format!("{}..", &job.tgt[..28]) } else { job.tgt.clone() };
-            let source_str = if job.local { "local" } else { "master" };
+                // Truncate fields to prevent column overlap
+                let jid_str = if job.jid.len() > 24 { format!("{}..", &job.jid[..22]) } else { job.jid.clone() };
+                let fun_str = if job.fun.len() > 26 { format!("{}..", &job.fun[..24]) } else { job.fun.clone() };
+                let tgt_str = if job.tgt.len() > 30 { format!("{}..", &job.tgt[..28]) } else { job.tgt.clone() };
+                let source_str = if job.local { "local" } else { "master" };
 
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {:<24}", jid_str), Style::default().fg(color::TEXT_DIM)),
-                Span::styled(format!("{:<26}", fun_str), Style::default().fg(color::CYAN)),
-                Span::styled(format!("{:<30}", tgt_str), Style::default().fg(color::YELLOW)),
-                Span::styled(format!("{:<8}", source_str), Style::default().fg(if job.local { color::PURPLE } else { color::GREEN })),
-                Span::styled(progress, Style::default().fg(if job.returned >= job.target_count && job.target_count > 0 { color::GREEN } else { color::ORANGE }).add_modifier(Modifier::BOLD)),
-            ]).style(sel_style));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:<24}", jid_str), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(format!("{:<26}", fun_str), Style::default().fg(color::CYAN)),
+                    Span::styled(format!("{:<30}", tgt_str), Style::default().fg(color::YELLOW)),
+                    Span::styled(format!("{:<8}", source_str), Style::default().fg(if job.local { color::PURPLE } else { color::GREEN })),
+                    Span::styled(progress, Style::default().fg(if job.returned >= job.target_count && job.target_count > 0 { color::GREEN } else { color::ORANGE }).add_modifier(Modifier::BOLD)),
+                ]).style(sel_style));
+            }
         }
     }
 

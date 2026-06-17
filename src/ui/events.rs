@@ -13,7 +13,7 @@ fn format_time_local(ts: f64) -> String {
         return "\u{2014}".to_string();
     }
     chrono::DateTime::from_timestamp(ts as i64, 0)
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
         .unwrap_or_else(|| "\u{2014}".to_string())
 }
 
@@ -22,7 +22,7 @@ fn format_time_utc(ts: f64) -> String {
         return "\u{2014}".to_string();
     }
     chrono::DateTime::from_timestamp(ts as i64, 0)
-        .map(|dt| dt.format("%H:%M:%S").to_string())
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
         .unwrap_or_else(|| "\u{2014}".to_string())
 }
 
@@ -60,58 +60,62 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    if total == 0 {
-        if app.events.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  No events received.",
-                Style::default().fg(color::TEXT_DIM),
-            )));
-        }
+    if app.events.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No events received.",
+            Style::default().fg(color::TEXT_DIM),
+        )));
     } else {
-        // Header
+        // Header (always shown when events exist)
         lines.push(Line::from(vec![
-            Span::styled("  Local     UTC       ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled("Tag", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled("                                                    ", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("  {:<19}  {:<19}", "Local", "UTC"), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {:<55}", "Tag"), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
             Span::styled("  Summary", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         ]));
 
-        let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
-        let scroll = scroll.min(total.saturating_sub(visible));
+        if total == 0 {
+            lines.push(Line::from(Span::styled(
+                "  No events match the filter.",
+                Style::default().fg(color::TEXT_DIM),
+            )));
+        } else {
+            let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+            let scroll = scroll.min(total.saturating_sub(visible));
 
-        for idx in scroll..(scroll + visible).min(total) {
-            let evt = match app.get_filtered_event(idx) {
-                Some(e) => e,
-                None => break,
-            };
+            for idx in scroll..(scroll + visible).min(total) {
+                let evt = match app.get_filtered_event(idx) {
+                    Some(e) => e,
+                    None => break,
+                };
 
-            let is_selected = idx == selected;
-            let sel_style = if is_selected {
-                Style::default().bg(color::BG_LIGHT)
-            } else {
-                Style::default().bg(color::BG_DARK)
-            };
+                let is_selected = idx == selected;
+                let sel_style = if is_selected {
+                    color::select_bg(app.high_contrast)
+                } else {
+                    Style::default().bg(color::BG_DARK)
+                };
 
-            let local_t = format_time_local(evt.ts);
-            let utc_t = format_time_utc(evt.ts);
+                let local_t = format_time_local(evt.ts);
+                let utc_t = format_time_utc(evt.ts);
 
-            let tag = if evt.tag.len() > 55 {
-                format!("{}..", &evt.tag[..53])
-            } else {
-                evt.tag.clone()
-            };
+                let tag = if evt.tag.len() > 55 {
+                    format!("{}..", &evt.tag[..53])
+                } else {
+                    evt.tag.clone()
+                };
 
-            let summary = evt.data["fun"].as_str()
-                .or_else(|| {
-                    if evt.tag.contains("/ret/") { Some("return") } else { None }
-                })
-                .unwrap_or("");
+                let summary = evt.data["fun"].as_str()
+                    .or_else(|| {
+                        if evt.tag.contains("/ret/") { Some("return") } else { None }
+                    })
+                    .unwrap_or("");
 
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {}  {}", local_t, utc_t), Style::default().fg(color::TEXT_DIM)),
-                Span::styled(format!("  {:<55}", tag), Style::default().fg(color::CYAN)),
-                Span::styled(summary, Style::default().fg(color::TEXT)),
-            ]).style(sel_style));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}  {}", local_t, utc_t), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(format!("  {:<55}", tag), Style::default().fg(color::CYAN)),
+                    Span::styled(summary, Style::default().fg(color::TEXT)),
+                ]).style(sel_style));
+            }
         }
     }
 
