@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-17
+
+### Fixed
+- Event sniffer: added spacing between `#` and Time columns so they don't merge together on large event numbers
+
 ## [0.3.0] - 2026-06-17
 
 ### Added
