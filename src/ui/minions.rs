@@ -134,12 +134,21 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                 let os_str = truncate(&os_str, os_w);
                 let ver_str = truncate(&minion.salt_version, sal_w);
 
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(ks_color)),
-                    Span::styled(format!("  {:<os_w$}", os_str, os_w = os_w), Style::default().fg(color::CYAN)),
-                    Span::styled(format!("  {:<sal_w$}", ver_str, sal_w = sal_w), Style::default().fg(color::TEXT_DIM)),
-                ]).style(sel_style));
+                if minion.timed_out {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(color::TEXT_DIM)),
+                        Span::styled(format!("  {:<os_w$}", "n/a", os_w = os_w), Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
+                        Span::styled(format!("  {:<sal_w$}", "n/a", sal_w = sal_w), Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
+                    ]).style(sel_style));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(ks_color)),
+                        Span::styled(format!("  {:<os_w$}", os_str, os_w = os_w), Style::default().fg(color::CYAN)),
+                        Span::styled(format!("  {:<sal_w$}", ver_str, sal_w = sal_w), Style::default().fg(color::TEXT_DIM)),
+                    ]).style(sel_style));
+                }
             }
         }
     }
@@ -180,10 +189,18 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
     } else if let Some(ref fs) = app.fleet_data {
         let bar_width = (inner.width as usize).saturating_sub(14);
 
-        lines.push(Line::from(Span::styled(
-            format!("  Total: {} minions", fs.minions.len()),
-            Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
-        )));
+        let timed_out_count = fs.minions.iter().filter(|m| m.timed_out).count();
+
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  Total: {} minions", fs.minions.len()),
+                Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if timed_out_count > 0 { format!("  ({} timed out)", timed_out_count) } else { String::new() },
+                Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
+            ),
+        ]));
         lines.push(Line::from(""));
 
         if !fs.minions.is_empty() {

@@ -267,14 +267,19 @@ impl App {
                             if ok {
                                 let minions = parse_fleet_scan(&data);
                                 self.fleet_data = Some(FleetScan { minions: minions.clone(), scanned_at: Instant::now() });
-                                // Merge fleet scan data into minion_info so columns populate
+
+                                // Collect IDs of minions that responded
+                                let responded: std::collections::HashSet<String> = minions.iter().map(|m| m.id.clone()).collect();
+
+                                // Merge fleet scan data into minion_info
                                 for fm in &minions {
                                     if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == fm.id) {
                                         existing.os = fm.osfinger.clone();
                                         existing.osrelease = fm.osrelease.clone();
                                         existing.salt_version = fm.saltversion.clone();
                                         existing.cpuarch = fm.cpuarch.clone();
-                                    } else {
+                                        existing.timed_out = fm.timed_out;
+                                    } else if !fm.timed_out {
                                         self.minion_info.push(MinionInfo {
                                             id: fm.id.clone(),
                                             os: fm.osfinger.clone(),
@@ -285,6 +290,15 @@ impl App {
                                         });
                                     }
                                 }
+
+                                // Mark existing minion_info entries that didn't respond as timed_out
+                                for m in &mut self.minion_info {
+                                    if !responded.contains(&m.id) {
+                                        m.timed_out = true;
+                                    }
+                                }
+
+                                self.minion_info.sort_by(|a, b| a.id.cmp(&b.id));
                             }
                             self.fleet_scanning = false;
                         }
@@ -323,6 +337,13 @@ impl App {
                                 self.last_activity_minion = mid.to_string();
                                 self.last_activity_fun = data["fun"].as_str().unwrap_or("?").to_string();
                                 self.last_activity_at = Instant::now();
+                                // Update last_seen for this minion from return events
+                                let ts_epoch = ts as u64;
+                                if let Some(info) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                    if ts_epoch > info.last_seen_epoch {
+                                        info.last_seen_epoch = ts_epoch;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1325,6 +1346,7 @@ fn parse_minion_list(data: &serde_json::Value) -> Vec<MinionInfo> {
             });
         }
     }
+    result.sort_by(|a, b| a.id.cmp(&b.id));
     result
 }
 
@@ -1405,8 +1427,10 @@ fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
                 osrelease: entry["osrelease"].as_str().unwrap_or("").to_string(),
                 saltversion: entry["saltversion"].as_str().unwrap_or("").to_string(),
                 cpuarch: entry["cpuarch"].as_str().unwrap_or("").to_string(),
+                timed_out: entry["timed_out"].as_bool().unwrap_or(false),
             });
         }
     }
+    result.sort_by(|a, b| a.id.cmp(&b.id));
     result
 }

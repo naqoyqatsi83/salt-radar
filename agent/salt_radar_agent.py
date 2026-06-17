@@ -28,12 +28,26 @@ def _import_salt():
     return salt
 
 
+# ── Saved stdout fd (immune to fd-level redirects) ─────────────────────────
+# Initialized in main() via os.dup(1).  ndjson() writes through this fd so
+# that the event subscriber thread is unaffected by any fd-1 redirect (e.g.
+# fleet scan suppressing Salt warnings).
+_OUTPUT_FD = None
+
+
+def _init_output():
+    global _OUTPUT_FD
+    _OUTPUT_FD = os.dup(1)
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 def ndjson(obj):
-    """Write a JSON line to stdout and flush immediately."""
-    sys.stdout.write(json.dumps(obj, default=str) + "\n")
-    sys.stdout.flush()
+    """Write a JSON line to the saved output fd and flush immediately."""
+    global _OUTPUT_FD
+    fd = _OUTPUT_FD if _OUTPUT_FD is not None else 1
+    data = json.dumps(obj, default=str) + "\n"
+    os.write(fd, data.encode())
 
 
 def result(id_val, cmd, ok=True, data=None):
@@ -331,25 +345,39 @@ def cmd_unsubscribe_events(opts, req):
 
 def cmd_fleet_scan(opts, req):
     """Run grains.items on all minions via LocalClient and return fleet data."""
-    import contextlib
     salt = _import_salt()
     local = salt.client.LocalClient(opts["conf_file"])
 
-    # Suppress stdout during Salt call — local.cmd() can print warnings
-    # about unresponsive minions that would corrupt the NDJSON stream.
-    old_stdout = sys.stdout
-    sys.stdout = sys.stderr
+    # Get all accepted minion keys so we know which minions to expect
+    expected_minions = set()
+    try:
+        sk = salt.key.Key(opts)
+        keys = sk.list_keys()
+        expected_minions = set(keys.get("minions", []))
+    except Exception:
+        pass
+
+    # Redirect stdout at the OS file descriptor level to suppress Salt
+    # warnings about unresponsive minions (which go to fd 1 via C-level
+    # write()). The event thread is unaffected because ndjson() writes
+    # through the saved _OUTPUT_FD (os.dup(1) at startup), not fd 1.
+    old_fd = os.dup(1)
+    null_fd = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(null_fd, 1)
+    os.close(null_fd)
     try:
         result_data = local.cmd("*", "grains.items", [],
                                 tgt_type="glob", timeout=30)
     finally:
-        sys.stdout = old_stdout
+        os.dup2(old_fd, 1)
+        os.close(old_fd)
 
+    responded = set()
     minions = []
     for mid, grains in (result_data or {}).items():
         if not isinstance(grains, dict):
-            # Non-responsive minion — skip
             continue
+        responded.add(mid)
         minions.append({
             "id": mid,
             "osfinger": grains.get("osfinger", ""),
@@ -357,6 +385,18 @@ def cmd_fleet_scan(opts, req):
             "saltversion": grains.get("saltversion", ""),
             "cpuarch": grains.get("cpuarch", ""),
         })
+
+    # Add minions that have accepted keys but did not respond
+    for mid in expected_minions:
+        if mid not in responded:
+            minions.append({
+                "id": mid,
+                "osfinger": "",
+                "osrelease": "",
+                "saltversion": "",
+                "cpuarch": "",
+                "timed_out": True,
+            })
 
     result(req["id"], "fleet_scan", data={"minions": minions})
 
@@ -402,6 +442,10 @@ def main():
             args = args[2:]
         else:
             args = args[1:]
+
+    # Save a reference to the real stdout fd so ndjson() / event thread
+    # are immune to fd-1 redirects (used by fleet scan).
+    _init_output()
 
     # Load opts once at startup
     salt = _import_salt()

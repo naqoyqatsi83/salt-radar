@@ -85,6 +85,7 @@ pub struct MinionInfo {
     pub last_seen_epoch: u64,
     pub cache_updated_epoch: u64,
     pub connected: bool,
+    pub timed_out: bool,
 }
 
 // ─── Process info ──────────────────────────────────────────────────────────
@@ -276,6 +277,7 @@ pub struct FleetMinion {
     pub osrelease: String,
     pub saltversion: String,
     pub cpuarch: String,
+    pub timed_out: bool,
 }
 
 #[derive(Clone, Debug)]
