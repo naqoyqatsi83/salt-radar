@@ -217,7 +217,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 *os_counts.entry(key).or_insert(0) += 1;
             }
             let mut os_sorted: Vec<(&str, usize)> = os_counts.into_iter().collect();
-            os_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+            os_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             let os_max = os_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
 
             for (os, count) in &os_sorted {
@@ -241,7 +241,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 *ver_counts.entry(key).or_insert(0) += 1;
             }
             let mut ver_sorted: Vec<(&str, usize)> = ver_counts.into_iter().collect();
-            ver_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+            ver_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             let ver_max = ver_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
 
             for (ver, count) in &ver_sorted {
@@ -265,7 +265,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 *arch_counts.entry(key).or_insert(0) += 1;
             }
             let mut arch_sorted: Vec<(&str, usize)> = arch_counts.into_iter().collect();
-            arch_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+            arch_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             let arch_max = arch_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
 
             for (arch, count) in &arch_sorted {
