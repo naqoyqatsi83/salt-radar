@@ -146,7 +146,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                     Span::styled(format!("  {:<os_w$}", os_display, os_w = os_w), Style::default().fg(os_color)),
                     Span::styled(format!("  {:<sal_w$}", ver_display, sal_w = sal_w), Style::default().fg(color::TEXT_DIM)),
                 ]);
-                lines.push(if minion.timed_out { line.style(Style::default()) } else { line.style(sel_style) });
+                lines.push(line.style(sel_style));
             }
         }
     }
