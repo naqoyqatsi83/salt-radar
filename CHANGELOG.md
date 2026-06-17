@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-06-17
+
+### Fixed
+- Fleet scan stability: saved stdout fd so event thread is immune to fd-level redirects
+- Fleet overview distribution bars no longer randomly reorder on refresh (added alphabetical secondary sort)
+- Last seen timestamp now populated from return events in the event stream
+- Minion list: unresponsive minions shown with dim foreground and `—` dashes instead of stale data
+- Timed-out count shown in fleet overview header
+- Minion info and fleet data sorted by ID for stable ordering across refreshes
+- Minion detail popup shows osfinger cleanly when fleet scan data is available
+- Fleet scan detects unresponsive minions via salt-key pre-check and reports them as timed out
+
 ## [0.3.1] - 2026-06-17
 
 ### Fixed
