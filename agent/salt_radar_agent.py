@@ -331,13 +331,25 @@ def cmd_unsubscribe_events(opts, req):
 
 def cmd_fleet_scan(opts, req):
     """Run grains.items on all minions via LocalClient and return fleet data."""
+    import contextlib
     salt = _import_salt()
     local = salt.client.LocalClient(opts["conf_file"])
-    result_data = local.cmd("*", "grains.items", [],
-                            tgt_type="glob", timeout=30)
+
+    # Suppress stdout during Salt call — local.cmd() can print warnings
+    # about unresponsive minions that would corrupt the NDJSON stream.
+    old_stdout = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        result_data = local.cmd("*", "grains.items", [],
+                                tgt_type="glob", timeout=30)
+    finally:
+        sys.stdout = old_stdout
 
     minions = []
     for mid, grains in (result_data or {}).items():
+        if not isinstance(grains, dict):
+            # Non-responsive minion — skip
+            continue
         minions.append({
             "id": mid,
             "osfinger": grains.get("osfinger", ""),

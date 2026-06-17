@@ -264,27 +264,29 @@ impl App {
                             self.zmq_ping_sent_at = None;
                         }
                         "fleet_scan" => {
-                            let minions = parse_fleet_scan(&data);
-                            self.fleet_data = Some(FleetScan { minions: minions.clone(), scanned_at: Instant::now() });
-                            self.fleet_scanning = false;
-                            // Merge fleet scan data into minion_info so columns populate
-                            for fm in &minions {
-                                if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == fm.id) {
-                                    existing.os = fm.osfinger.clone();
-                                    existing.osrelease = fm.osrelease.clone();
-                                    existing.salt_version = fm.saltversion.clone();
-                                    existing.cpuarch = fm.cpuarch.clone();
-                                } else {
-                                    self.minion_info.push(MinionInfo {
-                                        id: fm.id.clone(),
-                                        os: fm.osfinger.clone(),
-                                        osrelease: fm.osrelease.clone(),
-                                        salt_version: fm.saltversion.clone(),
-                                        cpuarch: fm.cpuarch.clone(),
-                                        ..Default::default()
-                                    });
+                            if ok {
+                                let minions = parse_fleet_scan(&data);
+                                self.fleet_data = Some(FleetScan { minions: minions.clone(), scanned_at: Instant::now() });
+                                // Merge fleet scan data into minion_info so columns populate
+                                for fm in &minions {
+                                    if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == fm.id) {
+                                        existing.os = fm.osfinger.clone();
+                                        existing.osrelease = fm.osrelease.clone();
+                                        existing.salt_version = fm.saltversion.clone();
+                                        existing.cpuarch = fm.cpuarch.clone();
+                                    } else {
+                                        self.minion_info.push(MinionInfo {
+                                            id: fm.id.clone(),
+                                            os: fm.osfinger.clone(),
+                                            osrelease: fm.osrelease.clone(),
+                                            salt_version: fm.saltversion.clone(),
+                                            cpuarch: fm.cpuarch.clone(),
+                                            ..Default::default()
+                                        });
+                                    }
                                 }
                             }
+                            self.fleet_scanning = false;
                         }
                         _ => {}
                     }
@@ -340,16 +342,16 @@ impl App {
 
                     // Sniffer: inject matching events into sniffer buffer
                     if let Some(DetailPopup::EventSniffer(ref mut state)) = self.detail_popup {
-                        if let Some(evt) = self.events.back() {
-                            if Self::matches_sniffer_event(evt, &state.minion_ids) {
-                                if state.buffer.len() >= 1000 {
-                                    state.buffer.pop_front();
-                                }
-                                state.buffer.push_back(evt.clone());
-                                if !state.paused {
+                        if !state.paused {
+                            if let Some(evt) = self.events.back() {
+                                if Self::matches_sniffer_event(evt, &state.minion_ids) {
+                                    if state.buffer.len() >= 1000 {
+                                        state.buffer.pop_front();
+                                    }
+                                    state.buffer.push_back(evt.clone());
                                     state.selected = 0;
+                                    self.sniffer_dirty = true;
                                 }
-                                self.sniffer_dirty = true;
                             }
                         }
                     }
