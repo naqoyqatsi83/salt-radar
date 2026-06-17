@@ -134,21 +134,19 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                 let os_str = truncate(&os_str, os_w);
                 let ver_str = truncate(&minion.salt_version, sal_w);
 
-                if minion.timed_out {
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(color::TEXT_DIM)),
-                        Span::styled(format!("  {:<os_w$}", "n/a", os_w = os_w), Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
-                        Span::styled(format!("  {:<sal_w$}", "n/a", sal_w = sal_w), Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
-                    ]).style(sel_style));
-                } else {
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(ks_color)),
-                        Span::styled(format!("  {:<os_w$}", os_str, os_w = os_w), Style::default().fg(color::CYAN)),
-                        Span::styled(format!("  {:<sal_w$}", ver_str, sal_w = sal_w), Style::default().fg(color::TEXT_DIM)),
-                    ]).style(sel_style));
-                }
+                let fg = if minion.timed_out { color::TEXT_DIM } else { color::TEXT };
+                let label_color = if minion.timed_out { color::TEXT_DIM } else { ks_color };
+                let os_color = if minion.timed_out { color::TEXT_DIM } else { color::CYAN };
+                let os_display = if minion.timed_out { "\u{2014}" } else { &os_str };
+                let ver_display = if minion.timed_out { "\u{2014}" } else { &ver_str };
+
+                let line = Line::from(vec![
+                    Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(label_color)),
+                    Span::styled(format!("  {:<os_w$}", os_display, os_w = os_w), Style::default().fg(os_color)),
+                    Span::styled(format!("  {:<sal_w$}", ver_display, sal_w = sal_w), Style::default().fg(color::TEXT_DIM)),
+                ]);
+                lines.push(if minion.timed_out { line.style(Style::default()) } else { line.style(sel_style) });
             }
         }
     }
