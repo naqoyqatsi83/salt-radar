@@ -380,14 +380,14 @@ fn draw_event_sniffer(
         )));
     } else {
         // Column widths: # | Time | JID | Type
-        let num_w: usize = 6;
+        let num_w: usize = 8;
         let time_w: usize = 22;
         let type_w: usize = 18;
-        let jid_w = (area.width as usize).saturating_sub(num_w + time_w + type_w + 5);
+        let jid_w = (area.width as usize).saturating_sub(num_w + time_w + type_w + 4);
 
         // Column header
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:>nw$}", "#", nw = num_w - 1), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {:>nw$} ", "#", nw = num_w - 3), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{:<tw$}", "Time", tw = time_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{:<jw$}", "JID", jw = jid_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{:<tyw$}", "Type", tyw = type_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
@@ -434,7 +434,7 @@ fn draw_event_sniffer(
 
             // Header row: # | Time | JID | Type
             lines.push(Line::from(vec![
-                Span::styled(format!("  {:>nw$}", event_num, nw = num_w - 1), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("  {:>nw$} ", event_num, nw = num_w - 3), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(format!("{:<tw$}", t, tw = time_w), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(format!("{:<jw$}", tag_disp, jw = jid_w), Style::default().fg(color::CYAN)),
                 Span::styled(format!("{:<tyw$}", etype, tyw = type_w), Style::default().fg(color::GREEN)),
