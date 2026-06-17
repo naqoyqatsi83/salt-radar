@@ -148,7 +148,17 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], footer: Opti
 fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo) {
     let mut lines = header_lines(" Minion Detail ");
     lines.push(row("ID", minion.id.clone(), color::CYAN));
-    lines.push(row("OS", format!("{} {}", minion.os, minion.osrelease), color::GREEN));
+    let os_display = if !minion.osfinger.is_empty() {
+        minion.osfinger.clone()
+    } else if !minion.osrelease.is_empty() {
+        format!("{} {}", minion.os, minion.osrelease)
+    } else {
+        minion.os.clone()
+    };
+    lines.push(row("OS", os_display, color::GREEN));
+    if !minion.osfinger.is_empty() && !minion.osrelease.is_empty() {
+        lines.push(row("OS Release", minion.osrelease.clone(), color::TEXT));
+    }
     lines.push(row("Salt Version", minion.salt_version.clone(), color::YELLOW));
     lines.push(row("Arch", minion.cpuarch.clone(), color::TEXT));
     lines.push(row("Last Seen", format_epoch(minion.last_seen_epoch), color::TEXT_DIM));
