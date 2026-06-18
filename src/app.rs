@@ -124,7 +124,6 @@ pub struct App {
     pub hide_timed_out: bool,
 
     /// Fleet scan async tracking
-    pub fleet_scan_jid: Option<String>,
     pub fleet_scan_expected: Vec<String>,
     pub fleet_scan_started_at: Option<Instant>,
 }
@@ -199,7 +198,6 @@ impl App {
             sniffer_dirty: false,
             return_to_sniffer: None,
             hide_timed_out: false,
-            fleet_scan_jid: None,
             fleet_scan_expected: Vec::new(),
             fleet_scan_started_at: None,
 
@@ -277,11 +275,9 @@ impl App {
                         }
                         "fleet_scan" => {
                             if ok {
-                                let jid = data["jid"].as_str().unwrap_or("").to_string();
                                 let expected: Vec<String> = data["expected_minions"].as_array()
                                     .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                                     .unwrap_or_default();
-                                self.fleet_scan_jid = Some(jid);
                                 self.fleet_scan_expected = expected;
                                 self.fleet_scan_started_at = Some(Instant::now());
                                 self.fleet_scanning = true;
@@ -858,22 +854,20 @@ impl App {
 
     /// Scan events buffer for fleet scan return events and merge them
     fn process_fleet_returns(&mut self) {
-        let jid = match self.fleet_scan_jid.as_ref() {
-            Some(j) => j.clone(),
-            None => return,
-        };
-        let prefix = format!("salt/job/{}/ret/", jid);
+        if !self.fleet_scanning || self.fleet_scan_expected.is_empty() {
+            return;
+        }
         for evt in &self.events {
-            if !evt.tag.starts_with(&prefix) {
+            if !evt.tag.contains("/ret/") {
                 continue;
             }
-            let mid = match evt.tag.strip_prefix(&prefix) {
-                Some(m) if !m.is_empty() => m.to_string(),
-                _ => continue,
-            };
             if evt.data["fun"].as_str() != Some("grains.items") {
                 continue;
             }
+            let mid = match evt.data["id"].as_str() {
+                Some(m) if !m.is_empty() => m.to_string(),
+                _ => continue,
+            };
             let grains = &evt.data["return"];
             let osfinger = grains.get("osfinger").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let osrelease = grains.get("osrelease").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -920,7 +914,6 @@ impl App {
 
             // If all expected have responded, complete immediately
             if self.fleet_scan_expected.is_empty() {
-                self.fleet_scan_jid = None;
                 self.fleet_scan_started_at = None;
                 self.fleet_scanning = false;
             }
@@ -1001,7 +994,6 @@ impl App {
                     self.minion_info.sort_by(|a, b| {
                         a.timed_out.cmp(&b.timed_out).then(a.id.cmp(&b.id))
                     });
-                    self.fleet_scan_jid = None;
                     self.fleet_scan_started_at = None;
                     self.fleet_scanning = false;
                 }
