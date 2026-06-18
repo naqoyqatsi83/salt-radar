@@ -1,6 +1,6 @@
 [package]
 name = "salt-radar"
-version = "0.1.0"
+version = "0.3.2"
 edition = "2021"
 description = "A non-intrusive, read-only TUI for monitoring a Salt Master"
 license = "MIT"
