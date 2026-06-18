@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::Read;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
@@ -571,19 +571,33 @@ impl App {
     }
 
     pub fn filtered_minions_len(&self) -> usize {
+        let accepted: HashSet<&str> = self.keys.iter()
+            .filter(|k| k.status == KeyStatus::Accepted)
+            .map(|k| k.id.as_str())
+            .collect();
         if self.filter_text.is_empty() {
-            return self.minion_info.len();
+            return self.minion_info.iter().filter(|m| accepted.contains(m.id.as_str())).count();
         }
         let pat = &self.filter_text;
-        self.minion_info.iter().filter(|m| Self::matches_minion(m, pat)).count()
+        self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()))
+            .filter(|m| Self::matches_minion(m, pat))
+            .count()
     }
 
     pub fn get_filtered_minion(&self, index: usize) -> Option<&MinionInfo> {
+        let accepted: HashSet<&str> = self.keys.iter()
+            .filter(|k| k.status == KeyStatus::Accepted)
+            .map(|k| k.id.as_str())
+            .collect();
         if self.filter_text.is_empty() {
-            return self.minion_info.get(index);
+            return self.minion_info.iter().filter(|m| accepted.contains(m.id.as_str())).nth(index);
         }
         let pat = &self.filter_text;
-        self.minion_info.iter().filter(|m| Self::matches_minion(m, pat)).nth(index)
+        self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()))
+            .filter(|m| Self::matches_minion(m, pat))
+            .nth(index)
     }
 
     fn open_detail(&mut self) {

@@ -24,7 +24,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Minions ({}) ", app.minion_info.len()))
+        .title(format!(" Minions ({}) ", app.filtered_minions_len()))
         .style(Style::default().bg(color::BG_DARK));
 
     let inner = block.inner(area);

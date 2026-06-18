@@ -210,16 +210,16 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    // total minions as last row
-    let total_minions = app.minion_info.len();
-    if total_minions > 0 {
+    // total keys as last row
+    let total_keys = accepted + pending + rejected + denied;
+    if total_keys > 0 {
         lines.push(Line::from(Span::styled(
             "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string(),
             Style::default().fg(color::BORDER),
         )));
         lines.push(Line::from(vec![
-            Span::styled("    Total minions  ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{}", total_minions), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+            Span::styled("    Total keys  ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{}", total_keys), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
         ]));
     }
 
