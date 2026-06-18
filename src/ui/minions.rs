@@ -50,6 +50,13 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(Span::styled("   Press / to filter", Style::default().fg(color::TEXT_DIM))));
     }
 
+    // ── Hide timed-out indicator ─────────────────────────────────────────
+    if app.hide_timed_out {
+        lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]  x to toggle", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
+    } else if app.fleet_data.is_some() {
+        lines.push(Line::from(Span::styled("  x Hide non-responsive", Style::default().fg(color::TEXT_DIM))));
+    }
+
     // ── Admin status line ─────────────────────────────────────────────────
     if app.admin_mode {
         if app.fleet_scanning {

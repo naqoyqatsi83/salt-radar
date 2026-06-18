@@ -119,6 +119,9 @@ pub struct App {
     pub sniffer_dirty: bool,
     /// When viewing event detail from sniffer, pressing q returns to sniffer popup
     pub return_to_sniffer: Option<SnifferState>,
+
+    /// Hide timed-out (non-responsive) minions from list
+    pub hide_timed_out: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -190,6 +193,7 @@ impl App {
             sniffer_input_text: String::new(),
             sniffer_dirty: false,
             return_to_sniffer: None,
+            hide_timed_out: false,
 
             admin_mode: false,
             admin_mode_pending: false,
@@ -298,7 +302,9 @@ impl App {
                                     }
                                 }
 
-                                self.minion_info.sort_by(|a, b| a.id.cmp(&b.id));
+                                self.minion_info.sort_by(|a, b| {
+                                    a.timed_out.cmp(&b.timed_out).then(a.id.cmp(&b.id))
+                                });
                             }
                             self.fleet_scanning = false;
                         }
@@ -582,13 +588,12 @@ impl App {
             .filter(|k| k.status == KeyStatus::Accepted)
             .map(|k| k.id.as_str())
             .collect();
-        if self.filter_text.is_empty() {
-            return self.minion_info.iter().filter(|m| accepted.contains(m.id.as_str())).count();
-        }
+        let hide = self.hide_timed_out;
         let pat = &self.filter_text;
         self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()))
-            .filter(|m| Self::matches_minion(m, pat))
+            .filter(|m| !hide || !m.timed_out)
+            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
             .count()
     }
 
@@ -597,13 +602,12 @@ impl App {
             .filter(|k| k.status == KeyStatus::Accepted)
             .map(|k| k.id.as_str())
             .collect();
-        if self.filter_text.is_empty() {
-            return self.minion_info.iter().filter(|m| accepted.contains(m.id.as_str())).nth(index);
-        }
+        let hide = self.hide_timed_out;
         let pat = &self.filter_text;
         self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()))
-            .filter(|m| Self::matches_minion(m, pat))
+            .filter(|m| !hide || !m.timed_out)
+            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
             .nth(index)
     }
 
@@ -1285,6 +1289,12 @@ impl App {
                 if self.admin_mode && self.current_tab == Tab::Minions && !self.fleet_scanning {
                     self.fleet_scanning = true;
                     self.send_agent_cmd("fleet_scan", None);
+                }
+            }
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                if self.current_tab == Tab::Minions && self.fleet_data.is_some() {
+                    self.hide_timed_out = !self.hide_timed_out;
+                    self.clamp_selection();
                 }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {

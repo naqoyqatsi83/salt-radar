@@ -294,6 +294,9 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         Tab::Minions => {
             let mut keys = vec![key::render("/", "Filter"), key::render("Enter", "Detail")];
             keys.push(key::render("a", "Admin"));
+            if app.fleet_data.is_some() {
+                keys.push(key::render("x", "Hide unresponsive"));
+            }
             if app.admin_mode {
                 keys.push(key::render("s", "Scan fleet"));
             }
@@ -463,6 +466,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  s", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Fleet scan (admin mode, Minions tab)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  x", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Hide/show non-responsive minions (Minions tab)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),
