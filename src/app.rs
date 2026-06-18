@@ -903,11 +903,13 @@ impl App {
         self.send_agent_cmd("zmq_ping", None);
 
         // Alert engine checks
+        let recent_events: Vec<SaltEvent> = self.events.iter().rev().take(500).cloned().collect();
         self.alert_engine.tick(
             &self.minion_info,
             &self.keys,
             &self.services,
             &self.system_info,
+            &recent_events,
             self.config.stale_minion_secs,
             self.config.pending_key_secs,
             self.config.disk_usage_pct,
@@ -1159,6 +1161,30 @@ impl App {
                                 ts,
                                 serde_json::to_string_pretty(&evt.data).unwrap_or_default()
                             ));
+                        }
+                        _ => {}
+                    }
+                }
+                DetailPopup::Alert(ref alert) => {
+                    match code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            self.detail_popup = None;
+                        }
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            let mut text = format!(
+                                "Alert: {}\nSeverity: {}\nRule: {}\n{}\n",
+                                alert.key,
+                                alert.severity.label(),
+                                alert.rule,
+                                alert.description,
+                            );
+                            if !alert.details.is_empty() {
+                                text.push_str("\nDetails:\n");
+                                for d in &alert.details {
+                                    text.push_str(&format!("  {}\n", d));
+                                }
+                            }
+                            clipboard_text = Some(text);
                         }
                         _ => {}
                     }

@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::types::{
-    AlertEntry, AlertSeverity, KeyInfo, KeyStatus, MinionInfo, ServiceHealth, SystemInfo,
+    AlertEntry, AlertSeverity, KeyInfo, KeyStatus, MinionInfo, SaltEvent, ServiceHealth, SystemInfo,
 };
 
 /// Lightweight representation of an active alert condition.
@@ -10,6 +10,7 @@ struct ActiveAlert {
     rule: &'static str,
     severity: AlertSeverity,
     description: String,
+    details: Vec<String>,
 }
 
 pub struct AlertEngine {
@@ -29,6 +30,7 @@ impl AlertEngine {
         keys: &[KeyInfo],
         services: &[ServiceHealth],
         sys: &SystemInfo,
+        events: &[SaltEvent],
         stale_minion_secs: u64,
         pending_key_secs: u64,
         disk_usage_pct: f64,
@@ -51,6 +53,7 @@ impl AlertEngine {
                     rule: "Stale minion",
                     severity: AlertSeverity::Warn,
                     description: format!("{} not seen for {}s", minion.id, age),
+                    details: Vec::new(),
                 });
             }
         }
@@ -70,6 +73,7 @@ impl AlertEngine {
                     rule: "Pending key",
                     severity: AlertSeverity::Warn,
                     description: format!("{} pending for {}s", key.id, age),
+                    details: Vec::new(),
                 });
             }
         }
@@ -82,6 +86,7 @@ impl AlertEngine {
                     rule: "Service down",
                     severity: AlertSeverity::Crit,
                     description: format!("{} is {}", svc.unit, svc.state),
+                    details: Vec::new(),
                 });
             }
         }
@@ -93,6 +98,7 @@ impl AlertEngine {
                 rule: "Disk usage high",
                 severity: AlertSeverity::Warn,
                 description: format!("cache disk at {:.0}%", sys.cache_disk_usage_pct),
+                details: Vec::new(),
             });
         }
         if sys.pki_disk_usage_pct > disk_usage_pct {
@@ -101,10 +107,93 @@ impl AlertEngine {
                 rule: "Disk usage high",
                 severity: AlertSeverity::Warn,
                 description: format!("pki disk at {:.0}%", sys.pki_disk_usage_pct),
+                details: Vec::new(),
             });
         }
 
-        // Sync active alerts into the engine — add new, update existing, remove resolved
+        // ── ZMQ / Security alert rules ──────────────────────────────────────
+
+        // Rule 5: Legacy protocol minions
+        // Scan events for tags containing "legacy" or "minion_legacy"
+        let mut legacy_minions: Vec<String> = Vec::new();
+        for evt in events {
+            if evt.tag.contains("minion_legacy") || evt.tag.contains("/legacy/") {
+                let mid = evt.tag.rsplit('/').next().unwrap_or("?");
+                let msg = evt.data["message"].as_str().unwrap_or("legacy protocol");
+                let detail = format!("{}: {}", mid, msg);
+                if !legacy_minions.contains(&detail) {
+                    legacy_minions.push(detail);
+                }
+            }
+        }
+        if !legacy_minions.is_empty() {
+            active.push(ActiveAlert {
+                key: "zmq:legacy".to_string(),
+                rule: "Legacy protocol",
+                severity: AlertSeverity::Warn,
+                description: format!("{} minion(s) using legacy protocol", legacy_minions.len()),
+                details: legacy_minions,
+            });
+        }
+
+        // Rule 6: Salt warning events (ZMQ / protocol issues)
+        let mut warnings: Vec<String> = Vec::new();
+        for evt in events {
+            if !evt.tag.starts_with("salt/warning/") {
+                continue;
+            }
+            let msg = evt.data["message"].as_str().unwrap_or("");
+            if msg.is_empty() {
+                continue;
+            }
+            // Already handled by rule 5
+            if msg.contains("legacy") {
+                continue;
+            }
+            let mid = evt.data["id"].as_str().unwrap_or("?");
+            let detail = format!("{}: {}", mid, msg);
+            if !warnings.contains(&detail) {
+                warnings.push(detail);
+            }
+        }
+        if !warnings.is_empty() {
+            active.push(ActiveAlert {
+                key: "zmq:warnings".to_string(),
+                rule: "Salt warning",
+                severity: AlertSeverity::Warn,
+                description: format!("{} warning(s) on event bus", warnings.len()),
+                details: warnings,
+            });
+        }
+
+        // Rule 7: Auth failures
+        let mut auth_fails: Vec<String> = Vec::new();
+        for evt in events {
+            if !evt.tag.starts_with("salt/auth") {
+                continue;
+            }
+            let result = evt.data["result"].as_bool().unwrap_or(true);
+            if result {
+                continue;
+            }
+            let mid = evt.data["id"].as_str().unwrap_or("?");
+            let reason = evt.data["reason"].as_str().unwrap_or("unknown");
+            let detail = format!("{}: {}", mid, reason);
+            if !auth_fails.contains(&detail) {
+                auth_fails.push(detail);
+            }
+        }
+        if !auth_fails.is_empty() {
+            active.push(ActiveAlert {
+                key: "zmq:auth".to_string(),
+                rule: "Auth failure",
+                severity: AlertSeverity::Crit,
+                description: format!("{} auth failure(s) on ZMQ bus", auth_fails.len()),
+                details: auth_fails,
+            });
+        }
+
+        // Sync active alerts into the engine
         self.sync_alerts(&active);
     }
 
@@ -112,15 +201,16 @@ impl AlertEngine {
         let active_keys: std::collections::HashSet<&str> =
             active.iter().map(|a| a.key.as_str()).collect();
 
-        // Remove resolved alerts (their key is no longer active)
+        // Remove resolved alerts
         self.alerts.retain(|a| active_keys.contains(a.key.as_str()));
 
-        // Add new alerts or update descriptions
+        // Add new or update existing
         for a in active {
             match self.alerts.iter_mut().find(|e| e.key == a.key) {
                 Some(existing) => {
                     existing.count += 1;
                     existing.description = a.description.clone();
+                    existing.details = a.details.clone();
                 }
                 None => {
                     self.alerts.push(AlertEntry {
@@ -128,6 +218,7 @@ impl AlertEngine {
                         severity: a.severity,
                         rule: a.rule,
                         description: a.description.clone(),
+                        details: a.details.clone(),
                         active_since: Instant::now(),
                         count: 1,
                     });

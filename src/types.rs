@@ -248,6 +248,7 @@ pub struct AlertEntry {
     pub severity: AlertSeverity,
     pub rule: &'static str,
     pub description: String,
+    pub details: Vec<String>,
     pub active_since: Instant,
     pub count: u64,
 }

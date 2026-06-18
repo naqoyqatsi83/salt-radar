@@ -263,8 +263,9 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             return;
         }
         let is_event = matches!(app.detail_popup, Some(DetailPopup::SaltEvent(_)));
+        let is_alert = matches!(app.detail_popup, Some(DetailPopup::Alert(_)));
         let mut spans = key::render("Esc", "Close");
-        if is_event {
+        if is_event || is_alert {
             spans.extend(key::render("y", "Copy"));
         }
         let paragraph = Paragraph::new(Line::from(spans))

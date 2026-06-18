@@ -85,10 +85,16 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
                     crate::types::AlertSeverity::Crit => color::RED,
                 };
 
+                let detail_count = if alert.details.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", alert.details.len())
+                };
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:<8}", alert.severity.label()), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
                     Span::styled(format!("{:<16}", alert.rule), Style::default().fg(color::CYAN)),
                     Span::styled(alert.description.clone(), Style::default().fg(color::TEXT)),
+                    Span::styled(detail_count, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
                 ]).style(sel_style));
             }
         }

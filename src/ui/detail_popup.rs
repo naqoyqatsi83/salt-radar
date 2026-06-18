@@ -29,9 +29,9 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             draw_job_detail(f, area, jid, lookup, *selected_return, *scroll_offset, *scroll_mode, job_fun, job_tgt, *job_start_epoch, app.clipboard_at);
         }
         DetailPopup::Alert(alert) => {
-            let area = centered_rect(60, 40, f.area());
+            let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
             f.render_widget(Clear, area);
-            draw_alert_detail(f, area, alert);
+            draw_alert_detail(f, area, alert, app.clipboard_at);
         }
         DetailPopup::AdminConfirm => {
             let area = centered_rect(55, 35, f.area());
@@ -286,7 +286,7 @@ fn draw_job_detail(
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
-fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry) {
+fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, clipboard_at: Option<std::time::Instant>) {
     let sev_color = match alert.severity {
         crate::types::AlertSeverity::Info => color::CYAN,
         crate::types::AlertSeverity::Warn => color::YELLOW,
@@ -296,10 +296,36 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
     lines.push(row("Severity", alert.severity.label().to_string(), sev_color));
     lines.push(row("Rule", alert.rule.to_string(), color::CYAN));
     lines.push(row("Description", alert.description.clone(), color::TEXT_HI));
-    let footer = Line::from(Span::styled(
-        "  [ Esc / q to close ]",
-        Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-    ));
+    lines.push(Line::from(""));
+
+    if !alert.details.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("  Items ({}):", alert.details.len()),
+            Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
+        )));
+        for detail in &alert.details {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", detail),
+                Style::default().fg(color::TEXT),
+            )));
+        }
+    }
+
+    lines.push(Line::from(""));
+    let show_copied = clipboard_at
+        .map(|t| t.elapsed().as_secs_f64() < 3.0)
+        .unwrap_or(false);
+    let footer = if show_copied {
+        Line::from(Span::styled(
+            "  \u{2713} Copied                                ",
+            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        Line::from(Span::styled(
+            "  [ Esc/q close | y=copy ]",
+            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
+        ))
+    };
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
