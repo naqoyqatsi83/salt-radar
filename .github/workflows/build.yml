@@ -1,0 +1,66 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --verbose
+
+      - name: Package .deb
+        run: |
+          VERSION="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | jq -r '.packages[0].version' 2>/dev/null || echo "0.0.0")"
+          PKG_ROOT="${{ runner.temp }}/deb/salt-radar_${VERSION}_amd64"
+          mkdir -p "$PKG_ROOT/DEBIAN"
+          mkdir -p "$PKG_ROOT/usr/bin"
+          mkdir -p "$PKG_ROOT/usr/share/salt-radar/agent"
+          mkdir -p "$PKG_ROOT/usr/share/doc/salt-radar"
+          install -m 0755 target/release/salt-radar "$PKG_ROOT/usr/bin/salt-radar"
+          install -m 0644 agent/salt_radar_agent.py "$PKG_ROOT/usr/share/salt-radar/agent/salt_radar_agent.py"
+          cp LICENSE "$PKG_ROOT/usr/share/doc/salt-radar/" 2>/dev/null || true
+          cp README.md "$PKG_ROOT/usr/share/doc/salt-radar/"
+          {
+            printf 'Package: salt-radar\n'
+            printf 'Version: %s\n' "$VERSION"
+            printf 'Section: admin\n'
+            printf 'Priority: optional\n'
+            printf 'Architecture: amd64\n'
+            printf 'Depends: libc6 (>= 2.31)\n'
+            printf 'Recommends: python3, salt-master\n'
+            printf 'Maintainer: naqoyqatsi83 <naqoyqatsi83@users.noreply.github.com>\n'
+            printf 'Description: Non-intrusive read-only TUI for monitoring a Salt Master\n'
+            printf ' Real-time monitoring of Salt infrastructure: dashboard, minion fleet,\n'
+            printf ' event bus, job tracking, alerts. Uses a bundled Python agent to\n'
+            printf ' communicate with Salt APIs via NDJSON over stdin/stdout.\n'
+            printf 'Homepage: https://github.com/naqoyqatsi83/salt-radar\n'
+          } > "$PKG_ROOT/DEBIAN/control"
+          dpkg-deb --build "$PKG_ROOT" "${{ runner.temp }}/deb/salt-radar_${VERSION}_amd64.deb"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v5
+        with:
+          name: salt-radar-amd64
+          path: target/release/salt-radar
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v5
+        with:
+          name: salt-radar-amd64.deb
+          path: ${{ runner.temp }}/deb/salt-radar_*.deb
