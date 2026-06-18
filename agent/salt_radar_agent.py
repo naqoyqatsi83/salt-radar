@@ -307,29 +307,45 @@ def cmd_fleet_scan(opts, req):
     local = salt.client.LocalClient(opts["conf_file"])
 
     # Get all accepted minion keys so we know which minions to expect
-    expected_minions = []
+    expected_minions = set()
     try:
         sk = salt.key.Key(opts)
         keys = sk.list_keys()
-        expected_minions = keys.get("minions", [])
+        expected_minions = set(keys.get("minions", []))
     except Exception:
         pass
 
-    # Fire async command — returns JID immediately without blocking
-    try:
-        jid = local.cmd_async("*", "grains.items", [],
-                              tgt_type="glob")
-    except Exception as exc:
-        result(req["id"], "fleet_scan", ok=False, data={"error": str(exc)})
-        return
+    # Run blocking cmd with 10s timeout (runs in background thread via _LONG_RUNNING_CMDS)
+    result_data = local.cmd("*", "grains.items", [],
+                            tgt_type="glob", timeout=10)
 
-    if isinstance(jid, bytes):
-        jid = jid.decode()
+    responded = set()
+    minions = []
+    for mid, grains in (result_data or {}).items():
+        if not isinstance(grains, dict):
+            continue
+        responded.add(mid)
+        minions.append({
+            "id": mid,
+            "osfinger": grains.get("osfinger", ""),
+            "osrelease": grains.get("osrelease", ""),
+            "saltversion": grains.get("saltversion", ""),
+            "cpuarch": grains.get("cpuarch", ""),
+        })
 
-    result(req["id"], "fleet_scan", data={
-        "jid": str(jid),
-        "expected_minions": expected_minions,
-    })
+    # Add minions that have accepted keys but did not respond
+    for mid in expected_minions:
+        if mid not in responded:
+            minions.append({
+                "id": mid,
+                "osfinger": "",
+                "osrelease": "",
+                "saltversion": "",
+                "cpuarch": "",
+                "timed_out": True,
+            })
+
+    result(req["id"], "fleet_scan", data={"minions": minions})
 
 
 # ── Command dispatcher ──────────────────────────────────────────────────────
@@ -347,7 +363,7 @@ HANDLERS = {
 
 # Commands that may block for a long time (Salt runner calls, etc.).
 # These run in a background thread so the agent stays responsive.
-_LONG_RUNNING_CMDS = frozenset(["jid_lookup"])
+_LONG_RUNNING_CMDS = frozenset(["jid_lookup", "fleet_scan"])
 
 
 def dispatch(opts, req):

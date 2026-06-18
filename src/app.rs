@@ -122,10 +122,6 @@ pub struct App {
 
     /// Hide timed-out (non-responsive) minions from list
     pub hide_timed_out: bool,
-
-    /// Fleet scan async tracking
-    pub fleet_scan_expected: Vec<String>,
-    pub fleet_scan_started_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
@@ -198,8 +194,6 @@ impl App {
             sniffer_dirty: false,
             return_to_sniffer: None,
             hide_timed_out: false,
-            fleet_scan_expected: Vec::new(),
-            fleet_scan_started_at: None,
 
             admin_mode: false,
             admin_mode_pending: false,
@@ -275,19 +269,44 @@ impl App {
                         }
                         "fleet_scan" => {
                             if ok {
-                                let expected: Vec<String> = data["expected_minions"].as_array()
-                                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                                    .unwrap_or_default();
-                                self.fleet_scan_expected = expected;
-                                self.fleet_scan_started_at = Some(Instant::now());
-                                self.fleet_scanning = true;
-                                self.fleet_data = Some(FleetScan {
-                                    minions: Vec::new(),
-                                    scanned_at: Instant::now(),
+                                let minions = parse_fleet_scan(&data);
+                                self.fleet_data = Some(FleetScan { minions: minions.clone(), scanned_at: Instant::now() });
+
+                                // Collect IDs of minions that responded
+                                let responded: std::collections::HashSet<String> = minions.iter().map(|m| m.id.clone()).collect();
+
+                                // Merge fleet scan data into minion_info
+                                for fm in &minions {
+                                    if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == fm.id) {
+                                        existing.osfinger = fm.osfinger.clone();
+                                        existing.osrelease = fm.osrelease.clone();
+                                        existing.salt_version = fm.saltversion.clone();
+                                        existing.cpuarch = fm.cpuarch.clone();
+                                        existing.timed_out = fm.timed_out;
+                                    } else if !fm.timed_out {
+                                        self.minion_info.push(MinionInfo {
+                                            id: fm.id.clone(),
+                                            osfinger: fm.osfinger.clone(),
+                                            osrelease: fm.osrelease.clone(),
+                                            salt_version: fm.saltversion.clone(),
+                                            cpuarch: fm.cpuarch.clone(),
+                                            ..Default::default()
+                                        });
+                                    }
+                                }
+
+                                // Mark existing minion_info entries that didn't respond as timed_out
+                                for m in &mut self.minion_info {
+                                    if !responded.contains(&m.id) {
+                                        m.timed_out = true;
+                                    }
+                                }
+
+                                self.minion_info.sort_by(|a, b| {
+                                    a.timed_out.cmp(&b.timed_out).then(a.id.cmp(&b.id))
                                 });
-                            } else {
-                                self.fleet_scanning = false;
                             }
+                            self.fleet_scanning = false;
                         }
                         _ => {}
                     }
@@ -852,88 +871,11 @@ impl App {
         "peto".to_string()
     }
 
-    /// Scan events buffer for fleet scan return events and merge them
-    fn process_fleet_returns(&mut self) {
-        if !self.fleet_scanning {
-            return;
-        }
-        let expected_empty = self.fleet_scan_expected.is_empty();
-        for evt in &self.events {
-            if !evt.tag.contains("/ret/") {
-                continue;
-            }
-            let fun = evt.data["fun"].as_str().unwrap_or("__nofun__").to_string();
-            // Debug log every return event during fleet scan
-            let mid_debug = evt.data["id"].as_str().unwrap_or("__noid__");
-            let _ = std::fs::write("/tmp/salt-radar-fleet.log",
-                format!("tag={}\nfun={}\nid={}\nexpected_empty={}\nevents_count={}\n",
-                    evt.tag, fun, mid_debug, expected_empty, self.events.len()));
-            if fun != "grains.items" {
-                continue;
-            }
-            let mid = match evt.data["id"].as_str() {
-                Some(m) if !m.is_empty() => m.to_string(),
-                _ => continue,
-            };
-            let grains = &evt.data["return"];
-            let osfinger = grains.get("osfinger").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let osrelease = grains.get("osrelease").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let saltversion = grains.get("saltversion").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let cpuarch = grains.get("cpuarch").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-            // Merge into minion_info
-            if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == mid) {
-                existing.osfinger = osfinger.clone();
-                existing.osrelease = osrelease.clone();
-                existing.salt_version = saltversion.clone();
-                existing.cpuarch = cpuarch.clone();
-                existing.timed_out = false;
-            } else {
-                self.minion_info.push(MinionInfo {
-                    id: mid.clone(),
-                    osfinger: osfinger.clone(),
-                    osrelease: osrelease.clone(),
-                    salt_version: saltversion.clone(),
-                    cpuarch: cpuarch.clone(),
-                    ..Default::default()
-                });
-            }
-
-            // Merge into fleet_data for overview
-            if let Some(ref mut fd) = self.fleet_data {
-                let fm = FleetMinion {
-                    id: mid.clone(),
-                    osfinger,
-                    osrelease,
-                    saltversion,
-                    cpuarch,
-                    timed_out: false,
-                };
-                if let Some(existing) = fd.minions.iter_mut().find(|m| m.id == mid) {
-                    *existing = fm;
-                } else {
-                    fd.minions.push(fm);
-                }
-            }
-
-            // Remove from expected list
-            self.fleet_scan_expected.retain(|e| *e != mid);
-
-            // If all expected have responded, complete immediately
-            if self.fleet_scan_expected.is_empty() {
-                self.fleet_scan_started_at = None;
-                self.fleet_scanning = false;
-            }
-        }
-    }
 
     /// Called every tick (1s)
     pub fn update(&mut self) {
         // Drain agent messages (must happen every tick)
         self.drain_agent_messages();
-
-        // Process fleet scan returns from events buffer
-        self.process_fleet_returns();
 
         // Refresh collectors at interval, not every tick
         if let Some(ref cfg) = self.config_snapshot {
@@ -970,42 +912,6 @@ impl App {
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
         self.events_since_last_tick.clear();
 
-        // Fleet scan timeout — mark remaining expected as timed_out after 60s
-        if self.fleet_scanning {
-            if let Some(started) = self.fleet_scan_started_at {
-                if started.elapsed().as_secs() > 60 {
-                    let pending = std::mem::take(&mut self.fleet_scan_expected);
-                    for mid in &pending {
-                        if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id.as_str() == mid) {
-                            existing.timed_out = true;
-                        } else {
-                            self.minion_info.push(MinionInfo {
-                                id: mid.clone(),
-                                timed_out: true,
-                                ..Default::default()
-                            });
-                        }
-                        if let Some(ref mut fd) = self.fleet_data {
-                            if !fd.minions.iter().any(|m| m.id == *mid) {
-                                fd.minions.push(FleetMinion {
-                                    id: mid.clone(),
-                                    osfinger: String::new(),
-                                    osrelease: String::new(),
-                                    saltversion: String::new(),
-                                    cpuarch: String::new(),
-                                    timed_out: true,
-                                });
-                            }
-                        }
-                    }
-                    self.minion_info.sort_by(|a, b| {
-                        a.timed_out.cmp(&b.timed_out).then(a.id.cmp(&b.id))
-                    });
-                    self.fleet_scan_started_at = None;
-                    self.fleet_scanning = false;
-                }
-            }
-        }
 
         // Update host uptime from collector
         if let Some(ref cfg) = self.config_snapshot {
@@ -1595,4 +1501,22 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             });
         }
     }
+}
+
+fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
+    let mut result = Vec::new();
+    if let Some(arr) = data["minions"].as_array() {
+        for entry in arr {
+            result.push(FleetMinion {
+                id: entry["id"].as_str().unwrap_or("?").to_string(),
+                osfinger: entry["osfinger"].as_str().unwrap_or("").to_string(),
+                osrelease: entry["osrelease"].as_str().unwrap_or("").to_string(),
+                saltversion: entry["saltversion"].as_str().unwrap_or("").to_string(),
+                cpuarch: entry["cpuarch"].as_str().unwrap_or("").to_string(),
+                timed_out: entry["timed_out"].as_bool().unwrap_or(false),
+            });
+        }
+    }
+    result.sort_by(|a, b| a.id.cmp(&b.id));
+    result
 }
