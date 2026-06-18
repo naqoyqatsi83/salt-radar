@@ -1,0 +1,265 @@
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - target: x86_64-unknown-linux-gnu
+            rust_target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+            pkg_suffix: x86_64
+            libc_min: "2.31"
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            rust_target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+            pkg_suffix: aarch64
+            libc_min: "2.31"
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.arch.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up QEMU for ARM64
+        if: matrix.arch.target == 'aarch64-unknown-linux-gnu'
+        uses: docker/setup-qemu-action@v4
+
+      - name: Determine version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "VERSION_STRIPPED=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            V=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].version')
+            echo "VERSION_STRIPPED=$V" >> $GITHUB_ENV
+          fi
+
+      - name: Build release (${{ matrix.arch.target }})
+        run: |
+          PLATFORM_FLAG=""
+          if [ "${{ matrix.arch.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            PLATFORM_FLAG="--platform linux/arm64"
+          fi
+          # Build inside Debian Bullseye (glibc 2.31) for compatibility with older distros
+          docker run $PLATFORM_FLAG --rm -v ${{ github.workspace }}:/work -w /work \
+            debian:bullseye-slim bash -c '
+            set -e
+            apt-get update -qq && apt-get install -y -qq curl build-essential > /dev/null
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            . "$HOME/.cargo/env"
+            cargo build --release
+          '
+          sudo mkdir -p target/${{ matrix.arch.rust_target }}/release
+          sudo cp ${{ github.workspace }}/target/release/salt-radar target/${{ matrix.arch.rust_target }}/release/salt-radar
+
+      - name: Create .deb package (${{ matrix.arch.deb_arch }})
+        run: |
+          VERSION="$VERSION_STRIPPED"
+          BINARY="${{ github.workspace }}/target/${{ matrix.arch.rust_target }}/release/salt-radar"
+          PKG_ROOT="${{ runner.temp }}/deb/salt-radar_${VERSION}_${{ matrix.arch.deb_arch }}"
+
+          mkdir -p "$PKG_ROOT/DEBIAN"
+          mkdir -p "$PKG_ROOT/usr/bin"
+          mkdir -p "$PKG_ROOT/usr/share/salt-radar/agent"
+          mkdir -p "$PKG_ROOT/usr/share/doc/salt-radar"
+
+          install -m 0755 "$BINARY" "$PKG_ROOT/usr/bin/salt-radar"
+          install -m 0644 "${{ github.workspace }}/agent/salt_radar_agent.py" "$PKG_ROOT/usr/share/salt-radar/agent/salt_radar_agent.py"
+          cp "${{ github.workspace }}/LICENSE" "$PKG_ROOT/usr/share/doc/salt-radar/" 2>/dev/null || true
+          cp "${{ github.workspace }}/README.md" "$PKG_ROOT/usr/share/doc/salt-radar/"
+
+          {
+            printf 'Package: salt-radar\n'
+            printf 'Version: %s\n' "$VERSION"
+            printf 'Section: admin\n'
+            printf 'Priority: optional\n'
+            printf 'Architecture: %s\n' "${{ matrix.arch.deb_arch }}"
+            printf 'Depends: libc6 (>= %s)\n' "${{ matrix.arch.libc_min }}"
+            printf 'Recommends: python3, salt-master\n'
+            printf 'Maintainer: naqoyqatsi83 <naqoyqatsi83@users.noreply.github.com>\n'
+            printf 'Description: Non-intrusive read-only TUI for monitoring a Salt Master\n'
+            printf ' Real-time monitoring of Salt infrastructure: dashboard, minion fleet,\n'
+            printf ' event bus, job tracking, alerts. Uses a bundled Python agent to\n'
+            printf ' communicate with Salt APIs via NDJSON over stdin/stdout.\n'
+            printf 'Homepage: https://github.com/naqoyqatsi83/salt-radar\n'
+          } > "$PKG_ROOT/DEBIAN/control"
+
+          dpkg-deb --build "$PKG_ROOT" "${{ runner.temp }}/deb/salt-radar_${VERSION}_${{ matrix.arch.deb_arch }}.deb"
+
+      - name: Create tarball (${{ matrix.arch.target }})
+        run: |
+          VERSION="$VERSION_STRIPPED"
+          TAR_DIR="${{ runner.temp }}/tar"
+          mkdir -p "$TAR_DIR/salt-radar-${VERSION}"
+          install -m 0755 "${{ github.workspace }}/target/${{ matrix.arch.rust_target }}/release/salt-radar" "$TAR_DIR/salt-radar-${VERSION}/salt-radar"
+          mkdir -p "$TAR_DIR/salt-radar-${VERSION}/agent"
+          install -m 0644 "${{ github.workspace }}/agent/salt_radar_agent.py" "$TAR_DIR/salt-radar-${VERSION}/agent/salt_radar_agent.py"
+          cp "${{ github.workspace }}/README.md" "$TAR_DIR/salt-radar-${VERSION}/" 2>/dev/null || true
+          cp "${{ github.workspace }}/LICENSE" "$TAR_DIR/salt-radar-${VERSION}/" 2>/dev/null || true
+          cd "$TAR_DIR" && tar czf "${{ runner.temp }}/salt-radar-${VERSION}-${{ matrix.arch.pkg_suffix }}-unknown-linux-gnu.tar.gz" "salt-radar-${VERSION}"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: salt-radar-${{ matrix.arch.deb_arch }}.deb
+          path: ${{ runner.temp }}/deb/salt-radar_*.deb
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: salt-radar-${{ matrix.arch.pkg_suffix }}-tar.gz
+          path: ${{ runner.temp }}/salt-radar-*.tar.gz
+
+  rpm:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install RPM build tools
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - name: Determine version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "VERSION_STRIPPED=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            V=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].version')
+            echo "VERSION_STRIPPED=$V" >> $GITHUB_ENV
+          fi
+
+      - name: Download amd64 binary
+        uses: actions/download-artifact@v5
+        with:
+          name: salt-radar-amd64.deb
+          path: ${{ runner.temp }}/download
+
+      - name: Create RPM package
+        run: |
+          VERSION="$VERSION_STRIPPED"
+          mkdir -p $HOME/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          # Extract binary from .deb
+          cd ${{ runner.temp }}/download
+          ar x salt-radar_*.deb
+          tar xf data.tar.zst 2>/dev/null || tar xf data.tar.gz 2>/dev/null || true
+
+          # Write spec file
+          {
+            printf 'Name: salt-radar\n'
+            printf 'Version: %s\n' "$VERSION"
+            printf 'Release: 1%%{?dist}\n'
+            printf 'Summary: Non-intrusive read-only TUI for monitoring a Salt Master\n'
+            printf 'License: MIT\n'
+            printf 'URL: https://github.com/naqoyqatsi83/salt-radar\n'
+            printf 'Group: Applications/System\n'
+            printf 'BuildArch: x86_64\n'
+            printf 'Requires: glibc >= 2.31\n'
+            printf '\n'
+            printf '%%description\n'
+            printf 'Real-time monitoring of Salt infrastructure: dashboard, minion fleet,\n'
+            printf 'event bus, job tracking, alerts. Uses a bundled Python agent to\n'
+            printf 'communicate with Salt APIs via NDJSON over stdin/stdout.\n'
+            printf '\n'
+            printf '%%install\n'
+            printf 'mkdir -p %%{buildroot}%%{_bindir}\n'
+            printf 'mkdir -p %%{buildroot}%%{_datadir}/salt-radar/agent\n'
+            printf 'install -m 0755 %%{_sourcedir}/salt-radar %%{buildroot}%%{_bindir}/salt-radar\n'
+            printf 'install -m 0644 %%{_sourcedir}/salt_radar_agent.py %%{buildroot}%%{_datadir}/salt-radar/agent/salt_radar_agent.py\n'
+            printf '\n'
+            printf '%%files\n'
+            printf '%%{_bindir}/salt-radar\n'
+            printf '%%{_datadir}/salt-radar/agent/salt_radar_agent.py\n'
+            printf '\n'
+            printf '%%changelog\n'
+            printf '* Thu Jun 18 2026 naqoyqatsi83 <naqoyqatsi83@users.noreply.github.com> - %s\n' "$VERSION"
+            printf '%%s\n' '- Initial release'
+          } > $HOME/rpmbuild/SPECS/salt-radar.spec
+
+          # Copy files to SOURCES
+          install -m 0755 "${{ runner.temp }}/download/usr/bin/salt-radar" $HOME/rpmbuild/SOURCES/salt-radar
+          install -m 0644 "${{ github.workspace }}/agent/salt_radar_agent.py" $HOME/rpmbuild/SOURCES/salt_radar_agent.py
+
+          rpmbuild -ba $HOME/rpmbuild/SPECS/salt-radar.spec
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: salt-radar-x86_64.rpm
+          path: ~/rpmbuild/RPMS/x86_64/salt-radar-*.rpm
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [build, rpm]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          path: ${{ runner.temp }}/artifacts
+
+      - name: Determine version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "VERSION_STRIPPED=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            V=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].version')
+            echo "VERSION_STRIPPED=$V" >> $GITHUB_ENV
+          fi
+
+      - name: Collect all artifacts
+        run: |
+          mkdir -p "${{ runner.temp }}/upload"
+          find "${{ runner.temp }}/artifacts" -type f -exec cp {} "${{ runner.temp }}/upload/" \;
+
+      - name: Upload all artifacts (manual run, no release)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v5
+        with:
+          name: salt-radar-all-artifacts
+          path: ${{ runner.temp }}/upload/
+
+      - name: Create release (tag push only)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          name: salt-radar v${{ env.VERSION_STRIPPED }}
+          body: |
+            ## salt-radar v${{ env.VERSION_STRIPPED }}
+
+            ### Installation
+            **Debian/Ubuntu (amd64)**:
+            ```bash
+            sudo dpkg -i salt-radar_*_amd64.deb
+            ```
+
+            **Debian/Ubuntu (ARM64)**:
+            ```bash
+            sudo dpkg -i salt-radar_*_arm64.deb
+            ```
+
+            **Fedora/RHEL (amd64)**:
+            ```bash
+            sudo rpm -i salt-radar-*.rpm
+            ```
+
+            **Other distros**: Download the `.tar.gz` for your arch, extract, and run `./salt-radar`.
+
+            **Build from source**:
+            ```bash
+            cargo install --git https://github.com/naqoyqatsi83/salt-radar.git
+            ```
+          files: |
+            ${{ runner.temp }}/upload/salt-radar_*.deb
+            ${{ runner.temp }}/upload/salt-radar-*.tar.gz
+            ${{ runner.temp }}/upload/salt-radar-*.rpm
