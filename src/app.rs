@@ -1590,21 +1590,3 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
         }
     }
 }
-
-fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
-    let mut result = Vec::new();
-    if let Some(arr) = data["minions"].as_array() {
-        for entry in arr {
-            result.push(FleetMinion {
-                id: entry["id"].as_str().unwrap_or("?").to_string(),
-                osfinger: entry["osfinger"].as_str().unwrap_or("").to_string(),
-                osrelease: entry["osrelease"].as_str().unwrap_or("").to_string(),
-                saltversion: entry["saltversion"].as_str().unwrap_or("").to_string(),
-                cpuarch: entry["cpuarch"].as_str().unwrap_or("").to_string(),
-                timed_out: entry["timed_out"].as_bool().unwrap_or(false),
-            });
-        }
-    }
-    result.sort_by(|a, b| a.id.cmp(&b.id));
-    result
-}
