@@ -31,10 +31,10 @@ jobs:
           PKG_ROOT="${{ runner.temp }}/deb/salt-radar_${VERSION}_amd64"
           mkdir -p "$PKG_ROOT/DEBIAN"
           mkdir -p "$PKG_ROOT/usr/bin"
-          mkdir -p "$PKG_ROOT/usr/share/salt-radar/agent"
+          mkdir -p "$PKG_ROOT/usr/share/salt-radar"
           mkdir -p "$PKG_ROOT/usr/share/doc/salt-radar"
           install -m 0755 target/release/salt-radar "$PKG_ROOT/usr/bin/salt-radar"
-          install -m 0644 agent/salt_radar_agent.py "$PKG_ROOT/usr/share/salt-radar/agent/salt_radar_agent.py"
+          install -m 0644 agent/salt_radar_agent.py "$PKG_ROOT/usr/share/salt-radar/salt_radar_agent.py"
           cp LICENSE "$PKG_ROOT/usr/share/doc/salt-radar/" 2>/dev/null || true
           cp README.md "$PKG_ROOT/usr/share/doc/salt-radar/"
           {
