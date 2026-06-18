@@ -307,56 +307,29 @@ def cmd_fleet_scan(opts, req):
     local = salt.client.LocalClient(opts["conf_file"])
 
     # Get all accepted minion keys so we know which minions to expect
-    expected_minions = set()
+    expected_minions = []
     try:
         sk = salt.key.Key(opts)
         keys = sk.list_keys()
-        expected_minions = set(keys.get("minions", []))
+        expected_minions = keys.get("minions", [])
     except Exception:
         pass
 
-    # Redirect stdout at the OS file descriptor level to suppress Salt
-    # warnings about unresponsive minions (which go to fd 1 via C-level
-    # write()). The event thread is unaffected because ndjson() writes
-    # through the saved _OUTPUT_FD (os.dup(1) at startup), not fd 1.
-    old_fd = os.dup(1)
-    null_fd = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(null_fd, 1)
-    os.close(null_fd)
+    # Fire async command — returns JID immediately without blocking
     try:
-        result_data = local.cmd("*", "grains.items", [],
-                                tgt_type="glob", timeout=30)
-    finally:
-        os.dup2(old_fd, 1)
-        os.close(old_fd)
+        jid = local.cmd_async("*", "grains.items", [],
+                              tgt_type="glob")
+    except Exception as exc:
+        result(req["id"], "fleet_scan", ok=False, data={"error": str(exc)})
+        return
 
-    responded = set()
-    minions = []
-    for mid, grains in (result_data or {}).items():
-        if not isinstance(grains, dict):
-            continue
-        responded.add(mid)
-        minions.append({
-            "id": mid,
-            "osfinger": grains.get("osfinger", ""),
-            "osrelease": grains.get("osrelease", ""),
-            "saltversion": grains.get("saltversion", ""),
-            "cpuarch": grains.get("cpuarch", ""),
-        })
+    if isinstance(jid, bytes):
+        jid = jid.decode()
 
-    # Add minions that have accepted keys but did not respond
-    for mid in expected_minions:
-        if mid not in responded:
-            minions.append({
-                "id": mid,
-                "osfinger": "",
-                "osrelease": "",
-                "saltversion": "",
-                "cpuarch": "",
-                "timed_out": True,
-            })
-
-    result(req["id"], "fleet_scan", data={"minions": minions})
+    result(req["id"], "fleet_scan", data={
+        "jid": str(jid),
+        "expected_minions": expected_minions,
+    })
 
 
 # ── Command dispatcher ──────────────────────────────────────────────────────

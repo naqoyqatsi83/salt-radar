@@ -122,6 +122,11 @@ pub struct App {
 
     /// Hide timed-out (non-responsive) minions from list
     pub hide_timed_out: bool,
+
+    /// Fleet scan async tracking
+    pub fleet_scan_jid: Option<String>,
+    pub fleet_scan_expected: Vec<String>,
+    pub fleet_scan_started_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
@@ -194,6 +199,9 @@ impl App {
             sniffer_dirty: false,
             return_to_sniffer: None,
             hide_timed_out: false,
+            fleet_scan_jid: None,
+            fleet_scan_expected: Vec::new(),
+            fleet_scan_started_at: None,
 
             admin_mode: false,
             admin_mode_pending: false,
@@ -269,44 +277,21 @@ impl App {
                         }
                         "fleet_scan" => {
                             if ok {
-                                let minions = parse_fleet_scan(&data);
-                                self.fleet_data = Some(FleetScan { minions: minions.clone(), scanned_at: Instant::now() });
-
-                                // Collect IDs of minions that responded
-                                let responded: std::collections::HashSet<String> = minions.iter().map(|m| m.id.clone()).collect();
-
-                                // Merge fleet scan data into minion_info
-                                for fm in &minions {
-                                    if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == fm.id) {
-                                        existing.osfinger = fm.osfinger.clone();
-                                        existing.osrelease = fm.osrelease.clone();
-                                        existing.salt_version = fm.saltversion.clone();
-                                        existing.cpuarch = fm.cpuarch.clone();
-                                        existing.timed_out = fm.timed_out;
-                                    } else if !fm.timed_out {
-                                        self.minion_info.push(MinionInfo {
-                                            id: fm.id.clone(),
-                                            osfinger: fm.osfinger.clone(),
-                                            osrelease: fm.osrelease.clone(),
-                                            salt_version: fm.saltversion.clone(),
-                                            cpuarch: fm.cpuarch.clone(),
-                                            ..Default::default()
-                                        });
-                                    }
-                                }
-
-                                // Mark existing minion_info entries that didn't respond as timed_out
-                                for m in &mut self.minion_info {
-                                    if !responded.contains(&m.id) {
-                                        m.timed_out = true;
-                                    }
-                                }
-
-                                self.minion_info.sort_by(|a, b| {
-                                    a.timed_out.cmp(&b.timed_out).then(a.id.cmp(&b.id))
+                                let jid = data["jid"].as_str().unwrap_or("").to_string();
+                                let expected: Vec<String> = data["expected_minions"].as_array()
+                                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                    .unwrap_or_default();
+                                self.fleet_scan_jid = Some(jid);
+                                self.fleet_scan_expected = expected;
+                                self.fleet_scan_started_at = Some(Instant::now());
+                                self.fleet_scanning = true;
+                                self.fleet_data = Some(FleetScan {
+                                    minions: Vec::new(),
+                                    scanned_at: Instant::now(),
                                 });
+                            } else {
+                                self.fleet_scanning = false;
                             }
-                            self.fleet_scanning = false;
                         }
                         _ => {}
                     }
@@ -335,6 +320,74 @@ impl App {
                     }
                 }
                 AgentMessage::Event { tag, data, ts } => {
+                    // ── Fleet scan return processing (event-driven) ────
+                    let is_fleet_ret = self.fleet_scanning && self.fleet_scan_jid.as_ref()
+                        .map(|jid| tag.starts_with(&format!("salt/job/{}/ret/", jid)))
+                        .unwrap_or(false);
+
+                    if is_fleet_ret {
+                        if let Some(ref jid) = self.fleet_scan_jid.clone() {
+                            let prefix = format!("salt/job/{}/ret/", jid);
+                            if let Some(mid) = tag.strip_prefix(&prefix) {
+                                if !mid.is_empty() && data["fun"].as_str() == Some("grains.items") {
+                                    let grains = &data["return"];
+                                    let osfinger = grains.get("osfinger").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let osrelease = grains.get("osrelease").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let saltversion = grains.get("saltversion").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let cpuarch = grains.get("cpuarch").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                                    // Merge into minion_info
+                                    if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                        existing.osfinger = osfinger.clone();
+                                        existing.osrelease = osrelease.clone();
+                                        existing.salt_version = saltversion.clone();
+                                        existing.cpuarch = cpuarch.clone();
+                                        existing.timed_out = false;
+                                    } else {
+                                        self.minion_info.push(MinionInfo {
+                                            id: mid.to_string(),
+                                            osfinger: osfinger.clone(),
+                                            osrelease: osrelease.clone(),
+                                            salt_version: saltversion.clone(),
+                                            cpuarch: cpuarch.clone(),
+                                            ..Default::default()
+                                        });
+                                    }
+
+                                    // Merge into fleet_data for overview
+                                    if let Some(ref mut fd) = self.fleet_data {
+                                        let fm = FleetMinion {
+                                            id: mid.to_string(),
+                                            osfinger,
+                                            osrelease,
+                                            saltversion,
+                                            cpuarch,
+                                            timed_out: false,
+                                        };
+                                        if let Some(existing) = fd.minions.iter_mut().find(|m| m.id == mid) {
+                                            *existing = fm;
+                                        } else {
+                                            fd.minions.push(fm);
+                                        }
+                                    }
+
+                                    // Remove from expected list
+                                    self.fleet_scan_expected.retain(|e| e != mid);
+
+                                    // If all expected have responded, complete immediately
+                                    if self.fleet_scan_expected.is_empty() {
+                                        self.fleet_scan_jid = None;
+                                        self.fleet_scan_started_at = None;
+                                        self.fleet_scanning = false;
+                                    }
+                                }
+                            }
+                        }
+                        // Don't add fleet scan returns to events buffer (too noisy)
+                        return;
+                    }
+
+                    // ── Normal event processing ─────────────────────────
                     // Track return events for activity matrix
                     if tag.contains("/ret/") {
                         self.current_sec_returns += 1;
@@ -909,6 +962,44 @@ impl App {
         }
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
         self.events_since_last_tick.clear();
+
+        // Fleet scan timeout — mark remaining expected as timed_out after 60s
+        if self.fleet_scanning {
+            if let Some(started) = self.fleet_scan_started_at {
+                if started.elapsed().as_secs() > 60 {
+                    let pending = std::mem::take(&mut self.fleet_scan_expected);
+                    for mid in &pending {
+                        if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id.as_str() == mid) {
+                            existing.timed_out = true;
+                        } else {
+                            self.minion_info.push(MinionInfo {
+                                id: mid.clone(),
+                                timed_out: true,
+                                ..Default::default()
+                            });
+                        }
+                        if let Some(ref mut fd) = self.fleet_data {
+                            if !fd.minions.iter().any(|m| m.id == *mid) {
+                                fd.minions.push(FleetMinion {
+                                    id: mid.clone(),
+                                    osfinger: String::new(),
+                                    osrelease: String::new(),
+                                    saltversion: String::new(),
+                                    cpuarch: String::new(),
+                                    timed_out: true,
+                                });
+                            }
+                        }
+                    }
+                    self.minion_info.sort_by(|a, b| {
+                        a.timed_out.cmp(&b.timed_out).then(a.id.cmp(&b.id))
+                    });
+                    self.fleet_scan_jid = None;
+                    self.fleet_scan_started_at = None;
+                    self.fleet_scanning = false;
+                }
+            }
+        }
 
         // Update host uptime from collector
         if let Some(ref cfg) = self.config_snapshot {
