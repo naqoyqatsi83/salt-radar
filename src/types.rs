@@ -272,7 +272,7 @@ impl AlertSeverity {
 
 // ─── Fleet scan ────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FleetMinion {
     pub id: String,
     pub osfinger: String,
