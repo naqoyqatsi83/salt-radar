@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-06-17
+
+### Fixed
+- Minion list now shows only minions with accepted keys (not stale cache entries) — total went from 3954 to actual accepted count.
+- Dashboard key status panel total sums the four displayed key categories instead of using raw cache count.
+- Home/End keys jump to first/last item in Minions, Events, Jobs, Alerts tabs.
+
 ## [0.3.2] - 2026-06-17
 
 ### Fixed
