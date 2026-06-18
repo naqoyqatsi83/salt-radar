@@ -1304,6 +1304,8 @@ impl App {
             KeyCode::Down => self.move_down(),
             KeyCode::PageUp => { for _ in 0..10 { self.move_up(); } }
             KeyCode::PageDown => { for _ in 0..10 { self.move_down(); } }
+            KeyCode::Home => self.move_to_first(),
+            KeyCode::End => self.move_to_last(),
             KeyCode::Enter => self.open_detail(),
             _ => {}
         }
@@ -1326,6 +1328,26 @@ impl App {
             Tab::Events => self.event_selected += 1,
             Tab::Jobs => self.job_selected += 1,
             Tab::Alerts => self.alert_selected += 1,
+            _ => {}
+        }
+    }
+
+    fn move_to_first(&mut self) {
+        match self.current_tab {
+            Tab::Minions => self.minion_selected = 0,
+            Tab::Events => self.event_selected = 0,
+            Tab::Jobs => self.job_selected = 0,
+            Tab::Alerts => self.alert_selected = 0,
+            _ => {}
+        }
+    }
+
+    fn move_to_last(&mut self) {
+        match self.current_tab {
+            Tab::Minions => self.minion_selected = self.filtered_minions_len().saturating_sub(1),
+            Tab::Events => self.event_selected = self.filtered_events_len().saturating_sub(1),
+            Tab::Jobs => self.job_selected = self.filtered_jobs_len().saturating_sub(1),
+            Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
             _ => {}
         }
     }
