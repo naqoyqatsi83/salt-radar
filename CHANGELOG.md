@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Header and help menu now show correct version (used compile-time constant instead of hardcoded string).
+- Service unit column widened from 16 to 24 chars for longer service names.
+- Dashboard key status panel total sums displayed categories instead of raw cache count.
+- Minion list now shows only minions with accepted keys (not stale cache entries).
+
+### Performance
+- Heavy collectors (services, processes, keys, system) now refresh at `dashboard_secs` interval (default 2s) instead of every tick, eliminating ~14 systemctl subprocess calls per second.
+- Removed duplicate `systemctl list-unit-files` call in services collector.
 
 ## [0.3.3] - 2026-06-17
 
