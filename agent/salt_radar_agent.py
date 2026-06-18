@@ -213,40 +213,6 @@ def cmd_jid_lookup(opts, req):
             if isinstance(inner, dict):
                 lookup = inner
 
-    # Get full CLI output once via salt-run
-    cli_output = ""
-    try:
-        import subprocess as sp
-        cp = sp.run(
-            ["salt-run", "jobs.lookup_jid", jid],
-            capture_output=True, text=True, timeout=60,
-        )
-        if cp.returncode == 0:
-            cli_output = cp.stdout
-    except Exception:
-        pass
-
-    # Parse CLI output into per-minion chunks.
-    # Minion header = line starting at col 0 ending with ':' (e.g. "ol9:")
-    # All subsequent indented lines belong to that minion until next header.
-    per_minion = {}
-    if cli_output:
-        lines = cli_output.splitlines()
-        current_minion = None
-        current_lines = []
-        for line in lines:
-            # Check for minion header: starts at col 0, ends with ':', no indent
-            if line and not line[0].isspace() and line.endswith(":"):
-                if current_minion is not None:
-                    per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
-                current_minion = line[:-1].strip()  # remove trailing ':'
-                current_lines = [line]
-            elif current_minion is not None:
-                current_lines.append(line)
-        # Flush last
-        if current_minion is not None:
-            per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
-
     # Normalize: lookup returns {minion_id: result_data, ...}
     returns = []
     for mid, retdata in lookup.items():
@@ -262,14 +228,13 @@ def cmd_jid_lookup(opts, req):
             success = True
             summary = str(retdata)[:200]
             full = retdata if isinstance(retdata, (dict, list)) else str(retdata)
-        formatted_text = per_minion.get(mid, "")
         returns.append({
             "minion_id": str(mid),
             "success": success,
             "retcode": retcode,
             "summary": summary,
             "full_return": full,
-            "formatted_text": formatted_text,
+            "formatted_text": "",
         })
 
     data = {

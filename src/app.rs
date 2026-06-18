@@ -442,7 +442,7 @@ impl App {
         text.to_lowercase().contains(&pat.to_lowercase())
     }
 
-    fn matches_event(evt: &SaltEvent, pat: &str, known_minions: &[String]) -> bool {
+    fn matches_event(evt: &SaltEvent, pat: &str, known_minions: &HashSet<&str>) -> bool {
         if pat.is_empty() { return true; }
         if Self::matches_filter(&evt.tag, pat)
             || evt.data["fun"].as_str().map(|f| Self::matches_filter(f, pat)).unwrap_or(false)
@@ -486,7 +486,7 @@ impl App {
         }
     }
 
-    fn matches_job(job: &JobEntry, pat: &str, known_minions: &[String]) -> bool {
+    fn matches_job(job: &JobEntry, pat: &str, known_minions: &HashSet<&str>) -> bool {
         if pat.is_empty() { return true; }
         if Self::matches_filter(&job.jid, pat)
             || Self::matches_filter(&job.fun, pat)
@@ -517,12 +517,19 @@ impl App {
             || Self::matches_filter(&minion.salt_version, pat)
     }
 
+    fn accepted_ids(&self) -> HashSet<&str> {
+        self.keys.iter()
+            .filter(|k| k.status == KeyStatus::Accepted)
+            .map(|k| k.id.as_str())
+            .collect()
+    }
+
     pub fn filtered_events_len(&self) -> usize {
         if self.filter_text.is_empty() {
             return self.events.len();
         }
         let pat = &self.filter_text;
-        let known: Vec<String> = self.minion_info.iter().map(|m| m.id.clone()).collect();
+        let known = self.accepted_ids();
         self.events.iter().rev().filter(|e| Self::matches_event(e, pat, &known)).count()
     }
 
@@ -532,7 +539,7 @@ impl App {
             return self.events.get(rev_idx);
         }
         let pat = &self.filter_text;
-        let known: Vec<String> = self.minion_info.iter().map(|m| m.id.clone()).collect();
+        let known = self.accepted_ids();
         self.events.iter().rev().filter(|e| Self::matches_event(e, pat, &known)).nth(index)
     }
 
@@ -541,7 +548,7 @@ impl App {
             return self.jobs.len();
         }
         let pat = &self.filter_text;
-        let known: Vec<String> = self.minion_info.iter().map(|m| m.id.clone()).collect();
+        let known = self.accepted_ids();
         self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).count()
     }
 
@@ -550,7 +557,7 @@ impl App {
             return self.jobs.get(index);
         }
         let pat = &self.filter_text;
-        let known: Vec<String> = self.minion_info.iter().map(|m| m.id.clone()).collect();
+        let known = self.accepted_ids();
         self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).nth(index)
     }
 
