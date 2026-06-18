@@ -185,59 +185,49 @@ def cmd_zmq_ping(opts, req):
 
 
 def cmd_jid_lookup(opts, req):
-    salt = _import_salt()
     jid = req.get("jid", "")
     if not jid:
         result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "jid required"})
         return
 
-    runner = salt.runner.RunnerClient(opts)
-    try:
-        import multiprocessing.pool
-        pool = multiprocessing.pool.ThreadPool(1)
-        async_result = pool.apply_async(runner.cmd, ("jobs.lookup_jid", [jid]))
-        lookup = async_result.get(timeout=30)
-    except Exception as exc:
-        result(req["id"], "jid_lookup", ok=False, data={
-            "found": False, "error": str(exc),
-        })
+    import subprocess as sp
+    cp = sp.run(
+        ["salt-run", "jobs.lookup_jid", jid],
+        capture_output=True, text=True, timeout=60,
+    )
+    if cp.returncode != 0 or not cp.stdout.strip():
+        result(req["id"], "jid_lookup", ok=False, data={"found": False})
         return
 
-    if not lookup:
-        result(req["id"], "jid_lookup", data={"found": False})
-        return
+    cli_output = cp.stdout
 
-    # Detect outputter from wrapper and unwrap data
-    outputter = None
-    if isinstance(lookup, dict):
-        outputter = lookup.get("outputter")
-        if outputter and "data" in lookup:
-            inner = lookup["data"]
-            if isinstance(inner, dict):
-                lookup = inner
+    # Parse CLI output into per-minion chunks.
+    # Minion header = line starting at col 0 ending with ':' (e.g. "ol9:")
+    # All subsequent indented lines belong to that minion until next header.
+    per_minion = {}
+    lines = cli_output.splitlines()
+    current_minion = None
+    current_lines = []
+    for line in lines:
+        if line and not line[0].isspace() and line.endswith(":"):
+            if current_minion is not None:
+                per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
+            current_minion = line[:-1].strip()
+            current_lines = [line]
+        elif current_minion is not None:
+            current_lines.append(line)
+    if current_minion is not None:
+        per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
 
-    # Normalize: lookup returns {minion_id: result_data, ...}
     returns = []
-    for mid, retdata in lookup.items():
-        if isinstance(retdata, dict):
-            # Unwrap: Salt cache stores {"return": actual_data, "retcode": 0, ...}
-            actual = retdata.get("return", retdata)
-            retcode = retdata.get("retcode", 0)
-            success = not retcode
-            summary = str(actual)[:200]
-            full = actual if isinstance(actual, (dict, list)) else str(actual)
-        else:
-            retcode = 0
-            success = True
-            summary = str(retdata)[:200]
-            full = retdata if isinstance(retdata, (dict, list)) else str(retdata)
+    for mid, formatted_text in per_minion.items():
         returns.append({
             "minion_id": str(mid),
-            "success": success,
-            "retcode": retcode,
-            "summary": summary,
-            "full_return": full,
-            "formatted_text": "",
+            "success": True,
+            "retcode": 0,
+            "summary": (formatted_text or "")[:200],
+            "full_return": formatted_text or "",
+            "formatted_text": formatted_text or "",
         })
 
     data = {

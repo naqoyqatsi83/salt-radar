@@ -1093,8 +1093,7 @@ impl App {
                                     if idx < l.returns.len() {
                                         let ret = &l.returns[idx];
                                         clipboard_text = Some(
-                                            serde_json::to_string_pretty(&ret.full_return)
-                                                .unwrap_or_else(|_| ret.summary.clone())
+                                            ret.full_return.as_str().unwrap_or(&ret.summary).to_string()
                                         );
                                     }
                                 }
