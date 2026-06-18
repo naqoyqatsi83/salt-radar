@@ -854,14 +854,21 @@ impl App {
 
     /// Scan events buffer for fleet scan return events and merge them
     fn process_fleet_returns(&mut self) {
-        if !self.fleet_scanning || self.fleet_scan_expected.is_empty() {
+        if !self.fleet_scanning {
             return;
         }
+        let expected_empty = self.fleet_scan_expected.is_empty();
         for evt in &self.events {
             if !evt.tag.contains("/ret/") {
                 continue;
             }
-            if evt.data["fun"].as_str() != Some("grains.items") {
+            let fun = evt.data["fun"].as_str().unwrap_or("__nofun__").to_string();
+            // Debug log every return event during fleet scan
+            let mid_debug = evt.data["id"].as_str().unwrap_or("__noid__");
+            let _ = std::fs::write("/tmp/salt-radar-fleet.log",
+                format!("tag={}\nfun={}\nid={}\nexpected_empty={}\nevents_count={}\n",
+                    evt.tag, fun, mid_debug, expected_empty, self.events.len()));
+            if fun != "grains.items" {
                 continue;
             }
             let mid = match evt.data["id"].as_str() {
