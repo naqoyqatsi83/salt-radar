@@ -260,7 +260,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     let mut service_lines: Vec<Line<'static>> = vec![];
 
     service_lines.push(Line::from(vec![
-        Span::styled("Unit            ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Unit                    ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled("Status", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled(" State            ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled(" Memory ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
@@ -291,14 +291,14 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             "--".to_string()
         };
 
-        let unit_display = if service.unit.len() > 16 {
-            format!("{}..", &service.unit[..14])
+        let unit_display = if service.unit.len() > 24 {
+            format!("{}..", &service.unit[..22])
         } else {
             service.unit.clone()
         };
 
         service_lines.push(Line::from(vec![
-            Span::styled(format!("{:<16}", unit_display), Style::default().fg(color::CYAN)),
+            Span::styled(format!("{:<24}", unit_display), Style::default().fg(color::CYAN)),
             Span::styled(format!(" {:<6}", status_icon), Style::default().fg(status_color)),
             Span::styled(format!(" {:<17}", service.state), Style::default().fg(color::TEXT)),
             Span::styled(format!(" {:>6} ", memory_text), Style::default().fg(color::YELLOW)),
