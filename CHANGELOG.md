@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-06-18
+
+### Added
+- Minions tab: responsive minions sorted to top after fleet scan (alive first, timed-out below, each group by ID).
+- Press `x` on Minions tab to toggle hiding non-responsive (timed-out) minions. Only available after at least one fleet scan.
+
+### Changed
+- Fleet scan is now fully event-driven: `cmd_async` fires the job and returns immediately. Returns arrive incrementally via the ZMQ event bus — minion grains (osfinger, saltversion, cpuarch) appear in the list as each minion responds, with no blocking wait.
+- Fleet scan 60s grace period for late responders before being marked timed-out.
+
 ## [0.3.4] - 2026-06-17
 
 ### Fixed
