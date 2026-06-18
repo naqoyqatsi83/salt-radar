@@ -193,7 +193,10 @@ def cmd_jid_lookup(opts, req):
 
     runner = salt.runner.RunnerClient(opts)
     try:
-        lookup = runner.cmd("jobs.lookup_jid", [jid])
+        import multiprocessing.pool
+        pool = multiprocessing.pool.ThreadPool(1)
+        async_result = pool.apply_async(runner.cmd, ("jobs.lookup_jid", [jid]))
+        lookup = async_result.get(timeout=30)
     except Exception as exc:
         result(req["id"], "jid_lookup", ok=False, data={
             "found": False, "error": str(exc),
@@ -379,6 +382,10 @@ HANDLERS = {
     "fleet_scan": cmd_fleet_scan,
 }
 
+# Commands that may block for a long time (Salt runner calls, etc.).
+# These run in a background thread so the agent stays responsive.
+_LONG_RUNNING_CMDS = frozenset(["jid_lookup"])
+
 
 def dispatch(opts, req):
     cmd = req.get("cmd", "")
@@ -386,6 +393,17 @@ def dispatch(opts, req):
     if handler is None:
         result(req.get("id", 0), cmd, ok=False, data={"error": "unknown cmd: {}".format(cmd)})
         return
+
+    if cmd in _LONG_RUNNING_CMDS:
+        # Run in a background thread so the main loop stays responsive
+        t = threading.Thread(target=_run_handler, args=(handler, opts, req), daemon=True)
+        t.start()
+    else:
+        _run_handler(handler, opts, req)
+
+
+def _run_handler(handler, opts, req):
+    cmd = req.get("cmd", "")
     try:
         handler(opts, req)
     except Exception as exc:
