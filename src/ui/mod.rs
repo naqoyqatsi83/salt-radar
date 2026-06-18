@@ -465,7 +465,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  Fleet scan (admin mode, Minions tab)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
-        Line::from(Span::styled("  salt-radar v0.1.0 \u{2014} Salt Master Monitor", Style::default().fg(color::TEXT_DIM))),
+        Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),
         Line::from(Span::styled("  Read-only TUI. All data sourced from /proc, systemctl,", Style::default().fg(color::TEXT_DIM))),
         Line::from(Span::styled("  and Salt's own APIs via the bundled Python agent.", Style::default().fg(color::TEXT_DIM))),
     ];
