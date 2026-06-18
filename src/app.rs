@@ -126,6 +126,7 @@ pub struct App {
     /// Fleet scan async tracking (JID from cmd_async + event-driven returns)
     pub fleet_scan_jid: Option<String>,
     pub fleet_scan_expected: Vec<String>,
+    pub fleet_scan_responded: HashSet<String>,
     pub fleet_scan_started_at: Option<Instant>,
 }
 
@@ -201,6 +202,7 @@ impl App {
             hide_timed_out: false,
             fleet_scan_jid: None,
             fleet_scan_expected: Vec::new(),
+            fleet_scan_responded: HashSet::new(),
             fleet_scan_started_at: None,
 
             admin_mode: false,
@@ -283,6 +285,7 @@ impl App {
                                     .unwrap_or_default();
                                 self.fleet_scan_jid = Some(jid);
                                 self.fleet_scan_expected = expected;
+                                self.fleet_scan_responded.clear();
                                 self.fleet_scan_started_at = Some(Instant::now());
                                 self.fleet_scanning = true;
                                 self.fleet_data = Some(FleetScan {
@@ -919,7 +922,8 @@ impl App {
                 }
             }
 
-            // Remove from expected list (if not empty)
+            // Track as responded and remove from expected list
+            self.fleet_scan_responded.insert(mid.clone());
             if !self.fleet_scan_expected.is_empty() {
                 self.fleet_scan_expected.retain(|e| *e != mid);
             }
@@ -934,12 +938,26 @@ impl App {
         // Process fleet scan returns from events buffer
         self.process_fleet_returns();
 
-        // Fleet scan timeout: mark remaining expected minions as timed_out after 60s
+        // Fleet scan timeout: mark minions that haven't responded as timed_out after 60s
         if self.fleet_scanning {
             if let Some(started) = self.fleet_scan_started_at {
                 if started.elapsed().as_secs() > 60 {
-                    let pending = std::mem::take(&mut self.fleet_scan_expected);
-                    for mid in &pending {
+                    // Find all minions that should have responded but didn't.
+                    // Source 1: accepted keys from Rust key cache.
+                    // Source 2: agent-provided expected list (fallback if keys cache is empty).
+                    let accepted: HashSet<&str> = self.keys.iter()
+                        .filter(|k| k.status == KeyStatus::Accepted)
+                        .map(|k| k.id.as_str())
+                        .collect();
+                    let to_check: Vec<String> = if !accepted.is_empty() {
+                        accepted.into_iter().map(String::from).collect()
+                    } else {
+                        std::mem::take(&mut self.fleet_scan_expected)
+                    };
+                    for mid in &to_check {
+                        if self.fleet_scan_responded.contains(mid.as_str()) {
+                            continue;
+                        }
                         // Mark in minion_info
                         if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id.as_str() == mid) {
                             existing.timed_out = true;
@@ -965,6 +983,8 @@ impl App {
                         }
                     }
                     self.fleet_scan_jid = None;
+                    self.fleet_scan_responded.clear();
+                    self.fleet_scan_expected.clear();
                     self.fleet_scan_started_at = None;
                     self.fleet_scanning = false;
                 }
