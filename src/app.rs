@@ -124,7 +124,6 @@ pub struct App {
     pub hide_timed_out: bool,
 
     /// Fleet scan async tracking
-    pub fleet_scan_jid: Option<String>,
     pub fleet_scan_expected: Vec<String>,
     pub fleet_scan_started_at: Option<Instant>,
 }
@@ -199,7 +198,6 @@ impl App {
             sniffer_dirty: false,
             return_to_sniffer: None,
             hide_timed_out: false,
-            fleet_scan_jid: None,
             fleet_scan_expected: Vec::new(),
             fleet_scan_started_at: None,
 
@@ -277,11 +275,9 @@ impl App {
                         }
                         "fleet_scan" => {
                             if ok {
-                                let jid = data["jid"].as_str().unwrap_or("").to_string();
                                 let expected: Vec<String> = data["expected_minions"].as_array()
                                     .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                                     .unwrap_or_default();
-                                self.fleet_scan_jid = Some(jid);
                                 self.fleet_scan_expected = expected;
                                 self.fleet_scan_started_at = Some(Instant::now());
                                 self.fleet_scanning = true;
@@ -321,66 +317,63 @@ impl App {
                 }
                 AgentMessage::Event { tag, data, ts } => {
                     // ── Fleet scan return processing (event-driven) ────
-                    let is_fleet_ret = self.fleet_scanning && self.fleet_scan_jid.as_ref()
-                        .map(|jid| tag.starts_with(&format!("salt/job/{}/ret/", jid)))
-                        .unwrap_or(false);
+                    // Match by fun=grains.items while scanning is active —
+                    // avoids relying on fragile JID tag matching from cmd_async.
+                    let is_fleet_ret = self.fleet_scanning
+                        && tag.contains("/ret/")
+                        && data["fun"].as_str() == Some("grains.items");
 
                     if is_fleet_ret {
-                        if let Some(ref jid) = self.fleet_scan_jid.clone() {
-                            let prefix = format!("salt/job/{}/ret/", jid);
-                            if let Some(mid) = tag.strip_prefix(&prefix) {
-                                if !mid.is_empty() && data["fun"].as_str() == Some("grains.items") {
-                                    let grains = &data["return"];
-                                    let osfinger = grains.get("osfinger").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let osrelease = grains.get("osrelease").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let saltversion = grains.get("saltversion").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let cpuarch = grains.get("cpuarch").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let mid = data["id"].as_str().unwrap_or("").to_string();
+                        if !mid.is_empty() {
+                            let grains = &data["return"];
+                            let osfinger = grains.get("osfinger").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let osrelease = grains.get("osrelease").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let saltversion = grains.get("saltversion").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let cpuarch = grains.get("cpuarch").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-                                    // Merge into minion_info
-                                    if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == mid) {
-                                        existing.osfinger = osfinger.clone();
-                                        existing.osrelease = osrelease.clone();
-                                        existing.salt_version = saltversion.clone();
-                                        existing.cpuarch = cpuarch.clone();
-                                        existing.timed_out = false;
-                                    } else {
-                                        self.minion_info.push(MinionInfo {
-                                            id: mid.to_string(),
-                                            osfinger: osfinger.clone(),
-                                            osrelease: osrelease.clone(),
-                                            salt_version: saltversion.clone(),
-                                            cpuarch: cpuarch.clone(),
-                                            ..Default::default()
-                                        });
-                                    }
+                            // Merge into minion_info
+                            if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                existing.osfinger = osfinger.clone();
+                                existing.osrelease = osrelease.clone();
+                                existing.salt_version = saltversion.clone();
+                                existing.cpuarch = cpuarch.clone();
+                                existing.timed_out = false;
+                            } else {
+                                self.minion_info.push(MinionInfo {
+                                    id: mid.clone(),
+                                    osfinger: osfinger.clone(),
+                                    osrelease: osrelease.clone(),
+                                    salt_version: saltversion.clone(),
+                                    cpuarch: cpuarch.clone(),
+                                    ..Default::default()
+                                });
+                            }
 
-                                    // Merge into fleet_data for overview
-                                    if let Some(ref mut fd) = self.fleet_data {
-                                        let fm = FleetMinion {
-                                            id: mid.to_string(),
-                                            osfinger,
-                                            osrelease,
-                                            saltversion,
-                                            cpuarch,
-                                            timed_out: false,
-                                        };
-                                        if let Some(existing) = fd.minions.iter_mut().find(|m| m.id == mid) {
-                                            *existing = fm;
-                                        } else {
-                                            fd.minions.push(fm);
-                                        }
-                                    }
-
-                                    // Remove from expected list
-                                    self.fleet_scan_expected.retain(|e| e != mid);
-
-                                    // If all expected have responded, complete immediately
-                                    if self.fleet_scan_expected.is_empty() {
-                                        self.fleet_scan_jid = None;
-                                        self.fleet_scan_started_at = None;
-                                        self.fleet_scanning = false;
-                                    }
+                            // Merge into fleet_data for overview
+                            if let Some(ref mut fd) = self.fleet_data {
+                                let fm = FleetMinion {
+                                    id: mid.clone(),
+                                    osfinger,
+                                    osrelease,
+                                    saltversion,
+                                    cpuarch,
+                                    timed_out: false,
+                                };
+                                if let Some(existing) = fd.minions.iter_mut().find(|m| m.id == mid) {
+                                    *existing = fm;
+                                } else {
+                                    fd.minions.push(fm);
                                 }
+                            }
+
+                            // Remove from expected list
+                            self.fleet_scan_expected.retain(|e| *e != mid);
+
+                            // If all expected have responded, complete immediately
+                            if self.fleet_scan_expected.is_empty() {
+                                self.fleet_scan_started_at = None;
+                                self.fleet_scanning = false;
                             }
                         }
                         // Don't add fleet scan returns to events buffer (too noisy)
@@ -994,7 +987,6 @@ impl App {
                     self.minion_info.sort_by(|a, b| {
                         a.timed_out.cmp(&b.timed_out).then(a.id.cmp(&b.id))
                     });
-                    self.fleet_scan_jid = None;
                     self.fleet_scan_started_at = None;
                     self.fleet_scanning = false;
                 }
