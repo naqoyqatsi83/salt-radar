@@ -861,16 +861,20 @@ impl App {
 
     /// Called every tick (1s)
     pub fn update(&mut self) {
-        // Drain agent messages
+        // Drain agent messages (must happen every tick)
         self.drain_agent_messages();
 
-        // Refresh collectors
+        // Refresh collectors at interval, not every tick
         if let Some(ref cfg) = self.config_snapshot {
-            self.keys = collectors::keys::collect_keys(&cfg.pki_dir);
-            self.processes = collectors::processes::collect_processes();
-            self.services = collectors::services::collect_services();
+            let interval = self.config.dashboard_secs.max(1);
+            if self.tick_count % interval == 0 {
+                self.keys = collectors::keys::collect_keys(&cfg.pki_dir);
+                self.processes = collectors::processes::collect_processes();
+                self.services = collectors::services::collect_services();
+                self.system_info = collectors::system::collect_system(&cfg.cachedir, &cfg.pki_dir);
+            }
+            // Connections are cheap — /proc/net/tcp reads — refresh every tick
             self.zmq_connections = collectors::connections::collect_connections_with_api(cfg.publish_port, cfg.ret_port, cfg.api_port);
-            self.system_info = collectors::system::collect_system(&cfg.cachedir, &cfg.pki_dir);
         }
 
         // Calculate events/sec

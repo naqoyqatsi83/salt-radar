@@ -4,7 +4,7 @@ use crate::types::ServiceHealth;
 /// Dynamic discovery from installed .service unit files, not hardcoded.
 pub fn collect_services() -> Vec<ServiceHealth> {
     let units = discover_salt_units();
-    let running_procs = find_running_salt_processes();
+    let running_procs = find_running_salt_processes(&units);
 
     let mut services = Vec::new();
     for unit in &units {
@@ -46,7 +46,7 @@ fn discover_salt_units() -> Vec<String> {
 }
 
 /// Return the set of unit names whose processes are found in /proc.
-fn find_running_salt_processes() -> Vec<String> {
+fn find_running_salt_processes(units: &[String]) -> Vec<String> {
     let mut found = Vec::new();
     let proc_dir = match std::fs::read_dir("/proc") {
         Ok(d) => d,
@@ -81,14 +81,13 @@ fn find_running_salt_processes() -> Vec<String> {
             found.push("salt-proxy@".to_string());
         }
 
-        // For salt-job-archive and other services, check if it's running as salt-api
-        let unit_names = discover_salt_units();
-        for unit in unit_names {
+        // For salt-job-archive and other services, check if it's running
+        for unit in units {
             if !found.contains(&unit) {
                 let service_exe = unit.trim_start_matches("salt-");
                 let full_exe = format!("salt-{}", service_exe);
                 if cmdline.contains(&full_exe) {
-                    found.push(unit);
+                    found.push(unit.clone());
                 }
             }
         }
