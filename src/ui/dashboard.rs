@@ -254,7 +254,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         .percent((mem_pct.round() as u16).min(100))
         .label(format!(
             "Salt RSS {} MB ({} proc)  {} minions",
-            total_rss_used / 1024, proc_count, app.minion_info.len(),
+            total_rss_used / 1024, proc_count, app.filtered_minions_len(),
         ));
 
     let mut service_lines: Vec<Line<'static>> = vec![];
@@ -291,8 +291,14 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             "--".to_string()
         };
 
+        let unit_display = if service.unit.len() > 16 {
+            format!("{}..", &service.unit[..14])
+        } else {
+            service.unit.clone()
+        };
+
         service_lines.push(Line::from(vec![
-            Span::styled(format!("{:<16}", service.unit), Style::default().fg(color::CYAN)),
+            Span::styled(format!("{:<16}", unit_display), Style::default().fg(color::CYAN)),
             Span::styled(format!(" {:<6}", status_icon), Style::default().fg(status_color)),
             Span::styled(format!(" {:<17}", service.state), Style::default().fg(color::TEXT)),
             Span::styled(format!(" {:>6} ", memory_text), Style::default().fg(color::YELLOW)),
