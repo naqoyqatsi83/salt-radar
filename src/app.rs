@@ -773,7 +773,7 @@ impl App {
         // 3. xclip (pushes to X11 clipboard → MobaXterm → Windows).
         // Resolve DISPLAY: prefer tmux's preserved env (captured before sudo stripped it),
         // then the process env, then fallback guess.
-        let display = if let Some(socket) = Self::tmux_socket_path() {
+        let (display, display_is_guess) = if let Some(socket) = Self::tmux_socket_path() {
             let output = std::process::Command::new("tmux")
                 .args(["-S", &socket, "show-environment", "DISPLAY"])
                 .output()
@@ -782,17 +782,24 @@ impl App {
                     String::from_utf8(o.stdout).ok()
                 } else { None });
             match output.as_deref() {
-                Some(s) if s.starts_with("DISPLAY=") => s.trim_start_matches("DISPLAY=").trim().to_string(),
-                _ => std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string()),
+                Some(s) if s.starts_with("DISPLAY=") => (s.trim_start_matches("DISPLAY=").trim().to_string(), false),
+                _ => match std::env::var("DISPLAY") {
+                    Ok(d) if !d.is_empty() => (d, false),
+                    _ => ("localhost:10.0".to_string(), true),
+                },
             }
         } else {
-            std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string())
+            match std::env::var("DISPLAY") {
+                Ok(d) if !d.is_empty() => (d, false),
+                _ => ("localhost:10.0".to_string(), true),
+            }
         };
         let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
-        // Try xclip directly as the current user (root — has the SSH X11 auth cookie)
-        if !display.is_empty() {
+        // Try xclip directly as the current user (root — has the SSH X11 auth cookie).
+        // Only attempt when DISPLAY was actually resolved (not a guess).
+        if !display_is_guess {
             let (ok, _) = Self::run_cmd_with_stdin(
                 std::process::Command::new("xclip")
                     .args(["-selection", "clipboard", "-display", &display]),
@@ -820,7 +827,7 @@ impl App {
         // 4. Debug log
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={} display={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display),
+            format!("file={}b tmux={} xclip={} display={}{}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display, if display_is_guess { " (guess)" } else { "" }),
         );
 
         // 5. Leave alt screen and show text visibly
