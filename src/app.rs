@@ -771,46 +771,30 @@ impl App {
         } else { false };
 
         // 3. xclip (pushes to X11 clipboard → MobaXterm → Windows).
-        // Resolve DISPLAY: prefer tmux's preserved env (captured before sudo),
-        // then process env, then fallback guess.
-        let display = Self::resolve_display();
-        let display_str = display.as_deref().unwrap_or("localhost:10.0");
-        let x11_user = Self::detect_x11_user(display_str);
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
+        let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
-        // Direct xclip as root — only when DISPLAY is a real value (not a guess).
-        // This works when X11 forwarding is active and root has the auth cookie.
-        if display.is_some() {
+        let users_to_try = [&x11_user[..], "vagrant", "peto"];
+        for user in users_to_try {
+            if !std::process::Command::new("id")
+                .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false)
+            {
+                continue;
+            }
             let (ok, _) = Self::run_cmd_with_stdin(
-                std::process::Command::new("xclip")
-                    .args(["-selection", "clipboard", "-display", display_str]),
+                std::process::Command::new("su")
+                    .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
                 text, 3,
             );
-            if ok { ok_xclip = true; }
-        }
-        // Fallback: try via su to detected X11 user (xclip as unprivileged user)
-        if !ok_xclip {
-            let users_to_try = [&x11_user[..], "vagrant", "peto"];
-            for user in users_to_try {
-                if !std::process::Command::new("id")
-                    .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
-                    .status().map(|s| s.success()).unwrap_or(false)
-                {
-                    continue;
-                }
-                let (ok, _) = Self::run_cmd_with_stdin(
-                    std::process::Command::new("su")
-                        .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display_str), user]),
-                    text, 3,
-                );
-                if ok { ok_xclip = true; break; }
-            }
+            if ok { ok_xclip = true; break; }
         }
 
         // 4. Debug log
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={} display={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display_str),
+            format!("file={}b tmux={} xclip={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }),
         );
 
         // 5. Leave alt screen and show text visibly
@@ -873,37 +857,6 @@ impl App {
             }
         }
         "peto".to_string()
-    }
-
-    /// Resolve DISPLAY value: scan all tmux sockets (including other users'),
-    /// then the process env. Returns None if only the fallback guess would be available.
-    fn resolve_display() -> Option<String> {
-        // Scan ALL tmux sockets — after sudo su - the current process's TMUX
-        // env is stripped, but the original user's socket still has DISPLAY.
-        if let Ok(entries) = std::fs::read_dir("/tmp") {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.starts_with("tmux-") { continue; }
-                let sock = format!("/tmp/{}/default", name);
-                if !std::path::Path::new(&sock).exists() { continue; }
-                let output = std::process::Command::new("tmux")
-                    .args(["-S", &sock, "show-environment", "DISPLAY"])
-                    .output().ok()
-                    .and_then(|o| {
-                        if o.status.success() { String::from_utf8(o.stdout).ok() } else { None }
-                    });
-                if let Some(s) = output {
-                    if s.starts_with('-') { continue; } /* tmux: variable was unset */
-                    if let Some(val) = s.strip_prefix("DISPLAY=") {
-                        let v = val.trim().to_string();
-                        if !v.is_empty() { return Some(v); }
-                    }
-                }
-            }
-        }
-        // Fallback: process env var
-        let d = std::env::var("DISPLAY").ok()?;
-        if d.is_empty() { None } else { Some(d) }
     }
 
     /// Scan events buffer for fleet scan returns matching the known JID
