@@ -875,23 +875,28 @@ impl App {
         "peto".to_string()
     }
 
-    /// Resolve DISPLAY value: prefer tmux's show-environment (preserved before sudo),
+    /// Resolve DISPLAY value: scan all tmux sockets (including other users'),
     /// then the process env. Returns None if only the fallback guess would be available.
     fn resolve_display() -> Option<String> {
-        // Try tmux show-environment first (survives sudo)
-        if let Some(socket) = Self::tmux_socket_path() {
-            let output = std::process::Command::new("tmux")
-                .args(["-S", &socket, "show-environment", "DISPLAY"])
-                .output().ok()
-                .and_then(|o| {
-                    if o.status.success() { String::from_utf8(o.stdout).ok() } else { None }
-                });
-            if let Some(s) = output {
-                if s.starts_with('-') { /* tmux prefix: variable was unset */ }
-                else if let Some(val) = s.strip_prefix("DISPLAY=") {
-                    let v = val.trim().to_string();
-                    if !v.is_empty() {
-                        return Some(v);
+        // Scan ALL tmux sockets — after sudo su - the current process's TMUX
+        // env is stripped, but the original user's socket still has DISPLAY.
+        if let Ok(entries) = std::fs::read_dir("/tmp") {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.starts_with("tmux-") { continue; }
+                let sock = format!("/tmp/{}/default", name);
+                if !std::path::Path::new(&sock).exists() { continue; }
+                let output = std::process::Command::new("tmux")
+                    .args(["-S", &sock, "show-environment", "DISPLAY"])
+                    .output().ok()
+                    .and_then(|o| {
+                        if o.status.success() { String::from_utf8(o.stdout).ok() } else { None }
+                    });
+                if let Some(s) = output {
+                    if s.starts_with('-') { continue; } /* tmux: variable was unset */
+                    if let Some(val) = s.strip_prefix("DISPLAY=") {
+                        let v = val.trim().to_string();
+                        if !v.is_empty() { return Some(v); }
                     }
                 }
             }
