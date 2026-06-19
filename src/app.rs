@@ -771,25 +771,8 @@ impl App {
         } else { false };
 
         // 3. xclip (pushes to X11 clipboard → MobaXterm → Windows).
-        // Try to resolve DISPLAY: prefer tmux's preserved env (captured before sudo),
-        // then the process env, then fallback guess.
-        let display = (|| -> Option<String> {
-            if let Some(socket) = Self::tmux_socket_path() {
-                let output = std::process::Command::new("tmux")
-                    .args(["-S", &socket, "show-environment", "DISPLAY"])
-                    .output().ok()
-                    .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None });
-                if let Some(s) = output {
-                    if let Some(val) = s.strip_prefix("DISPLAY=") {
-                        let v = val.trim().to_string();
-                        if !v.is_empty() { return Some(v); }
-                    }
-                }
-            }
-            std::env::var("DISPLAY").ok().filter(|d| !d.is_empty())
-        })();
-        let display_str = display.as_deref().unwrap_or("localhost:10.0");
-        let x11_user = Self::detect_x11_user(display_str);
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
+        let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
         let users_to_try = [&x11_user[..], "vagrant", "peto"];
@@ -802,7 +785,7 @@ impl App {
             }
             let (ok, _) = Self::run_cmd_with_stdin(
                 std::process::Command::new("su")
-                    .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display_str), user]),
+                    .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
                 text, 3,
             );
             if ok { ok_xclip = true; break; }
@@ -811,7 +794,7 @@ impl App {
         // 4. Debug log
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={} display={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display_str),
+            format!("file={}b tmux={} xclip={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }),
         );
 
         // 5. Leave alt screen and show text visibly
