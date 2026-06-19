@@ -34,15 +34,27 @@ jobs:
           fi
 
       - name: Build release (${{ matrix.arch.target }})
+        env:
+          CARGO_NET_RETRY: 5
+          CARGO_HTTP_TIMEOUT: 120
         run: |
           # Build inside Debian Bullseye (glibc 2.31) for compatibility with older distros
           docker run --rm -v ${{ github.workspace }}:/work -w /work \
+            -e CARGO_NET_RETRY=5 -e CARGO_HTTP_TIMEOUT=120 \
             debian:bullseye-slim bash -c '
             set -e
             apt-get update -qq && apt-get install -y -qq curl build-essential > /dev/null
             curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
             . "$HOME/.cargo/env"
-            cargo build --release
+            for i in 1 2 3; do
+            cargo build --release && break
+            echo "Build attempt $i failed, retrying..."
+            sleep 5
+            if [ "$i" = 3 ]; then
+              echo "All 3 build attempts failed!"
+              exit 1
+            fi
+          done
           '
           sudo mkdir -p target/${{ matrix.arch.rust_target }}/release
           sudo cp ${{ github.workspace }}/target/release/salt-radar target/${{ matrix.arch.rust_target }}/release/salt-radar
