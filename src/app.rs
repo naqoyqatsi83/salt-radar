@@ -791,6 +791,16 @@ impl App {
         let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
+        // Try xclip directly as the current user (root — has the SSH X11 auth cookie)
+        if !display.is_empty() {
+            let (ok, _) = Self::run_cmd_with_stdin(
+                std::process::Command::new("xclip")
+                    .args(["-selection", "clipboard", "-display", &display]),
+                text, 3,
+            );
+            if ok { ok_xclip = true; }
+        }
+        // Fallback: try via su to detected X11 user, then vagrant, then peto
         let users_to_try = [&x11_user[..], "vagrant", "peto"];
         for user in users_to_try {
             if !std::process::Command::new("id")
