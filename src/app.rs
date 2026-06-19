@@ -771,30 +771,56 @@ impl App {
         } else { false };
 
         // 3. xclip (pushes to X11 clipboard → MobaXterm → Windows).
-        let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
+        // Resolve DISPLAY: prefer tmux's preserved env (captured before sudo stripped it),
+        // then the process env, then fallback guess.
+        let display = if let Some(socket) = Self::tmux_socket_path() {
+            let output = std::process::Command::new("tmux")
+                .args(["-S", &socket, "show-environment", "DISPLAY"])
+                .output()
+                .ok()
+                .and_then(|o| if o.status.success() {
+                    String::from_utf8(o.stdout).ok()
+                } else { None });
+            match output.as_deref() {
+                Some(s) if s.starts_with("DISPLAY=") => s.trim_start_matches("DISPLAY=").trim().to_string(),
+                _ => std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string()),
+            }
+        } else {
+            std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string())
+        };
         let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
-        let users_to_try = [&x11_user[..], "vagrant", "peto"];
-        for user in users_to_try {
-            if !std::process::Command::new("id")
-                .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false)
-            {
-                continue;
+        // Try xclip directly first (works when running user has the X11 auth)
+        let (ok, _) = Self::run_cmd_with_stdin(
+            std::process::Command::new("xclip")
+                .args(["-selection", "clipboard", "-display", &display]),
+            text, 3,
+        );
+        if ok { ok_xclip = true; }
+        if !ok_xclip {
+            // Fallback: try via su to detected X11 user, then vagrant, then peto
+            let users_to_try = [&x11_user[..], "vagrant", "peto"];
+            for user in users_to_try {
+                if !std::process::Command::new("id")
+                    .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
+                    .status().map(|s| s.success()).unwrap_or(false)
+                {
+                    continue;
+                }
+                let (ok, _) = Self::run_cmd_with_stdin(
+                    std::process::Command::new("su")
+                        .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
+                    text, 3,
+                );
+                if ok { ok_xclip = true; break; }
             }
-            let (ok, _) = Self::run_cmd_with_stdin(
-                std::process::Command::new("su")
-                    .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
-                text, 3,
-            );
-            if ok { ok_xclip = true; break; }
         }
 
         // 4. Debug log
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }),
+            format!("file={}b tmux={} xclip={} display={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display),
         );
 
         // 5. Leave alt screen and show text visibly
