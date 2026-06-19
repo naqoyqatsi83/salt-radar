@@ -771,20 +771,24 @@ impl App {
         } else { false };
 
         // 3. xclip (pushes to X11 clipboard → MobaXterm → Windows).
-        let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
-        let x11_user = Self::detect_x11_user(&display);
+        // Resolve DISPLAY: prefer tmux's preserved env (captured before sudo),
+        // then process env, then fallback guess.
+        let display = Self::resolve_display();
+        let display_str = display.as_deref().unwrap_or("localhost:10.0");
+        let x11_user = Self::detect_x11_user(display_str);
 
         let mut ok_xclip = false;
-        // If DISPLAY was actually set (not the default fallback), try xclip
-        // directly as root — it has the SSH-forwarded X11 auth cookie.
-        if std::env::var("DISPLAY").is_ok() {
+        // Direct xclip as root — only when DISPLAY is a real value (not a guess).
+        // This works when X11 forwarding is active and root has the auth cookie.
+        if display.is_some() {
             let (ok, _) = Self::run_cmd_with_stdin(
                 std::process::Command::new("xclip")
-                    .args(["-selection", "clipboard", "-display", &display]),
+                    .args(["-selection", "clipboard", "-display", display_str]),
                 text, 3,
             );
             if ok { ok_xclip = true; }
         }
+        // Fallback: try via su to detected X11 user (xclip as unprivileged user)
         if !ok_xclip {
             let users_to_try = [&x11_user[..], "vagrant", "peto"];
             for user in users_to_try {
@@ -796,7 +800,7 @@ impl App {
                 }
                 let (ok, _) = Self::run_cmd_with_stdin(
                     std::process::Command::new("su")
-                        .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
+                        .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display_str), user]),
                     text, 3,
                 );
                 if ok { ok_xclip = true; break; }
@@ -806,7 +810,7 @@ impl App {
         // 4. Debug log
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }),
+            format!("file={}b tmux={} xclip={} display={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display_str),
         );
 
         // 5. Leave alt screen and show text visibly
@@ -871,6 +875,31 @@ impl App {
         "peto".to_string()
     }
 
+    /// Resolve DISPLAY value: prefer tmux's show-environment (preserved before sudo),
+    /// then the process env. Returns None if only the fallback guess would be available.
+    fn resolve_display() -> Option<String> {
+        // Try tmux show-environment first (survives sudo)
+        if let Some(socket) = Self::tmux_socket_path() {
+            let output = std::process::Command::new("tmux")
+                .args(["-S", &socket, "show-environment", "DISPLAY"])
+                .output().ok()
+                .and_then(|o| {
+                    if o.status.success() { String::from_utf8(o.stdout).ok() } else { None }
+                });
+            if let Some(s) = output {
+                if s.starts_with('-') { /* tmux prefix: variable was unset */ }
+                else if let Some(val) = s.strip_prefix("DISPLAY=") {
+                    let v = val.trim().to_string();
+                    if !v.is_empty() {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+        // Fallback: process env var
+        let d = std::env::var("DISPLAY").ok()?;
+        if d.is_empty() { None } else { Some(d) }
+    }
 
     /// Scan events buffer for fleet scan returns matching the known JID
     fn process_fleet_returns(&mut self) {
