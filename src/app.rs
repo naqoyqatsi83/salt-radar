@@ -775,20 +775,32 @@ impl App {
         let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
-        let users_to_try = [&x11_user[..], "vagrant", "peto"];
-        for user in users_to_try {
-            if !std::process::Command::new("id")
-                .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false)
-            {
-                continue;
-            }
+        // If DISPLAY was actually set (not the default fallback), try xclip
+        // directly as root — it has the SSH-forwarded X11 auth cookie.
+        if std::env::var("DISPLAY").is_ok() {
             let (ok, _) = Self::run_cmd_with_stdin(
-                std::process::Command::new("su")
-                    .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
+                std::process::Command::new("xclip")
+                    .args(["-selection", "clipboard", "-display", &display]),
                 text, 3,
             );
-            if ok { ok_xclip = true; break; }
+            if ok { ok_xclip = true; }
+        }
+        if !ok_xclip {
+            let users_to_try = [&x11_user[..], "vagrant", "peto"];
+            for user in users_to_try {
+                if !std::process::Command::new("id")
+                    .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
+                    .status().map(|s| s.success()).unwrap_or(false)
+                {
+                    continue;
+                }
+                let (ok, _) = Self::run_cmd_with_stdin(
+                    std::process::Command::new("su")
+                        .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
+                    text, 3,
+                );
+                if ok { ok_xclip = true; break; }
+            }
         }
 
         // 4. Debug log
