@@ -775,26 +775,41 @@ impl App {
         let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
-        let users_to_try = [&x11_user[..], "vagrant", "peto"];
-        for user in users_to_try {
-            if !std::process::Command::new("id")
-                .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false)
-            {
-                continue;
+        // Direct xclip as root — only when DISPLAY was actually set by the
+        // environment (not the localhost:10.0 fallback). Root has the SSH
+        // X11 auth cookie when X11 forwarding is active.
+        if let Ok(d) = std::env::var("DISPLAY") {
+            if !d.is_empty() {
+                let (ok, _) = Self::run_cmd_with_stdin(
+                    std::process::Command::new("xclip")
+                        .args(["-selection", "clipboard", "-display", &display]),
+                    text, 3,
+                );
+                if ok { ok_xclip = true; }
             }
-            let (ok, _) = Self::run_cmd_with_stdin(
-                std::process::Command::new("su")
-                    .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
-                text, 3,
-            );
-            if ok { ok_xclip = true; break; }
+        }
+        if !ok_xclip {
+            let users_to_try = [&x11_user[..], "vagrant", "peto"];
+            for user in users_to_try {
+                if !std::process::Command::new("id")
+                    .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
+                    .status().map(|s| s.success()).unwrap_or(false)
+                {
+                    continue;
+                }
+                let (ok, _) = Self::run_cmd_with_stdin(
+                    std::process::Command::new("su")
+                        .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
+                    text, 3,
+                );
+                if ok { ok_xclip = true; break; }
+            }
         }
 
         // 4. Debug log
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }),
+            format!("file={}b tmux={} xclip={} display={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display),
         );
 
         // 5. Leave alt screen and show text visibly
