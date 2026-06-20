@@ -775,46 +775,23 @@ impl App {
         let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
-        // Direct xclip as root — only when DISPLAY was actually set by the
-        // environment (not the localhost:10.0 fallback). Also find the Xauthority
-        // cookie file so root can authenticate to the X server.
-        if let Ok(d) = std::env::var("DISPLAY") {
-            if !d.is_empty() {
-                let mut cmd = std::process::Command::new("xclip");
-                cmd.args(["-selection", "clipboard", "-display", &display]);
-                if let Some(xa) = Self::find_xauthority(&x11_user) {
-                    cmd.env("XAUTHORITY", xa);
-                }
-                let (ok, _) = Self::run_cmd_with_stdin(&mut cmd, text, 3);
-                if ok { ok_xclip = true; }
-            }
-        }
-        if !ok_xclip {
-            let cur_user = Self::current_username();
-            let users_to_try = [&x11_user[..], cur_user.as_str()];
-            for user in users_to_try {
-                if !std::process::Command::new("id")
-                    .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
-                    .status().map(|s| s.success()).unwrap_or(false)
-                {
-                    continue;
-                }
-                let xa = Self::find_xauthority(user);
-                let xa_env = xa.as_ref().map(|p| format!("XAUTHORITY={} ", p)).unwrap_or_default();
-                let (ok, _) = Self::run_cmd_with_stdin(
-                    std::process::Command::new("su")
-                        .args(["-c", &format!("{}DISPLAY={} xclip -selection clipboard", xa_env, display), user]),
-                    text, 3,
-                );
-                if ok { ok_xclip = true; break; }
-            }
+        // Try xclip via su as the user that owns the X11 socket
+        if std::process::Command::new("id")
+            .arg(&x11_user).stdout(Stdio::null()).stderr(Stdio::null())
+            .status().map(|s| s.success()).unwrap_or(false)
+        {
+            let (ok, _) = Self::run_cmd_with_stdin(
+                std::process::Command::new("su")
+                    .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), &x11_user]),
+                text, 3,
+            );
+            if ok { ok_xclip = true; }
         }
 
         // 4. Debug log
-        let xa_info = Self::find_xauthority(&x11_user).unwrap_or_else(|| "not_found".to_string());
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={} display={} xauthority={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display, xa_info),
+            format!("file={}b tmux={} xclip={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }),
         );
 
         // 5. Leave alt screen and show text visibly
@@ -837,23 +814,22 @@ impl App {
         self.needs_terminal_clear = true;
     }
 
-    /// Tries to find the unprivileged user that owns the X11 session by
-    /// checking ownership of /tmp/.X11-unix/X<display_number>.
-    fn current_username() -> String {
+    fn current_user() -> String {
         std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "root".to_string())
     }
 
+    /// Tries to find the unprivileged user that owns the X11 session by
+    /// checking ownership of /tmp/.X11-unix/X<display_number>.
     fn detect_x11_user(display: &str) -> String {
-        // Extract display number from "localhost:10.0" or ":1" or "10" etc.
         let dnum = display
             .trim_start_matches("localhost:")
             .trim_start_matches(':')
-            .split('.')   // strip screen number: "10.0" → "10"
+            .split('.')
             .next()
             .unwrap_or("")
             .trim();
         if dnum.is_empty() {
-            return Self::current_username();
+            return Self::current_user();
         }
         if let Ok(entries) = std::fs::read_dir("/tmp/.X11-unix") {
             for entry in entries.filter_map(|e| e.ok()) {
@@ -880,34 +856,7 @@ impl App {
                 }
             }
         }
-        Self::current_username()
-    }
-
-    /// Find the Xauthority file for a given user — the cookie file that
-    /// grants xclip access to the X11 display. Checks common locations:
-    /// ~/.Xauthority and /run/user/<uid>/xauth (pam_xauth on newer Ubuntu).
-    fn find_xauthority(username: &str) -> Option<String> {
-        // Look up the user's home dir and uid from /etc/passwd
-        let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
-        for line in passwd.lines() {
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.first() != Some(&username) { continue; }
-            let home = parts.get(5)?;
-            let uid: u32 = parts.get(2)?.parse().ok()?;
-
-            // Check ~/.Xauthority
-            let dot_path = format!("{}/.Xauthority", home);
-            if std::path::Path::new(&dot_path).exists() {
-                return Some(dot_path);
-            }
-            // Check /run/user/<uid>/xauth
-            let run_path = format!("/run/user/{}/xauth", uid);
-            if std::path::Path::new(&run_path).exists() {
-                return Some(run_path);
-            }
-            break;
-        }
-        None
+        Self::current_user()
     }
 
     /// Scan events buffer for fleet scan returns matching the known JID
