@@ -790,7 +790,8 @@ impl App {
             }
         }
         if !ok_xclip {
-            let users_to_try = [&x11_user[..], "vagrant", "peto"];
+            let cur_user = Self::current_username();
+            let users_to_try = [&x11_user[..], cur_user.as_str()];
             for user in users_to_try {
                 if !std::process::Command::new("id")
                     .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
@@ -838,6 +839,10 @@ impl App {
 
     /// Tries to find the unprivileged user that owns the X11 session by
     /// checking ownership of /tmp/.X11-unix/X<display_number>.
+    fn current_username() -> String {
+        std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "root".to_string())
+    }
+
     fn detect_x11_user(display: &str) -> String {
         // Extract display number from "localhost:10.0" or ":1" or "10" etc.
         let dnum = display
@@ -848,7 +853,7 @@ impl App {
             .unwrap_or("")
             .trim();
         if dnum.is_empty() {
-            return "peto".to_string();
+            return Self::current_username();
         }
         if let Ok(entries) = std::fs::read_dir("/tmp/.X11-unix") {
             for entry in entries.filter_map(|e| e.ok()) {
@@ -875,7 +880,7 @@ impl App {
                 }
             }
         }
-        "peto".to_string()
+        Self::current_username()
     }
 
     /// Find the Xauthority file for a given user — the cookie file that
