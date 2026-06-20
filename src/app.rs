@@ -776,15 +776,16 @@ impl App {
 
         let mut ok_xclip = false;
         // Direct xclip as root — only when DISPLAY was actually set by the
-        // environment (not the localhost:10.0 fallback). Root has the SSH
-        // X11 auth cookie when X11 forwarding is active.
+        // environment (not the localhost:10.0 fallback). Also find the Xauthority
+        // cookie file so root can authenticate to the X server.
         if let Ok(d) = std::env::var("DISPLAY") {
             if !d.is_empty() {
-                let (ok, _) = Self::run_cmd_with_stdin(
-                    std::process::Command::new("xclip")
-                        .args(["-selection", "clipboard", "-display", &display]),
-                    text, 3,
-                );
+                let mut cmd = std::process::Command::new("xclip");
+                cmd.args(["-selection", "clipboard", "-display", &display]);
+                if let Some(xa) = Self::find_xauthority(&x11_user) {
+                    cmd.env("XAUTHORITY", xa);
+                }
+                let (ok, _) = Self::run_cmd_with_stdin(&mut cmd, text, 3);
                 if ok { ok_xclip = true; }
             }
         }
@@ -797,9 +798,11 @@ impl App {
                 {
                     continue;
                 }
+                let xa = Self::find_xauthority(user);
+                let xa_env = xa.as_ref().map(|p| format!("XAUTHORITY={} ", p)).unwrap_or_default();
                 let (ok, _) = Self::run_cmd_with_stdin(
                     std::process::Command::new("su")
-                        .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), user]),
+                        .args(["-c", &format!("{}DISPLAY={} xclip -selection clipboard", xa_env, display), user]),
                     text, 3,
                 );
                 if ok { ok_xclip = true; break; }
@@ -807,9 +810,10 @@ impl App {
         }
 
         // 4. Debug log
+        let xa_info = Self::find_xauthority(&x11_user).unwrap_or_else(|| "not_found".to_string());
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={} display={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display),
+            format!("file={}b tmux={} xclip={} display={} xauthority={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display, xa_info),
         );
 
         // 5. Leave alt screen and show text visibly
@@ -872,6 +876,33 @@ impl App {
             }
         }
         "peto".to_string()
+    }
+
+    /// Find the Xauthority file for a given user — the cookie file that
+    /// grants xclip access to the X11 display. Checks common locations:
+    /// ~/.Xauthority and /run/user/<uid>/xauth (pam_xauth on newer Ubuntu).
+    fn find_xauthority(username: &str) -> Option<String> {
+        // Look up the user's home dir and uid from /etc/passwd
+        let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+        for line in passwd.lines() {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.first() != Some(&username) { continue; }
+            let home = parts.get(5)?;
+            let uid: u32 = parts.get(2)?.parse().ok()?;
+
+            // Check ~/.Xauthority
+            let dot_path = format!("{}/.Xauthority", home);
+            if std::path::Path::new(&dot_path).exists() {
+                return Some(dot_path);
+            }
+            // Check /run/user/<uid>/xauth
+            let run_path = format!("/run/user/{}/xauth", uid);
+            if std::path::Path::new(&run_path).exists() {
+                return Some(run_path);
+            }
+            break;
+        }
+        None
     }
 
     /// Scan events buffer for fleet scan returns matching the known JID
