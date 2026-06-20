@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.6] - 2026-06-18
+## [0.3.6] - 2026-06-20
 
 ### Changed
 - Fleet scan is now fully event-driven: `cmd_async` fires the job and returns immediately. Returns arrive incrementally via the ZMQ event bus — minion grains (osfinger, saltversion, cpuarch) appear in the list as each minion responds, with no blocking wait.
 - Fleet scan 60s grace period: minions that don't respond within 60 seconds are marked as non-responsive instead of being ignored.
+
+### Fixed
+- Clipboard: removed XAUTHORITY-based xclip approach that caused "X11 connection rejected because of wrong authentication" errors. Reverted to v0.3.5 clipboard strategy (tmux load-buffer + su xclip) with dynamic user detection — no hardcoded usernames.
 
 ## [0.3.5] - 2026-06-18
 
