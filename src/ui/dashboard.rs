@@ -748,39 +748,40 @@ fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], style: Style, mode:
             f.render_widget(sp, area);
         }
         SparklineStyle::Dots => {
-            let mut s = String::new();
-            let mut i = 0;
-            while i + 1 < data.len() && s.len() < area.width as usize {
-                let v1 = data[i].min(100);
-                let v2 = data[i + 1].min(100);
-                let r1 = v1.saturating_mul(4) / 100;
-                let r2 = v2.saturating_mul(4) / 100;
-                let mut bits = 0u8;
-                match r1.min(4) {
-                    1 => bits |= 0b00000001,
-                    2 => bits |= 0b00000010,
-                    3 => bits |= 0b00000100,
-                    4 => bits |= 0b01000000,
-                    _ => {}
-                }
-                match r2.min(4) {
-                    1 => bits |= 0b00001000,
-                    2 => bits |= 0b00010000,
-                    3 => bits |= 0b00100000,
-                    4 => bits |= 0b10000000,
-                    _ => {}
-                }
-                let ch = if bits == 0 { ' ' } else { char::from_u32(0x2800 + bits as u32).unwrap_or(' ') };
-                s.push(ch);
-                i += 2;
-            }
-            // Render at bottom of area
-            let blank_lines = area.height.saturating_sub(1);
+            // One braille char per data value: all 8 dots represent 9 height
+            // levels (0 = empty, 8 = full).  This fills the full area width.
+            let total_pixels = (area.height as u32).saturating_mul(8).max(1);
+            let ncols = area.width as usize;
+            if ncols == 0 || area.height == 0 { return; }
+
             let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
-            for _ in 0..blank_lines {
-                lines.push(Line::from(""));
+            for br in 0..area.height {
+                let mut line = String::with_capacity(ncols);
+                let row_from_bottom = (area.height - 1 - br) as u32;
+                for &v in data.iter().take(ncols) {
+                    let threshold = ((v.min(100) as u32).saturating_mul(total_pixels) + 99) / 100;
+                    let mut bits = 0u8;
+                    // 8 dots, bottom-to-top bit order: 0,1,2,6,3,7,4,5
+                    for dot in 0u8..8 {
+                        let pixel_pos = row_from_bottom.saturating_mul(8) + dot as u32;
+                        if pixel_pos < threshold {
+                            bits |= match dot {
+                                0 => 0b00000001,
+                                1 => 0b00000010,
+                                2 => 0b00000100,
+                                3 => 0b00001000,
+                                4 => 0b00010000,
+                                5 => 0b00100000,
+                                6 => 0b01000000,
+                                _ => 0b10000000,
+                            };
+                        }
+                    }
+                    let ch = if bits == 0 { ' ' } else { char::from_u32(0x2800 + bits as u32).unwrap_or(' ') };
+                    line.push(ch);
+                }
+                lines.push(Line::from(Span::styled(line, style)));
             }
-            lines.push(Line::from(Span::styled(s, style)));
             f.render_widget(Paragraph::new(lines), area);
         }
     }

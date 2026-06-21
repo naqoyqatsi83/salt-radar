@@ -250,6 +250,7 @@ fn draw_job_detail(
 
             // Show full return data for selected minion
             if sel < l.returns.len() {
+                lines.push(Line::from(""));
                 let ret = &l.returns[sel];
                 let display_str = if !ret.formatted_text.is_empty() {
                     // Salt's own outputter already includes the ----------
