@@ -108,7 +108,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_key_hints(f, main_layout[3], app);
 
     // Detail popup overlay
-    detail_popup::draw_detail_popup(f, app);
+    if app.popup_tab == Some(app.current_tab) { detail_popup::draw_detail_popup(f, app); }
 
     // Help overlay
     if app.show_help {

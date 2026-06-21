@@ -52,6 +52,8 @@ pub struct App {
     // UI state
     pub last_frame_size: Rect,
     pub detail_popup: Option<DetailPopup>,
+    /// Tab where the current popup was opened (popup only shows on that tab)
+    pub popup_tab: Option<Tab>,
     pub show_help: bool,
     pub high_contrast: bool,
 
@@ -76,7 +78,10 @@ pub struct App {
     agent_req_id: u64,
     config_tick: u64,
     /// Pending jid_lookup (request_id, jid) waiting for async result
+    /// Pending jid_lookup (request_id, jid) for auto-updating the popup
     pending_jid_lookup: Option<(u64, String)>,
+    /// When Y is pressed, stores (request_id, jid) so the response auto-copies JSON
+    pending_y_copy: Option<(u64, String)>,
     /// Events statistics
     pub events_total: u64,
     events_last_sec_count: u64,
@@ -195,6 +200,7 @@ impl App {
 
             last_frame_size: Rect::default(),
             detail_popup: None,
+            popup_tab: None,
             show_help: false,
             high_contrast: false,
 
@@ -225,6 +231,7 @@ impl App {
             agent_req_id: 0,
             config_tick: 0,
             pending_jid_lookup: None,
+            pending_y_copy: None,
             events_total: 0,
             events_last_sec_count: 0,
             events_last_sec_time: Instant::now(),
@@ -256,6 +263,7 @@ impl App {
     /// Poll pending agent messages from background thread
     pub fn drain_agent_messages(&mut self) {
         let mut q = self.agent_rx.lock().unwrap();
+        let mut y_copy_json: Option<String> = None;
         while let Some(msg) = q.pop_front() {
             match msg {
                 AgentMessage::Result { id, cmd, ok, data } => {
@@ -313,14 +321,22 @@ impl App {
                                 if id == pending_id {
                                     self.pending_jid_lookup = None;
                                     if let Some(DetailPopup::JobDetail { ref mut lookup, .. }) = self.detail_popup {
-                                        *lookup = Some(jid_data);
+                                        *lookup = Some(jid_data.clone());
                                     }
                                 }
-                            } else {
-                                // No pending — update if popup has no data
-                                if let Some(DetailPopup::JobDetail { ref mut lookup, .. }) = self.detail_popup {
-                                    if lookup.is_none() {
-                                        *lookup = Some(jid_data);
+                            }
+                            // Y key pending: copy pretty JSON of selected return
+                            if let Some((y_id, _)) = self.pending_y_copy {
+                                if id == y_id {
+                                    self.pending_y_copy = None;
+                                    let idx = match self.detail_popup {
+                                        Some(DetailPopup::JobDetail { selected_return, .. }) => selected_return.unwrap_or(0),
+                                        _ => 0,
+                                    };
+                                    if idx < jid_data.returns.len() {
+                                        let json = serde_json::to_string_pretty(&jid_data.returns[idx].full_return)
+                                            .unwrap_or_else(|_| jid_data.returns[idx].summary.clone());
+                                        y_copy_json = Some(json);
                                     }
                                 }
                             }
@@ -382,6 +398,15 @@ impl App {
                     self.agent.connected = false;
                 }
             }
+        }
+        if let Some(json) = y_copy_json {
+            // Store in a temp file for clipboard
+            let _ = std::fs::write("/tmp/salt-radar-copy.txt", &json);
+            self.clipboard_msg = Some((
+                format!(" Copied {} bytes of JSON job return -- use y for display format ", json.len()),
+                std::time::Instant::now(),
+            ));
+            self.clipboard_at = Some(std::time::Instant::now());
         }
     }
 
@@ -610,36 +635,36 @@ impl App {
             Tab::Events => {
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
                     self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone()));
+                    self.popup_tab = Some(self.current_tab);
                 }
             }
             Tab::Jobs => {
                 if let Some(job) = self.get_filtered_job(self.job_selected) {
                     let jid = job.jid.clone();
-                    let job_fun = job.fun.clone();
-                    let job_tgt = job.tgt.clone();
-                    let job_start_epoch = job.created_epoch;
-                    let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": jid.clone()})));
-                    self.pending_jid_lookup = Some((req_id, jid.clone()));
+                    let lookup = build_jid_lookup_from_events(&jid, &self.events);
                     self.detail_popup = Some(DetailPopup::JobDetail {
                         jid,
-                        lookup: None,
+                        lookup,
                         selected_return: None,
                         scroll_offset: 0,
                         scroll_mode: false,
-                        job_fun,
-                        job_tgt,
-                        job_start_epoch,
+                        job_fun: job.fun.clone(),
+                        job_tgt: job.tgt.clone(),
+                        job_start_epoch: job.created_epoch,
                     });
+                    self.popup_tab = Some(self.current_tab);
                 }
             }
             Tab::Alerts => {
                 if let Some(alert) = self.get_filtered_alert(self.alert_selected) {
                     self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                    self.popup_tab = Some(self.current_tab);
                 }
             }
             Tab::Minions => {
                 if let Some(minion) = self.get_filtered_minion(self.minion_selected) {
                     self.detail_popup = Some(DetailPopup::Minion(minion.clone()));
+                    self.popup_tab = Some(self.current_tab);
                 }
             }
             _ => {}
@@ -1210,6 +1235,7 @@ impl App {
                                 selected: 0,
                             }
                         ));
+                        self.popup_tab = Some(self.current_tab);
                     }
                     self.sniffer_input_active = false;
                     self.sniffer_input_text.clear();
@@ -1227,7 +1253,7 @@ impl App {
 
         // Detail popup gets first crack
         let mut clipboard_text: Option<String> = None;
-        let had_popup = self.detail_popup.is_some();
+        let had_popup = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
 
         // Contrast toggle and tab switching work universally (even with popups open)
         if had_popup {
@@ -1247,13 +1273,17 @@ impl App {
             }
         }
 
-        if let Some(ref mut detail) = self.detail_popup {
+        // Local variable to defer jid_lookup agent command (avoids borrow conflict)
+        let mut trigger_y_lookup: Option<String> = None;
+        if self.popup_tab == Some(self.current_tab) {
+            if let Some(ref mut detail) = self.detail_popup {
             match *detail {
                 DetailPopup::JobDetail {
                     ref mut selected_return,
                     ref mut scroll_offset,
                     ref mut scroll_mode,
-                    ref lookup, ..
+                    ref lookup,
+                    ref jid, ..
                 } => {
                     if *scroll_mode {
                         match code {
@@ -1324,13 +1354,13 @@ impl App {
                                 if let Some(ref l) = lookup {
                                     let idx = selected_return.unwrap_or(0);
                                     if idx < l.returns.len() {
-                                        let ret = &l.returns[idx];
                                         clipboard_text = Some(
-                                            serde_json::to_string_pretty(&ret.full_return)
-                                                .unwrap_or_else(|_| ret.summary.clone())
+                                            serde_json::to_string_pretty(&l.returns[idx].full_return)
+                                                .unwrap_or_else(|_| l.returns[idx].summary.clone())
                                         );
                                     }
                                 }
+                                trigger_y_lookup = Some(jid.clone());
                             }
                             _ => {}
                         }
@@ -1357,6 +1387,7 @@ impl App {
                             if let Some(evt) = state.buffer.get(rev_idx) {
                                 self.return_to_sniffer = Some(state.clone());
                                 self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone()));
+                                self.popup_tab = Some(self.current_tab);
                             }
                         }
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -1405,6 +1436,7 @@ impl App {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             if let Some(sniffer) = self.return_to_sniffer.take() {
                                 self.detail_popup = Some(DetailPopup::EventSniffer(sniffer));
+                                self.popup_tab = Some(self.current_tab);
                             } else {
                                 self.detail_popup = None;
                             }
@@ -1462,6 +1494,11 @@ impl App {
             self.clipboard_at = Some(Instant::now());
             return false;
         }
+        }
+        if let Some(jid) = trigger_y_lookup {
+            let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+            self.pending_y_copy = Some((req_id, jid));
+        }
         if had_popup {
             return false;
         }
@@ -1513,6 +1550,7 @@ impl App {
                 } else if self.detail_popup.is_none() && !self.is_filtering {
                     self.admin_mode_pending = true;
                     self.detail_popup = Some(DetailPopup::AdminConfirm);
+                    self.popup_tab = Some(self.current_tab);
                 }
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -1667,6 +1705,58 @@ fn parse_minion_list(data: &serde_json::Value) -> Vec<MinionInfo> {
     }
     result.sort_by(|a, b| a.id.cmp(&b.id));
     result
+}
+
+/// Build a JidLookup directly from events in the buffer (no agent call).
+fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Option<JidLookup> {
+    let prefix = format!("salt/job/{}/ret/", jid);
+    let mut returns: Vec<JidReturn> = Vec::new();
+    let mut fun = String::new();
+    let mut tgt = String::new();
+
+    for evt in events {
+        if evt.tag == format!("salt/job/{}/new", jid) {
+            fun = evt.data["fun"].as_str().unwrap_or("").to_string();
+            tgt = evt.data["tgt"].as_str().unwrap_or("").to_string();
+        }
+        if !evt.tag.starts_with(&prefix) { continue; }
+        let minion_id = match evt.data["id"].as_str() {
+            Some(m) if !m.is_empty() => m.to_string(),
+            _ => continue,
+        };
+        let full_return = evt.data["return"].clone();
+        let summary = match &full_return {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                // Use a short summary: first 80 chars of formatted representation
+                let formatted = App::format_return_as_console(&minion_id, &full_return);
+                let first_line = formatted.lines().next().unwrap_or(&formatted);
+                let truncated = if first_line.len() > 80 {
+                    format!("{}...", &first_line[..80])
+                } else {
+                    first_line.to_string()
+                };
+                truncated
+            }
+            other => other.to_string(),
+        };
+        returns.push(JidReturn {
+            minion_id,
+            success: evt.data["success"].as_bool().unwrap_or(false),
+            retcode: evt.data["retcode"].as_i64().unwrap_or(0),
+            summary,
+            full_return,
+            formatted_text: String::new(), // computed on-demand in y handler
+        });
+    }
+    if returns.is_empty() { return None; }
+    Some(JidLookup {
+        found: true,
+        fun,
+        tgt,
+        start_time: String::new(),
+        returns,
+    })
 }
 
 fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {

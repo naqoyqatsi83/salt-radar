@@ -753,28 +753,35 @@ fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], style: Style, mode:
             while i + 1 < data.len() && s.len() < area.width as usize {
                 let v1 = data[i].min(100);
                 let v2 = data[i + 1].min(100);
-                let r1 = v1 * 3 / 100;
-                let r2 = v2 * 3 / 100;
+                let r1 = v1.saturating_mul(4) / 100;
+                let r2 = v2.saturating_mul(4) / 100;
                 let mut bits = 0u8;
-                match r1.min(3) {
-                    0 => bits |= 0b00000001,
-                    1 => bits |= 0b00000010,
-                    2 => bits |= 0b00000100,
-                    _ => bits |= 0b01000000,
+                match r1.min(4) {
+                    1 => bits |= 0b00000001,
+                    2 => bits |= 0b00000010,
+                    3 => bits |= 0b00000100,
+                    4 => bits |= 0b01000000,
+                    _ => {}
                 }
-                match r2.min(3) {
-                    0 => bits |= 0b00001000,
-                    1 => bits |= 0b00010000,
-                    2 => bits |= 0b00100000,
-                    _ => bits |= 0b10000000,
+                match r2.min(4) {
+                    1 => bits |= 0b00001000,
+                    2 => bits |= 0b00010000,
+                    3 => bits |= 0b00100000,
+                    4 => bits |= 0b10000000,
+                    _ => {}
                 }
-                s.push(char::from_u32(0x2800 + bits as u32).unwrap_or(' '));
+                let ch = if bits == 0 { ' ' } else { char::from_u32(0x2800 + bits as u32).unwrap_or(' ') };
+                s.push(ch);
                 i += 2;
             }
-            f.render_widget(
-                Paragraph::new(Line::from(Span::styled(s, style))),
-                area,
-            );
+            // Render at bottom of area
+            let blank_lines = area.height.saturating_sub(1);
+            let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
+            for _ in 0..blank_lines {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(s, style)));
+            f.render_widget(Paragraph::new(lines), area);
         }
     }
 }

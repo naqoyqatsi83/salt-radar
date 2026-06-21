@@ -21,7 +21,7 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
         DetailPopup::SaltEvent(evt) => {
             let area = centered_rect(75, 70, f.area());
             f.render_widget(Clear, area);
-            draw_event_detail(f, area, evt);
+            draw_event_detail(f, area, evt, app.clipboard_at);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, scroll_offset, scroll_mode, job_fun, job_tgt, job_start_epoch } => {
             let area = centered_rect(75, 75, f.area());
@@ -169,7 +169,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent) {
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, clipboard_at: Option<std::time::Instant>) {
     let mut lines = header_lines(" Event Detail ");
     lines.push(row("Tag", evt.tag.clone(), color::CYAN));
     lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
@@ -180,10 +180,7 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent) {
         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
     }
 
-    let footer = Line::from(Span::styled(
-        "  [ Esc/q close | y=copy ]",
-        Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-    ));
+    let footer = dismiss_line(clipboard_at, false);
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
