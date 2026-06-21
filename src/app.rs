@@ -1213,8 +1213,8 @@ impl App {
             return false;
         }
 
-        // Sniffer input mode (text entry before launching)
-        if self.sniffer_input_active {
+        // Sniffer input mode (text entry before launching, only on Events tab)
+        if self.sniffer_input_active && self.current_tab == Tab::Events {
             match code {
                 KeyCode::Esc => {
                     self.sniffer_input_active = false;
@@ -1554,8 +1554,12 @@ impl App {
                 }
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                if self.admin_mode && self.current_tab == Tab::Minions && !self.fleet_scanning {
+                if self.admin_mode && self.current_tab == Tab::Minions {
+                    // Reset any stuck scan state and start fresh
                     self.fleet_scanning = true;
+                    self.fleet_scan_jid = None;
+                    self.fleet_scan_started_at = None;
+                    self.fleet_data = None;
                     self.send_agent_cmd("fleet_scan", None);
                 }
             }
