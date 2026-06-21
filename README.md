@@ -58,9 +58,19 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Toggle with `a` (danger-zone confirmation dialog required)
 - **Fleet scan** (`s`): runs `grains.items` on all minions via Salt LocalClient, populates OS/Salt Version/Arch data
 
+### Clipboard
+
+Copy-to-clipboard (`y` / `Y`) uses two methods:
+
+1. **tmux load-buffer** — pushes text into the tmux paste buffer via OSC 52 escape sequence. MobaXterm (or any terminal emulator that handles OSC 52) captures this and places it on the system clipboard. Works automatically when running inside tmux.
+
+2. **xclip** — pushes text to the X11 clipboard via `su` as the user that owns the X11 socket. The code auto-resolves DISPLAY and XAUTHORITY by checking the process environment first, then falling back to the tmux session's global environment (inherited from the original SSH session). This means clipboard works even when salt-radar is launched under `sudo`, with no `sudoers` configuration required.
+
+If running without tmux and DISPLAY/XAUTHORITY aren't set, xclip falls back to `localhost:10.0` — in this case, forward X11 via `ssh -X` or `ssh -Y`.
+
 ### Everywhere
 - **High-contrast selection mode** (`c`) — steel-blue background + bold, works inside popups too
-- **Clipboard integration** — tmux load-buffer + xclip via X11 forwarding (works from MobaXterm → SSH → tmux)
+- **Clipboard integration** — tmux load-buffer + xclip via X11 forwarding. DISPLAY and XAUTHORITY are auto-resolved from the process environment or the tmux session's global environment — no manual configuration needed even when running under `sudo`
 - Filter-as-you-type with `/` on all list tabs
 - Keyboard-driven navigation with `?` for help
 

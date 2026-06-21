@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fleet scan 60s grace period: minions that don't respond within 60 seconds are marked as non-responsive instead of being ignored.
 
 ### Fixed
-- Clipboard: removed XAUTHORITY-based xclip approach that caused "X11 connection rejected because of wrong authentication" errors. Reverted to v0.3.5 clipboard strategy (tmux load-buffer + su xclip) with dynamic user detection — no hardcoded usernames.
+- Clipboard: XAUTHORITY is now auto-resolved from the process environment or tmux session global environment (`tmux show-environment -g XAUTHORITY`). This means xclip works under `sudo` without any `sudoers` configuration — the code finds DISPLAY and XAUTHORITY via the original tmux session even when the root shell has neither set.
+- Clipboard: removed buggy `find_xauthority()` code that caused "X11 connection rejected because of wrong authentication" errors. Replaced with clean XAUTHORITY forwarding via env/tmux.
+- Clipboard: no hardcoded usernames — X11 socket owner detection uses `/tmp/.X11-unix/` ownership lookup with dynamic fallback to `USER`/`LOGNAME` env vars.
 
 ## [0.3.5] - 2026-06-18
 

@@ -757,6 +757,72 @@ impl App {
         }
     }
 
+    /// Run a command and capture its stdout (with timeout).
+    fn run_cmd_with_output(cmd: &mut std::process::Command, timeout_secs: u64) -> Option<String> {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let mut child = match cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+        let (tx, rx) = mpsc::channel();
+        let pid = child.id();
+        std::thread::spawn(move || {
+            let mut output = String::new();
+            let _ = child.stdout.take().map(|mut s| s.read_to_string(&mut output));
+            let _ = child.wait();
+            let _ = tx.send(output);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+            Ok(out) => Some(out),
+            Err(_) => {
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                None
+            }
+        }
+    }
+
+    /// Read a tmux global environment variable (inherited from the process
+    /// that started the tmux server, which is the original SSH session).
+    fn tmux_global_env(name: &str) -> Option<String> {
+        let socket = Self::tmux_socket_path();
+        let mut cmd = std::process::Command::new("tmux");
+        if let Some(s) = &socket {
+            cmd.args(["-S", s]);
+        }
+        cmd.args(["show-environment", "-g", name]);
+
+        let output = Self::run_cmd_with_output(&mut cmd, 3)?;
+        let line = output.trim();
+        if line.is_empty() || line.starts_with('-') {
+            return None;
+        }
+        line.strip_prefix(&format!("{}=", name)).map(|v| v.to_string())
+    }
+
+    /// Resolve DISPLAY and XAUTHORITY by checking the current process
+    /// environment first, then falling back to the tmux session's global
+    /// environment (which holds the original SSH session values).
+    fn resolve_x11_env() -> (String, Option<String>) {
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| {
+            Self::tmux_global_env("DISPLAY").unwrap_or_else(|| "localhost:10.0".to_string())
+        });
+        let xauth = std::env::var("XAUTHORITY").ok()
+            .or_else(|| Self::tmux_global_env("XAUTHORITY"));
+        (display, xauth)
+    }
+
     pub fn copy_to_clipboard(&mut self, text: &str) {
         // 1. Write to local file (always works, easy debug)
         let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
@@ -770,28 +836,32 @@ impl App {
             ok
         } else { false };
 
-        // 3. xclip (pushes to X11 clipboard → MobaXterm → Windows).
-        let display = std::env::var("DISPLAY").unwrap_or_else(|_| "localhost:10.0".to_string());
+        // 3. xclip — resolves DISPLAY and XAUTHORITY from process env or
+        //    tmux global environment, then forwards them via su.
+        let (display, xauth) = Self::resolve_x11_env();
         let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
-        // Try xclip via su as the user that owns the X11 socket
         if std::process::Command::new("id")
             .arg(&x11_user).stdout(Stdio::null()).stderr(Stdio::null())
             .status().map(|s| s.success()).unwrap_or(false)
         {
+            let xa_prefix = xauth.as_ref()
+                .map(|v| format!("XAUTHORITY={} ", v))
+                .unwrap_or_default();
             let (ok, _) = Self::run_cmd_with_stdin(
                 std::process::Command::new("su")
-                    .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", display), &x11_user]),
+                    .args(["-c", &format!("{}DISPLAY={} xclip -selection clipboard", xa_prefix, display), &x11_user]),
                 text, 3,
             );
             if ok { ok_xclip = true; }
         }
 
         // 4. Debug log
+        let xa_info = xauth.as_deref().unwrap_or("not_set");
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }),
+            format!("file={}b tmux={} xclip={} display={} xauthority={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display, xa_info),
         );
 
         // 5. Leave alt screen and show text visibly
