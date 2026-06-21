@@ -89,6 +89,8 @@ pub struct App {
     pub event_rate_idx: usize,
     /// Timestamp of last successful clipboard copy (for UI feedback)
     pub clipboard_at: Option<Instant>,
+    /// Transient message shown in status bar (e.g. clipboard hints)
+    pub clipboard_msg: Option<(String, Instant)>,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
     /// Measured ZMQ/master response latency in milliseconds (from zmq_ping agent command)
@@ -230,6 +232,7 @@ impl App {
             event_rate_history: [0.0; 2000],
             event_rate_idx: 0,
             clipboard_at: None,
+            clipboard_msg: None,
             needs_terminal_clear: false,
             zmq_latency_ms: 0.0,
             zmq_ping_sent_at: None,
@@ -811,15 +814,16 @@ impl App {
         line.strip_prefix(&format!("{}=", name)).map(|v| v.to_string())
     }
 
-    /// Resolve DISPLAY and XAUTHORITY by checking the current process
-    /// environment first, then falling back to the tmux session's global
-    /// environment (which holds the original SSH session values).
-    fn resolve_x11_env() -> (String, Option<String>) {
-        let display = std::env::var("DISPLAY").unwrap_or_else(|_| {
-            Self::tmux_global_env("DISPLAY").unwrap_or_else(|| "localhost:10.0".to_string())
-        });
+    /// Resolve DISPLAY and XAUTHORITY. Checks process env first, then tmux
+    /// global env (the original SSH session). Neither is hardcoded — returns
+    /// None for both if unresolvable, to avoid leaking data to a wrong display.
+    fn resolve_x11_env() -> (Option<String>, Option<String>) {
+        let display = std::env::var("DISPLAY").ok()
+            .or_else(|| Self::tmux_global_env("DISPLAY"))
+            .filter(|d| !d.is_empty());
         let xauth = std::env::var("XAUTHORITY").ok()
-            .or_else(|| Self::tmux_global_env("XAUTHORITY"));
+            .or_else(|| Self::tmux_global_env("XAUTHORITY"))
+            .filter(|d| !d.is_empty());
         (display, xauth)
     }
 
@@ -839,29 +843,45 @@ impl App {
         // 3. xclip — resolves DISPLAY and XAUTHORITY from process env or
         //    tmux global environment, then forwards them via su.
         let (display, xauth) = Self::resolve_x11_env();
-        let x11_user = Self::detect_x11_user(&display);
 
         let mut ok_xclip = false;
-        if std::process::Command::new("id")
-            .arg(&x11_user).stdout(Stdio::null()).stderr(Stdio::null())
-            .status().map(|s| s.success()).unwrap_or(false)
-        {
-            let xa_prefix = xauth.as_ref()
-                .map(|v| format!("XAUTHORITY={} ", v))
-                .unwrap_or_default();
-            let (ok, _) = Self::run_cmd_with_stdin(
-                std::process::Command::new("su")
-                    .args(["-c", &format!("{}DISPLAY={} xclip -selection clipboard", xa_prefix, display), &x11_user]),
-                text, 3,
-            );
-            if ok { ok_xclip = true; }
+        if let Some(ref disp) = display {
+            let x11_user = Self::detect_x11_user(disp);
+            if std::process::Command::new("id")
+                .arg(&x11_user).stdout(Stdio::null()).stderr(Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false)
+            {
+                let xa_prefix = xauth.as_ref()
+                    .map(|v| format!("XAUTHORITY={} ", v))
+                    .unwrap_or_default();
+                let (ok, _) = Self::run_cmd_with_stdin(
+                    std::process::Command::new("su")
+                        .args(["-c", &format!("{}DISPLAY={} xclip -selection clipboard", xa_prefix, disp), &x11_user]),
+                    text, 3,
+                );
+                if ok { ok_xclip = true; }
+            }
+        }
+        if display.is_none() {
+            self.clipboard_msg = Some((
+                " DISPLAY not found — X11 clipboard unavailable. Use ssh -X/-Y or set DISPLAY/XAUTHORITY in tmux ".to_string(),
+                Instant::now(),
+            ));
+        } else if !ok_xclip {
+            self.clipboard_msg = Some((
+                " xclip failed — check DISPLAY and XAUTHORITY. Try: ssh -X, check tmux show-environment -g ".to_string(),
+                Instant::now(),
+            ));
+        } else {
+            self.clipboard_msg = None;
         }
 
         // 4. Debug log
         let xa_info = xauth.as_deref().unwrap_or("not_set");
+        let disp_info = display.as_deref().unwrap_or("not_set");
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={} display={} xauthority={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, display, xa_info),
+            format!("file={}b tmux={} xclip={} display={} xauthority={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, disp_info, xa_info),
         );
 
         // 5. Leave alt screen and show text visibly
@@ -1143,6 +1163,13 @@ impl App {
 
         // Clamp cursor selections to valid range
         self.clamp_selection();
+
+        // Clear transient clipboard message after 8 seconds
+        if let Some((_, at)) = self.clipboard_msg {
+            if at.elapsed().as_secs() > 8 {
+                self.clipboard_msg = None;
+            }
+        }
 
         self.tick_count += 1;
     }

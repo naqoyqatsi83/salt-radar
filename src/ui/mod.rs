@@ -338,6 +338,15 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(" agent: down ", Style::default().fg(color::RED)));
     }
 
+    // Transient clipboard message (auto-clears after 8 seconds)
+    if let Some((ref msg, _)) = app.clipboard_msg {
+        spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
+        spans.push(Span::styled(
+            msg.clone(),
+            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     // Admin mode indicator (always visible, highlights when active)
     spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
     if app.admin_mode {
