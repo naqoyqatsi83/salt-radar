@@ -138,6 +138,7 @@ disk_usage_pct = 85.0
 | `c` | Toggle high-contrast selection |
 | `?` / `h` | Help overlay |
 | `+`/`-` | Adjust refresh interval (Dashboard) |
+| `m` | Toggle sparkline style (Dashboard) |
 
 ### Per-tab
 

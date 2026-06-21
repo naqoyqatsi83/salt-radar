@@ -194,7 +194,10 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
     } else if app.fleet_scanning {
         lines.push(Line::from(Span::styled("  Scanning fleet...", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
     } else if let Some(ref fs) = app.fleet_data {
-        let bar_width = (inner.width as usize).saturating_sub(14);
+        // bar_width reserves space for: "  name<22> <count> <bar> <pct>%"
+        // = 2 prefix + 22 name + 5 count (sp+4) + 5 pct (sp+3+%) = 34
+        let fixed = 34;
+        let bar_width = (inner.width as usize).saturating_sub(fixed);
 
         let timed_out_count = fs.minions.iter().filter(|m| m.timed_out).count();
 
@@ -235,6 +238,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 let pct = *count as f64 / total_minions as f64 * 100.0;
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:<22}", os), Style::default().fg(color::TEXT)),
+                    Span::styled(format!(" {:>4}", count), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(bar, Style::default().fg(color::CYAN)),
                     Span::styled(format!(" {:.0}%", pct), Style::default().fg(color::TEXT_DIM)),
                 ]));
@@ -259,6 +263,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 let pct = *count as f64 / total_minions as f64 * 100.0;
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:<22}", ver), Style::default().fg(color::TEXT)),
+                    Span::styled(format!(" {:>4}", count), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(bar, Style::default().fg(color::YELLOW)),
                     Span::styled(format!(" {:.0}%", pct), Style::default().fg(color::TEXT_DIM)),
                 ]));
@@ -283,6 +288,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 let pct = *count as f64 / total_minions as f64 * 100.0;
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:<22}", arch), Style::default().fg(color::TEXT)),
+                    Span::styled(format!(" {:>4}", count), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(bar, Style::default().fg(color::PURPLE)),
                     Span::styled(format!(" {:.0}%", pct), Style::default().fg(color::TEXT_DIM)),
                 ]));

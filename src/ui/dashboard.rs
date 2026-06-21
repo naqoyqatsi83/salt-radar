@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline};
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::types::SparklineStyle;
 
 use super::color;
 
@@ -489,11 +490,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
             (v / max_lat * 100.0) as u64
         })
         .collect();
-    let sparkline = Sparkline::default()
-        .block(Block::default())
-        .style(Style::default().fg(lat_color))
-        .data(&spark_data);
-    f.render_widget(sparkline, inner_layout[0]);
+    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(lat_color), app.sparkline_style);
 
     // Stats bar below sparkline
     let mut spans: Vec<Span<'static>> = vec![
@@ -571,10 +568,7 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         format!("{}s ago", app.secs_since_last_event)
     };
 
-    let sparkline = Sparkline::default()
-        .block(Block::default())
-        .style(Style::default().fg(color::CYAN))
-        .data(&spark_data);
+    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
 
     let stats_line = Line::from(vec![
         Span::styled("  Rate: ", Style::default().fg(color::TEXT_LABEL)),
@@ -588,8 +582,6 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
             else { color::ORANGE }
         )),
     ]);
-
-    f.render_widget(sparkline, inner_layout[0]);
     f.render_widget(
         Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
         inner_layout[1],
@@ -649,10 +641,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let sparkline = Sparkline::default()
-        .block(Block::default())
-        .style(Style::default().fg(color::GREEN))
-        .data(&spark_data);
+    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::GREEN), app.sparkline_style);
 
     let activity_label = if app.last_activity_minion.is_empty() {
         "  waiting for minion returns...".to_string()
@@ -676,8 +665,6 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(activity_label, Style::default().fg(rate_color)),
         Span::styled(format!("  total: {}", total_returns), Style::default().fg(color::TEXT_DIM)),
     ]);
-
-    f.render_widget(sparkline, inner_layout[0]);
     f.render_widget(
         Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
         inner_layout[1],
@@ -747,4 +734,47 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
         inner,
     );
+}
+
+// ─── Shared sparkline renderer (bars or braille dots) ─────────────────────
+
+fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], style: Style, mode: SparklineStyle) {
+    match mode {
+        SparklineStyle::Bars => {
+            let sp = Sparkline::default()
+                .block(Block::default())
+                .style(style)
+                .data(data);
+            f.render_widget(sp, area);
+        }
+        SparklineStyle::Dots => {
+            let mut s = String::new();
+            let mut i = 0;
+            while i + 1 < data.len() && s.len() < area.width as usize {
+                let v1 = data[i].min(100);
+                let v2 = data[i + 1].min(100);
+                let r1 = v1 * 3 / 100;
+                let r2 = v2 * 3 / 100;
+                let mut bits = 0u8;
+                match r1.min(3) {
+                    0 => bits |= 0b00000001,
+                    1 => bits |= 0b00000010,
+                    2 => bits |= 0b00000100,
+                    _ => bits |= 0b01000000,
+                }
+                match r2.min(3) {
+                    0 => bits |= 0b00001000,
+                    1 => bits |= 0b00010000,
+                    2 => bits |= 0b00100000,
+                    _ => bits |= 0b10000000,
+                }
+                s.push(char::from_u32(0x2800 + bits as u32).unwrap_or(' '));
+                i += 2;
+            }
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(s, style))),
+                area,
+            );
+        }
+    }
 }

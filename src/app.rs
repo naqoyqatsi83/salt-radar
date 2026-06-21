@@ -91,6 +91,7 @@ pub struct App {
     pub clipboard_at: Option<Instant>,
     /// Transient message shown in status bar (e.g. clipboard hints)
     pub clipboard_msg: Option<(String, Instant)>,
+    pub sparkline_style: SparklineStyle,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
     /// Measured ZMQ/master response latency in milliseconds (from zmq_ping agent command)
@@ -233,6 +234,7 @@ impl App {
             event_rate_idx: 0,
             clipboard_at: None,
             clipboard_msg: None,
+            sparkline_style: SparklineStyle::default(),
             needs_terminal_clear: false,
             zmq_latency_ms: 0.0,
             zmq_ping_sent_at: None,
@@ -1227,13 +1229,20 @@ impl App {
         let mut clipboard_text: Option<String> = None;
         let had_popup = self.detail_popup.is_some();
 
-        // Contrast toggle works universally (even with popups open)
+        // Contrast toggle and tab switching work universally (even with popups open)
         if had_popup {
             match code {
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     self.high_contrast = !self.high_contrast;
                     return false;
                 }
+                KeyCode::Tab => { self.current_tab = self.current_tab.next(); return false; }
+                KeyCode::BackTab => { self.current_tab = self.current_tab.prev(); return false; }
+                KeyCode::Char('1') => { self.current_tab = Tab::Dashboard; return false; }
+                KeyCode::Char('2') => { self.current_tab = Tab::Minions; return false; }
+                KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
+                KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
+                KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
                 _ => {}
             }
         }
@@ -1317,7 +1326,8 @@ impl App {
                                     if idx < l.returns.len() {
                                         let ret = &l.returns[idx];
                                         clipboard_text = Some(
-                                            ret.full_return.as_str().unwrap_or(&ret.summary).to_string()
+                                            serde_json::to_string_pretty(&ret.full_return)
+                                                .unwrap_or_else(|_| ret.summary.clone())
                                         );
                                     }
                                 }
@@ -1528,6 +1538,12 @@ impl App {
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.high_contrast = !self.high_contrast;
+            }
+            KeyCode::Char('m') | KeyCode::Char('M') => {
+                self.sparkline_style = match self.sparkline_style {
+                    SparklineStyle::Bars => SparklineStyle::Dots,
+                    SparklineStyle::Dots => SparklineStyle::Bars,
+                };
             }
             KeyCode::Char('/') => {
                 self.is_filtering = true;

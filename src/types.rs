@@ -12,6 +12,16 @@ pub enum Tab {
     Alerts,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SparklineStyle {
+    Bars,
+    Dots,
+}
+
+impl Default for SparklineStyle {
+    fn default() -> Self { Self::Bars }
+}
+
 impl Tab {
     pub fn next(&self) -> Self {
         match self {
