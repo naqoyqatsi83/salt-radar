@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-22
+
+### Added
+- Job Cache split panel: Jobs tab split into Live Jobs (left, 55%) and Job Cache (right, 45%) with Tab focus switching
+- Job Cache pagination: `[`/`]` adjust page limit (±500), `,`/`.` navigate pages
+- Server-side job cache search: filter across jid/fun/tgt/user on the full cache (not just displayed page)
+- Page indicator in Job Cache panel title (page number, limit, total count)
+- 120s timeout guard for cache loading with retry message
+
+### Fixed
+- Job detail success/fail detection: derives success and retcode directly from return value structure (state dicts check `result` key, primitives check truthiness, error strings detected)
+- `cmd_jid_lookup` agent command: rewrote CLI text parser to `--out=json` structured output, eliminating fragile minion-header parsing
+- `cmd_jobs_list` agent command: switched from `RunnerClient` (hung indefinitely in background threads due to Python/Salt threading issues) to `subprocess.run(["salt-run", "jobs.list_jobs", "--out=json"])`
+- Job cache timestamps: use JID-derived epoch (YYYYMMDDHHMMSS) as primary source for reliable UTC timestamps, displayed in local time
+- `_parse_stamp` handles ISO-8601 with T or space separators, with or without fractional seconds, and `datetime` objects
+- Clipboard `y`/`Y` from cache job detail popup now works correctly
+
 ## [0.3.6] - 2026-06-20
 
 ### Changed

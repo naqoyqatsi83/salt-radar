@@ -146,6 +146,10 @@ pub struct App {
     pub cache_loading: bool,
     pub cache_loaded: bool,
     pub cache_load_error: Option<String>,
+    pub cache_total_count: usize,
+    pub cache_max_results: usize,
+    pub cache_offset: usize,
+    pub cache_loading_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
@@ -232,6 +236,10 @@ impl App {
             cache_loading: false,
             cache_loaded: false,
             cache_load_error: None,
+            cache_total_count: 0,
+            cache_max_results: 500,
+            cache_offset: 0,
+            cache_loading_at: None,
 
             admin_mode: false,
             admin_mode_pending: false,
@@ -334,8 +342,10 @@ impl App {
                             }
                         }
                         "jobs_list" => {
+                            self.cache_loading_at = None;
                             if ok {
                                 self.jobs_cache = parse_cache_jobs(&data);
+                                self.cache_total_count = data["total_count"].as_u64().unwrap_or(0) as usize;
                                 self.cache_loaded = true;
                                 self.cache_load_error = None;
                             } else {
@@ -477,6 +487,7 @@ impl App {
     /// Fast poll between ticks
     pub fn fast_poll(&mut self) -> bool {
         self.drain_agent_messages();
+        self.clamp_selection();
         if self.sniffer_dirty {
             self.sniffer_dirty = false;
             true
@@ -1295,8 +1306,18 @@ impl App {
 
         // Auto-load job cache when first viewing Jobs tab
         if self.current_tab == Tab::Jobs && !self.cache_loaded && !self.cache_loading && self.cache_load_error.is_none() {
-            self.cache_loading = true;
-            self.send_agent_cmd("jobs_list", None);
+            self.send_cache_jobs_list(None, true);
+        }
+
+        // Cache loading timeout — reset after 30s in case agent hangs
+        if self.cache_loading {
+            if let Some(since) = self.cache_loading_at {
+                if since.elapsed().as_secs() >= 120 {
+                    self.cache_loading = false;
+                    self.cache_loading_at = None;
+                    self.cache_load_error = Some("Request timed out after 120s. Press r to retry.".to_string());
+                }
+            }
         }
 
         // Clamp cursor selections to valid range
@@ -1310,6 +1331,21 @@ impl App {
         }
 
         self.tick_count += 1;
+    }
+
+    fn send_cache_jobs_list(&mut self, filter: Option<&str>, reset_offset: bool) {
+        if reset_offset {
+            self.cache_offset = 0;
+        }
+        let mut extra = serde_json::json!({"max_results": self.cache_max_results, "offset": self.cache_offset});
+        if let Some(f) = filter {
+            extra["filter_text"] = serde_json::Value::String(f.to_string());
+        }
+        self.cache_loading = true;
+        self.cache_loading_at = Some(Instant::now());
+        self.cache_loaded = false;
+        self.cache_load_error = None;
+        self.send_agent_cmd("jobs_list", Some(extra));
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> bool {
@@ -1655,6 +1691,8 @@ impl App {
                     self.cache_is_filtering = false;
                     self.cache_selected = 0;
                     self.clamp_selection();
+                    let filter = self.cache_filter_text.clone();
+                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, true);
                 }
                 KeyCode::Backspace => {
                     self.cache_filter_text.pop();
@@ -1714,10 +1752,39 @@ impl App {
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 if self.current_tab == Tab::Jobs && !self.cache_loading {
-                    self.cache_loading = true;
-                    self.cache_loaded = false;
-                    self.cache_load_error = None;
-                    self.send_agent_cmd("jobs_list", None);
+                    let filter = self.cache_filter_text.clone();
+                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
+                }
+            }
+            KeyCode::Char(']') | KeyCode::Char('}') => {
+                if self.current_tab == Tab::Jobs && !self.cache_loading {
+                    self.cache_max_results = (self.cache_max_results + 500).min(10000);
+                    let filter = self.cache_filter_text.clone();
+                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
+                }
+            }
+            KeyCode::Char('[') | KeyCode::Char('{') => {
+                if self.current_tab == Tab::Jobs && !self.cache_loading {
+                    self.cache_max_results = self.cache_max_results.saturating_sub(500).max(200);
+                    let filter = self.cache_filter_text.clone();
+                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
+                }
+            }
+            KeyCode::Char('>') | KeyCode::Char('.') => {
+                if self.current_tab == Tab::Jobs && !self.cache_loading && self.cache_loaded {
+                    self.cache_offset += self.cache_max_results;
+                    if self.cache_offset >= self.cache_total_count {
+                        self.cache_offset = self.cache_total_count.saturating_sub(self.cache_max_results);
+                    }
+                    let filter = self.cache_filter_text.clone();
+                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
+                }
+            }
+            KeyCode::Char('<') | KeyCode::Char(',') => {
+                if self.current_tab == Tab::Jobs && !self.cache_loading && self.cache_loaded {
+                    self.cache_offset = self.cache_offset.saturating_sub(self.cache_max_results);
+                    let filter = self.cache_filter_text.clone();
+                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
                 }
             }
             KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => {
@@ -1950,6 +2017,42 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
     })
 }
 
+pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
+    match full_return {
+        serde_json::Value::Object(obj) => {
+            // state dict: check 'result' key
+            if let Some(result_val) = obj.get("result") {
+                if !result_val.as_bool().unwrap_or(false) {
+                    return (1, false);
+                }
+                if result_val.is_boolean() {
+                    return (0, true);
+                }
+            }
+            // check explicit retcode
+            let rc = obj.get("retcode").and_then(|v| v.as_i64()).unwrap_or(0);
+            (rc, rc == 0)
+        }
+        serde_json::Value::Bool(b) => (0, *b),
+        serde_json::Value::Null => (1, false),
+        serde_json::Value::String(s) => {
+            // Salt returns error strings starting with "ERROR:" for cmd.run etc.
+            if s.starts_with("ERROR:") || s.starts_with("error:") {
+                (1, false)
+            } else if s.trim().is_empty() {
+                (1, false)
+            } else {
+                (0, true)
+            }
+        }
+        _ => (0, true),
+    }
+}
+
+fn write_jid_debug(full_return: &serde_json::Value, success: bool, retcode: i64, minion_id: &str) {
+    let _ = (full_return, success, retcode, minion_id);
+}
+
 fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     let mut result = JidLookup {
         found: data["found"].as_bool().unwrap_or(false),
@@ -1960,12 +2063,16 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     };
     if let Some(arr) = data["returns"].as_array() {
         for entry in arr {
+            let full_return = entry["full_return"].clone();
+            let (derived_retcode, derived_success) = derive_success_retcode(&full_return);
+            write_jid_debug(&full_return, derived_success, derived_retcode,
+                entry["minion_id"].as_str().unwrap_or("?"));
             result.returns.push(JidReturn {
                 minion_id: entry["minion_id"].as_str().unwrap_or("?").to_string(),
-                success: entry["success"].as_bool().unwrap_or(false),
-                retcode: entry["retcode"].as_i64().unwrap_or(0),
+                success: derived_success,
+                retcode: derived_retcode,
                 summary: entry["summary"].as_str().unwrap_or("").to_string(),
-                full_return: entry["full_return"].clone(),
+                full_return,
                 formatted_text: entry["formatted_text"].as_str().unwrap_or("").to_string(),
             });
         }

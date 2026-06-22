@@ -230,8 +230,10 @@ fn draw_job_detail(
         } else {
             for (i, ret) in l.returns.iter().enumerate() {
                 let cursor = if i == sel { "\u{25b6}" } else { " " };
-                let status = if ret.success { "OK" } else { "FAIL" };
-                let status_color = if ret.success { color::GREEN } else { color::RED };
+                // Derive success directly from full_return to ensure correctness
+                let (live_retcode, live_success) = crate::app::derive_success_retcode(&ret.full_return);
+                let status = if live_success { "OK" } else { "FAIL" };
+                let status_color = if live_success { color::GREEN } else { color::RED };
 
                 let summary_short = if ret.summary.len() > 50 {
                     format!("{}..", &ret.summary[..48])
@@ -243,7 +245,7 @@ fn draw_job_detail(
                     Span::styled(format!("  {} {}: ", cursor, ret.minion_id),
                         Style::default().fg(if i == sel { color::CYAN } else { color::TEXT }).add_modifier(if i == sel { Modifier::BOLD } else { Modifier::empty() })),
                     Span::styled(status, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!(" (retcode={}) ", ret.retcode), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(format!(" (retcode={}) ", live_retcode), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(summary_short, Style::default().fg(color::TEXT_DIM)),
                 ]));
             }

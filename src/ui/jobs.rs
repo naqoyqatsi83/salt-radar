@@ -130,10 +130,20 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(color::BORDER)
     };
 
+    let total_hint = if app.cache_loaded {
+        let page = if app.cache_total_count > 0 {
+            (app.cache_offset / app.cache_max_results) + 1
+        } else {
+            0
+        };
+        format!("{} found (pg {}, limit {})", app.cache_total_count, page, app.cache_max_results)
+    } else {
+        format!("{}", app.jobs_cache.len())
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title(format!(" Job Cache ({}) ", app.jobs_cache.len()))
+        .title(format!(" Job Cache ({}) ", total_hint))
         .style(Style::default().bg(color::BG_DARK));
 
     let inner = block.inner(area);
@@ -170,7 +180,7 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Filter bar
+    // Filter bar with total_count context
     if app.cache_is_filtering {
         let cursor = if app.cache_filter_text.len() % 2 == 0 { '|' } else { ' ' };
         lines.push(Line::from(vec![
@@ -180,11 +190,16 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
     } else if !app.cache_filter_text.is_empty() {
         lines.push(Line::from(vec![
             Span::styled(format!(" /{}/ ", app.cache_filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!("{} items (of {} total)", total, app.cache_total_count), Style::default().fg(color::TEXT_DIM)),
         ]));
     } else {
+        let total_hint = if app.cache_loaded {
+            format!("   / filter  > pg dn  < pg up  ]/+ 500  [/- 500")
+        } else {
+            "   / to filter".to_string()
+        };
         lines.push(Line::from(vec![
-            Span::styled("   / to filter", Style::default().fg(color::TEXT_DIM)),
+            Span::styled(total_hint, Style::default().fg(color::TEXT_DIM)),
         ]));
     }
 
@@ -196,7 +211,7 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
     } else {
         // Header
         lines.push(Line::from(Span::styled(
-            format!("  {:<20}{:<24}{:<18}{:<10}{}", "JID", "Fun", "Target", "User", "Started"),
+            format!("  {:<23} {:<26} {:<20} {:<12} {}", "JID", "Fun", "Target", "User", "Started"),
             Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
         )));
 
@@ -222,21 +237,28 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().bg(color::BG_DARK)
                 };
 
-                let jid_str = if job.jid.len() > 20 { format!("{}..", &job.jid[..18]) } else { job.jid.clone() };
-                let fun_str = if job.fun.len() > 24 { format!("{}..", &job.fun[..22]) } else { job.fun.clone() };
-                let tgt_str = if job.tgt.len() > 18 { format!("{}..", &job.tgt[..16]) } else { job.tgt.clone() };
-                let user_str = if job.user.len() > 10 { format!("{}..", &job.user[..8]) } else { job.user.clone() };
-                let started = if job.start_time.len() > 12 {
-                    format!("{}..", &job.start_time[..10])
+                let jid_str = if job.jid.len() > 23 { format!("{}..", &job.jid[..21]) } else { job.jid.clone() };
+                let fun_str = if job.fun.len() > 26 { format!("{}..", &job.fun[..24]) } else { job.fun.clone() };
+                let tgt_str = if job.tgt.len() > 20 { format!("{}..", &job.tgt[..18]) } else { job.tgt.clone() };
+                let user_str = if job.user.len() > 12 { format!("{}..", &job.user[..10]) } else { job.user.clone() };
+                // Format from start_epoch as local time
+                let started = if job.start_epoch > 0.0 {
+                    chrono::DateTime::from_timestamp(job.start_epoch as i64, 0)
+                        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_else(|| "?".to_string())
                 } else {
-                    job.start_time.clone()
+                    "?".to_string()
                 };
 
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<20}", jid_str), Style::default().fg(color::TEXT_DIM)),
-                    Span::styled(format!("{:<24}", fun_str), Style::default().fg(color::CYAN)),
-                    Span::styled(format!("{:<18}", tgt_str), Style::default().fg(color::YELLOW)),
-                    Span::styled(format!("{:<10}", user_str), Style::default().fg(color::PURPLE)),
+                    Span::styled(format!("  {:<23}", jid_str), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(format!("{:<26}", fun_str), Style::default().fg(color::CYAN)),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(format!("{:<20}", tgt_str), Style::default().fg(color::YELLOW)),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(format!("{:<12}", user_str), Style::default().fg(color::PURPLE)),
+                    Span::styled(" ", Style::default()),
                     Span::styled(started, Style::default().fg(color::TEXT_DIM)),
                 ]).style(sel_style));
             }

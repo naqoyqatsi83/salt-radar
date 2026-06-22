@@ -42,10 +42,11 @@ Live overview of your Salt Master with real-time sparkline panels:
   - Copy all captured events to clipboard (`y`)
 
 ### Jobs
-- Live job tracking from event bus (`/new` and `/ret/` events)
-- Detects both master-scheduled and local `salt-call` executions
+- Split panel: **Live Jobs** (left) from event bus and **Job Cache** (right) from Salt's master job cache
+- Job cache supports pagination (`[`/`]` adjust limit, `,`/`.` page navigation) and server-side search
 - Per-minion return navigation (j/k), scrollable output viewer (Enter)
 - Copy return output to clipboard (y = Salt outputter format, Y = raw JSON)
+- Job detail popup shows correct OK/FAIL status derived from return values
 
 ### Alerts
 - Minion staleness detection
@@ -146,6 +147,11 @@ disk_usage_pct = 85.0
 |-----|-----|--------|
 | Events | `n` | Launch event sniffer |
 | Minions | `s` | Fleet scan (admin mode only) |
+| Jobs (Cache) | `/` | Filter cache entries (server-side) |
+| Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
+| Jobs (Cache) | `,`/`.` | Previous/next page |
+| Jobs (Cache) | `r` | Refresh job cache |
+| Jobs (Cache) | `Tab` | Toggle focus between Live Jobs and Cache panels |
 
 ### Popups
 

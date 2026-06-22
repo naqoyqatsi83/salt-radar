@@ -191,43 +191,87 @@ def cmd_jid_lookup(opts, req):
         return
 
     import subprocess as sp
+    import json as json_mod
+
+    # Get structured JSON output from lookup_jid
     cp = sp.run(
-        ["salt-run", "jobs.lookup_jid", jid],
+        ["salt-run", "jobs.lookup_jid", jid, "--out=json"],
         capture_output=True, text=True, timeout=60,
     )
     if cp.returncode != 0 or not cp.stdout.strip():
         result(req["id"], "jid_lookup", ok=False, data={"found": False})
         return
 
-    cli_output = cp.stdout
+    try:
+        lookup_data = json_mod.loads(cp.stdout)
+    except Exception as exc:
+        result(req["id"], "jid_lookup", ok=False,
+               data={"found": False, "error": "failed to parse lookup_jid output: {}".format(str(exc))})
+        return
 
-    # Parse CLI output into per-minion chunks.
-    # Minion header = line starting at col 0 ending with ':' (e.g. "ol9:")
-    # All subsequent indented lines belong to that minion until next header.
-    per_minion = {}
-    lines = cli_output.splitlines()
-    current_minion = None
-    current_lines = []
-    for line in lines:
-        if line and not line[0].isspace() and line.endswith(":"):
-            if current_minion is not None:
-                per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
-            current_minion = line[:-1].strip()
-            current_lines = [line]
-        elif current_minion is not None:
-            current_lines.append(line)
-    if current_minion is not None:
-        per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
+    if not isinstance(lookup_data, dict):
+        result(req["id"], "jid_lookup", ok=False, data={"found": False})
+        return
+
+    def _derive_retcode_and_success(return_val):
+        """Derive (retcode, success) from a minion's return value.
+
+        Handles common Salt return formats:
+          - state dicts: read the 'result' key
+          - primitive bool: True=OK, False=FAIL
+          - None: FAIL
+          - anything truthy: OK
+        """
+        if isinstance(return_val, dict):
+            # Check for state result key
+            result_val = return_val.get("result")
+            if result_val is not None:
+                if result_val is False:
+                    return (1, False)
+                # result_val is True or truthy
+                if isinstance(result_val, bool):
+                    return (0, True)
+            # Check for retcode in return
+            rc = return_val.get("retcode", 0)
+            if not isinstance(rc, int):
+                try:
+                    rc = int(rc)
+                except (ValueError, TypeError):
+                    rc = 0
+            return (rc, rc == 0)
+        if return_val is None:
+            return (1, False)
+        if isinstance(return_val, bool):
+            return (0, return_val)
+        return (0, True)
 
     returns = []
-    for mid, formatted_text in per_minion.items():
+    for mid, ret_val in lookup_data.items():
+        mid = str(mid)
+
+        retcode, success = _derive_retcode_and_success(ret_val)
+
+        # Sanitise return value to JSON-encodable types
+        try:
+            clean_return = json_mod.loads(json_mod.dumps(ret_val, default=str))
+        except Exception:
+            clean_return = str(ret_val)
+
+        # Pretty-print for display
+        try:
+            formatted = json_mod.dumps(ret_val, indent=2, default=str)
+        except Exception:
+            formatted = str(ret_val)
+
+        summary = (formatted or "")[:200]
+
         returns.append({
-            "minion_id": str(mid),
-            "success": True,
-            "retcode": 0,
-            "summary": (formatted_text or "")[:200],
-            "full_return": formatted_text or "",
-            "formatted_text": formatted_text or "",
+            "minion_id": mid,
+            "success": success,
+            "retcode": retcode,
+            "summary": summary,
+            "full_return": clean_return,
+            "formatted_text": formatted,
         })
 
     data = {
@@ -247,19 +291,43 @@ _event_stop = threading.Event()
 
 
 def _parse_stamp(stamp):
-    """Convert Salt's _stamp (ISO-8601 string) to a Unix timestamp float."""
+    """Convert Salt's _stamp (ISO-8601 string or datetime) to a Unix timestamp float."""
     if stamp is None:
         return time.time()
     try:
         from datetime import datetime
         if isinstance(stamp, (int, float)):
             return float(stamp)
+        if isinstance(stamp, datetime):
+            return stamp.timestamp()
         if isinstance(stamp, str):
-            dt = datetime.strptime(stamp[:26], "%Y-%m-%dT%H:%M:%S.%f")
-            return dt.timestamp()
+            s = stamp.strip()
+            for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                        "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(s[:26], fmt).timestamp()
+                except ValueError:
+                    continue
     except (ValueError, OSError):
         pass
     return time.time()
+
+
+def _jid_to_epoch(jid):
+    """Parse a Salt JID (YYYYMMDDHHMMSSuuuuuu) into a Unix timestamp float.
+
+    Salt encodes the master wall clock time as the first 14 digits of the JID.
+    JIDs are always UTC.
+    """
+    try:
+        s = str(jid).strip()[:14]
+        if len(s) == 14 and s.isdigit():
+            from datetime import datetime, timezone
+            dt = datetime.strptime(s, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+    except (ValueError, OSError):
+        pass
+    return 0.0
 
 
 def _event_loop(opts):
@@ -333,28 +401,63 @@ def cmd_fleet_scan(opts, req):
 
 
 def cmd_jobs_list(opts, req):
-    """Fetch recent jobs from the master job cache."""
-    import salt.runner
-    runner = salt.runner.RunnerClient(opts)
-    try:
-        result_data = runner.cmd('jobs.list_jobs', [])
-    except Exception as exc:
-        result(req["id"], "jobs_list", ok=False, data={"error": str(exc)})
+    """Fetch recent jobs from the master job cache via salt-run subprocess.
+
+    Uses subprocess (same as cmd_jid_lookup) to avoid RunnerClient threading
+    issues inside the agent.
+
+    Optional request fields:
+      - filter_text (str): search across jid/fun/tgt/user on the full cache
+      - max_results (int): max items to return (default 500)
+      - offset (int): skip N newest entries (for pagination)
+    """
+    import subprocess as sp
+    import json as json_mod
+
+    cp = sp.run(
+        ["salt-run", "jobs.list_jobs", "--out=json"],
+        capture_output=True, text=True, timeout=90,
+    )
+    if cp.returncode != 0 or not cp.stdout.strip():
+        result(req["id"], "jobs_list", ok=False, data={"error": "salt-run jobs.list_jobs failed"})
         return
 
+    try:
+        result_data = json_mod.loads(cp.stdout)
+    except Exception as exc:
+        result(req["id"], "jobs_list", ok=False, data={"error": "failed to parse output: {}".format(str(exc))})
+        return
+
+    filter_text = req.get("filter_text", "")
+    max_results = req.get("max_results", 500)
+    offset = req.get("offset", 0)
+
     jobs = []
-    items = list(result_data.items())[:200]
-    for jid, info in items:
+    for jid, info in result_data.items():
         if not isinstance(info, dict):
             continue
         fun = info.get("Function", info.get("fun", ""))
         tgt = info.get("Target", info.get("tgt", ""))
         tgt_type = info.get("tgt_type", info.get("tgt_type", "glob"))
         user = info.get("User", info.get("user", ""))
-        stamp = info.get("_Stamp", info.get("start_time", ""))
+        # Use JID-derived epoch as primary — the JID always encodes the master
+        # wall-clock time (YYYYMMDDHHMMSSuuuuuu) and is reliable even when the
+        # cache lacks timestamp fields (common for runner jobs).
+        start_epoch = _jid_to_epoch(jid)
+        stamp = ""
+        if start_epoch <= 0.0:
+            stamp = info.get("StartTime", info.get("start_time", info.get("_stamp", "")))
+            start_epoch = _parse_stamp(stamp)
+
         args_raw = info.get("Arguments", info.get("arg", []))
         args_list = args_raw if isinstance(args_raw, list) else []
-        start_epoch = _parse_stamp(stamp)
+
+        # Apply filter across full cache (server-side search)
+        if filter_text:
+            ft = filter_text.lower()
+            fields_to_search = [str(jid).lower(), fun.lower(), tgt.lower(), user.lower()]
+            if not any(ft in f for f in fields_to_search):
+                continue
         jobs.append({
             "jid": str(jid),
             "fun": fun,
@@ -365,8 +468,17 @@ def cmd_jobs_list(opts, req):
             "start_epoch": start_epoch,
             "arguments": args_list,
         })
+
+    total_matching = len(jobs)
     jobs.sort(key=lambda j: j["start_epoch"], reverse=True)
-    result(req["id"], "jobs_list", data={"jobs": jobs})
+    jobs = jobs[offset:]
+    jobs = jobs[:max_results]
+
+    result(req["id"], "jobs_list", data={
+        "jobs": jobs,
+        "total_count": total_matching,
+        "returned_count": len(jobs),
+    })
 
 
 # ── Command dispatcher ──────────────────────────────────────────────────────

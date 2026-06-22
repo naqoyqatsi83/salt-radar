@@ -319,6 +319,8 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 key::render("Enter", "Detail"),
                 key::render("Tab", "Focus"),
             ];
+            keys.push(key::render("[ ]", "Limit"));
+            keys.push(key::render(", .", "Page"));
             keys.push(key::render("r", "Refresh"));
             keys.push(key::render("a", "Admin"));
             keys
