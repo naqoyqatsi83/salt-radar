@@ -193,7 +193,14 @@ def cmd_jid_lookup(opts, req):
     import subprocess as sp
     import json as json_mod
 
-    # Get structured JSON output from lookup_jid
+    # Get raw CLI output for classic Salt console format (y key / formatted_text)
+    raw_cp = sp.run(
+        ["salt-run", "jobs.lookup_jid", jid],
+        capture_output=True, text=True, timeout=60,
+    )
+    raw_output = raw_cp.stdout if raw_cp.returncode == 0 else ""
+
+    # Get structured JSON output for parsing (Y key / full_return)
     cp = sp.run(
         ["salt-run", "jobs.lookup_jid", jid, "--out=json"],
         capture_output=True, text=True, timeout=60,
@@ -215,7 +222,6 @@ def cmd_jid_lookup(opts, req):
 
     def _derive_retcode_and_success(return_val):
         """Derive (retcode, success) from a minion's return value.
-
         Handles common Salt return formats:
           - state dicts: read the 'result' key
           - primitive bool: True=OK, False=FAIL
@@ -223,15 +229,12 @@ def cmd_jid_lookup(opts, req):
           - anything truthy: OK
         """
         if isinstance(return_val, dict):
-            # Check for state result key
             result_val = return_val.get("result")
             if result_val is not None:
                 if result_val is False:
                     return (1, False)
-                # result_val is True or truthy
                 if isinstance(result_val, bool):
                     return (0, True)
-            # Check for retcode in return
             rc = return_val.get("retcode", 0)
             if not isinstance(rc, int):
                 try:
@@ -245,36 +248,6 @@ def cmd_jid_lookup(opts, req):
             return (0, return_val)
         return (0, True)
 
-    def _fmt_val(val, indent=0):
-        """Format a return value like Salt's classic console outputter.
-        Produces output similar to salt-run jobs.lookup_jid JID:
-        dict keys get --- separators, simple values inline.
-        """
-        pad = "    " * indent
-        if isinstance(val, dict):
-            if not val:
-                return "{}".format(pad) + "{}"
-            lines = []
-            for k, v in val.items():
-                if isinstance(k, str) and k.startswith("__"):
-                    continue
-                lines.append("{}----------".format(pad))
-                lines.append("{}{}:".format(pad, k))
-                lines.append(_fmt_val(v, indent + 1))
-            return "\n".join(lines)
-        elif isinstance(val, list):
-            if not val:
-                return "{}[]".format(pad)
-            return "\n".join(_fmt_val(v, indent) for v in val)
-        elif isinstance(val, bool):
-            return "{}{}".format(pad, str(val).lower())
-        elif val is None:
-            return "{}None".format(pad)
-        elif isinstance(val, str):
-            return "\n".join(pad + l for l in val.split("\n"))
-        else:
-            return "{}{}".format(pad, str(val))
-
     returns = []
     for mid, ret_val in lookup_data.items():
         mid = str(mid)
@@ -287,13 +260,52 @@ def cmd_jid_lookup(opts, req):
         except Exception:
             clean_return = str(ret_val)
 
-        # Classic console-like format for display (y key, default popup view)
-        try:
-            formatted = "{}:\n    {}".format(mid, _fmt_val(ret_val, 1).lstrip())
-        except Exception:
-            formatted = str(ret_val)
+        # Extract this minion's section from the raw CLI output.
+        # Format: "minion_id:\n..." until next minion header or EOF.
+        formatted = ""
+        if raw_output.strip():
+            text = raw_output.strip()
+            marker = "\n" + mid + ":"
+            start_pos = text.find(marker)
+            if start_pos == -1 and text.startswith(mid + ":"):
+                # First line in output
+                start_pos = -1  # treat \n before text as the separator
+                content_start = 0
+            elif start_pos != -1:
+                content_start = start_pos + 1  # skip the leading \n
+            else:
+                content_start = -1
 
-        summary = (formatted or "")[:200]
+            if content_start >= 0:
+                # Find next minion header to know where this section ends
+                rest = text[content_start + len(mid) + 1:]  # after "mid:" line
+                next_pos = len(text)
+                for other_mid in lookup_data:
+                    if other_mid == mid:
+                        continue
+                    np = rest.find("\n" + other_mid + ":")
+                    if np != -1:
+                        candidate = content_start + len(mid) + 1 + np
+                        if candidate < next_pos:
+                            next_pos = candidate
+                section = text[content_start:next_pos].strip()
+                if section:
+                    formatted = section
+
+        if not formatted:
+            # Fallback: minion header + JSON
+            try:
+                formatted = "{}:\n{}".format(mid, json_mod.dumps(ret_val, indent=2, default=str))
+            except Exception:
+                formatted = "{}:\n    {}".format(mid, str(ret_val))
+
+        # Summary: use the content after the first line (skip the minion header)
+        newline_idx = formatted.find('\n')
+        if newline_idx != -1:
+            summary_body = formatted[newline_idx:].strip()
+            summary = summary_body[:200]
+        else:
+            summary = (formatted or "")[:200]
 
         returns.append({
             "minion_id": mid,
