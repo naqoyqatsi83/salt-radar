@@ -3,6 +3,9 @@ use std::io::Read;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::process::Stdio;
+
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -734,28 +737,28 @@ impl App {
                         self.popup_tab = Some(self.current_tab);
                     }
                 } else {
-                    let (jid, fun, tgt, created_epoch, lookup, exists) = {
+                    let (jid, fun, tgt, start_epoch, exists) = {
                         let job = self.get_filtered_job(self.job_selected);
                         match job {
                             Some(job) => {
-                                let jid = job.jid.clone();
-                                let lookup = build_jid_lookup_from_events(&jid, &self.events);
-                                (jid, job.fun.clone(), job.tgt.clone(), job.created_epoch, lookup, true)
+                                (job.jid.clone(), job.fun.clone(), job.tgt.clone(), job.created_epoch, true)
                             }
-                            None => (String::new(), String::new(), String::new(), 0.0, None, false),
+                            None => (String::new(), String::new(), String::new(), 0.0, false),
                         }
                     };
                     if exists {
+                        let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                        self.pending_jid_lookup = Some((req_id, jid.clone()));
                         self.detail_popup = Some(DetailPopup::JobDetail {
                             jid,
-                            lookup,
+                            lookup: None,
                             selected_return: None,
                             scroll_offset: 0,
                             scroll_max: 0,
                             scroll_mode: false,
                             job_fun: fun,
                             job_tgt: tgt,
-                            job_start_epoch: created_epoch,
+                            job_start_epoch: start_epoch,
                         });
                         self.popup_tab = Some(self.current_tab);
                     }
@@ -775,6 +778,168 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Strip ANSI escape sequences from a string.
+    pub fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // Consume until we hit 'm' (end of CSI sequence)
+                while let Some(n) = chars.next() {
+                    if n == 'm' { break; }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Parse ANSI-escaped text into styled Spans for ratatui rendering.
+    /// SGR resets fall back to `default_style`.
+    pub fn ansi_to_styled_spans(text: &str, default_style: Style) -> Vec<Span<'static>> {
+        if !text.contains('\x1b') {
+            return vec![Span::styled(text.to_string(), default_style)];
+        }
+
+        fn apply_sgr(style: &mut Style, params: &[u16], default_style: &Style) {
+            if params.is_empty() {
+                *style = *default_style;
+                return;
+            }
+            let mut i = 0;
+            while i < params.len() {
+                if params[i] == 0 {
+                    // Reset to default, then continue for any remaining params
+                    *style = *default_style;
+                    i += 1;
+                    continue;
+                }
+                match params[i] {
+                    1 => *style = style.add_modifier(Modifier::BOLD),
+                    3 => *style = style.add_modifier(Modifier::ITALIC),
+                    4 => *style = style.add_modifier(Modifier::UNDERLINED),
+                    22 => *style = style.remove_modifier(Modifier::BOLD),
+                    23 => *style = style.remove_modifier(Modifier::ITALIC),
+                    24 => *style = style.remove_modifier(Modifier::UNDERLINED),
+                    // Standard foreground (30-37)
+                    30 => *style = style.fg(Color::Black),
+                    31 => *style = style.fg(Color::Red),
+                    32 => *style = style.fg(Color::Green),
+                    33 => *style = style.fg(Color::Yellow),
+                    34 => *style = style.fg(Color::Blue),
+                    35 => *style = style.fg(Color::Magenta),
+                    36 => *style = style.fg(Color::Cyan),
+                    37 => *style = style.fg(Color::White),
+                    38 => {
+                        // Extended foreground: 38;5;N or 38;2;R;G;B
+                        if i + 1 < params.len() {
+                            match params[i + 1] {
+                                5 if i + 2 < params.len() => {
+                                    let idx = params[i + 2] as u8;
+                                    *style = style.fg(Color::Indexed(idx));
+                                    i += 2;
+                                }
+                                2 if i + 4 < params.len() => {
+                                    let r = params[i + 2] as u8;
+                                    let g = params[i + 3] as u8;
+                                    let b = params[i + 4] as u8;
+                                    *style = style.fg(Color::Rgb(r, g, b));
+                                    i += 4;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    39 => *style = style.fg(Color::Reset),
+                    // Standard background (40-47)
+                    40 => *style = style.bg(Color::Black),
+                    41 => *style = style.bg(Color::Red),
+                    42 => *style = style.bg(Color::Green),
+                    43 => *style = style.bg(Color::Yellow),
+                    44 => *style = style.bg(Color::Blue),
+                    45 => *style = style.bg(Color::Magenta),
+                    46 => *style = style.bg(Color::Cyan),
+                    47 => *style = style.bg(Color::White),
+                    48 => {
+                        // Extended background: 48;5;N or 48;2;R;G;B
+                        if i + 1 < params.len() {
+                            match params[i + 1] {
+                                5 if i + 2 < params.len() => {
+                                    let idx = params[i + 2] as u8;
+                                    *style = style.bg(Color::Indexed(idx));
+                                    i += 2;
+                                }
+                                2 if i + 4 < params.len() => {
+                                    let r = params[i + 2] as u8;
+                                    let g = params[i + 3] as u8;
+                                    let b = params[i + 4] as u8;
+                                    *style = style.bg(Color::Rgb(r, g, b));
+                                    i += 4;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    49 => *style = style.bg(Color::Reset),
+                    // Bright foreground (90-97)
+                    90 => *style = style.fg(Color::Rgb(128, 128, 128)),
+                    91 => *style = style.fg(Color::Rgb(255, 85, 85)),
+                    92 => *style = style.fg(Color::Rgb(85, 255, 85)),
+                    93 => *style = style.fg(Color::Rgb(255, 255, 85)),
+                    94 => *style = style.fg(Color::Rgb(85, 85, 255)),
+                    95 => *style = style.fg(Color::Rgb(255, 85, 255)),
+                    96 => *style = style.fg(Color::Rgb(85, 255, 255)),
+                    97 => *style = style.fg(Color::Rgb(255, 255, 255)),
+                    // Bright background (100-107)
+                    100 => *style = style.bg(Color::Rgb(128, 128, 128)),
+                    101 => *style = style.bg(Color::Rgb(255, 85, 85)),
+                    102 => *style = style.bg(Color::Rgb(85, 255, 85)),
+                    103 => *style = style.bg(Color::Rgb(255, 255, 85)),
+                    104 => *style = style.bg(Color::Rgb(85, 85, 255)),
+                    105 => *style = style.bg(Color::Rgb(255, 85, 255)),
+                    106 => *style = style.bg(Color::Rgb(85, 255, 255)),
+                    107 => *style = style.bg(Color::Rgb(255, 255, 255)),
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut buf = String::new();
+        let mut style = default_style;
+        let mut chars = text.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // Flush accumulated text
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), style));
+                }
+                // Read escape sequence: expect '[' then params then 'm'
+                if chars.next_if(|&n| n == '[').is_some() {
+                    let mut params_str = String::new();
+                    while let Some(&n) = chars.peek() {
+                        if n == 'm' { chars.next(); break; }
+                        params_str.push(n);
+                        chars.next();
+                    }
+                    let params: Vec<u16> = params_str.split(';')
+                        .filter_map(|s| s.parse::<u16>().ok())
+                        .collect();
+                    apply_sgr(&mut style, &params, &default_style);
+                }
+            } else {
+                buf.push(c);
+            }
+        }
+        if !buf.is_empty() {
+            spans.push(Span::styled(buf, style));
+        }
+        spans
     }
 
     /// Format a job return value in salt's nested outputter format.
@@ -1366,10 +1531,12 @@ impl App {
                     if !ids.is_empty() {
                         self.detail_popup = Some(DetailPopup::EventSniffer(
                             crate::types::SnifferState {
-                                minion_ids: ids,
+                                minion_ids: ids.clone(),
                                 buffer: std::collections::VecDeque::with_capacity(1000),
                                 paused: false,
                                 selected: 0,
+                                highlight_keywords: ids,
+                                highlight_input: None,
                             }
                         ));
                         self.popup_tab = Some(self.current_tab);
@@ -1491,7 +1658,7 @@ impl App {
                                         let ret = &l.returns[idx];
                                         clipboard_text = Some(
                                             if !ret.formatted_text.is_empty() {
-                                                ret.formatted_text.clone()
+                                                Self::strip_ansi(&ret.formatted_text)
                                             } else {
                                                 Self::format_return_as_console(&ret.minion_id, &ret.full_return)
                                             }
@@ -1530,6 +1697,28 @@ impl App {
                     }
                 }
                 DetailPopup::EventSniffer(ref mut state) => {
+                    // Highlight keyword input mode
+                    if let Some(ref mut buf) = state.highlight_input {
+                        match code {
+                            KeyCode::Enter => {
+                                let keywords: Vec<String> = buf.split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                                if !keywords.is_empty() {
+                                    state.highlight_keywords = keywords;
+                                }
+                                state.highlight_input = None;
+                            }
+                            KeyCode::Esc => {
+                                state.highlight_input = None;
+                            }
+                            KeyCode::Backspace => { buf.pop(); }
+                            KeyCode::Char(c) => { buf.push(c); }
+                            _ => {}
+                        }
+                        return false;
+                    }
                     match code {
                         KeyCode::Enter => {
                             let rev_idx = state.buffer.len().saturating_sub(1).saturating_sub(state.selected);
@@ -1558,6 +1747,9 @@ impl App {
                         }
                         KeyCode::Char('p') | KeyCode::Char('P') => {
                             state.paused = !state.paused;
+                        }
+                        KeyCode::Char('h') | KeyCode::Char('H') => {
+                            state.highlight_input = Some(state.highlight_keywords.join(", "));
                         }
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             let mut text = String::new();

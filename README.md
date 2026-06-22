@@ -163,6 +163,7 @@ disk_usage_pct = 85.0
 | `Enter` | Enter scroll mode (event/job detail) |
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |
+| `h` | Edit highlight keywords (sniffer) |
 | `p` | Pause/resume (sniffer) |
 
 ## How It Works

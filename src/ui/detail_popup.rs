@@ -285,11 +285,13 @@ fn draw_job_detail(
                     let effective_skip = scroll_offset
                         .min(all_lines.len().saturating_sub(max_fit));
                     for line in all_lines.iter().skip(effective_skip) {
-                        lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
+                        let spans = crate::app::App::ansi_to_styled_spans(line, Style::default().fg(color::TEXT));
+                        lines.push(Line::from(spans));
                     }
                 } else {
                     for line in all_lines.iter() {
-                        lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
+                        let spans = crate::app::App::ansi_to_styled_spans(line, Style::default().fg(color::TEXT));
+                        lines.push(Line::from(spans));
                     }
                 }
             }
@@ -456,6 +458,8 @@ fn draw_event_sniffer(
         let total = state.buffer.len();
         let sel = state.selected.min(total.saturating_sub(1));
         let mut event_line_starts: Vec<usize> = Vec::with_capacity(total);
+        // Popup inner width = area width minus left+right borders
+        let inner_w = (area.width as usize).saturating_sub(2);
 
         for display_idx in 0..total {
             let buf_idx = total - 1 - display_idx;
@@ -489,23 +493,50 @@ fn draw_event_sniffer(
             };
 
             // Header row: # | Time | JID | Type
-            lines.push(Line::from(vec![
+            let mut header_spans = vec![
                 Span::styled(format!("  {:>nw$} ", event_num, nw = num_w - 3), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(format!("{:<tw$}", t, tw = time_w), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(format!("{:<jw$}", tag_disp, jw = jid_w), Style::default().fg(color::CYAN)),
                 Span::styled(format!("{:<tyw$}", etype, tyw = type_w), Style::default().fg(color::GREEN)),
-            ]).style(sel_style));
+            ];
+            if is_sel {
+                let hdr_w: usize = header_spans.iter().map(|s| s.content.len()).sum();
+                let pad = inner_w.saturating_sub(hdr_w);
+                if pad > 0 {
+                    header_spans.push(Span::styled(" ".repeat(pad), sel_style));
+                }
+            }
+            lines.push(Line::from(header_spans).style(sel_style));
 
-            // Full JSON body (no truncation)
+            // Full JSON body (no truncation) with keyword highlighting
             let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
             let indent = format!("{:w$}", "", w = num_w + time_w + 3);
-            for line in json_str.lines() {
-                lines.push(Line::from(
-                    Span::styled(
-                        format!("{}{}", indent, line),
-                        Style::default().fg(color::TEXT),
-                    ),
-                ).style(sel_style));
+            if !state.highlight_keywords.is_empty() {
+                for raw_line in json_str.lines() {
+                    let text = format!("{}{}", indent, raw_line);
+                    let mut spans = highlight_keywords(&text, &state.highlight_keywords);
+                    if is_sel {
+                        let pad = inner_w.saturating_sub(text.len());
+                        if pad > 0 {
+                            spans.push(Span::styled(" ".repeat(pad), sel_style));
+                        }
+                    }
+                    lines.push(Line::from(spans).style(sel_style));
+                }
+            } else {
+                for line in json_str.lines() {
+                    let text = format!("{}{}", indent, line);
+                    let style = Style::default().fg(color::TEXT);
+                    if is_sel {
+                        let pad = inner_w.saturating_sub(text.len());
+                        lines.push(Line::from(vec![
+                            Span::styled(text, style),
+                            Span::styled(" ".repeat(pad), sel_style),
+                        ]).style(sel_style));
+                    } else {
+                        lines.push(Line::from(Span::styled(text, style)));
+                    }
+                }
             }
         }
 
@@ -519,14 +550,66 @@ fn draw_event_sniffer(
             0
         };
 
-        let footer = sniffer_dismiss_line(clipboard_at, state.paused);
+        let footer = sniffer_footer(clipboard_at, state);
         render_popup(f, area, &lines, Some(footer), scroll);
         return;
     }
 
     lines.push(Line::from(""));
-    let footer = sniffer_dismiss_line(clipboard_at, state.paused);
+    let footer = sniffer_footer(clipboard_at, state);
     render_popup(f, area, &lines, Some(footer), 0);
+}
+
+/// Split a line of text into styled spans, highlighting all occurrences of any keyword.
+fn highlight_keywords(text: &str, keywords: &[String]) -> Vec<Span<'static>> {
+    if keywords.is_empty() {
+        return vec![Span::styled(text.to_string(), Style::default().fg(color::TEXT))];
+    }
+    let lower_text = text.to_lowercase();
+    // Collect match positions (start, end) for each keyword occurrence
+    let mut matches: Vec<(usize, usize)> = Vec::new();
+    for kw in keywords {
+        if kw.is_empty() { continue; }
+        let lower_kw = kw.to_lowercase();
+        let mut start = 0;
+        while let Some(pos) = lower_text[start..].find(&lower_kw) {
+            let abs_start = start + pos;
+            let abs_end = abs_start + kw.len();
+            matches.push((abs_start, abs_end));
+            start = abs_end;
+        }
+    }
+    if matches.is_empty() {
+        return vec![Span::styled(text.to_string(), Style::default().fg(color::TEXT))];
+    }
+    // Sort by start position and merge overlapping ranges
+    matches.sort_by_key(|m| m.0);
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for m in &matches {
+        if let Some(last) = merged.last_mut() {
+            if m.0 <= last.1 {
+                last.1 = last.1.max(m.1);
+                continue;
+            }
+        }
+        merged.push(*m);
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut pos = 0;
+    for (start, end) in &merged {
+        if *start > pos {
+            spans.push(Span::styled(text[pos..*start].to_string(), Style::default().fg(color::TEXT)));
+        }
+        spans.push(Span::styled(
+            text[*start..*end].to_string(),
+            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+        ));
+        pos = *end;
+    }
+    if pos < text.len() {
+        spans.push(Span::styled(text[pos..].to_string(), Style::default().fg(color::TEXT)));
+    }
+    spans
 }
 
 fn sniffer_format_ts(ts: f64) -> String {
@@ -535,10 +618,22 @@ fn sniffer_format_ts(ts: f64) -> String {
         .unwrap_or_else(|| "--:--:--".to_string())
 }
 
-fn sniffer_dismiss_line(
+fn sniffer_footer(
     clipboard_at: Option<std::time::Instant>,
-    paused: bool,
+    state: &SnifferState,
 ) -> Line<'static> {
+    if let Some(ref buf) = state.highlight_input {
+        let cursor = if buf.len() % 2 == 0 { '|' } else { ' ' };
+        let display = if buf.is_empty() {
+            String::from("  Highlight keywords (comma-separated, Enter=confirm, Esc=cancel): ")
+        } else {
+            format!("  Highlight keywords: {} {}", buf, cursor)
+        };
+        return Line::from(Span::styled(
+            display,
+            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
+        ));
+    }
     let show_copied = clipboard_at
         .map(|t| t.elapsed().as_secs_f64() < 3.0)
         .unwrap_or(false);
@@ -548,10 +643,10 @@ fn sniffer_dismiss_line(
             Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
         ));
     }
-    let hint = if paused {
-        "  [ q/Esc close | \u{2191}\u{2193} | Enter=detail | p=resume | y=copy ]"
+    let hint = if state.paused {
+        "  [ q/Esc close | \u{2191}\u{2193} | Enter=detail | h=highlight | p=resume | y=copy ]"
     } else {
-        "  [ q/Esc close | \u{2191}\u{2193} | Enter=detail | p=pause | y=copy ]"
+        "  [ q/Esc close | \u{2191}\u{2193} | Enter=detail | h=highlight | p=pause | y=copy ]"
     };
     Line::from(Span::styled(
         hint,

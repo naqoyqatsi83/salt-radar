@@ -18,11 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Event detail scroll mode: Enter to scroll full event JSON, with Home/End navigation
 - Job detail shows all return lines by default (no 30-line cap), matching Events view
 - Viewport-aware scroll clamping: End positions last lines at viewport bottom
+- Event sniffer keyword highlighting: press `h` to set highlight words, matches shown in bold yellow
+- Job detail output now preserves Salt's native ANSI color codes for state/function/ID coloring
+- Copy-to-clipboard `y` strips ANSI codes automatically, yielding clean plain text
+- Sniffer selection background fills to full popup width for easier visual tracking
 
 ### Changed
 - Tab now consistently switches tabs everywhere (previously toggled panel focus on Jobs tab)
 - `←`/`→` arrows switch focus between Live Jobs and Cache panels on Jobs tab
-- Job detail `y` key now copies classic Salt console output format; `Y` still copies raw JSON
+- Job detail `y` key shows exact `salt-run jobs.lookup_jid` console output; `Y` still copies raw JSON
+- Live Jobs now uses the same agent-based lookup as Cache Jobs, so both show identical formatted output
+- Agent runs `salt-run --force-color` with `CLICOLOR_FORCE=1` to emit ANSI codes for job detail display
 
 ### Fixed
 - Job cache search now works across pagination: server filter preserved independently of input text

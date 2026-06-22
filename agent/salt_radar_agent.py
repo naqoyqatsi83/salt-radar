@@ -193,41 +193,35 @@ def cmd_jid_lookup(opts, req):
     import subprocess as sp
     import json as json_mod
 
-    # Get raw CLI output for classic Salt console format (y key / formatted_text)
+    # Run raw CLI output for console format (y key / formatted_text)
+    # --force-color + CLICOLOR_FORCE ensures ANSI codes even without a TTY
+    _color_env = dict(os.environ, CLICOLOR_FORCE="1", FORCE_COLOR="1", TERM="xterm-256color")
     raw_cp = sp.run(
-        ["salt-run", "jobs.lookup_jid", jid],
-        capture_output=True, text=True, timeout=60,
+        ["salt-run", "--force-color", "jobs.lookup_jid", jid],
+        capture_output=True, text=True, timeout=60, env=_color_env,
     )
-    raw_output = raw_cp.stdout if raw_cp.returncode == 0 else ""
+    if raw_cp.returncode != 0 or not raw_cp.stdout.strip():
+        # Fall back to empty — no data
+        result(req["id"], "jid_lookup", ok=False, data={"found": False})
+        return
 
-    # Get structured JSON output for parsing (Y key / full_return)
-    cp = sp.run(
+    cli_output = raw_cp.stdout
+
+    # Run JSON output for structured data (Y key / full_return)
+    json_cp = sp.run(
         ["salt-run", "jobs.lookup_jid", jid, "--out=json"],
         capture_output=True, text=True, timeout=60,
     )
-    if cp.returncode != 0 or not cp.stdout.strip():
-        result(req["id"], "jid_lookup", ok=False, data={"found": False})
-        return
-
-    try:
-        lookup_data = json_mod.loads(cp.stdout)
-    except Exception as exc:
-        result(req["id"], "jid_lookup", ok=False,
-               data={"found": False, "error": "failed to parse lookup_jid output: {}".format(str(exc))})
-        return
-
+    lookup_data = {}
+    if json_cp.returncode == 0 and json_cp.stdout.strip():
+        try:
+            lookup_data = json_mod.loads(json_cp.stdout)
+        except Exception:
+            lookup_data = {}
     if not isinstance(lookup_data, dict):
-        result(req["id"], "jid_lookup", ok=False, data={"found": False})
-        return
+        lookup_data = {}
 
     def _derive_retcode_and_success(return_val):
-        """Derive (retcode, success) from a minion's return value.
-        Handles common Salt return formats:
-          - state dicts: read the 'result' key
-          - primitive bool: True=OK, False=FAIL
-          - None: FAIL
-          - anything truthy: OK
-        """
         if isinstance(return_val, dict):
             result_val = return_val.get("result")
             if result_val is not None:
@@ -248,72 +242,50 @@ def cmd_jid_lookup(opts, req):
             return (0, return_val)
         return (0, True)
 
+    # Parse CLI output into per-minion chunks (lines may contain ANSI codes).
+    # Minion header = stripped line starting at col 0 ending with ':' (e.g. "ol9:")
+    import re
+    def _strip_ansi(s):
+        return re.sub(r'\x1b\[[0-9;]*m', '', s)
+    per_minion = {}
+    lines = cli_output.splitlines()
+    current_minion = None
+    current_lines = []
+    for line in lines:
+        plain = _strip_ansi(line)
+        if plain and not plain[0].isspace() and plain.endswith(":"):
+            if current_minion is not None:
+                per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
+            current_minion = plain[:-1].strip()
+            current_lines = [line]
+        elif current_minion is not None:
+            current_lines.append(line)
+    if current_minion is not None:
+        per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
+
     returns = []
-    for mid, ret_val in lookup_data.items():
-        mid = str(mid)
+    for mid, formatted_text in per_minion.items():
+        ret_val = lookup_data.get(mid)
+        retcode, success = _derive_retcode_and_success(ret_val) if ret_val is not None else (0, True)
 
-        retcode, success = _derive_retcode_and_success(ret_val)
-
-        # Sanitise return value to JSON-encodable types
-        try:
-            clean_return = json_mod.loads(json_mod.dumps(ret_val, default=str))
-        except Exception:
-            clean_return = str(ret_val)
-
-        # Extract this minion's section from the raw CLI output.
-        # Format: "minion_id:\n..." until next minion header or EOF.
-        formatted = ""
-        if raw_output.strip():
-            text = raw_output.strip()
-            marker = "\n" + mid + ":"
-            start_pos = text.find(marker)
-            if start_pos == -1 and text.startswith(mid + ":"):
-                # First line in output
-                start_pos = -1  # treat \n before text as the separator
-                content_start = 0
-            elif start_pos != -1:
-                content_start = start_pos + 1  # skip the leading \n
-            else:
-                content_start = -1
-
-            if content_start >= 0:
-                # Find next minion header to know where this section ends
-                rest = text[content_start + len(mid) + 1:]  # after "mid:" line
-                next_pos = len(text)
-                for other_mid in lookup_data:
-                    if other_mid == mid:
-                        continue
-                    np = rest.find("\n" + other_mid + ":")
-                    if np != -1:
-                        candidate = content_start + len(mid) + 1 + np
-                        if candidate < next_pos:
-                            next_pos = candidate
-                section = text[content_start:next_pos].strip()
-                if section:
-                    formatted = section
-
-        if not formatted:
-            # Fallback: minion header + JSON
+        # Sanitise JSON return for full_return
+        if ret_val is not None:
             try:
-                formatted = "{}:\n{}".format(mid, json_mod.dumps(ret_val, indent=2, default=str))
+                clean_return = json_mod.loads(json_mod.dumps(ret_val, default=str))
             except Exception:
-                formatted = "{}:\n    {}".format(mid, str(ret_val))
-
-        # Summary: use the content after the first line (skip the minion header)
-        newline_idx = formatted.find('\n')
-        if newline_idx != -1:
-            summary_body = formatted[newline_idx:].strip()
-            summary = summary_body[:200]
+                clean_return = str(ret_val)
         else:
-            summary = (formatted or "")[:200]
+            clean_return = formatted_text
+
+        summary = (formatted_text or "")[:200]
 
         returns.append({
-            "minion_id": mid,
+            "minion_id": str(mid),
             "success": success,
             "retcode": retcode,
             "summary": summary,
             "full_return": clean_return,
-            "formatted_text": formatted,
+            "formatted_text": formatted_text,
         })
 
     data = {

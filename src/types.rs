@@ -213,6 +213,9 @@ pub struct SnifferState {
     pub buffer: VecDeque<SaltEvent>,
     pub paused: bool,
     pub selected: usize,
+    pub highlight_keywords: Vec<String>,
+    /// When Some, the user is editing highlight keywords within the popup
+    pub highlight_input: Option<String>,
 }
 
 // ─── Job entry (live) ─────────────────────────────────────────────────────
