@@ -455,7 +455,7 @@ def cmd_jobs_list(opts, req):
         # Apply filter across full cache (server-side search)
         if filter_text:
             ft = filter_text.lower()
-            fields_to_search = [str(jid).lower(), fun.lower(), tgt.lower(), user.lower()]
+            fields_to_search = [str(jid).lower(), str(fun).lower(), str(tgt).lower(), str(user).lower()]
             if not any(ft in f for f in fields_to_search):
                 continue
         jobs.append({
