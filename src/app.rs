@@ -163,7 +163,7 @@ pub enum AgentMessage {
 #[derive(Clone, Debug)]
 pub enum DetailPopup {
     Minion(MinionInfo),
-    SaltEvent(SaltEvent),
+    SaltEvent(SaltEvent, usize, bool),
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_max: usize, scroll_mode: bool, job_fun: String, job_tgt: String, job_start_epoch: f64 },
     Alert(AlertEntry),
     AdminConfirm,
@@ -706,7 +706,7 @@ impl App {
         match self.current_tab {
             Tab::Events => {
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
-                    self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone()));
+                    self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
                     self.popup_tab = Some(self.current_tab);
                 }
             }
@@ -1444,7 +1444,7 @@ impl App {
                                 *scroll_offset = 0;
                             }
                             KeyCode::End => {
-                                *scroll_offset = scroll_max.saturating_sub(1);
+                                *scroll_offset = usize::MAX / 2;
                             }
                             _ => {}
                         }
@@ -1535,7 +1535,7 @@ impl App {
                             let rev_idx = state.buffer.len().saturating_sub(1).saturating_sub(state.selected);
                             if let Some(evt) = state.buffer.get(rev_idx) {
                                 self.return_to_sniffer = Some(state.clone());
-                                self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone()));
+                                self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
                                 self.popup_tab = Some(self.current_tab);
                             }
                         }
@@ -1580,7 +1580,30 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::SaltEvent(ref evt) => {
+                DetailPopup::SaltEvent(ref evt, ref mut scroll_offset, ref mut scroll_mode) => {
+                    if *scroll_mode {
+                        match code {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                *scroll_mode = false;
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                *scroll_offset = scroll_offset.saturating_sub(1);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                *scroll_offset += 1;
+                            }
+                            KeyCode::PageUp => {
+                                *scroll_offset = scroll_offset.saturating_sub(10);
+                            }
+                            KeyCode::PageDown => {
+                                *scroll_offset += 10;
+                            }
+                            KeyCode::Home => { *scroll_offset = 0; }
+                            KeyCode::End => { *scroll_offset = usize::MAX / 2; }
+                            _ => {}
+                        }
+                        return false;
+                    }
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             if let Some(sniffer) = self.return_to_sniffer.take() {
@@ -1589,6 +1612,10 @@ impl App {
                             } else {
                                 self.detail_popup = None;
                             }
+                        }
+                        KeyCode::Enter => {
+                            *scroll_mode = true;
+                            *scroll_offset = 0;
                         }
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)

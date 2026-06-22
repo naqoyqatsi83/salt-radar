@@ -18,10 +18,10 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             f.render_widget(Clear, area);
             draw_minion_detail(f, area, minion);
         }
-        DetailPopup::SaltEvent(evt) => {
+        DetailPopup::SaltEvent(evt, scroll_offset, scroll_mode) => {
             let area = centered_rect(75, 70, f.area());
             f.render_widget(Clear, area);
-            draw_event_detail(f, area, evt, app.clipboard_at);
+            draw_event_detail(f, area, evt, *scroll_offset, *scroll_mode, app.clipboard_at);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, scroll_offset, scroll_max: _, scroll_mode, job_fun, job_tgt, job_start_epoch } => {
             let area = centered_rect(75, 75, f.area());
@@ -169,18 +169,30 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, clipboard_at: Option<std::time::Instant>) {
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_mode: bool, clipboard_at: Option<std::time::Instant>) {
     let mut lines = header_lines(" Event Detail ");
     lines.push(row("Tag", evt.tag.clone(), color::CYAN));
     lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
     lines.push(Line::from(""));
 
     let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
-    for line in json_str.lines().take(20) {
+    let data_lines: Vec<&str> = json_str.lines().collect();
+    let total_data = data_lines.len();
+
+    // Clamp scroll_offset so the last line can appear at viewport bottom
+    let viewport_h = (area.height as usize).saturating_sub(6); // borders(2) + footer(1) + header(3)
+    let max_scroll = total_data.saturating_sub(viewport_h);
+    let effective_scroll = if scroll_mode {
+        scroll_offset.min(max_scroll)
+    } else {
+        0
+    };
+
+    for line in data_lines.iter().skip(effective_scroll) {
         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
     }
 
-    let footer = dismiss_line(clipboard_at, false);
+    let footer = dismiss_line(clipboard_at, scroll_mode);
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
@@ -264,11 +276,19 @@ fn draw_job_detail(
                 };
                 let all_lines: Vec<&str> = display_str.lines().collect();
                 if scroll_mode {
-                    for line in all_lines.iter().skip(scroll_offset) {
+                    // Viewport: area minus borders (2), minus footer (1), minus trailing blank
+                    let viewport_h = (area.height as usize).saturating_sub(3);
+                    // Lines consumed before the return data (header + metadata)
+                    let lines_before = lines.len();
+                    // Max data lines we can show so last line fills the bottom
+                    let max_fit = viewport_h.saturating_sub(lines_before + 1);
+                    let effective_skip = scroll_offset
+                        .min(all_lines.len().saturating_sub(max_fit));
+                    for line in all_lines.iter().skip(effective_skip) {
                         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
                     }
                 } else {
-                    for line in all_lines.iter().take(30) {
+                    for line in all_lines.iter() {
                         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
                     }
                 }

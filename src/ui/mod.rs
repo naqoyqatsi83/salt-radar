@@ -263,7 +263,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(paragraph, area);
             return;
         }
-        let is_event = matches!(app.detail_popup, Some(DetailPopup::SaltEvent(_)));
+        let is_event = matches!(app.detail_popup, Some(DetailPopup::SaltEvent(..)));
         let is_alert = matches!(app.detail_popup, Some(DetailPopup::Alert(_)));
         let mut spans = key::render("Esc", "Close");
         if is_event || is_alert {
