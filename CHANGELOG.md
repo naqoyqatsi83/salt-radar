@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab now consistently switches tabs everywhere (previously toggled panel focus on Jobs tab)
 - `←`/`→` arrows switch focus between Live Jobs and Cache panels on Jobs tab
+- Job detail `y` key now copies classic Salt console output format; `Y` still copies raw JSON
 
 ### Fixed
 - Job cache search now works across pagination: server filter preserved independently of input text

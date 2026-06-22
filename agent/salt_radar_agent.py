@@ -245,6 +245,36 @@ def cmd_jid_lookup(opts, req):
             return (0, return_val)
         return (0, True)
 
+    def _fmt_val(val, indent=0):
+        """Format a return value like Salt's classic console outputter.
+        Produces output similar to salt-run jobs.lookup_jid JID:
+        dict keys get --- separators, simple values inline.
+        """
+        pad = "    " * indent
+        if isinstance(val, dict):
+            if not val:
+                return "{}".format(pad) + "{}"
+            lines = []
+            for k, v in val.items():
+                if isinstance(k, str) and k.startswith("__"):
+                    continue
+                lines.append("{}----------".format(pad))
+                lines.append("{}{}:".format(pad, k))
+                lines.append(_fmt_val(v, indent + 1))
+            return "\n".join(lines)
+        elif isinstance(val, list):
+            if not val:
+                return "{}[]".format(pad)
+            return "\n".join(_fmt_val(v, indent) for v in val)
+        elif isinstance(val, bool):
+            return "{}{}".format(pad, str(val).lower())
+        elif val is None:
+            return "{}None".format(pad)
+        elif isinstance(val, str):
+            return "\n".join(pad + l for l in val.split("\n"))
+        else:
+            return "{}{}".format(pad, str(val))
+
     returns = []
     for mid, ret_val in lookup_data.items():
         mid = str(mid)
@@ -257,9 +287,9 @@ def cmd_jid_lookup(opts, req):
         except Exception:
             clean_return = str(ret_val)
 
-        # Pretty-print for display
+        # Classic console-like format for display (y key, default popup view)
         try:
-            formatted = json_mod.dumps(ret_val, indent=2, default=str)
+            formatted = "{}:\n    {}".format(mid, _fmt_val(ret_val, 1).lstrip())
         except Exception:
             formatted = str(ret_val)
 
