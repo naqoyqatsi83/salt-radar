@@ -36,12 +36,11 @@ fn main() -> io::Result<()> {
     })?;
 
     let mut last_tick = Instant::now();
-    let fast_poll_interval = Duration::from_millis(200);
     let mut last_tab = app.current_tab;
-    let mut needs_redraw = true;
+    let mut need_redraw = true;
 
     loop {
-        if needs_redraw {
+        if need_redraw {
             if app.needs_terminal_clear {
                 terminal.clear()?;
                 app.needs_terminal_clear = false;
@@ -54,14 +53,16 @@ fn main() -> io::Result<()> {
                 app.last_frame_size = f.area();
                 ui::draw(f, &mut app);
             })?;
-            needs_redraw = false;
+            need_redraw = false;
         }
 
         let tick_rate = Duration::from_millis(app.tick_interval_ms);
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or(Duration::ZERO)
-            .min(fast_poll_interval);
+        let remaining = tick_rate.checked_sub(last_tick.elapsed()).unwrap_or(Duration::ZERO);
+        let timeout = if app.needs_fast_poll() {
+            remaining.min(Duration::from_millis(100))
+        } else {
+            remaining
+        };
 
         if event::poll(timeout)? {
             match event::read()? {
@@ -75,11 +76,11 @@ fn main() -> io::Result<()> {
                         if app.handle_key(key.code) {
                             break;
                         }
-                        needs_redraw = true;
+                        need_redraw = true;
                     }
                 }
                 Event::Resize(_, _) => {
-                    needs_redraw = true;
+                    need_redraw = true;
                 }
                 _ => {}
             }
@@ -87,13 +88,13 @@ fn main() -> io::Result<()> {
 
         // Fast poll: drain streaming buffers
         if app.fast_poll() {
-            needs_redraw = true;
+            need_redraw = true;
         }
 
         if last_tick.elapsed() >= tick_rate {
             app.update();
             last_tick = Instant::now();
-            needs_redraw = true;
+            need_redraw = true;
         }
     }
 

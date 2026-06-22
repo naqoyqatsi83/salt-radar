@@ -260,11 +260,16 @@ impl App {
         }
     }
 
-    /// Poll pending agent messages from background thread
+    /// Poll pending agent messages from background thread.
+    /// Processes at most MAX_PER_DRAIN messages to prevent runaway when
+    /// the event arrival rate exceeds the processing rate.
     pub fn drain_agent_messages(&mut self) {
         let mut q = self.agent_rx.lock().unwrap();
         let mut y_copy_json: Option<String> = None;
+        let mut processed = 0;
+        const MAX_PER_DRAIN: usize = 200;
         while let Some(msg) = q.pop_front() {
+            processed += 1;
             match msg {
                 AgentMessage::Result { id, cmd, ok, data } => {
                     self.agent.connected = true;
@@ -398,6 +403,7 @@ impl App {
                     self.agent.connected = false;
                 }
             }
+            if processed >= MAX_PER_DRAIN { break; }
         }
         if let Some(json) = y_copy_json {
             // Store in a temp file for clipboard
@@ -448,6 +454,15 @@ impl App {
         } else {
             false
         }
+    }
+
+    /// True when the main loop should poll at a shorter interval to stay
+    /// responsive for an active feature (sniffer, fleet scan, pending lookups).
+    pub fn needs_fast_poll(&self) -> bool {
+        self.pending_jid_lookup.is_some()
+            || self.pending_y_copy.is_some()
+            || self.fleet_scanning
+            || matches!(self.detail_popup, Some(DetailPopup::EventSniffer(ref s)) if !s.paused)
     }
 
     /// Clamp all cursor selections to valid bounds

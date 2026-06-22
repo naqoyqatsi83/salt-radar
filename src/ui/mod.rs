@@ -332,6 +332,13 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         spans.extend(s);
     }
 
+    // Refresh interval indicator
+    spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
+    spans.push(Span::styled(
+        format!(" ref: {:.1}s ", app.tick_interval_ms as f64 / 1000.0),
+        Style::default().fg(color::TEXT_DIM),
+    ));
+
     // Agent status on the right
     spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
     if app.agent.connected {
