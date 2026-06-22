@@ -313,6 +313,16 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             keys.push(key::render("a", "Admin"));
             keys
         }
+        Tab::Jobs => {
+            let mut keys = vec![
+                key::render("/", "Filter"),
+                key::render("Enter", "Detail"),
+                key::render("Tab", "Focus"),
+            ];
+            keys.push(key::render("r", "Refresh"));
+            keys.push(key::render("a", "Admin"));
+            keys
+        }
         _ => {
             let mut keys = vec![
                 key::render("/", "Filter"),
@@ -376,12 +386,33 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     // Selection position on list tabs
     match app.current_tab {
         Tab::Dashboard => {}
+        Tab::Jobs => {
+            spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
+            let focus_label = if app.cache_focus { "Cache" } else { "Live" };
+            let focus_color = if app.cache_focus { color::CYAN } else { color::GREEN };
+            spans.push(Span::styled(
+                format!(" {} ", focus_label),
+                Style::default().fg(focus_color).add_modifier(Modifier::BOLD),
+            ));
+            let (cur, total) = if app.cache_focus {
+                (app.cache_selected + 1, app.filtered_cache_len())
+            } else {
+                (app.job_selected + 1, app.filtered_jobs_len())
+            };
+            if total > 0 {
+                spans.push(Span::styled(format!(" {}/{} ", cur, total), Style::default().fg(color::CYAN)));
+            }
+            if app.cache_focus && !app.cache_filter_text.is_empty() {
+                spans.push(Span::styled(format!(" filtered: /{}/ ", app.cache_filter_text), Style::default().fg(color::YELLOW)));
+            } else if !app.cache_focus && !app.filter_text.is_empty() {
+                spans.push(Span::styled(format!(" filtered: /{}/ ", app.filter_text), Style::default().fg(color::YELLOW)));
+            }
+        }
         _ => {
             spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
             let (cur, total) = match app.current_tab {
                 Tab::Minions => (app.minion_selected + 1, app.filtered_minions_len()),
                 Tab::Events => (app.event_selected + 1, app.filtered_events_len()),
-                Tab::Jobs => (app.job_selected + 1, app.filtered_jobs_len()),
                 Tab::Alerts => (app.alert_selected + 1, app.filtered_alerts_len()),
                 _ => (0, 0),
             };

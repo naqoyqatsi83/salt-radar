@@ -332,6 +332,43 @@ def cmd_fleet_scan(opts, req):
     })
 
 
+def cmd_jobs_list(opts, req):
+    """Fetch recent jobs from the master job cache."""
+    import salt.runner
+    runner = salt.runner.RunnerClient(opts)
+    try:
+        result_data = runner.cmd('jobs.list_jobs', [])
+    except Exception as exc:
+        result(req["id"], "jobs_list", ok=False, data={"error": str(exc)})
+        return
+
+    jobs = []
+    items = list(result_data.items())[:200]
+    for jid, info in items:
+        if not isinstance(info, dict):
+            continue
+        fun = info.get("Function", info.get("fun", ""))
+        tgt = info.get("Target", info.get("tgt", ""))
+        tgt_type = info.get("tgt_type", info.get("tgt_type", "glob"))
+        user = info.get("User", info.get("user", ""))
+        stamp = info.get("_Stamp", info.get("start_time", ""))
+        args_raw = info.get("Arguments", info.get("arg", []))
+        args_list = args_raw if isinstance(args_raw, list) else []
+        start_epoch = _parse_stamp(stamp)
+        jobs.append({
+            "jid": str(jid),
+            "fun": fun,
+            "tgt": tgt,
+            "tgt_type": tgt_type,
+            "user": user,
+            "start_time": str(stamp),
+            "start_epoch": start_epoch,
+            "arguments": args_list,
+        })
+    jobs.sort(key=lambda j: j["start_epoch"], reverse=True)
+    result(req["id"], "jobs_list", data={"jobs": jobs})
+
+
 # ── Command dispatcher ──────────────────────────────────────────────────────
 
 HANDLERS = {
@@ -343,11 +380,12 @@ HANDLERS = {
     "subscribe_events": cmd_subscribe_events,
     "unsubscribe_events": cmd_unsubscribe_events,
     "fleet_scan": cmd_fleet_scan,
+    "jobs_list": cmd_jobs_list,
 }
 
 # Commands that may block for a long time (Salt runner calls, etc.).
 # These run in a background thread so the agent stays responsive.
-_LONG_RUNNING_CMDS = frozenset(["jid_lookup"])
+_LONG_RUNNING_CMDS = frozenset(["jid_lookup", "jobs_list"])
 
 
 def dispatch(opts, req):

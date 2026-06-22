@@ -229,6 +229,20 @@ pub struct JobEntry {
     pub local: bool,
 }
 
+// ─── Cache job entry (from agent jobs.list_jobs) ──────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct CacheJobEntry {
+    pub jid: String,
+    pub fun: String,
+    pub tgt: String,
+    pub tgt_type: String,
+    pub user: String,
+    pub start_time: String,
+    pub start_epoch: f64,
+    pub arguments: Vec<String>,
+}
+
 // ─── JID lookup result ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default)]

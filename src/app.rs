@@ -136,6 +136,16 @@ pub struct App {
     pub fleet_scan_expected: Vec<String>,
     pub fleet_scan_responded: HashSet<String>,
     pub fleet_scan_started_at: Option<Instant>,
+
+    // Job cache
+    pub jobs_cache: Vec<CacheJobEntry>,
+    pub cache_selected: usize,
+    pub cache_filter_text: String,
+    pub cache_is_filtering: bool,
+    pub cache_focus: bool,
+    pub cache_loading: bool,
+    pub cache_loaded: bool,
+    pub cache_load_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -213,6 +223,15 @@ impl App {
             fleet_scan_expected: Vec::new(),
             fleet_scan_responded: HashSet::new(),
             fleet_scan_started_at: None,
+
+            jobs_cache: Vec::new(),
+            cache_selected: 0,
+            cache_filter_text: String::new(),
+            cache_is_filtering: false,
+            cache_focus: false,
+            cache_loading: false,
+            cache_loaded: false,
+            cache_load_error: None,
 
             admin_mode: false,
             admin_mode_pending: false,
@@ -313,6 +332,16 @@ impl App {
                             } else {
                                 self.fleet_scanning = false;
                             }
+                        }
+                        "jobs_list" => {
+                            if ok {
+                                self.jobs_cache = parse_cache_jobs(&data);
+                                self.cache_loaded = true;
+                                self.cache_load_error = None;
+                            } else {
+                                self.cache_load_error = data["error"].as_str().map(|s| s.to_string());
+                            }
+                            self.cache_loading = false;
                         }
                         _ => {}
                     }
@@ -462,6 +491,7 @@ impl App {
         self.pending_jid_lookup.is_some()
             || self.pending_y_copy.is_some()
             || self.fleet_scanning
+            || self.cache_loading
             || matches!(self.detail_popup, Some(DetailPopup::EventSniffer(ref s)) if !s.paused)
     }
 
@@ -471,6 +501,8 @@ impl App {
             .min(self.filtered_events_len().saturating_sub(1));
         self.job_selected = self.job_selected
             .min(self.filtered_jobs_len().saturating_sub(1));
+        self.cache_selected = self.cache_selected
+            .min(self.filtered_cache_len().saturating_sub(1));
         self.alert_selected = self.alert_selected
             .min(self.filtered_alerts_len().saturating_sub(1));
         self.minion_selected = self.minion_selected
@@ -601,6 +633,32 @@ impl App {
         self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).nth(index)
     }
 
+    // ── Cache job filter helpers ─────────────────────────────────────────
+
+    fn matches_cache_job(job: &CacheJobEntry, pat: &str) -> bool {
+        if pat.is_empty() { return true; }
+        Self::matches_filter(&job.jid, pat)
+            || Self::matches_filter(&job.fun, pat)
+            || Self::matches_filter(&job.tgt, pat)
+            || Self::matches_filter(&job.user, pat)
+    }
+
+    pub fn filtered_cache_len(&self) -> usize {
+        if self.cache_filter_text.is_empty() {
+            return self.jobs_cache.len();
+        }
+        let pat = &self.cache_filter_text;
+        self.jobs_cache.iter().filter(|j| Self::matches_cache_job(j, pat)).count()
+    }
+
+    pub fn get_filtered_cache_job(&self, index: usize) -> Option<&CacheJobEntry> {
+        if self.cache_filter_text.is_empty() {
+            return self.jobs_cache.get(index);
+        }
+        let pat = &self.cache_filter_text;
+        self.jobs_cache.iter().filter(|j| Self::matches_cache_job(j, pat)).nth(index)
+    }
+
     pub fn filtered_alerts_len(&self) -> usize {
         if self.filter_text.is_empty() {
             return self.alert_engine.alerts.len();
@@ -654,20 +712,52 @@ impl App {
                 }
             }
             Tab::Jobs => {
-                if let Some(job) = self.get_filtered_job(self.job_selected) {
-                    let jid = job.jid.clone();
-                    let lookup = build_jid_lookup_from_events(&jid, &self.events);
-                    self.detail_popup = Some(DetailPopup::JobDetail {
-                        jid,
-                        lookup,
-                        selected_return: None,
-                        scroll_offset: 0,
-                        scroll_mode: false,
-                        job_fun: job.fun.clone(),
-                        job_tgt: job.tgt.clone(),
-                        job_start_epoch: job.created_epoch,
-                    });
-                    self.popup_tab = Some(self.current_tab);
+                if self.cache_focus {
+                    let cache_idx = self.cache_selected;
+                    let (jid, fun, tgt, start_epoch, exists) = match self.get_filtered_cache_job(cache_idx) {
+                        Some(job) => (job.jid.clone(), job.fun.clone(), job.tgt.clone(), job.start_epoch, true),
+                        None => (String::new(), String::new(), String::new(), 0.0, false),
+                    };
+                    if exists {
+                        let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                        self.pending_jid_lookup = Some((req_id, jid.clone()));
+                        self.detail_popup = Some(DetailPopup::JobDetail {
+                            jid,
+                            lookup: None,
+                            selected_return: None,
+                            scroll_offset: 0,
+                            scroll_mode: false,
+                            job_fun: fun,
+                            job_tgt: tgt,
+                            job_start_epoch: start_epoch,
+                        });
+                        self.popup_tab = Some(self.current_tab);
+                    }
+                } else {
+                    let (jid, fun, tgt, created_epoch, lookup, exists) = {
+                        let job = self.get_filtered_job(self.job_selected);
+                        match job {
+                            Some(job) => {
+                                let jid = job.jid.clone();
+                                let lookup = build_jid_lookup_from_events(&jid, &self.events);
+                                (jid, job.fun.clone(), job.tgt.clone(), job.created_epoch, lookup, true)
+                            }
+                            None => (String::new(), String::new(), String::new(), 0.0, None, false),
+                        }
+                    };
+                    if exists {
+                        self.detail_popup = Some(DetailPopup::JobDetail {
+                            jid,
+                            lookup,
+                            selected_return: None,
+                            scroll_offset: 0,
+                            scroll_mode: false,
+                            job_fun: fun,
+                            job_tgt: tgt,
+                            job_start_epoch: created_epoch,
+                        });
+                        self.popup_tab = Some(self.current_tab);
+                    }
                 }
             }
             Tab::Alerts => {
@@ -1203,6 +1293,12 @@ impl App {
         let max_age = self.config.config_secs * 60; // 60 min default
         self.jobs.retain(|j| j.age_seconds < max_age);
 
+        // Auto-load job cache when first viewing Jobs tab
+        if self.current_tab == Tab::Jobs && !self.cache_loaded && !self.cache_loading && self.cache_load_error.is_none() {
+            self.cache_loading = true;
+            self.send_agent_cmd("jobs_list", None);
+        }
+
         // Clamp cursor selections to valid range
         self.clamp_selection();
 
@@ -1518,7 +1614,7 @@ impl App {
             return false;
         }
 
-        // Filter input mode
+        // Filter input mode (live jobs / other tabs)
         if self.is_filtering {
             match code {
                 KeyCode::Esc => {
@@ -1540,6 +1636,32 @@ impl App {
                 }
                 KeyCode::Char(c) => {
                     self.filter_text.push(c);
+                    self.clamp_selection();
+                }
+                _ => {}
+            }
+            return false;
+        }
+
+        // Cache filter input mode (Jobs tab, right panel)
+        if self.cache_is_filtering {
+            match code {
+                KeyCode::Esc => {
+                    self.cache_is_filtering = false;
+                    self.cache_filter_text.clear();
+                    self.clamp_selection();
+                }
+                KeyCode::Enter => {
+                    self.cache_is_filtering = false;
+                    self.cache_selected = 0;
+                    self.clamp_selection();
+                }
+                KeyCode::Backspace => {
+                    self.cache_filter_text.pop();
+                    self.clamp_selection();
+                }
+                KeyCode::Char(c) => {
+                    self.cache_filter_text.push(c);
                     self.clamp_selection();
                 }
                 _ => {}
@@ -1590,6 +1712,14 @@ impl App {
                     self.sniffer_input_text.clear();
                 }
             }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                if self.current_tab == Tab::Jobs && !self.cache_loading {
+                    self.cache_loading = true;
+                    self.cache_loaded = false;
+                    self.cache_load_error = None;
+                    self.send_agent_cmd("jobs_list", None);
+                }
+            }
             KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => {
                 self.show_help = true;
             }
@@ -1603,10 +1733,28 @@ impl App {
                 };
             }
             KeyCode::Char('/') => {
-                self.is_filtering = true;
-                self.filter_text.clear();
+                if self.current_tab == Tab::Jobs {
+                    if self.cache_focus {
+                        self.cache_is_filtering = true;
+                        self.cache_filter_text.clear();
+                    } else {
+                        self.is_filtering = true;
+                        self.filter_text.clear();
+                    }
+                } else {
+                    self.is_filtering = true;
+                    self.filter_text.clear();
+                }
             }
-            KeyCode::Tab => self.current_tab = self.current_tab.next(),
+            KeyCode::Tab => {
+                if self.current_tab == Tab::Jobs && !had_popup
+                    && !self.is_filtering && !self.cache_is_filtering
+                {
+                    self.cache_focus = !self.cache_focus;
+                } else {
+                    self.current_tab = self.current_tab.next();
+                }
+            }
             KeyCode::BackTab => self.current_tab = self.current_tab.prev(),
             KeyCode::Char('1') => self.current_tab = Tab::Dashboard,
             KeyCode::Char('2') => self.current_tab = Tab::Minions,
@@ -1629,7 +1777,13 @@ impl App {
         match self.current_tab {
             Tab::Minions => self.minion_selected = self.minion_selected.saturating_sub(1),
             Tab::Events => self.event_selected = self.event_selected.saturating_sub(1),
-            Tab::Jobs => self.job_selected = self.job_selected.saturating_sub(1),
+            Tab::Jobs => {
+                if self.cache_focus {
+                    self.cache_selected = self.cache_selected.saturating_sub(1);
+                } else {
+                    self.job_selected = self.job_selected.saturating_sub(1);
+                }
+            }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
             _ => {}
         }
@@ -1639,7 +1793,13 @@ impl App {
         match self.current_tab {
             Tab::Minions => self.minion_selected += 1,
             Tab::Events => self.event_selected += 1,
-            Tab::Jobs => self.job_selected += 1,
+            Tab::Jobs => {
+                if self.cache_focus {
+                    self.cache_selected += 1;
+                } else {
+                    self.job_selected += 1;
+                }
+            }
             Tab::Alerts => self.alert_selected += 1,
             _ => {}
         }
@@ -1649,7 +1809,13 @@ impl App {
         match self.current_tab {
             Tab::Minions => self.minion_selected = 0,
             Tab::Events => self.event_selected = 0,
-            Tab::Jobs => self.job_selected = 0,
+            Tab::Jobs => {
+                if self.cache_focus {
+                    self.cache_selected = 0;
+                } else {
+                    self.job_selected = 0;
+                }
+            }
             Tab::Alerts => self.alert_selected = 0,
             _ => {}
         }
@@ -1659,7 +1825,13 @@ impl App {
         match self.current_tab {
             Tab::Minions => self.minion_selected = self.filtered_minions_len().saturating_sub(1),
             Tab::Events => self.event_selected = self.filtered_events_len().saturating_sub(1),
-            Tab::Jobs => self.job_selected = self.filtered_jobs_len().saturating_sub(1),
+            Tab::Jobs => {
+                if self.cache_focus {
+                    self.cache_selected = self.filtered_cache_len().saturating_sub(1);
+                } else {
+                    self.job_selected = self.filtered_jobs_len().saturating_sub(1);
+                }
+            }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
             _ => {}
         }
@@ -1795,6 +1967,27 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
                 summary: entry["summary"].as_str().unwrap_or("").to_string(),
                 full_return: entry["full_return"].clone(),
                 formatted_text: entry["formatted_text"].as_str().unwrap_or("").to_string(),
+            });
+        }
+    }
+    result
+}
+
+fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
+    let mut result = Vec::new();
+    if let Some(arr) = data["jobs"].as_array() {
+        for entry in arr {
+            result.push(CacheJobEntry {
+                jid: entry["jid"].as_str().unwrap_or("?").to_string(),
+                fun: entry["fun"].as_str().unwrap_or("").to_string(),
+                tgt: entry["tgt"].as_str().unwrap_or("").to_string(),
+                tgt_type: entry["tgt_type"].as_str().unwrap_or("glob").to_string(),
+                user: entry["user"].as_str().unwrap_or("").to_string(),
+                start_time: entry["start_time"].as_str().unwrap_or("").to_string(),
+                start_epoch: entry["start_epoch"].as_f64().unwrap_or(0.0),
+                arguments: entry["arguments"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
             });
         }
     }
