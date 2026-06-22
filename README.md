@@ -151,7 +151,7 @@ disk_usage_pct = 85.0
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
 | Jobs (Cache) | `,`/`.` | Previous/next page |
 | Jobs (Cache) | `r` | Refresh job cache |
-| Jobs (Cache) | `Tab` | Toggle focus between Live Jobs and Cache panels |
+| Jobs (Cache) | `\u{2190}`/`\u{2192}` | Switch focus between Live Jobs and Cache panels |
 
 ### Popups
 
@@ -160,6 +160,7 @@ disk_usage_pct = 85.0
 | `y` | Copy to clipboard |
 | `Y` | Copy raw JSON (job detail) |
 | `j`/`k` | Next/previous return (job detail) |
+| `Home`/`End` | Jump to start/end of output (scroll mode) |
 | `p` | Pause/resume (sniffer) |
 
 ## How It Works

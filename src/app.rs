@@ -141,6 +141,7 @@ pub struct App {
     pub jobs_cache: Vec<CacheJobEntry>,
     pub cache_selected: usize,
     pub cache_filter_text: String,
+    pub cache_server_filter: String,
     pub cache_is_filtering: bool,
     pub cache_focus: bool,
     pub cache_loading: bool,
@@ -163,7 +164,7 @@ pub enum AgentMessage {
 pub enum DetailPopup {
     Minion(MinionInfo),
     SaltEvent(SaltEvent),
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_mode: bool, job_fun: String, job_tgt: String, job_start_epoch: f64 },
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_max: usize, scroll_mode: bool, job_fun: String, job_tgt: String, job_start_epoch: f64 },
     Alert(AlertEntry),
     AdminConfirm,
     EventSniffer(crate::types::SnifferState),
@@ -231,6 +232,7 @@ impl App {
             jobs_cache: Vec::new(),
             cache_selected: 0,
             cache_filter_text: String::new(),
+            cache_server_filter: String::new(),
             cache_is_filtering: false,
             cache_focus: false,
             cache_loading: false,
@@ -646,28 +648,14 @@ impl App {
 
     // ── Cache job filter helpers ─────────────────────────────────────────
 
-    fn matches_cache_job(job: &CacheJobEntry, pat: &str) -> bool {
-        if pat.is_empty() { return true; }
-        Self::matches_filter(&job.jid, pat)
-            || Self::matches_filter(&job.fun, pat)
-            || Self::matches_filter(&job.tgt, pat)
-            || Self::matches_filter(&job.user, pat)
-    }
-
     pub fn filtered_cache_len(&self) -> usize {
-        if self.cache_filter_text.is_empty() {
-            return self.jobs_cache.len();
-        }
-        let pat = &self.cache_filter_text;
-        self.jobs_cache.iter().filter(|j| Self::matches_cache_job(j, pat)).count()
+        // Server already filtered — no client-side re-filter
+        self.jobs_cache.len()
     }
 
     pub fn get_filtered_cache_job(&self, index: usize) -> Option<&CacheJobEntry> {
-        if self.cache_filter_text.is_empty() {
-            return self.jobs_cache.get(index);
-        }
-        let pat = &self.cache_filter_text;
-        self.jobs_cache.iter().filter(|j| Self::matches_cache_job(j, pat)).nth(index)
+        // Server already filtered — no client-side re-filter
+        self.jobs_cache.get(index)
     }
 
     pub fn filtered_alerts_len(&self) -> usize {
@@ -737,6 +725,7 @@ impl App {
                             lookup: None,
                             selected_return: None,
                             scroll_offset: 0,
+                            scroll_max: 0,
                             scroll_mode: false,
                             job_fun: fun,
                             job_tgt: tgt,
@@ -762,6 +751,7 @@ impl App {
                             lookup,
                             selected_return: None,
                             scroll_offset: 0,
+                            scroll_max: 0,
                             scroll_mode: false,
                             job_fun: fun,
                             job_tgt: tgt,
@@ -1428,6 +1418,7 @@ impl App {
                 DetailPopup::JobDetail {
                     ref mut selected_return,
                     ref mut scroll_offset,
+                    ref mut scroll_max,
                     ref mut scroll_mode,
                     ref lookup,
                     ref jid, ..
@@ -1441,13 +1432,19 @@ impl App {
                                 *scroll_offset = scroll_offset.saturating_sub(1);
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                *scroll_offset += 1;
+                                *scroll_offset = scroll_offset.saturating_add(1).min(scroll_max.saturating_sub(1));
                             }
                             KeyCode::PageUp => {
                                 *scroll_offset = scroll_offset.saturating_sub(10);
                             }
                             KeyCode::PageDown => {
-                                *scroll_offset += 10;
+                                *scroll_offset = scroll_offset.saturating_add(10).min(scroll_max.saturating_sub(1));
+                            }
+                            KeyCode::Home => {
+                                *scroll_offset = 0;
+                            }
+                            KeyCode::End => {
+                                *scroll_offset = scroll_max.saturating_sub(1);
                             }
                             _ => {}
                         }
@@ -1457,7 +1454,12 @@ impl App {
                                 self.detail_popup = None;
                             }
                             KeyCode::Enter => {
-                                if lookup.is_some() {
+                                if let Some(ref l) = lookup {
+                                    let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
+                                    if sel < l.returns.len() {
+                                        let display_str = &l.returns[sel].formatted_text;
+                                        *scroll_max = if display_str.is_empty() { 0 } else { display_str.lines().count() };
+                                    }
                                     *scroll_mode = true;
                                     *scroll_offset = 0;
                                 }
@@ -1685,14 +1687,19 @@ impl App {
                 KeyCode::Esc => {
                     self.cache_is_filtering = false;
                     self.cache_filter_text.clear();
+                    self.cache_server_filter.clear();
+                    self.cache_selected = 0;
                     self.clamp_selection();
+                    self.send_cache_jobs_list(None, true);
                 }
                 KeyCode::Enter => {
                     self.cache_is_filtering = false;
+                    self.cache_server_filter = self.cache_filter_text.clone();
+                    self.cache_filter_text.clear();
                     self.cache_selected = 0;
                     self.clamp_selection();
-                    let filter = self.cache_filter_text.clone();
-                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, true);
+                    let ft = self.cache_server_filter.clone();
+                    self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, true);
                 }
                 KeyCode::Backspace => {
                     self.cache_filter_text.pop();
@@ -1752,22 +1759,22 @@ impl App {
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 if self.current_tab == Tab::Jobs && !self.cache_loading {
-                    let filter = self.cache_filter_text.clone();
-                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
+                    let ft = self.cache_server_filter.clone();
+                    self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
             }
             KeyCode::Char(']') | KeyCode::Char('}') => {
                 if self.current_tab == Tab::Jobs && !self.cache_loading {
                     self.cache_max_results = (self.cache_max_results + 500).min(10000);
-                    let filter = self.cache_filter_text.clone();
-                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
+                    let ft = self.cache_server_filter.clone();
+                    self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
             }
             KeyCode::Char('[') | KeyCode::Char('{') => {
                 if self.current_tab == Tab::Jobs && !self.cache_loading {
                     self.cache_max_results = self.cache_max_results.saturating_sub(500).max(200);
-                    let filter = self.cache_filter_text.clone();
-                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
+                    let ft = self.cache_server_filter.clone();
+                    self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
             }
             KeyCode::Char('>') | KeyCode::Char('.') => {
@@ -1776,15 +1783,15 @@ impl App {
                     if self.cache_offset >= self.cache_total_count {
                         self.cache_offset = self.cache_total_count.saturating_sub(self.cache_max_results);
                     }
-                    let filter = self.cache_filter_text.clone();
-                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
+                    let ft = self.cache_server_filter.clone();
+                    self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
             }
             KeyCode::Char('<') | KeyCode::Char(',') => {
                 if self.current_tab == Tab::Jobs && !self.cache_loading && self.cache_loaded {
                     self.cache_offset = self.cache_offset.saturating_sub(self.cache_max_results);
-                    let filter = self.cache_filter_text.clone();
-                    self.send_cache_jobs_list(if filter.is_empty() { None } else { Some(&filter) }, false);
+                    let ft = self.cache_server_filter.clone();
+                    self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
             }
             KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => {
@@ -1804,6 +1811,7 @@ impl App {
                     if self.cache_focus {
                         self.cache_is_filtering = true;
                         self.cache_filter_text.clear();
+                        self.cache_server_filter.clear();
                     } else {
                         self.is_filtering = true;
                         self.filter_text.clear();
@@ -1814,15 +1822,23 @@ impl App {
                 }
             }
             KeyCode::Tab => {
+                self.current_tab = self.current_tab.next();
+            }
+            KeyCode::BackTab => self.current_tab = self.current_tab.prev(),
+            KeyCode::Left => {
                 if self.current_tab == Tab::Jobs && !had_popup
                     && !self.is_filtering && !self.cache_is_filtering
                 {
-                    self.cache_focus = !self.cache_focus;
-                } else {
-                    self.current_tab = self.current_tab.next();
+                    self.cache_focus = false;
                 }
             }
-            KeyCode::BackTab => self.current_tab = self.current_tab.prev(),
+            KeyCode::Right => {
+                if self.current_tab == Tab::Jobs && !had_popup
+                    && !self.is_filtering && !self.cache_is_filtering
+                {
+                    self.cache_focus = true;
+                }
+            }
             KeyCode::Char('1') => self.current_tab = Tab::Dashboard,
             KeyCode::Char('2') => self.current_tab = Tab::Minions,
             KeyCode::Char('3') => self.current_tab = Tab::Events,

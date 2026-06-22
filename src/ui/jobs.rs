@@ -187,9 +187,9 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!(" /{} {}", app.cache_filter_text, cursor), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
-    } else if !app.cache_filter_text.is_empty() {
+    } else if !app.cache_server_filter.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.cache_filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" /{}/ ", app.cache_server_filter), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items (of {} total)", total, app.cache_total_count), Style::default().fg(color::TEXT_DIM)),
         ]));
     } else {

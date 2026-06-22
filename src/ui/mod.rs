@@ -317,7 +317,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             let mut keys = vec![
                 key::render("/", "Filter"),
                 key::render("Enter", "Detail"),
-                key::render("Tab", "Focus"),
+                key::render("\u{2190}\u{2192}", "Focus"),
             ];
             keys.push(key::render("[ ]", "Limit"));
             keys.push(key::render(", .", "Page"));

@@ -23,7 +23,7 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             f.render_widget(Clear, area);
             draw_event_detail(f, area, evt, app.clipboard_at);
         }
-        DetailPopup::JobDetail { jid, lookup, selected_return, scroll_offset, scroll_mode, job_fun, job_tgt, job_start_epoch } => {
+        DetailPopup::JobDetail { jid, lookup, selected_return, scroll_offset, scroll_max: _, scroll_mode, job_fun, job_tgt, job_start_epoch } => {
             let area = centered_rect(75, 75, f.area());
             f.render_widget(Clear, area);
             draw_job_detail(f, area, jid, lookup, *selected_return, *scroll_offset, *scroll_mode, job_fun, job_tgt, *job_start_epoch, app.clipboard_at);
