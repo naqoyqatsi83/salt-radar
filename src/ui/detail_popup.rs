@@ -117,6 +117,8 @@ fn dismiss_line(clipboard_at: Option<std::time::Instant>, scroll_mode: bool) -> 
 }
 
 fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], footer: Option<Line<'static>>, scroll: u16) {
+    // Clear the area first — prevents underlying content from bleeding through
+    f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER_HI))
