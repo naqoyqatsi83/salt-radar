@@ -1560,20 +1560,25 @@ impl App {
         let had_popup = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
 
         // Contrast toggle and tab switching work universally (even with popups open)
+        // but are muted when a text input mode is active inside the popup
         if had_popup {
-            match code {
-                KeyCode::Char('c') | KeyCode::Char('C') => {
-                    self.high_contrast = !self.high_contrast;
-                    return false;
+            let popup_text_input = matches!(&self.detail_popup,
+                Some(DetailPopup::EventSniffer(ref s)) if s.highlight_input.is_some());
+            if !popup_text_input {
+                match code {
+                    KeyCode::Char('c') | KeyCode::Char('C') => {
+                        self.high_contrast = !self.high_contrast;
+                        return false;
+                    }
+                    KeyCode::Tab => { self.current_tab = self.current_tab.next(); return false; }
+                    KeyCode::BackTab => { self.current_tab = self.current_tab.prev(); return false; }
+                    KeyCode::Char('1') => { self.current_tab = Tab::Dashboard; return false; }
+                    KeyCode::Char('2') => { self.current_tab = Tab::Minions; return false; }
+                    KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
+                    KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
+                    KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
+                    _ => {}
                 }
-                KeyCode::Tab => { self.current_tab = self.current_tab.next(); return false; }
-                KeyCode::BackTab => { self.current_tab = self.current_tab.prev(); return false; }
-                KeyCode::Char('1') => { self.current_tab = Tab::Dashboard; return false; }
-                KeyCode::Char('2') => { self.current_tab = Tab::Minions; return false; }
-                KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
-                KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
-                KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
-                _ => {}
             }
         }
 

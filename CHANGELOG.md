@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Popup overlay bleed-through: added `Clear` widget in `render_popup` to prevent underlying panels from showing through
+- Hotkeys (1-5, Tab, c) now muted during sniffer keyword highlight input so characters typed are consumed by the input handler instead of switching tabs
 
 ## [0.4.1] - 2026-06-22
 
