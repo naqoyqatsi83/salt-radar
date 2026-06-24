@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-06-24
+
+### Changed
+- Job detail popup redesigned with split-panel layout: returns list on left (35%), return content preview on right (65%)
+- Returns list now shows compact entries (minion_id: OK/FAIL (retcode=X)) without summary text
+- Enter on a return switches focus to the right panel for scrolling through the return output
+- Return list can be filtered with `/` key by hostname substring
+- Right panel (preview) supports scrolling with j/k, PgUp/PgDn, Home/End, and Enter to enter/exit scroll mode
+- y/Y copy works from either panel
+
 ## [0.4.3] - 2026-06-24
 
 ### Fixed
