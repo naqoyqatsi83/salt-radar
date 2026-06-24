@@ -1638,33 +1638,31 @@ impl App {
                             }
                             KeyCode::Enter => {
                                 *return_is_filtering = false;
-                            }
-                            KeyCode::Backspace => { return_filter.pop(); }
-                            KeyCode::Char(c) => { return_filter.push(c); }
-                            _ => {}
-                        }
-                        // Snap selected_return to nearest matching entry when filter changes
-                        if !return_filter.is_empty() {
-                            if let Some(ref l) = lookup {
-                                let cur = selected_return.unwrap_or(0);
-                                if cur >= l.returns.len() || !l.returns[cur].minion_id.contains(&*return_filter) {
-                                    // Try forward from current position
-                                    let next = (cur..l.returns.len())
-                                        .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
-                                    if let Some(idx) = next {
-                                        *selected_return = Some(idx);
-                                        *minion_scroll = idx.saturating_sub(4);
-                                    } else {
-                                        // Try backward from current position
-                                        let prev = (0..cur).rev()
+                                // Snap selection to nearest matching entry
+                                if !return_filter.is_empty() {
+                                    if let Some(ref l) = lookup {
+                                        let cur = selected_return.unwrap_or(0);
+                                        // Try forward from current position
+                                        let next = (cur..l.returns.len())
                                             .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
-                                        if let Some(idx) = prev {
+                                        if let Some(idx) = next {
                                             *selected_return = Some(idx);
                                             *minion_scroll = idx.saturating_sub(4);
+                                        } else {
+                                            // Try backward from current position
+                                            let prev = (0..cur).rev()
+                                                .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
+                                            if let Some(idx) = prev {
+                                                *selected_return = Some(idx);
+                                                *minion_scroll = idx.saturating_sub(4);
+                                            }
                                         }
                                     }
                                 }
                             }
+                            KeyCode::Backspace => { return_filter.pop(); }
+                            KeyCode::Char(c) => { return_filter.push(c); }
+                            _ => {}
                         }
                         return false;
                     }
@@ -1774,7 +1772,6 @@ impl App {
                         }
                         KeyCode::Char('/') => {
                             *return_is_filtering = true;
-                            return_filter.clear();
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             if let Some(ref l) = lookup {

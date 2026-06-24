@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Job detail popup redesigned with split-panel layout: returns list on left (25%), return content preview on right (75%)
 - Returns list now shows compact entries (minion_id: OK/FAIL (retcode=X)) without summary text
 - Enter on a return switches focus to the right panel for scrolling through the return output
-- Return list can be filtered with `/` key by hostname substring; selection auto-snaps to the nearest matching entry as you type
+- Return list can be filtered with `/` key by hostname substring; Enter commits filter, Esc cancels, selection snaps to nearest match on commit
 - Right panel (preview) supports scrolling with j/k, PgUp/PgDn, Home/End, and Enter to enter/exit scroll mode
 - y/Y copy works from either panel
 

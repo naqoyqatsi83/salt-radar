@@ -295,7 +295,7 @@ fn draw_job_detail(
             )));
         } else {
             for (i, ret) in l.returns.iter().enumerate() {
-                if !return_filter.is_empty() && !ret.minion_id.contains(return_filter) {
+                if !return_filter.is_empty() && !return_is_filtering && !ret.minion_id.contains(return_filter) {
                     continue;
                 }
                 let cursor = if i == sel { "\u{25b6}" } else { " " };
