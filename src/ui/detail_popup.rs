@@ -314,10 +314,11 @@ fn draw_job_detail(
         // Compute position of sel within the filtered view for scroll
         let left_list_h = left_inner.height as usize;
         let left_scroll = if minion_scroll > 0 { minion_scroll as u16 } else { 0 };
-        let sel_vis_idx = if return_filter.is_empty() || return_is_filtering {
-            sel
+        let (sel_vis_idx, is_filtered) = if return_filter.is_empty() || return_is_filtering {
+            (sel, false)
         } else {
-            l.returns.iter().take(sel + 1).filter(|ret| ret.minion_id.contains(return_filter)).count().saturating_sub(1)
+            let vis = l.returns.iter().take(sel + 1).filter(|ret| ret.minion_id.contains(return_filter)).count().saturating_sub(1);
+            (vis, true)
         };
         if left_lines.is_empty() {
             left_lines.push(Line::from(Span::styled(
@@ -327,6 +328,10 @@ fn draw_job_detail(
         }
         let left_scroll_adj = if sel_vis_idx > left_list_h.saturating_sub(2) {
             (sel_vis_idx.saturating_sub(left_list_h.saturating_sub(2))) as u16
+        } else if is_filtered {
+            // Filter confirmed: minion_scroll is an unfiltered index, not valid for
+            // the filtered left_lines. The selected item is already visible, so start at 0.
+            0
         } else {
             left_scroll.min(left_lines.len().saturating_sub(1) as u16)
         };
