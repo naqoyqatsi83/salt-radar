@@ -10,12 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.4] - 2026-06-24
 
 ### Changed
-- Job detail popup redesigned with split-panel layout: returns list on left (35%), return content preview on right (65%)
+- Job detail popup redesigned with split-panel layout: returns list on left (25%), return content preview on right (75%)
 - Returns list now shows compact entries (minion_id: OK/FAIL (retcode=X)) without summary text
 - Enter on a return switches focus to the right panel for scrolling through the return output
-- Return list can be filtered with `/` key by hostname substring
+- Return list can be filtered with `/` key by hostname substring; selection auto-snaps to the nearest matching entry as you type
 - Right panel (preview) supports scrolling with j/k, PgUp/PgDn, Home/End, and Enter to enter/exit scroll mode
 - y/Y copy works from either panel
+
+### Fixed
+- 'c' key no longer triggers high-contrast toggle during return filter input
+- Job detail lookup timeout: pending query auto-clears after 65s if agent hangs, closing the popup instead of showing permanent "Querying master..."
 
 ## [0.4.3] - 2026-06-24
 

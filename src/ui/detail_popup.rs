@@ -265,8 +265,8 @@ fn draw_job_detail(
 
     // ── Split body: left (returns list) / right (preview) ──
     let horiz = Layout::horizontal([
-        Constraint::Ratio(35, 100),
-        Constraint::Ratio(65, 100),
+        Constraint::Ratio(25, 100),
+        Constraint::Ratio(75, 100),
     ])
     .split(vert[1]);
 

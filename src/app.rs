@@ -83,6 +83,8 @@ pub struct App {
     /// Pending jid_lookup (request_id, jid) waiting for async result
     /// Pending jid_lookup (request_id, jid) for auto-updating the popup
     pending_jid_lookup: Option<(u64, String)>,
+    /// When pending_jid_lookup was started, for timeout detection
+    pending_jid_lookup_at: Option<Instant>,
     /// When Y is pressed, stores (request_id, jid) so the response auto-copies JSON
     pending_y_copy: Option<(u64, String)>,
     /// Events statistics
@@ -263,6 +265,7 @@ impl App {
             agent_req_id: 0,
             config_tick: 0,
             pending_jid_lookup: None,
+            pending_jid_lookup_at: None,
             pending_y_copy: None,
             events_total: 0,
             events_last_sec_count: 0,
@@ -369,6 +372,7 @@ impl App {
                             if let Some((pending_id, _)) = self.pending_jid_lookup {
                                 if id == pending_id {
                                     self.pending_jid_lookup = None;
+                                    self.pending_jid_lookup_at = None;
                                     if let Some(DetailPopup::JobDetail { ref mut lookup, .. }) = self.detail_popup {
                                         *lookup = Some(jid_data.clone());
                                     }
@@ -492,6 +496,18 @@ impl App {
     /// Fast poll between ticks
     pub fn fast_poll(&mut self) -> bool {
         self.drain_agent_messages();
+
+        // Timeout for stuck jid_lookup (agent subprocess may hang)
+        if self.pending_jid_lookup.is_some() {
+            if let Some(started) = self.pending_jid_lookup_at {
+                if started.elapsed().as_secs() > 65 {
+                    self.pending_jid_lookup = None;
+                    self.pending_jid_lookup_at = None;
+                    self.detail_popup = None;
+                }
+            }
+        }
+
         self.clamp_selection();
         if self.sniffer_dirty {
             self.sniffer_dirty = false;
@@ -723,6 +739,7 @@ impl App {
                     if exists {
                         let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
                         self.pending_jid_lookup = Some((req_id, jid.clone()));
+                        self.pending_jid_lookup_at = Some(Instant::now());
                         self.detail_popup = Some(DetailPopup::JobDetail {
                             jid,
                             lookup: None,
@@ -753,6 +770,7 @@ impl App {
                     if exists {
                         let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
                         self.pending_jid_lookup = Some((req_id, jid.clone()));
+                        self.pending_jid_lookup_at = Some(Instant::now());
                         self.detail_popup = Some(DetailPopup::JobDetail {
                             jid,
                             lookup: None,
@@ -1570,8 +1588,11 @@ impl App {
         // Contrast toggle and tab switching work universally (even with popups open)
         // but are muted when a text input mode is active inside the popup
         if had_popup {
-            let popup_text_input = matches!(&self.detail_popup,
-                Some(DetailPopup::EventSniffer(ref s)) if s.highlight_input.is_some());
+            let popup_text_input = match &self.detail_popup {
+                Some(DetailPopup::EventSniffer(ref s)) => s.highlight_input.is_some(),
+                Some(DetailPopup::JobDetail { return_is_filtering: true, .. }) => true,
+                _ => false,
+            };
             if !popup_text_input {
                 match code {
                     KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -1621,6 +1642,29 @@ impl App {
                             KeyCode::Backspace => { return_filter.pop(); }
                             KeyCode::Char(c) => { return_filter.push(c); }
                             _ => {}
+                        }
+                        // Snap selected_return to nearest matching entry when filter changes
+                        if !return_filter.is_empty() {
+                            if let Some(ref l) = lookup {
+                                let cur = selected_return.unwrap_or(0);
+                                if cur >= l.returns.len() || !l.returns[cur].minion_id.contains(&*return_filter) {
+                                    // Try forward from current position
+                                    let next = (cur..l.returns.len())
+                                        .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
+                                    if let Some(idx) = next {
+                                        *selected_return = Some(idx);
+                                        *minion_scroll = idx.saturating_sub(4);
+                                    } else {
+                                        // Try backward from current position
+                                        let prev = (0..cur).rev()
+                                            .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
+                                        if let Some(idx) = prev {
+                                            *selected_return = Some(idx);
+                                            *minion_scroll = idx.saturating_sub(4);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         return false;
                     }
