@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-24
+
+### Fixed
+- Job detail popup now scrolls when navigating many minion returns — selected return stays visible instead of scrolling off-screen
+- PageUp/PageDown/Home/End keys now work for navigating minion returns in job detail popup
+
 ## [0.4.2] - 2026-06-22
 
 ### Fixed

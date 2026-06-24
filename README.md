@@ -160,6 +160,8 @@ disk_usage_pct = 85.0
 | `y` | Copy to clipboard |
 | `Y` | Copy raw JSON (job detail) |
 | `j`/`k` | Next/previous return (job detail) |
+| `PgUp`/`PgDn` | Jump 10 returns |
+| `Home`/`End` | First/last return (job detail) |
 | `Enter` | Enter scroll mode (event/job detail) |
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |

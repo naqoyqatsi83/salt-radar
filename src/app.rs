@@ -167,7 +167,7 @@ pub enum AgentMessage {
 pub enum DetailPopup {
     Minion(MinionInfo),
     SaltEvent(SaltEvent, usize, bool),
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_max: usize, scroll_mode: bool, job_fun: String, job_tgt: String, job_start_epoch: f64 },
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_max: usize, scroll_mode: bool, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize },
     Alert(AlertEntry),
     AdminConfirm,
     EventSniffer(crate::types::SnifferState),
@@ -733,6 +733,7 @@ impl App {
                             job_fun: fun,
                             job_tgt: tgt,
                             job_start_epoch: start_epoch,
+                            minion_scroll: 0,
                         });
                         self.popup_tab = Some(self.current_tab);
                     }
@@ -759,6 +760,7 @@ impl App {
                             job_fun: fun,
                             job_tgt: tgt,
                             job_start_epoch: start_epoch,
+                            minion_scroll: 0,
                         });
                         self.popup_tab = Some(self.current_tab);
                     }
@@ -1592,6 +1594,7 @@ impl App {
                     ref mut scroll_offset,
                     ref mut scroll_max,
                     ref mut scroll_mode,
+                    ref mut minion_scroll,
                     ref lookup,
                     ref jid, ..
                 } => {
@@ -1643,6 +1646,9 @@ impl App {
                                         *selected_return = Some(cur.saturating_sub(1));
                                         *scroll_mode = false;
                                         *scroll_offset = 0;
+                                        if *minion_scroll > 0 && *minion_scroll >= selected_return.unwrap_or(0) {
+                                            *minion_scroll = selected_return.unwrap_or(0);
+                                        }
                                     }
                                 }
                             }
@@ -1651,6 +1657,55 @@ impl App {
                                     if !l.returns.is_empty() {
                                         let cur = selected_return.unwrap_or(0) + 1;
                                         *selected_return = Some(cur.min(l.returns.len().saturating_sub(1)));
+                                        *scroll_mode = false;
+                                        *scroll_offset = 0;
+                                        if *minion_scroll + 8 < selected_return.unwrap_or(0) {
+                                            *minion_scroll = selected_return.unwrap_or(0).saturating_sub(4);
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::PageUp => {
+                                if let Some(ref l) = lookup {
+                                    if !l.returns.is_empty() {
+                                        let cur = selected_return.unwrap_or(0);
+                                        *selected_return = Some(cur.saturating_sub(10));
+                                        *scroll_mode = false;
+                                        *scroll_offset = 0;
+                                        if *minion_scroll >= selected_return.unwrap_or(0) {
+                                            *minion_scroll = selected_return.unwrap_or(0).saturating_sub(4);
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::PageDown => {
+                                if let Some(ref l) = lookup {
+                                    if !l.returns.is_empty() {
+                                        let cur = selected_return.unwrap_or(0) + 10;
+                                        *selected_return = Some(cur.min(l.returns.len().saturating_sub(1)));
+                                        *scroll_mode = false;
+                                        *scroll_offset = 0;
+                                        if *minion_scroll + 8 < selected_return.unwrap_or(0) {
+                                            *minion_scroll = selected_return.unwrap_or(0).saturating_sub(4);
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Home => {
+                                if let Some(ref l) = lookup {
+                                    if !l.returns.is_empty() {
+                                        *selected_return = Some(0);
+                                        *minion_scroll = 0;
+                                        *scroll_mode = false;
+                                        *scroll_offset = 0;
+                                    }
+                                }
+                            }
+                            KeyCode::End => {
+                                if let Some(ref l) = lookup {
+                                    if !l.returns.is_empty() {
+                                        *selected_return = Some(l.returns.len().saturating_sub(1));
+                                        *minion_scroll = l.returns.len().saturating_sub(1);
                                         *scroll_mode = false;
                                         *scroll_offset = 0;
                                     }

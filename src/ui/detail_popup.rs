@@ -23,10 +23,10 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             f.render_widget(Clear, area);
             draw_event_detail(f, area, evt, *scroll_offset, *scroll_mode, app.clipboard_at);
         }
-        DetailPopup::JobDetail { jid, lookup, selected_return, scroll_offset, scroll_max: _, scroll_mode, job_fun, job_tgt, job_start_epoch } => {
+        DetailPopup::JobDetail { jid, lookup, selected_return, scroll_offset, scroll_max: _, scroll_mode, job_fun, job_tgt, job_start_epoch, minion_scroll } => {
             let area = centered_rect(75, 75, f.area());
             f.render_widget(Clear, area);
-            draw_job_detail(f, area, jid, lookup, *selected_return, *scroll_offset, *scroll_mode, job_fun, job_tgt, *job_start_epoch, app.clipboard_at);
+            draw_job_detail(f, area, jid, lookup, *selected_return, *scroll_offset, *scroll_mode, job_fun, job_tgt, *job_start_epoch, *minion_scroll, app.clipboard_at);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -209,6 +209,7 @@ fn draw_job_detail(
     job_fun: &str,
     job_tgt: &str,
     job_start_epoch: f64,
+    minion_scroll: usize,
     clipboard_at: Option<std::time::Instant>,
 ) {
     let short_jid: String = jid.chars().take(28).collect();
@@ -228,7 +229,11 @@ fn draw_job_detail(
         }
     }
 
+    // Track how many header/metadata lines precede the return list
+    // (used for minion_scroll calculation below)
+    let mut lines_before_returns = 0;
     if let Some(ref l) = lookup {
+        lines_before_returns = lines.len();
         lines.push(Line::from(Span::styled(
             format!("  Returns ({}):", l.returns.len()),
             Style::default().fg(color::TEXT_LABEL),
@@ -306,8 +311,15 @@ fn draw_job_detail(
     }
 
     lines.push(Line::from(""));
+    let viewport_h = (area.height as usize).saturating_sub(3);
+    let popup_scroll = if minion_scroll > 0 {
+        let target_line = lines_before_returns + 1 + minion_scroll;
+        if target_line.saturating_sub(viewport_h.saturating_div(3)) > 0 {
+            (target_line.saturating_sub(viewport_h.saturating_div(3))) as u16
+        } else { 0 }
+    } else { 0 };
     let footer = dismiss_line(clipboard_at, scroll_mode);
-    render_popup(f, area, &lines, Some(footer), 0);
+    render_popup(f, area, &lines, Some(footer), popup_scroll);
 }
 
 fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, clipboard_at: Option<std::time::Instant>) {
