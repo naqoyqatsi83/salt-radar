@@ -376,6 +376,18 @@ impl App {
                                     if let Some(DetailPopup::JobDetail { ref mut lookup, .. }) = self.detail_popup {
                                         *lookup = Some(jid_data.clone());
                                     }
+                                    // Snap to first filter match if filter was committed before data arrived
+                                    if let Some(DetailPopup::JobDetail { ref return_filter, ref mut selected_return, ref mut minion_scroll, ref lookup, .. }) = self.detail_popup {
+                                        if !return_filter.is_empty() {
+                                            if let Some(ref l) = lookup {
+                                                let first = l.returns.iter().position(|ret| ret.minion_id.contains(return_filter));
+                                                if let Some(idx) = first {
+                                                    *selected_return = Some(idx);
+                                                    *minion_scroll = idx.saturating_sub(4);
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             // Y key pending: copy pretty JSON of selected return
@@ -1772,6 +1784,7 @@ impl App {
                         }
                         KeyCode::Char('/') => {
                             *return_is_filtering = true;
+                            return_filter.clear();
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             if let Some(ref l) = lookup {

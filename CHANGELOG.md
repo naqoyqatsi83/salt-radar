@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - 'c' key no longer triggers high-contrast toggle during return filter input
 - Job detail lookup timeout: pending query auto-clears after 65s if agent hangs, closing the popup instead of showing permanent "Querying master..."
+- Return filter no longer causes empty left panel: scroll calculation now uses filtered position, not full-list index
+- Return filter snaps to first match when lookup data arrives after filter was committed
+- Pressing `/` to start a new filter correctly clears previous filter text
 
 ## [0.4.3] - 2026-06-24
 

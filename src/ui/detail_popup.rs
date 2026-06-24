@@ -311,27 +311,42 @@ fn draw_job_detail(
                 ]));
             }
         }
+        // Compute position of sel within the filtered view for scroll
+        let left_list_h = left_inner.height as usize;
+        let left_scroll = if minion_scroll > 0 { minion_scroll as u16 } else { 0 };
+        let sel_vis_idx = if return_filter.is_empty() || return_is_filtering {
+            sel
+        } else {
+            l.returns.iter().take(sel + 1).filter(|ret| ret.minion_id.contains(return_filter)).count().saturating_sub(1)
+        };
+        if left_lines.is_empty() {
+            left_lines.push(Line::from(Span::styled(
+                "  No matching hosts.",
+                Style::default().fg(color::TEXT_DIM),
+            )));
+        }
+        let left_scroll_adj = if sel_vis_idx > left_list_h.saturating_sub(2) {
+            (sel_vis_idx.saturating_sub(left_list_h.saturating_sub(2))) as u16
+        } else {
+            left_scroll.min(left_lines.len().saturating_sub(1) as u16)
+        };
+        f.render_widget(
+            Paragraph::new(left_lines)
+                .scroll((left_scroll_adj, 0))
+                .style(Style::default().bg(color::BG_POPUP)),
+            left_inner,
+        );
     } else {
         left_lines.push(Line::from(Span::styled(
             "  Querying master...",
             Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
         )));
+        f.render_widget(
+            Paragraph::new(left_lines)
+                .style(Style::default().bg(color::BG_POPUP)),
+            left_inner,
+        );
     }
-    let left_list_h = left_inner.height as usize;
-    let left_scroll = if minion_scroll > 0 { minion_scroll as u16 } else { 0 };
-    let sel_idx = selected_return.unwrap_or(0);
-    // Keep selection visible in left panel
-    let left_scroll_adj = if sel_idx > left_list_h.saturating_sub(2) {
-        (sel_idx.saturating_sub(left_list_h.saturating_sub(2))) as u16
-    } else {
-        left_scroll.min(left_lines.len().saturating_sub(1) as u16)
-    };
-    f.render_widget(
-        Paragraph::new(left_lines)
-            .scroll((left_scroll_adj, 0))
-            .style(Style::default().bg(color::BG_POPUP)),
-        left_inner,
-    );
 
     // Filter bar overlay if active
     if return_is_filtering {
