@@ -1959,6 +1959,12 @@ impl App {
                             let max = state.buffer.len().saturating_sub(1);
                             state.selected = state.selected.saturating_add(10).min(max);
                         }
+                        KeyCode::Home => {
+                            state.selected = 0;
+                        }
+                        KeyCode::End => {
+                            state.selected = state.buffer.len().saturating_sub(1);
+                        }
                         KeyCode::Char('p') | KeyCode::Char('P') => {
                             state.paused = !state.paused;
                         }
