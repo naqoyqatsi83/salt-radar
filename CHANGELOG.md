@@ -15,8 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clipboard: xclip availability is now checked before use, with clear status bar message when missing
 - Clipboard: tmux `set-clipboard on` setting is now verified, with warning when off
 - Clipboard: XAUTHORITY fallback now uses actual home directory from `/etc/passwd` instead of hardcoded `/home/{user}` — fixes clipboard for root (`/root`) and custom home dirs
-- Clipboard: also checks `/run/user/<uid>/xauth` (pam_xauth on Ubuntu) for XAUTHORITY path
-- Clipboard: xclip falls back to no explicit XAUTHORITY (auto-detects from `$HOME/.Xauthority` via `su`) if resolved path fails
+- Clipboard: also checks `/run/user/<uid>/xauth*` (globbing pam_xauth random filenames on Ubuntu) for XAUTHORITY path
+- Clipboard: reads XAUTHORITY from `/proc/<pid>/environ` of running user processes to find the exact pam_xauth cookie path
+- Clipboard: tries `su -l` (login shell triggers pam_xauth), explicit XAUTHORITY, and auto-detect fallback for xclip
+- Clipboard: captures diagnostic log to `/tmp/salt-radar-clip.log` with all strategies and errors
 - Clipboard: warnings shown in popup footer (not just status bar) so they're visible during popup usage
 
 ## [0.4.4] - 2026-06-24
