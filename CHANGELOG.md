@@ -14,11 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ctrl+H (^H) from terminals that send it instead of DEL now correctly treated as Backspace for all filter inputs
 - Clipboard: xclip availability is now checked before use, with clear status bar message when missing
 - Clipboard: tmux `set-clipboard on` setting is now verified, with warning when off
-- Clipboard: XAUTHORITY fallback now uses actual home directory from `/etc/passwd` instead of hardcoded `/home/{user}` — fixes clipboard for root (`/root`) and custom home dirs
-- Clipboard: also checks `/run/user/<uid>/xauth*` (globbing pam_xauth random filenames on Ubuntu) for XAUTHORITY path
-- Clipboard: reads XAUTHORITY from `/proc/<pid>/environ` of running user processes to find the exact pam_xauth cookie path
-- Clipboard: tries `su -l` (login shell triggers pam_xauth), explicit XAUTHORITY, and auto-detect fallback for xclip
-- Clipboard: captures diagnostic log to `/tmp/salt-radar-clip.log` with all strategies and errors
+- Clipboard: runs xclip directly as root (not via su) with XAUTHORITY set via cmd.env() for reliable auth
+- Clipboard: XAUTHORITY fallback reads home dir from `/etc/passwd` and finds cookie via `/proc/<pid>/environ`
+- Clipboard: also checks `/run/user/<uid>/xauth*` for random-named pam_xauth files on Ubuntu
+- Clipboard: comprehensive X11 diagnostics written to `/tmp/salt-radar-clip-debug.log`
 - Clipboard: warnings shown in popup footer (not just status bar) so they're visible during popup usage
 
 ## [0.4.4] - 2026-06-24
