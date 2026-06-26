@@ -1150,6 +1150,19 @@ impl App {
         line.strip_prefix(&format!("{}=", name)).map(|v| v.to_string())
     }
 
+    /// Look up a user's home directory from /etc/passwd.
+    fn get_home_dir(username: &str) -> Option<String> {
+        if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
+            for line in passwd.lines() {
+                let parts: Vec<&str> = line.split(':').collect();
+                if parts.first() == Some(&username) {
+                    return parts.get(5).map(|s| s.to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// Resolve DISPLAY and XAUTHORITY. Checks:
     /// 1. Process environment vars
     /// 2. tmux global environment (original SSH session)
@@ -1165,7 +1178,9 @@ impl App {
                 // Fallback: X11 socket owner's .Xauthority
                 if let Some(ref disp) = display {
                     let user = Self::detect_x11_user(disp);
-                    let path = format!("/home/{}/.Xauthority", user);
+                    let home = Self::get_home_dir(&user)
+                        .unwrap_or_else(|| format!("/home/{}", user));
+                    let path = format!("{}/.Xauthority", home);
                     if std::path::Path::new(&path).exists() { Some(path) } else { None }
                 } else { None }
             });
