@@ -1418,7 +1418,7 @@ impl App {
                 // Root can read any user's .Xauthority file.
                 if let Some(ref xa) = xauth {
                     let mut cmd = std::process::Command::new("xclip");
-                    cmd.args(["-selection", "clipboard", "-display", disp]);
+                    cmd.args(["-selection", "clipboard", "-loops", "1", "-display", disp]);
                     cmd.env("XAUTHORITY", xa);
                     let (ok, err) = Self::run_cmd_with_stdin(&mut cmd, text, 3);
                     if ok {
@@ -1433,7 +1433,7 @@ impl App {
                 // xclip auto-detects from HOME/.Xauthority
                 if !ok_xclip {
                     let mut cmd = std::process::Command::new("xclip");
-                    cmd.args(["-selection", "clipboard", "-display", disp]);
+                    cmd.args(["-selection", "clipboard", "-loops", "1", "-display", disp]);
                     let (ok, err) = Self::run_cmd_with_stdin(&mut cmd, text, 3);
                     if ok {
                         ok_xclip = true;
@@ -1463,7 +1463,7 @@ impl App {
                         // su -l (login shell triggers pam_xauth)
                         let (ok, err) = Self::run_cmd_with_stdin(
                             std::process::Command::new("su")
-                                .args(["-l", user, "-c", &format!("DISPLAY={} xclip -selection clipboard", disp)]),
+                                .args(["-l", user, "-c", &format!("DISPLAY={} xclip -loops 1 -selection clipboard", disp)]),
                             text, 3,
                         );
                         if ok {
@@ -1477,7 +1477,7 @@ impl App {
                         if let Some(ref xa) = xauth {
                             let (ok, err) = Self::run_cmd_with_stdin(
                                 std::process::Command::new("su")
-                                    .args(["-c", &format!("XAUTHORITY={} DISPLAY={} xclip -selection clipboard", xa, disp), user]),
+                                    .args(["-c", &format!("XAUTHORITY={} DISPLAY={} xclip -loops 1 -selection clipboard", xa, disp), user]),
                                 text, 3,
                             );
                             if ok {
@@ -1491,7 +1491,7 @@ impl App {
                         // su without XAUTHORITY (xclip auto-detects)
                         let (ok, err) = Self::run_cmd_with_stdin(
                             std::process::Command::new("su")
-                                .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", disp), user]),
+                                .args(["-c", &format!("DISPLAY={} xclip -loops 1 -selection clipboard", disp), user]),
                             text, 3,
                         );
                         if ok {

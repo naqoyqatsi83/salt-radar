@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ctrl+H (^H) from terminals that send it instead of DEL now correctly treated as Backspace for all filter inputs
 - Clipboard: xclip availability is now checked before use, with clear status bar message when missing
 - Clipboard: tmux `set-clipboard on` setting is now verified, with warning when off
-- Clipboard: runs xclip directly as root (not via su) with XAUTHORITY set via cmd.env() for reliable auth
+- Clipboard: runs xclip directly as root (not via su) with XAUTHORITY set via cmd.env() and `-loops 1` to prevent hang
 - Clipboard: detects X11 user from tmux socket ownership for SSH X11 forwarding (localhost:N) where no /tmp/.X11-unix/X socket exists
 - Clipboard: XAUTHORITY fallback reads home dir from `/etc/passwd` and finds cookie via `/proc/<pid>/environ`
 - Clipboard: also checks `/run/user/<uid>/xauth*` for random-named pam_xauth files on Ubuntu
