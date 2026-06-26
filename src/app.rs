@@ -1328,11 +1328,23 @@ impl App {
             }
         }
 
-        // Show xclip version
+        // Show xclip version (xclip outputs to stderr)
         let xclip_v = std::process::Command::new("xclip").arg("-version").output().ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok());
+            .map(|o| {
+                let mut s = String::from_utf8_lossy(&o.stdout).to_string();
+                if s.trim().is_empty() {
+                    s = String::from_utf8_lossy(&o.stderr).to_string();
+                }
+                s
+            });
         writeln!(d, "\n--- xclip ---").ok();
         writeln!(d, "  version: {:?}", xclip_v.unwrap_or_default().trim()).ok();
+
+        // Show tmux socket owner as detected user
+        writeln!(d, "\n--- tmux-derived user ---").ok();
+        let tmux_user = display.as_ref().map(|d| Self::detect_x11_user(d)).unwrap_or_default();
+        writeln!(d, "  detect_x11_user: {}", tmux_user).ok();
+        writeln!(d, "  find_xauthority for this user: {:?}", Self::find_xauthority(&tmux_user)).ok();
 
         let _ = std::fs::write("/tmp/salt-radar-clip-debug.log", &d);
     }
@@ -1551,9 +1563,12 @@ impl App {
         std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "root".to_string())
     }
 
-    /// Tries to find the unprivileged user that owns the X11 session by
-    /// checking ownership of /tmp/.X11-unix/X<display_number>.
+    /// Tries to find the unprivileged user that owns the X11 session by:
+    /// 1. Ownership of /tmp/.X11-unix/X<display_number>
+    /// 2. Ownership of the tmux socket (/tmp/tmux-<uid>/default)
+    /// 3. current_user() as last resort
     fn detect_x11_user(display: &str) -> String {
+        // 1. Try X11 socket ownership
         let dnum = display
             .trim_start_matches("localhost:")
             .trim_start_matches(':')
@@ -1561,34 +1576,49 @@ impl App {
             .next()
             .unwrap_or("")
             .trim();
-        if dnum.is_empty() {
-            return Self::current_user();
-        }
-        if let Ok(entries) = std::fs::read_dir("/tmp/.X11-unix") {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.strip_prefix('X') == Some(dnum) {
-                    if let Ok(meta) = entry.metadata() {
-                        #[cfg(target_os = "linux")]
-                        {
-                            let uid = meta.uid();
-                            if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
-                                for line in passwd.lines() {
-                                    let parts: Vec<&str> = line.split(':').collect();
-                                    let uid_str = parts.get(2).and_then(|s| s.parse::<u32>().ok());
-                                    if uid_str == Some(uid) {
-                                        if let Some(name) = parts.first() {
-                                            return name.to_string();
+        if !dnum.is_empty() {
+            if let Ok(entries) = std::fs::read_dir("/tmp/.X11-unix") {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.strip_prefix('X') == Some(dnum) {
+                        if let Ok(meta) = entry.metadata() {
+                            #[cfg(target_os = "linux")]
+                            {
+                                let uid = meta.uid();
+                                if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
+                                    for line in passwd.lines() {
+                                        let parts: Vec<&str> = line.split(':').collect();
+                                        let uid_str = parts.get(2).and_then(|s| s.parse::<u32>().ok());
+                                        if uid_str == Some(uid) {
+                                            if let Some(name) = parts.first() {
+                                                return name.to_string();
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                        break;
                     }
-                    break;
                 }
             }
         }
+
+        // 2. Try tmux socket ownership — SSH X11 forwarding uses TCP
+        //    (localhost:N) so there's no Unix socket in /tmp/.X11-unix/.
+        //    The tmux socket path contains the real user's UID.
+        if let Some(sock) = Self::tmux_socket_path() {
+            // Parse /tmp/tmux-<uid>/default to extract uid
+            if let Some(tail) = sock.strip_prefix("/tmp/tmux-") {
+                if let Some(uid_str) = tail.split('/').next() {
+                    if let Ok(uid) = uid_str.parse::<u32>() {
+                        return Self::uid_to_username(uid);
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback to current process user
         Self::current_user()
     }
 
