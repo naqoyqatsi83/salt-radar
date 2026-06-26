@@ -1170,26 +1170,69 @@ impl App {
         (display, xauth)
     }
 
-    /// Find the Xauthority file for a user. Checks common locations:
-    /// ~/.Xauthority and /run/user/<uid>/xauth (pam_xauth on newer Ubuntu).
+    /// Find the Xauthority file for a user. Checks (in order):
+    /// 1. XAUTHORITY env from running processes of that user (/proc/<pid>/environ)
+    /// 2. ~/.Xauthority from the user's passwd home directory
+    /// 3. /run/user/<uid>/xauth* (globbing for pam_xauth random filenames)
     fn find_xauthority(username: &str) -> Option<String> {
+        // Most reliable: read XAUTHORITY directly from a running process of
+        // the target user. This captures the actual pam_xauth-created path
+        // (e.g. /run/user/<uid>/xauth_XXXXXXXXXX).
+        if let Some(path) = Self::xauthority_from_process(username) {
+            return Some(path);
+        }
+
         let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
         for line in passwd.lines() {
             let parts: Vec<&str> = line.split(':').collect();
             if parts.first() != Some(&username) { continue; }
             let home = parts.get(5)?;
             let uid: u32 = parts.get(2)?.parse().ok()?;
+
             // Check ~/.Xauthority
             let dot_path = format!("{}/.Xauthority", home);
             if std::path::Path::new(&dot_path).exists() {
                 return Some(dot_path);
             }
-            // Check /run/user/<uid>/xauth
-            let run_path = format!("/run/user/{}/xauth", uid);
-            if std::path::Path::new(&run_path).exists() {
-                return Some(run_path);
+
+            // Glob for /run/user/<uid>/xauth* (pam_xauth creates random names)
+            let run_dir = format!("/run/user/{}", uid);
+            if let Ok(entries) = std::fs::read_dir(&run_dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name == "xauth" || name.starts_with("xauth") {
+                        let path = entry.path().to_string_lossy().to_string();
+                        if std::path::Path::new(&path).exists() {
+                            return Some(path);
+                        }
+                    }
+                }
             }
             break;
+        }
+        None
+    }
+
+    /// Try to read XAUTHORITY from /proc/<pid>/environ for any running
+    /// process of the given user. Tries newest PIDs first.
+    fn xauthority_from_process(username: &str) -> Option<String> {
+        let out = std::process::Command::new("pgrep")
+            .args(["-u", username]).output().ok()?;
+        let mut pids: Vec<u32> = String::from_utf8(out.stdout).ok()
+            .map(|s| s.lines().filter_map(|l| l.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        // Newest PID first — more likely to be from the current X11 session
+        pids.sort_by(|a, b| b.cmp(a));
+        for pid in pids {
+            if let Ok(env) = std::fs::read_to_string(format!("/proc/{}/environ", pid)) {
+                for entry in env.split('\0') {
+                    if let Some(val) = entry.strip_prefix("XAUTHORITY=") {
+                        if !val.is_empty() && std::path::Path::new(val).exists() {
+                            return Some(val.to_string());
+                        }
+                    }
+                }
+            }
         }
         None
     }
@@ -1233,33 +1276,69 @@ impl App {
         let (display, xauth) = Self::resolve_x11_env();
 
         let mut ok_xclip = false;
+        let mut xclip_log: Vec<String> = Vec::new();
+
         if let Some(ref disp) = display {
+            // Collect candidate users (X11 socket owner first, then current)
             let x11_user = Self::detect_x11_user(disp);
-            let x11_present = std::process::Command::new("id")
-                .arg(&x11_user).stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false);
-            if xclip_avail && x11_present {
-                // Try with explicit XAUTHORITY first
-                if let Some(ref xa) = xauth {
-                    let (ok, _) = Self::run_cmd_with_stdin(
-                        std::process::Command::new("su")
-                            .args(["-c", &format!("XAUTHORITY={} DISPLAY={} xclip -selection clipboard", xa, disp), &x11_user]),
-                        text, 3,
-                    );
-                    if ok { ok_xclip = true; }
+            let cur_user = Self::current_user();
+            let mut users_to_try = vec![x11_user.clone()];
+            if cur_user != x11_user {
+                users_to_try.push(cur_user);
+            }
+
+            for user in &users_to_try {
+                if !std::process::Command::new("id")
+                    .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
+                    .status().map(|s| s.success()).unwrap_or(false)
+                {
+                    xclip_log.push(format!("user {} not found, skip", user));
+                    continue;
                 }
-                // Fallback: no explicit XAUTHORITY — let xclip auto-detect
-                // from $HOME/.Xauthority (su sets HOME for the target user).
-                // This was the approach from v0.3.6 that worked reliably.
-                if !ok_xclip {
-                    let (ok, _) = Self::run_cmd_with_stdin(
+
+                // Strategy 1: su -l (login shell — triggers pam_xauth which
+                // generates the X11 auth cookie for this session automatically).
+                if xclip_avail {
+                    let (ok, err) = Self::run_cmd_with_stdin(
                         std::process::Command::new("su")
-                            .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", disp), &x11_user]),
+                            .args(["-l", user, "-c", &format!("DISPLAY={} xclip -selection clipboard", disp)]),
                         text, 3,
                     );
-                    if ok { ok_xclip = true; }
+                    if ok { ok_xclip = true; xclip_log.push(format!("su -l {}: OK", user)); break; }
+                    xclip_log.push(format!("su -l {}: FAIL err=[{}]", user, err.trim()));
+                }
+
+                // Strategy 2: su with explicit XAUTHORITY
+                if xclip_avail {
+                    if let Some(ref xa) = xauth {
+                        let (ok, err) = Self::run_cmd_with_stdin(
+                            std::process::Command::new("su")
+                                .args(["-c", &format!("XAUTHORITY={} DISPLAY={} xclip -selection clipboard", xa, disp), user]),
+                            text, 3,
+                        );
+                        if ok { ok_xclip = true; xclip_log.push(format!("su {} with-XA: OK", user)); break; }
+                        xclip_log.push(format!("su {} with-XA: FAIL err=[{}]", user, err.trim()));
+                    }
+                }
+
+                // Strategy 3: su without explicit XAUTHORITY (xclip auto-detects
+                // from ~/.Xauthority, which su maps via HOME).
+                if xclip_avail {
+                    let (ok, err) = Self::run_cmd_with_stdin(
+                        std::process::Command::new("su")
+                            .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", disp), user]),
+                        text, 3,
+                    );
+                    if ok { ok_xclip = true; xclip_log.push(format!("su {} no-XA: OK", user)); break; }
+                    xclip_log.push(format!("su {} no-XA: FAIL err=[{}]", user, err.trim()));
                 }
             }
+
+            if !xclip_avail {
+                xclip_log.push("xclip not installed".to_string());
+            }
+        } else {
+            xclip_log.push("no DISPLAY".to_string());
         }
 
         // 4. Compose status message with all findings
@@ -1284,7 +1363,14 @@ impl App {
         let disp_info = display.as_deref().unwrap_or("not_set");
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={} display={} xauthority={} xclip_installed={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, disp_info, xa_info, xclip_avail),
+            format!(
+                "file={}b tmux={} xclip={} display={} xauthority={} xclip_installed={}\n{}",
+                text.len(),
+                if ok_tmux { "ok" } else { "skip" },
+                if ok_xclip { "ok" } else { "fail" },
+                disp_info, xa_info, xclip_avail,
+                xclip_log.join("\n"),
+            ),
         );
 
         // 5. Leave alt screen and show text visibly
