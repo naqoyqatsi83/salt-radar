@@ -21,17 +21,17 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
         DetailPopup::SaltEvent(evt, scroll_offset, scroll_mode) => {
             let area = centered_rect(75, 70, f.area());
             f.render_widget(Clear, area);
-            draw_event_detail(f, area, evt, *scroll_offset, *scroll_mode, app.clipboard_at);
+            draw_event_detail(f, area, evt, *scroll_offset, *scroll_mode, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, job_fun, job_tgt, job_start_epoch, minion_scroll, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
             f.render_widget(Clear, area);
-            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, *minion_scroll, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, app.clipboard_at);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, *minion_scroll, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
             f.render_widget(Clear, area);
-            draw_alert_detail(f, area, alert, app.clipboard_at);
+            draw_alert_detail(f, area, alert, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
         DetailPopup::AdminConfirm => {
             let area = centered_rect(55, 35, f.area());
@@ -41,7 +41,7 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
         DetailPopup::EventSniffer(state) => {
             let area = centered_rect(80, 85, f.area());
             f.render_widget(Clear, area);
-            draw_event_sniffer(f, area, state, app.clipboard_at, app.high_contrast);
+            draw_event_sniffer(f, area, state, app.clipboard_at, app.high_contrast, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
     }
 }
@@ -93,7 +93,7 @@ fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> 
     ])
 }
 
-fn dismiss_line(clipboard_at: Option<std::time::Instant>, scroll_mode: bool) -> Line<'static> {
+fn dismiss_line(clipboard_at: Option<std::time::Instant>, scroll_mode: bool, clipboard_warning: Option<&str>) -> Line<'static> {
     let show_copied = clipboard_at
         .map(|t| t.elapsed().as_secs_f64() < 3.0)
         .unwrap_or(false);
@@ -101,6 +101,12 @@ fn dismiss_line(clipboard_at: Option<std::time::Instant>, scroll_mode: bool) -> 
         return Line::from(Span::styled(
             "  \u{2713} Copied                                ",
             Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(warn) = clipboard_warning {
+        return Line::from(Span::styled(
+            format!("  \u{26a0} {}", warn),
+            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
         ));
     }
     if scroll_mode {
@@ -171,7 +177,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_mode: bool, clipboard_at: Option<std::time::Instant>) {
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_mode: bool, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
     let mut lines = header_lines(" Event Detail ");
     lines.push(row("Tag", evt.tag.clone(), color::CYAN));
     lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
@@ -194,7 +200,7 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
     }
 
-    let footer = dismiss_line(clipboard_at, scroll_mode);
+    let footer = dismiss_line(clipboard_at, scroll_mode, clipboard_warning);
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
@@ -214,6 +220,7 @@ fn draw_job_detail(
     content_scroll: usize,
     content_scroll_mode: bool,
     clipboard_at: Option<std::time::Instant>,
+    clipboard_warning: Option<&str>,
 ) {
     // ── Outer frame ──
     f.render_widget(Clear, area);
@@ -427,14 +434,14 @@ fn draw_job_detail(
     );
 
     // ── Footer ──
-    let footer = dismiss_line_job_detail(clipboard_at, return_is_filtering, panel_focus, content_scroll_mode);
+    let footer = dismiss_line_job_detail(clipboard_at, return_is_filtering, panel_focus, content_scroll_mode, clipboard_warning);
     f.render_widget(
         Paragraph::new(footer).style(Style::default().bg(color::BG_POPUP)),
         vert[2],
     );
 }
 
-fn dismiss_line_job_detail(clipboard_at: Option<std::time::Instant>, filter_active: bool, right_focus: bool, scroll_mode: bool) -> Line<'static> {
+fn dismiss_line_job_detail(clipboard_at: Option<std::time::Instant>, filter_active: bool, right_focus: bool, scroll_mode: bool, clipboard_warning: Option<&str>) -> Line<'static> {
     let show_copied = clipboard_at
         .map(|t| t.elapsed().as_secs_f64() < 3.0)
         .unwrap_or(false);
@@ -442,6 +449,13 @@ fn dismiss_line_job_detail(clipboard_at: Option<std::time::Instant>, filter_acti
         return Line::from(Span::styled(
             "  \u{2713} Copied                                ",
             Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+        ));
+    }
+    // Show clipboard warnings in the popup footer where the user is looking
+    if let Some(warn) = clipboard_warning {
+        return Line::from(Span::styled(
+            format!("  \u{26a0} {}", warn),
+            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
         ));
     }
     if filter_active {
@@ -470,7 +484,7 @@ fn dismiss_line_job_detail(clipboard_at: Option<std::time::Instant>, filter_acti
     }
 }
 
-fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, clipboard_at: Option<std::time::Instant>) {
+fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
     let sev_color = match alert.severity {
         crate::types::AlertSeverity::Info => color::CYAN,
         crate::types::AlertSeverity::Warn => color::YELLOW,
@@ -503,6 +517,11 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
         Line::from(Span::styled(
             "  \u{2713} Copied                                ",
             Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+        ))
+    } else if let Some(warn) = clipboard_warning {
+        Line::from(Span::styled(
+            format!("  \u{26a0} {}", warn),
+            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
         ))
     } else {
         Line::from(Span::styled(
@@ -565,6 +584,7 @@ fn draw_event_sniffer(
     state: &SnifferState,
     clipboard_at: Option<std::time::Instant>,
     high_contrast: bool,
+    clipboard_warning: Option<&str>,
 ) {
     let ids_str = state.minion_ids.join(", ");
     let title = if ids_str.len() > 50 {
@@ -712,13 +732,13 @@ fn draw_event_sniffer(
             0
         };
 
-        let footer = sniffer_footer(clipboard_at, state);
+        let footer = sniffer_footer(clipboard_at, state, clipboard_warning);
         render_popup(f, area, &lines, Some(footer), scroll);
         return;
     }
 
     lines.push(Line::from(""));
-    let footer = sniffer_footer(clipboard_at, state);
+    let footer = sniffer_footer(clipboard_at, state, clipboard_warning);
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
@@ -783,6 +803,7 @@ fn sniffer_format_ts(ts: f64) -> String {
 fn sniffer_footer(
     clipboard_at: Option<std::time::Instant>,
     state: &SnifferState,
+    clipboard_warning: Option<&str>,
 ) -> Line<'static> {
     if let Some(ref buf) = state.highlight_input {
         let cursor = if buf.len() % 2 == 0 { '|' } else { ' ' };
@@ -803,6 +824,12 @@ fn sniffer_footer(
         return Line::from(Span::styled(
             "  \u{2713} Copied                                ",
             Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(warn) = clipboard_warning {
+        return Line::from(Span::styled(
+            format!("  \u{26a0} {}", warn),
+            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
         ));
     }
     let hint = if state.paused {

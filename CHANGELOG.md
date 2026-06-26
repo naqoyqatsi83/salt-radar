@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clipboard: xclip availability is now checked before use, with clear status bar message when missing
 - Clipboard: tmux `set-clipboard on` setting is now verified, with warning when off
 - Clipboard: XAUTHORITY fallback to `~<x11_user>/.Xauthority` for multi-user environments under sudo
+- Clipboard: warnings shown in popup footer (not just status bar) so they're visible during popup usage
 
 ## [0.4.4] - 2026-06-24
 
