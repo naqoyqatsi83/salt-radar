@@ -1150,23 +1150,11 @@ impl App {
         line.strip_prefix(&format!("{}=", name)).map(|v| v.to_string())
     }
 
-    /// Look up a user's home directory from /etc/passwd.
-    fn get_home_dir(username: &str) -> Option<String> {
-        if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
-            for line in passwd.lines() {
-                let parts: Vec<&str> = line.split(':').collect();
-                if parts.first() == Some(&username) {
-                    return parts.get(5).map(|s| s.to_string());
-                }
-            }
-        }
-        None
-    }
-
     /// Resolve DISPLAY and XAUTHORITY. Checks:
     /// 1. Process environment vars
     /// 2. tmux global environment (original SSH session)
-    /// 3. X11 socket owner's home directory (for XAUTHORITY when running as root)
+    /// 3. X11 socket owner's ~/.Xauthority
+    /// 4. X11 socket owner's /run/user/<uid>/xauth (pam_xauth on Ubuntu)
     fn resolve_x11_env() -> (Option<String>, Option<String>) {
         let display = std::env::var("DISPLAY").ok()
             .or_else(|| Self::tmux_global_env("DISPLAY"))
@@ -1175,16 +1163,35 @@ impl App {
             .or_else(|| Self::tmux_global_env("XAUTHORITY"))
             .filter(|d| !d.is_empty())
             .or_else(|| {
-                // Fallback: X11 socket owner's .Xauthority
                 if let Some(ref disp) = display {
-                    let user = Self::detect_x11_user(disp);
-                    let home = Self::get_home_dir(&user)
-                        .unwrap_or_else(|| format!("/home/{}", user));
-                    let path = format!("{}/.Xauthority", home);
-                    if std::path::Path::new(&path).exists() { Some(path) } else { None }
+                    Self::find_xauthority(&Self::detect_x11_user(disp))
                 } else { None }
             });
         (display, xauth)
+    }
+
+    /// Find the Xauthority file for a user. Checks common locations:
+    /// ~/.Xauthority and /run/user/<uid>/xauth (pam_xauth on newer Ubuntu).
+    fn find_xauthority(username: &str) -> Option<String> {
+        let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+        for line in passwd.lines() {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.first() != Some(&username) { continue; }
+            let home = parts.get(5)?;
+            let uid: u32 = parts.get(2)?.parse().ok()?;
+            // Check ~/.Xauthority
+            let dot_path = format!("{}/.Xauthority", home);
+            if std::path::Path::new(&dot_path).exists() {
+                return Some(dot_path);
+            }
+            // Check /run/user/<uid>/xauth
+            let run_path = format!("/run/user/{}/xauth", uid);
+            if std::path::Path::new(&run_path).exists() {
+                return Some(run_path);
+            }
+            break;
+        }
+        None
     }
 
     pub fn copy_to_clipboard(&mut self, text: &str) {
@@ -1228,19 +1235,30 @@ impl App {
         let mut ok_xclip = false;
         if let Some(ref disp) = display {
             let x11_user = Self::detect_x11_user(disp);
-            if std::process::Command::new("id")
+            let x11_present = std::process::Command::new("id")
                 .arg(&x11_user).stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false)
-            {
-                let xa_prefix = xauth.as_ref()
-                    .map(|v| format!("XAUTHORITY={} ", v))
-                    .unwrap_or_default();
-                let (ok, _) = Self::run_cmd_with_stdin(
-                    std::process::Command::new("su")
-                        .args(["-c", &format!("{}DISPLAY={} xclip -selection clipboard", xa_prefix, disp), &x11_user]),
-                    text, 3,
-                );
-                if ok && xclip_avail { ok_xclip = true; }
+                .status().map(|s| s.success()).unwrap_or(false);
+            if xclip_avail && x11_present {
+                // Try with explicit XAUTHORITY first
+                if let Some(ref xa) = xauth {
+                    let (ok, _) = Self::run_cmd_with_stdin(
+                        std::process::Command::new("su")
+                            .args(["-c", &format!("XAUTHORITY={} DISPLAY={} xclip -selection clipboard", xa, disp), &x11_user]),
+                        text, 3,
+                    );
+                    if ok { ok_xclip = true; }
+                }
+                // Fallback: no explicit XAUTHORITY — let xclip auto-detect
+                // from $HOME/.Xauthority (su sets HOME for the target user).
+                // This was the approach from v0.3.6 that worked reliably.
+                if !ok_xclip {
+                    let (ok, _) = Self::run_cmd_with_stdin(
+                        std::process::Command::new("su")
+                            .args(["-c", &format!("DISPLAY={} xclip -selection clipboard", disp), &x11_user]),
+                        text, 3,
+                    );
+                    if ok { ok_xclip = true; }
+                }
             }
         }
 
