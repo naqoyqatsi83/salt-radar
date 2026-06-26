@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-06-26
+
+### Fixed
+- Home/End navigation in Event Sniffer now works (jumps to newest/oldest event)
+- Ctrl+H (^H) from terminals that send it instead of DEL now correctly treated as Backspace for all filter inputs
+- Clipboard: xclip availability is now checked before use, with clear status bar message when missing
+- Clipboard: tmux `set-clipboard on` setting is now verified, with warning when off
+- Clipboard: XAUTHORITY fallback to `~<x11_user>/.Xauthority` for multi-user environments under sudo
+
 ## [0.4.4] - 2026-06-24
 
 ### Changed

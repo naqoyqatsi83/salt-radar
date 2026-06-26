@@ -73,7 +73,13 @@ fn main() -> io::Result<()> {
                         {
                             break;
                         }
-                        if app.handle_key(key.code) {
+                        // Ctrl+H = ^H = backspace for terminals that send ^H instead of DEL
+                        let code = if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('h') {
+                            KeyCode::Backspace
+                        } else {
+                            key.code
+                        };
+                        if app.handle_key(code) {
                             break;
                         }
                         need_redraw = true;

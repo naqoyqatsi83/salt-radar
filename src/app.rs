@@ -1150,16 +1150,25 @@ impl App {
         line.strip_prefix(&format!("{}=", name)).map(|v| v.to_string())
     }
 
-    /// Resolve DISPLAY and XAUTHORITY. Checks process env first, then tmux
-    /// global env (the original SSH session). Neither is hardcoded — returns
-    /// None for both if unresolvable, to avoid leaking data to a wrong display.
+    /// Resolve DISPLAY and XAUTHORITY. Checks:
+    /// 1. Process environment vars
+    /// 2. tmux global environment (original SSH session)
+    /// 3. X11 socket owner's home directory (for XAUTHORITY when running as root)
     fn resolve_x11_env() -> (Option<String>, Option<String>) {
         let display = std::env::var("DISPLAY").ok()
             .or_else(|| Self::tmux_global_env("DISPLAY"))
             .filter(|d| !d.is_empty());
         let xauth = std::env::var("XAUTHORITY").ok()
             .or_else(|| Self::tmux_global_env("XAUTHORITY"))
-            .filter(|d| !d.is_empty());
+            .filter(|d| !d.is_empty())
+            .or_else(|| {
+                // Fallback: X11 socket owner's .Xauthority
+                if let Some(ref disp) = display {
+                    let user = Self::detect_x11_user(disp);
+                    let path = format!("/home/{}/.Xauthority", user);
+                    if std::path::Path::new(&path).exists() { Some(path) } else { None }
+                } else { None }
+            });
         (display, xauth)
     }
 
@@ -1167,17 +1176,38 @@ impl App {
         // 1. Write to local file (always works, easy debug)
         let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
 
+        let mut warnings: Vec<&str> = Vec::new();
+
         // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux).
         let ok_tmux = if let Some(socket) = Self::tmux_socket_path() {
             let (ok, _) = Self::run_cmd_with_stdin(
                 std::process::Command::new("tmux").args(["-S", &socket, "load-buffer", "-"]),
                 text, 3,
             );
+            // Check if tmux will push to system clipboard via OSC 52
+            let set_clip_on = std::process::Command::new("tmux")
+                .args(["-S", &socket, "show-options", "-g", "set-clipboard"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim() == "set-clipboard on")
+                .unwrap_or(false);
+            if ok && !set_clip_on {
+                warnings.push("tmux set-clipboard is off — paste with Ctrl+b ]");
+            }
             ok
         } else { false };
 
         // 3. xclip — resolves DISPLAY and XAUTHORITY from process env or
         //    tmux global environment, then forwards them via su.
+        let xclip_avail = std::process::Command::new("sh")
+            .args(["-c", "command -v xclip"])
+            .stdout(Stdio::null()).stderr(Stdio::null())
+            .status().map(|s| s.success()).unwrap_or(false);
+        if !xclip_avail {
+            warnings.push("xclip not installed");
+        }
+
         let (display, xauth) = Self::resolve_x11_env();
 
         let mut ok_xclip = false;
@@ -1195,29 +1225,33 @@ impl App {
                         .args(["-c", &format!("{}DISPLAY={} xclip -selection clipboard", xa_prefix, disp), &x11_user]),
                     text, 3,
                 );
-                if ok { ok_xclip = true; }
+                if ok && xclip_avail { ok_xclip = true; }
             }
         }
-        if display.is_none() {
-            self.clipboard_msg = Some((
-                " DISPLAY not found — X11 clipboard unavailable. Use ssh -X/-Y or set DISPLAY/XAUTHORITY in tmux ".to_string(),
-                Instant::now(),
-            ));
-        } else if !ok_xclip {
-            self.clipboard_msg = Some((
-                " xclip failed — check DISPLAY and XAUTHORITY. Try: ssh -X, check tmux show-environment -g ".to_string(),
-                Instant::now(),
-            ));
+
+        // 4. Compose status message with all findings
+        let details = if !ok_tmux && !ok_xclip {
+            warnings.push("clipboard copy failed");
+            warnings.join("; ")
+        } else if ok_tmux && ok_xclip {
+            String::new()
+        } else if ok_tmux {
+            format!("Copied to tmux buffer ({}b). {}", text.len(), warnings.join("; "))
         } else {
+            format!("Copied via X11 ({}b). {}", text.len(), warnings.join("; "))
+        };
+        if details.is_empty() {
             self.clipboard_msg = None;
+        } else {
+            self.clipboard_msg = Some((details, Instant::now()));
         }
 
-        // 4. Debug log
+        // 5. Debug log
         let xa_info = xauth.as_deref().unwrap_or("not_set");
         let disp_info = display.as_deref().unwrap_or("not_set");
         let _ = std::fs::write(
             "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={} display={} xauthority={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, disp_info, xa_info),
+            format!("file={}b tmux={} xclip={} display={} xauthority={} xclip_installed={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, disp_info, xa_info, xclip_avail),
         );
 
         // 5. Leave alt screen and show text visibly
