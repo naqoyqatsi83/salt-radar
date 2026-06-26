@@ -1365,6 +1365,39 @@ impl App {
         format!("uid:{}", uid)
     }
 
+    /// Spawn xclip in the background (detached) and pipe text to its stdin.
+    /// xclip MUST stay alive as the clipboard selection owner — we can't wait
+    /// for it or kill it. Returns true if spawn succeeded.
+    fn run_xclip_detached(
+        xauth: Option<&str>,
+        display: &str,
+        text: &str,
+    ) -> bool {
+        let mut cmd = std::process::Command::new("xclip");
+        cmd.args(["-selection", "clipboard", "-display", display]);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        if let Some(xa) = xauth {
+            cmd.env("XAUTHORITY", xa);
+        }
+
+        match cmd.spawn() {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let owned = text.to_string();
+                    std::thread::spawn(move || {
+                        let _ = stdin.write_all(owned.as_bytes());
+                        // stdin drops → EOF → xclip reads full input
+                    });
+                }
+                // Forget child to prevent Drop from reaping (which blocks
+                // forever since xclip waits for clipboard paste requests).
+                std::mem::forget(child);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     pub fn copy_to_clipboard(&mut self, text: &str) {
         // 1. Write to local file (always works, easy debug)
         let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
@@ -1412,38 +1445,30 @@ impl App {
                 warnings.push("xclip not installed");
                 xclip_log.push("xclip not installed".to_string());
             } else {
-                // --- Strategy 0: Direct xclip as root with XAUTHORITY set via cmd.env() ---
-                // This is the most reliable approach: we're already root, just run xclip
-                // with the correct env vars set programmatically (not through a shell).
-                // Root can read any user's .Xauthority file.
-                if let Some(ref xa) = xauth {
-                    let mut cmd = std::process::Command::new("xclip");
-                    cmd.args(["-selection", "clipboard", "-loops", "1", "-display", disp]);
-                    cmd.env("XAUTHORITY", xa);
-                    let (ok, err) = Self::run_cmd_with_stdin(&mut cmd, text, 3);
-                    if ok {
-                        ok_xclip = true;
-                        xclip_log.push(format!("direct xclip(root) XA={}: OK", xa));
-                    } else {
-                        xclip_log.push(format!("direct xclip(root) XA={}: FAIL [{}]", xa, err.trim()));
-                    }
+                // --- Strategy 0: Direct xclip as root (detached) ---
+                // xclip MUST stay alive as clipboard owner — spawn and
+                // forget. We can't use run_cmd_with_stdin() which enforces
+                // a timeout and kills the process.
+                let with_xa = xauth.as_ref().map(|s| s.as_str());
+                if Self::run_xclip_detached(with_xa, disp, text) {
+                    ok_xclip = true;
+                    xclip_log.push(format!("detached xclip(root) XA={:?}: OK", with_xa));
+                } else {
+                    xclip_log.push(format!("detached xclip(root) XA={:?}: FAIL", with_xa));
                 }
 
-                // --- Strategy 0b: Direct xclip as root WITHOUT XAUTHORITY ---
-                // xclip auto-detects from HOME/.Xauthority
+                // --- Strategy 1: Direct xclip as root without XAUTHORITY ---
                 if !ok_xclip {
-                    let mut cmd = std::process::Command::new("xclip");
-                    cmd.args(["-selection", "clipboard", "-loops", "1", "-display", disp]);
-                    let (ok, err) = Self::run_cmd_with_stdin(&mut cmd, text, 3);
-                    if ok {
+                    if Self::run_xclip_detached(None, disp, text) {
                         ok_xclip = true;
-                        xclip_log.push("direct xclip(root) no-XA: OK".to_string());
+                        xclip_log.push("detached xclip(root) no-XA: OK".to_string());
                     } else {
-                        xclip_log.push(format!("direct xclip(root) no-XA: FAIL [{}]", err.trim()));
+                        xclip_log.push("detached xclip(root) no-XA: FAIL".to_string());
                     }
                 }
 
-                // --- su approaches as fallback ---
+                // --- su approaches as fallback (these use run_cmd_with_stdin
+                //     because su should exit quickly) ---
                 if !ok_xclip && xclip_avail {
                     let cur_user = Self::current_user();
                     let mut users_to_try = vec![x11_user.clone()];
@@ -1460,46 +1485,47 @@ impl App {
                             continue;
                         }
 
-                        // su -l (login shell triggers pam_xauth)
-                        let (ok, err) = Self::run_cmd_with_stdin(
-                            std::process::Command::new("su")
-                                .args(["-l", user, "-c", &format!("DISPLAY={} xclip -loops 1 -selection clipboard", disp)]),
-                            text, 3,
+                        // su -l (login shell triggers pam_xauth) — background
+                        // xclip so su exits immediately (xclip stays alive)
+                        let cmd1 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < /tmp/salt-radar-copy.txt' >/dev/null 2>&1 &", disp);
+                        let (ok, _) = Self::run_cmd_with_stdin(
+                            std::process::Command::new("su").args(["-l", user, "-c", &cmd1]),
+                            "", 5,
                         );
                         if ok {
                             ok_xclip = true;
                             xclip_log.push(format!("su -l {}: OK", user));
                             break;
                         }
-                        xclip_log.push(format!("su -l {}: FAIL [{}]", user, err.trim()));
+                        xclip_log.push(format!("su -l {}: FAIL", user));
 
                         // su with explicit XAUTHORITY
                         if let Some(ref xa) = xauth {
-                            let (ok, err) = Self::run_cmd_with_stdin(
-                                std::process::Command::new("su")
-                                    .args(["-c", &format!("XAUTHORITY={} DISPLAY={} xclip -loops 1 -selection clipboard", xa, disp), user]),
-                                text, 3,
+                            let cmd2 = format!("nohup sh -c 'XAUTHORITY={} DISPLAY={} xclip -selection clipboard < /tmp/salt-radar-copy.txt' >/dev/null 2>&1 &", xa, disp);
+                            let (ok, _) = Self::run_cmd_with_stdin(
+                                std::process::Command::new("su").args(["-c", &cmd2, user]),
+                                "", 5,
                             );
                             if ok {
                                 ok_xclip = true;
                                 xclip_log.push(format!("su {} with-XA: OK", user));
                                 break;
                             }
-                            xclip_log.push(format!("su {} with-XA: FAIL [{}]", user, err.trim()));
+                            xclip_log.push(format!("su {} with-XA: FAIL", user));
                         }
 
                         // su without XAUTHORITY (xclip auto-detects)
-                        let (ok, err) = Self::run_cmd_with_stdin(
-                            std::process::Command::new("su")
-                                .args(["-c", &format!("DISPLAY={} xclip -loops 1 -selection clipboard", disp), user]),
-                            text, 3,
+                        let cmd3 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < /tmp/salt-radar-copy.txt' >/dev/null 2>&1 &", disp);
+                        let (ok, _) = Self::run_cmd_with_stdin(
+                            std::process::Command::new("su").args(["-c", &cmd3, user]),
+                            "", 5,
                         );
                         if ok {
                             ok_xclip = true;
                             xclip_log.push(format!("su {} no-XA: OK", user));
                             break;
                         }
-                        xclip_log.push(format!("su {} no-XA: FAIL [{}]", user, err.trim()));
+                        xclip_log.push(format!("su {} no-XA: FAIL", user));
                     }
                 }
             }
