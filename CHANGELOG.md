@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Minion list OS column no longer capped at 30 chars — split proportionally with Salt version column so both remain visible
 - Fleet scan progress now counted from accepted keys (not agent's optional expected_minions list), fixing "1/1" display bug
 - Missing data shown consistently as "?" across OS Distribution, Salt Version, and Architecture in fleet overview
+- Minion list selection highlight now consistent with other tabs — stops at last text character instead of spanning full width
+- README: added fancy badge row (Rust, Linux, ratatui, Salt, MIT)
 
 ## [0.4.5] - 2026-06-26
 

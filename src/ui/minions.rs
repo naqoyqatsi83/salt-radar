@@ -154,7 +154,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                     Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
                     Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(label_color)),
                     Span::styled(format!("  {:<os_w$}", os_display, os_w = os_w), Style::default().fg(os_color)),
-                    Span::styled(format!("  {:<sal_w$}", ver_display, sal_w = sal_w), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(format!("{}", ver_display), Style::default().fg(color::TEXT_DIM)),
                 ]);
                 lines.push(line.style(sel_style));
             }
