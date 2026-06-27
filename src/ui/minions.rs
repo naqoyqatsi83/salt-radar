@@ -79,8 +79,9 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         let avail = (inner.width as usize).saturating_sub(8);
         let id_w = if avail > 24 { 18 } else { (avail / 3).max(4) };
         let key_w = if avail > 24 { 8 } else { (avail / 6).max(3) };
-        let os_w = avail.saturating_sub(id_w + key_w + 4).max(6);
-        let sal_w = avail.saturating_sub(id_w + key_w + os_w);
+        let remaining = avail.saturating_sub(id_w + key_w + 4);
+        let os_w = (remaining * 3 / 5).max(6).min(40);
+        let sal_w = remaining.saturating_sub(os_w).max(4);
 
         // ── Table header (always shown) ───────────────────────────────────
         let h_id = format!("  {:<id_w$}", "ID", id_w = id_w);
@@ -200,7 +201,8 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
         let timed_out_count = fs.minions.iter().filter(|m| m.timed_out).count();
 
         if app.fleet_scanning {
-            let expected_total = app.fleet_scan_expected.len() + fs.minions.len();
+            let accepted = app.keys.iter().filter(|k| k.status == crate::types::KeyStatus::Accepted).count();
+            let expected_total = accepted.max(1);
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  Scanning... {}/{} minions", fs.minions.len(), expected_total),
@@ -234,7 +236,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
             let mut os_counts: HashMap<&str, usize> = HashMap::new();
             for m in &fs.minions {
                 let key = if m.osfinger.is_empty() {
-                    if m.osrelease.is_empty() { "unknown" } else { m.osrelease.as_str() }
+                    if m.osrelease.is_empty() { "?" } else { m.osrelease.as_str() }
                 } else {
                     m.osfinger.as_str()
                 };
