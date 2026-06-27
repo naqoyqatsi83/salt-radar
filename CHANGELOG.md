@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-27
+
+### Added
+- Network traffic monitoring on Dashboard Host Resources panel: bytes in/out, current transfer rate (B/s, KB/s, MB/s, GB/s auto-scaled), cumulative totals from `/proc/net/dev`
+- Fleet overview now displays distribution bars incrementally during scan instead of hiding everything until complete
+- Minion list OS column no longer capped at 30 chars — split proportionally with Salt version column so both remain visible
+- Fleet scan progress now counted from accepted keys (not agent's optional expected_minions list), fixing "1/1" display bug
+- Missing data shown consistently as "?" across OS Distribution, Salt Version, and Architecture in fleet overview
+- Minion list selection highlight now consistent with other tabs — stops at last text character instead of spanning full width
+- README: added fancy badge row (Rust, Linux, ratatui, Salt, MIT)
+
+## [0.4.5] - 2026-06-26
+
+### Fixed
+- Home/End navigation in Event Sniffer now works (jumps to newest/oldest event)
+- Ctrl+H (^H) from terminals that send it instead of DEL now correctly treated as Backspace for all filter inputs
+- Clipboard: xclip availability is now checked before use, with clear status bar message when missing
+- Clipboard: tmux `set-clipboard on` setting is now verified, with warning when off
+- Clipboard: runs xclip detached (never killed) so it stays alive as clipboard selection owner
+- Clipboard: detects X11 user from tmux socket ownership for SSH X11 forwarding (localhost:N) where no /tmp/.X11-unix/X socket exists
+- Clipboard: XAUTHORITY fallback reads home dir from `/etc/passwd` and finds cookie via `/proc/<pid>/environ`
+- Clipboard: also checks `/run/user/<uid>/xauth*` for random-named pam_xauth files on Ubuntu
+- Clipboard: comprehensive X11 diagnostics written to `/tmp/.salt-radar-clip-debug-<pid>.log`
+- Clipboard: warnings shown in popup footer (not just status bar) so they're visible during popup usage
+- Temp files now use PID-based names (`/tmp/.salt-radar-*.<pid>.*`) so multiple users/instances don't conflict
+- Temp files cleaned up on exit (agent cmd, clipboard text, debug logs)
+
+## [0.4.4] - 2026-06-24
+
+### Changed
+- Job detail popup redesigned with split-panel layout: returns list on left (25%), return content preview on right (75%)
+- Returns list now shows compact entries (minion_id: OK/FAIL (retcode=X)) without summary text
+- Enter on a return switches focus to the right panel for scrolling through the return output
+- Return list can be filtered with `/` key by hostname substring; Enter commits filter, Esc cancels, selection snaps to nearest match on commit
+- Right panel (preview) supports scrolling with j/k, PgUp/PgDn, Home/End, and Enter to enter/exit scroll mode
+- y/Y copy works from either panel
+
+### Fixed
+- 'c' key no longer triggers high-contrast toggle during return filter input
+- Job detail lookup timeout: pending query auto-clears after 65s if agent hangs, closing the popup instead of showing permanent "Querying master..."
+- Return filter no longer causes empty left panel: scroll calculation now uses filtered position, not full-list index
+- Return filter snaps to first match when lookup data arrives after filter was committed
+- Pressing `/` to start a new filter correctly clears previous filter text
+
+## [0.4.3] - 2026-06-24
+
+### Fixed
+- Job detail popup now scrolls when navigating many minion returns — selected return stays visible instead of scrolling off-screen
+- PageUp/PageDown/Home/End keys now work for navigating minion returns in job detail popup
+
+## [0.4.2] - 2026-06-22
+
+### Fixed
+- Popup overlay bleed-through: added `Clear` widget in `render_popup` to prevent underlying panels from showing through
+- Hotkeys (1-5, Tab, c) now muted during sniffer keyword highlight input so characters typed are consumed by the input handler instead of switching tabs
+
 ## [0.4.1] - 2026-06-22
 
 ### Added

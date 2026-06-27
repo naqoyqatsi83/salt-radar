@@ -79,8 +79,9 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         let avail = (inner.width as usize).saturating_sub(8);
         let id_w = if avail > 24 { 18 } else { (avail / 3).max(4) };
         let key_w = if avail > 24 { 8 } else { (avail / 6).max(3) };
-        let os_w = avail.saturating_sub(id_w + key_w + 4).min(30).max(6);
-        let sal_w = avail.saturating_sub(id_w + key_w + os_w);
+        let remaining = avail.saturating_sub(id_w + key_w + 4);
+        let os_w = (remaining * 3 / 5).max(6).min(40);
+        let sal_w = remaining.saturating_sub(os_w).max(4);
 
         // ── Table header (always shown) ───────────────────────────────────
         let h_id = format!("  {:<id_w$}", "ID", id_w = id_w);
@@ -153,7 +154,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                     Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
                     Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(label_color)),
                     Span::styled(format!("  {:<os_w$}", os_display, os_w = os_w), Style::default().fg(os_color)),
-                    Span::styled(format!("  {:<sal_w$}", ver_display, sal_w = sal_w), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(format!("{}", ver_display), Style::default().fg(color::TEXT_DIM)),
                 ]);
                 lines.push(line.style(sel_style));
             }
@@ -191,8 +192,6 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
     if !app.admin_mode {
         lines.push(Line::from(Span::styled("  Enable admin mode ('a')", Style::default().fg(color::TEXT_DIM))));
         lines.push(Line::from(Span::styled("  to access fleet overview.", Style::default().fg(color::TEXT_DIM))));
-    } else if app.fleet_scanning {
-        lines.push(Line::from(Span::styled("  Scanning fleet...", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
     } else if let Some(ref fs) = app.fleet_data {
         // bar_width reserves space for: "  name<22> <count> <bar> <pct>%"
         // = 2 prefix + 22 name + 5 count (sp+4) + 5 pct (sp+3+%) = 34
@@ -201,16 +200,31 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
 
         let timed_out_count = fs.minions.iter().filter(|m| m.timed_out).count();
 
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  Total: {} minions", fs.minions.len()),
-                Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                if timed_out_count > 0 { format!("  ({} timed out)", timed_out_count) } else { String::new() },
-                Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        if app.fleet_scanning {
+            let accepted = app.keys.iter().filter(|k| k.status == crate::types::KeyStatus::Accepted).count();
+            let expected_total = accepted.max(1);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  Scanning... {}/{} minions", fs.minions.len(), expected_total),
+                    Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    if timed_out_count > 0 { format!("  ({} timed out)", timed_out_count) } else { String::new() },
+                    Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  Total: {} minions", fs.minions.len()),
+                    Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    if timed_out_count > 0 { format!("  ({} timed out)", timed_out_count) } else { String::new() },
+                    Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
         lines.push(Line::from(""));
 
         if !fs.minions.is_empty() {
@@ -222,7 +236,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
             let mut os_counts: HashMap<&str, usize> = HashMap::new();
             for m in &fs.minions {
                 let key = if m.osfinger.is_empty() {
-                    if m.osrelease.is_empty() { "unknown" } else { m.osrelease.as_str() }
+                    if m.osrelease.is_empty() { "?" } else { m.osrelease.as_str() }
                 } else {
                     m.osfinger.as_str()
                 };
@@ -294,6 +308,8 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 ]));
             }
         }
+    } else if app.fleet_scanning {
+        lines.push(Line::from(Span::styled("  Scanning fleet...", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
     } else {
         lines.push(Line::from(Span::styled("  No fleet data.", Style::default().fg(color::TEXT_DIM))));
         lines.push(Line::from(Span::styled("  Activate admin mode and", Style::default().fg(color::TEXT_DIM))));

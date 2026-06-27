@@ -37,7 +37,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),  // Host Resources
+            Constraint::Length(5),  // Host Resources
             Constraint::Length(mid_h), // Services + Key Status (exact-fit)
             Constraint::Length(3),  // Job Pulse
             Constraint::Min(6),     // Sparklines (at least 6 lines = 3×2 for 3 panels)
@@ -78,7 +78,7 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Length(services_height),
             Constraint::Length(4),
             Constraint::Length(4),
@@ -357,6 +357,30 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
 // ── Host Resources ───────────────────────────────────────────────────────────
 
+fn format_bytes(bps: f64) -> String {
+    if bps >= 1_000_000_000.0 {
+        format!("{:.1} GB/s", bps / 1_000_000_000.0)
+    } else if bps >= 1_000_000.0 {
+        format!("{:.1} MB/s", bps / 1_000_000.0)
+    } else if bps >= 1_000.0 {
+        format!("{:.1} KB/s", bps / 1_000.0)
+    } else {
+        format!("{:.0} B/s", bps)
+    }
+}
+
+fn format_bytes_total(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+    } else if bytes >= 1_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    } else if bytes >= 1_000 {
+        format!("{:.1} KB", bytes as f64 / 1_000.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     let mem_total_kb = app.system_info.mem_total_kb.max(1);
     let mem_avail_kb = app.system_info.mem_avail_kb;
@@ -365,10 +389,16 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     let cpu_count = app.config_snapshot.as_ref().map(|c| c.cpu_count).unwrap_or(1) as f64;
     let load_pct = (app.system_info.load_1 / cpu_count * 100.0).min(100.0).max(0.0) as u16;
 
+    let net_rate_str = format!(
+        "Net: \u{25bc}{} \u{25b2}{}",
+        format_bytes(app.system_info.network_rx_rate),
+        format_bytes(app.system_info.network_tx_rate),
+    );
+
     let title = Line::from(vec![
         Span::styled(" Host Resources ", Style::default().fg(color::TEXT_TITLE)),
         Span::styled(
-            format!("Load: {:.1}/{:.1}/{:.1}  Mem: {:.0}% ", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15, mem_pct),
+            format!("Load: {:.1}/{:.1}/{:.1}  Mem: {:.0}%  {}", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15, mem_pct, net_rate_str),
             Style::default().fg(color::TEXT_DIM),
         ),
     ]);
@@ -378,7 +408,7 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
 
     let inner_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
         .split(inner);
 
     let load_gauge = Gauge::default()
@@ -402,8 +432,26 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
             app.system_info.pki_disk_usage_pct,
         ));
 
+    let net_rx_rate = app.system_info.network_rx_rate;
+    let net_tx_rate = app.system_info.network_tx_rate;
+    let net_rx_total = app.system_info.network_rx_bytes;
+    let net_tx_total = app.system_info.network_tx_bytes;
+    let net_activity_pct = ((net_rx_rate + net_tx_rate) / 1_000_000_000.0 * 100.0).min(100.0) as u16;
+    let net_color = if net_rx_rate + net_tx_rate > 1_000_000.0 { color::CYAN } else { color::TEXT_DIM };
+    let net_gauge = Gauge::default()
+        .gauge_style(Style::default().fg(net_color).bg(color::BG_MID))
+        .percent(net_activity_pct)
+        .label(format!(
+            "\u{25bc} {}  \u{25b2} {}  (total: {} / {})",
+            format_bytes(net_rx_rate),
+            format_bytes(net_tx_rate),
+            format_bytes_total(net_rx_total),
+            format_bytes_total(net_tx_total),
+        ));
+
     f.render_widget(load_gauge, inner_layout[0]);
     f.render_widget(mem_gauge, inner_layout[1]);
+    f.render_widget(net_gauge, inner_layout[2]);
 }
 
 fn format_uptime(secs: u64) -> String {

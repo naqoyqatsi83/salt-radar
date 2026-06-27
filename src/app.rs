@@ -83,6 +83,8 @@ pub struct App {
     /// Pending jid_lookup (request_id, jid) waiting for async result
     /// Pending jid_lookup (request_id, jid) for auto-updating the popup
     pending_jid_lookup: Option<(u64, String)>,
+    /// When pending_jid_lookup was started, for timeout detection
+    pending_jid_lookup_at: Option<Instant>,
     /// When Y is pressed, stores (request_id, jid) so the response auto-copies JSON
     pending_y_copy: Option<(u64, String)>,
     /// Events statistics
@@ -110,6 +112,13 @@ pub struct App {
     pub zmq_latency_history: [f64; 2000],
     pub zmq_latency_idx: usize,
 
+    /// PID-based temp paths to avoid conflicts between users/instances
+    pid: u32,
+    cmd_path: String,
+    copy_path: String,
+    clip_log_path: String,
+    clip_debug_path: String,
+
     // ── Activity matrix (job return events per sec) ──────────────────────────
     /// Count of salt/job/*/ret/* events per second for last 60s (ring buffer)
     pub activity_matrix: [u64; 2000],
@@ -123,6 +132,11 @@ pub struct App {
 
     /// User-adjustable tick interval in milliseconds (default 2000 = 2s)
     pub tick_interval_ms: u64,
+
+    // Network rate tracking
+    prev_network_rx_bytes: u64,
+    prev_network_tx_bytes: u64,
+    prev_network_time: Option<Instant>,
 
     // Sniffer
     pub sniffer_input_active: bool,
@@ -167,7 +181,7 @@ pub enum AgentMessage {
 pub enum DetailPopup {
     Minion(MinionInfo),
     SaltEvent(SaltEvent, usize, bool),
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, scroll_offset: usize, scroll_max: usize, scroll_mode: bool, job_fun: String, job_tgt: String, job_start_epoch: f64 },
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_max: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
     EventSniffer(crate::types::SnifferState),
@@ -177,14 +191,22 @@ impl App {
     pub fn new() -> Self {
         let config = load_config(&std::path::Path::new("salt-radar.toml"));
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let pid = std::process::id();
+
+        // PID-based temp paths to avoid conflicts between multiple users or instances
+        let cmd_path = format!("/tmp/.salt-radar-cmd-{}", pid);
+        let copy_path = format!("/tmp/.salt-radar-copy-{}.txt", pid);
+        let clip_log_path = format!("/tmp/.salt-radar-clip-{}.log", pid);
+        let clip_debug_path = format!("/tmp/.salt-radar-clip-debug-{}.log", pid);
 
         // Spawn agent
         let rx = agent_rx.clone();
         let agent_path = config.agent_path.clone();
         let python_bin = config.python_bin.clone();
         let master_config = config.master_config.clone();
+        let cmd_path_agent = cmd_path.clone();
         std::thread::spawn(move || {
-            crate::agent::agent_main(rx, &agent_path, &python_bin, &master_config);
+            crate::agent::agent_main(rx, &agent_path, &python_bin, &master_config, &cmd_path_agent);
         });
 
         Self {
@@ -263,6 +285,7 @@ impl App {
             agent_req_id: 0,
             config_tick: 0,
             pending_jid_lookup: None,
+            pending_jid_lookup_at: None,
             pending_y_copy: None,
             events_total: 0,
             events_last_sec_count: 0,
@@ -289,6 +312,16 @@ impl App {
             header_radar_frame: 0,
 
             tick_interval_ms: 2000,
+
+            prev_network_rx_bytes: 0,
+            prev_network_tx_bytes: 0,
+            prev_network_time: None,
+
+            pid,
+            cmd_path,
+            copy_path,
+            clip_log_path,
+            clip_debug_path,
         }
     }
 
@@ -369,8 +402,21 @@ impl App {
                             if let Some((pending_id, _)) = self.pending_jid_lookup {
                                 if id == pending_id {
                                     self.pending_jid_lookup = None;
+                                    self.pending_jid_lookup_at = None;
                                     if let Some(DetailPopup::JobDetail { ref mut lookup, .. }) = self.detail_popup {
                                         *lookup = Some(jid_data.clone());
+                                    }
+                                    // Snap to first filter match if filter was committed before data arrived
+                                    if let Some(DetailPopup::JobDetail { ref return_filter, ref mut selected_return, ref mut minion_scroll, ref lookup, .. }) = self.detail_popup {
+                                        if !return_filter.is_empty() {
+                                            if let Some(ref l) = lookup {
+                                                let first = l.returns.iter().position(|ret| ret.minion_id.contains(return_filter));
+                                                if let Some(idx) = first {
+                                                    *selected_return = Some(idx);
+                                                    *minion_scroll = idx.saturating_sub(4);
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -451,7 +497,7 @@ impl App {
         }
         if let Some(json) = y_copy_json {
             // Store in a temp file for clipboard
-            let _ = std::fs::write("/tmp/salt-radar-copy.txt", &json);
+            let _ = std::fs::write(&self.copy_path, &json);
             self.clipboard_msg = Some((
                 format!(" Copied {} bytes of JSON job return -- use y for display format ", json.len()),
                 std::time::Instant::now(),
@@ -481,7 +527,7 @@ impl App {
             .create(true)
             .append(true)
             .write(true)
-            .open("/tmp/salt-radar-cmd")
+            .open(&self.cmd_path)
             .and_then(|f| {
                 let mut f = std::io::LineWriter::new(f);
                 f.write_all(payload.as_bytes())
@@ -492,6 +538,18 @@ impl App {
     /// Fast poll between ticks
     pub fn fast_poll(&mut self) -> bool {
         self.drain_agent_messages();
+
+        // Timeout for stuck jid_lookup (agent subprocess may hang)
+        if self.pending_jid_lookup.is_some() {
+            if let Some(started) = self.pending_jid_lookup_at {
+                if started.elapsed().as_secs() > 65 {
+                    self.pending_jid_lookup = None;
+                    self.pending_jid_lookup_at = None;
+                    self.detail_popup = None;
+                }
+            }
+        }
+
         self.clamp_selection();
         if self.sniffer_dirty {
             self.sniffer_dirty = false;
@@ -723,16 +781,21 @@ impl App {
                     if exists {
                         let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
                         self.pending_jid_lookup = Some((req_id, jid.clone()));
+                        self.pending_jid_lookup_at = Some(Instant::now());
                         self.detail_popup = Some(DetailPopup::JobDetail {
                             jid,
                             lookup: None,
                             selected_return: None,
-                            scroll_offset: 0,
-                            scroll_max: 0,
-                            scroll_mode: false,
                             job_fun: fun,
                             job_tgt: tgt,
                             job_start_epoch: start_epoch,
+                            minion_scroll: 0,
+                            return_filter: String::new(),
+                            return_is_filtering: false,
+                            panel_focus: false,
+                            content_scroll: 0,
+                            content_scroll_max: 0,
+                            content_scroll_mode: false,
                         });
                         self.popup_tab = Some(self.current_tab);
                     }
@@ -749,16 +812,21 @@ impl App {
                     if exists {
                         let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
                         self.pending_jid_lookup = Some((req_id, jid.clone()));
+                        self.pending_jid_lookup_at = Some(Instant::now());
                         self.detail_popup = Some(DetailPopup::JobDetail {
                             jid,
                             lookup: None,
                             selected_return: None,
-                            scroll_offset: 0,
-                            scroll_max: 0,
-                            scroll_mode: false,
                             job_fun: fun,
                             job_tgt: tgt,
                             job_start_epoch: start_epoch,
+                            minion_scroll: 0,
+                            return_filter: String::new(),
+                            return_is_filtering: false,
+                            panel_focus: false,
+                            content_scroll: 0,
+                            content_scroll_max: 0,
+                            content_scroll_mode: false,
                         });
                         self.popup_tab = Some(self.current_tab);
                     }
@@ -1112,77 +1180,423 @@ impl App {
         line.strip_prefix(&format!("{}=", name)).map(|v| v.to_string())
     }
 
-    /// Resolve DISPLAY and XAUTHORITY. Checks process env first, then tmux
-    /// global env (the original SSH session). Neither is hardcoded — returns
-    /// None for both if unresolvable, to avoid leaking data to a wrong display.
+    /// Resolve DISPLAY and XAUTHORITY. Checks:
+    /// 1. Process environment vars
+    /// 2. tmux global environment (original SSH session)
+    /// 3. X11 socket owner's ~/.Xauthority
+    /// 4. X11 socket owner's /run/user/<uid>/xauth (pam_xauth on Ubuntu)
     fn resolve_x11_env() -> (Option<String>, Option<String>) {
         let display = std::env::var("DISPLAY").ok()
             .or_else(|| Self::tmux_global_env("DISPLAY"))
             .filter(|d| !d.is_empty());
         let xauth = std::env::var("XAUTHORITY").ok()
             .or_else(|| Self::tmux_global_env("XAUTHORITY"))
-            .filter(|d| !d.is_empty());
+            .filter(|d| !d.is_empty())
+            .or_else(|| {
+                if let Some(ref disp) = display {
+                    Self::find_xauthority(&Self::detect_x11_user(disp))
+                } else { None }
+            });
         (display, xauth)
+    }
+
+    /// Find the Xauthority file for a user. Checks (in order):
+    /// 1. XAUTHORITY env from running processes of that user (/proc/<pid>/environ)
+    /// 2. ~/.Xauthority from the user's passwd home directory
+    /// 3. /run/user/<uid>/xauth* (globbing for pam_xauth random filenames)
+    fn find_xauthority(username: &str) -> Option<String> {
+        // Most reliable: read XAUTHORITY directly from a running process of
+        // the target user. This captures the actual pam_xauth-created path
+        // (e.g. /run/user/<uid>/xauth_XXXXXXXXXX).
+        if let Some(path) = Self::xauthority_from_process(username) {
+            return Some(path);
+        }
+
+        let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+        for line in passwd.lines() {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.first() != Some(&username) { continue; }
+            let home = parts.get(5)?;
+            let uid: u32 = parts.get(2)?.parse().ok()?;
+
+            // Check ~/.Xauthority
+            let dot_path = format!("{}/.Xauthority", home);
+            if std::path::Path::new(&dot_path).exists() {
+                return Some(dot_path);
+            }
+
+            // Glob for /run/user/<uid>/xauth* (pam_xauth creates random names)
+            let run_dir = format!("/run/user/{}", uid);
+            if let Ok(entries) = std::fs::read_dir(&run_dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name == "xauth" || name.starts_with("xauth") {
+                        let path = entry.path().to_string_lossy().to_string();
+                        if std::path::Path::new(&path).exists() {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        None
+    }
+
+    /// Try to read XAUTHORITY from /proc/<pid>/environ for any running
+    /// process of the given user. Tries newest PIDs first.
+    fn xauthority_from_process(username: &str) -> Option<String> {
+        let out = std::process::Command::new("pgrep")
+            .args(["-u", username]).output().ok()?;
+        let mut pids: Vec<u32> = String::from_utf8(out.stdout).ok()
+            .map(|s| s.lines().filter_map(|l| l.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        // Newest PID first — more likely to be from the current X11 session
+        pids.sort_by(|a, b| b.cmp(a));
+        for pid in pids {
+            if let Ok(env) = std::fs::read_to_string(format!("/proc/{}/environ", pid)) {
+                for entry in env.split('\0') {
+                    if let Some(val) = entry.strip_prefix("XAUTHORITY=") {
+                        if !val.is_empty() && std::path::Path::new(val).exists() {
+                            return Some(val.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Dump comprehensive X11 diagnostics to a file so the user can share
+    /// what's happening on their system.
+    fn debug_x11(display: &Option<String>, xauth: &Option<String>, x11_user: &str, debug_path: &str) {
+        use std::fmt::Write;
+        let mut d = String::new();
+        writeln!(d, "=== salt-radar X11 debug ===").ok();
+        writeln!(d, "process DISPLAY env: {:?}", std::env::var("DISPLAY").ok()).ok();
+        writeln!(d, "process XAUTHORITY env: {:?}", std::env::var("XAUTHORITY").ok()).ok();
+        writeln!(d, "process USER: {:?}", std::env::var("USER").ok()).ok();
+        writeln!(d, "process LOGNAME: {:?}", std::env::var("LOGNAME").ok()).ok();
+        writeln!(d, "current_user(): {}", Self::current_user()).ok();
+        if let Some(tmux) = Self::tmux_socket_path() {
+            writeln!(d, "tmux socket: {}", tmux).ok();
+            writeln!(d, "tmux DISPLAY: {:?}", Self::tmux_global_env("DISPLAY")).ok();
+            writeln!(d, "tmux XAUTHORITY: {:?}", Self::tmux_global_env("XAUTHORITY")).ok();
+        } else {
+            writeln!(d, "tmux: not detected").ok();
+        }
+        writeln!(d, "resolved DISPLAY: {:?}", display).ok();
+        writeln!(d, "resolved XAUTHORITY: {:?}", xauth).ok();
+        writeln!(d, "detected X11 user: {}", x11_user).ok();
+
+        // Dump /tmp/.X11-unix/ content
+        writeln!(d, "\n--- /tmp/.X11-unix/ ---").ok();
+        if let Ok(entries) = std::fs::read_dir("/tmp/.X11-unix") {
+            for e in entries.filter_map(|e| e.ok()) {
+                let meta = e.metadata().ok();
+                let uid = meta.as_ref().map(|m| m.uid()).unwrap_or(0);
+                // Resolve uid to username
+                let user = Self::uid_to_username(uid);
+                writeln!(d, "  {} owner_uid={} ({})", e.file_name().to_string_lossy(), uid, user).ok();
+            }
+        } else {
+            writeln!(d, "  (cannot read)").ok();
+        }
+
+        // Try to read the Xauthority file
+        if let Some(ref xa) = xauth {
+            writeln!(d, "\n--- XAUTHORITY file: {} ---", xa).ok();
+            let meta = std::fs::metadata(xa).ok();
+            if let Some(ref m) = meta {
+                writeln!(d, "  size: {} bytes", m.len()).ok();
+                writeln!(d, "  readable: {:?}", std::fs::read(xa).ok().map(|v| v.len())).ok();
+                // Try xauth list on it
+                let out = std::process::Command::new("xauth")
+                    .args(["-f", xa, "list"]).output().ok();
+                if let Some(ref o) = out {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    writeln!(d, "  xauth list: stdout=[{}] stderr=[{}]", stdout.trim(), stderr.trim()).ok();
+                } else {
+                    writeln!(d, "  xauth list: (failed to run)").ok();
+                }
+            } else {
+                writeln!(d, "  (file not found or no metadata)").ok();
+            }
+        } else {
+            writeln!(d, "\n--- XAUTHORITY: not resolved ---").ok();
+        }
+
+        // Check known Xauthority locations
+        writeln!(d, "\n--- common Xauthority paths ---").ok();
+        for path in &[
+            "/root/.Xauthority",
+            &format!("/home/{}/.Xauthority", x11_user),
+            "/run/user/0/xauth",
+        ] {
+            let exists = std::path::Path::new(path).exists();
+            writeln!(d, "  {} exists={}", path, exists).ok();
+        }
+
+        // Check /run/user/<uid>/ for xauth files
+        if let Ok(entries) = std::fs::read_dir("/run/user") {
+            for e in entries.filter_map(|e| e.ok()) {
+                let uid_str = e.file_name();
+                let uid: u32 = uid_str.to_string_lossy().parse().unwrap_or(u32::MAX);
+                let user = Self::uid_to_username(uid);
+                writeln!(d, "  /run/user/{} ({})", uid_str.to_string_lossy(), user).ok();
+                if let Ok(files) = std::fs::read_dir(e.path()) {
+                    for f in files.filter_map(|f| f.ok()) {
+                        let name = f.file_name().to_string_lossy().to_string();
+                        if name.contains("xauth") {
+                            let meta = f.metadata().ok();
+                            let size = meta.map(|m| m.len()).unwrap_or(0);
+                            writeln!(d, "    {} ({} bytes)", name, size).ok();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Show xclip version (xclip outputs to stderr)
+        let xclip_v = std::process::Command::new("xclip").arg("-version").output().ok()
+            .map(|o| {
+                let mut s = String::from_utf8_lossy(&o.stdout).to_string();
+                if s.trim().is_empty() {
+                    s = String::from_utf8_lossy(&o.stderr).to_string();
+                }
+                s
+            });
+        writeln!(d, "\n--- xclip ---").ok();
+        writeln!(d, "  version: {:?}", xclip_v.unwrap_or_default().trim()).ok();
+
+        // Show tmux socket owner as detected user
+        writeln!(d, "\n--- tmux-derived user ---").ok();
+        let tmux_user = display.as_ref().map(|d| Self::detect_x11_user(d)).unwrap_or_default();
+        writeln!(d, "  detect_x11_user: {}", tmux_user).ok();
+        writeln!(d, "  find_xauthority for this user: {:?}", Self::find_xauthority(&tmux_user)).ok();
+
+        let _ = std::fs::write(debug_path, &d);
+    }
+
+    fn uid_to_username(uid: u32) -> String {
+        if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
+            for line in passwd.lines() {
+                let parts: Vec<&str> = line.split(':').collect();
+                if let Some(u) = parts.get(2).and_then(|s| s.parse::<u32>().ok()) {
+                    if u == uid {
+                        if let Some(name) = parts.first() {
+                            return name.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        format!("uid:{}", uid)
+    }
+
+    /// Spawn xclip in the background (detached) and pipe text to its stdin.
+    /// xclip MUST stay alive as the clipboard selection owner — we can't wait
+    /// for it or kill it. Returns true if spawn succeeded.
+    fn run_xclip_detached(
+        xauth: Option<&str>,
+        display: &str,
+        text: &str,
+    ) -> bool {
+        let mut cmd = std::process::Command::new("xclip");
+        cmd.args(["-selection", "clipboard", "-display", display]);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        if let Some(xa) = xauth {
+            cmd.env("XAUTHORITY", xa);
+        }
+
+        match cmd.spawn() {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let owned = text.to_string();
+                    std::thread::spawn(move || {
+                        let _ = stdin.write_all(owned.as_bytes());
+                        // stdin drops → EOF → xclip reads full input
+                    });
+                }
+                // Forget child to prevent Drop from reaping (which blocks
+                // forever since xclip waits for clipboard paste requests).
+                std::mem::forget(child);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     pub fn copy_to_clipboard(&mut self, text: &str) {
         // 1. Write to local file (always works, easy debug)
-        let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
+        let _ = std::fs::write(&self.copy_path, text);
+
+        let mut warnings: Vec<&str> = Vec::new();
+        let mut ok_tmux = false;
+        let mut ok_xclip = false;
 
         // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux).
-        let ok_tmux = if let Some(socket) = Self::tmux_socket_path() {
+        if let Some(socket) = Self::tmux_socket_path() {
             let (ok, _) = Self::run_cmd_with_stdin(
                 std::process::Command::new("tmux").args(["-S", &socket, "load-buffer", "-"]),
                 text, 3,
             );
-            ok
-        } else { false };
-
-        // 3. xclip — resolves DISPLAY and XAUTHORITY from process env or
-        //    tmux global environment, then forwards them via su.
-        let (display, xauth) = Self::resolve_x11_env();
-
-        let mut ok_xclip = false;
-        if let Some(ref disp) = display {
-            let x11_user = Self::detect_x11_user(disp);
-            if std::process::Command::new("id")
-                .arg(&x11_user).stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false)
-            {
-                let xa_prefix = xauth.as_ref()
-                    .map(|v| format!("XAUTHORITY={} ", v))
-                    .unwrap_or_default();
-                let (ok, _) = Self::run_cmd_with_stdin(
-                    std::process::Command::new("su")
-                        .args(["-c", &format!("{}DISPLAY={} xclip -selection clipboard", xa_prefix, disp), &x11_user]),
-                    text, 3,
-                );
-                if ok { ok_xclip = true; }
+            ok_tmux = ok;
+            // Check if tmux will push to system clipboard via OSC 52
+            let set_clip_on = std::process::Command::new("tmux")
+                .args(["-S", &socket, "show-options", "-g", "set-clipboard"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim() == "set-clipboard on")
+                .unwrap_or(false);
+            if ok && !set_clip_on {
+                warnings.push("tmux set-clipboard is off — paste with Ctrl+b ]");
             }
         }
-        if display.is_none() {
-            self.clipboard_msg = Some((
-                " DISPLAY not found — X11 clipboard unavailable. Use ssh -X/-Y or set DISPLAY/XAUTHORITY in tmux ".to_string(),
-                Instant::now(),
-            ));
-        } else if !ok_xclip {
-            self.clipboard_msg = Some((
-                " xclip failed — check DISPLAY and XAUTHORITY. Try: ssh -X, check tmux show-environment -g ".to_string(),
-                Instant::now(),
-            ));
+
+        // 3. xclip
+        let (display, xauth) = Self::resolve_x11_env();
+        let x11_user = display.as_ref().map(|d| Self::detect_x11_user(d)).unwrap_or_default();
+
+        // Write full diagnostics before attempting anything
+        Self::debug_x11(&display, &xauth, &x11_user, &self.clip_debug_path);
+
+        let xclip_avail = std::process::Command::new("sh")
+            .args(["-c", "command -v xclip"])
+            .stdout(Stdio::null()).stderr(Stdio::null())
+            .status().map(|s| s.success()).unwrap_or(false);
+
+        let mut xclip_log: Vec<String> = Vec::new();
+
+        if let Some(ref disp) = display {
+            if !xclip_avail {
+                warnings.push("xclip not installed");
+                xclip_log.push("xclip not installed".to_string());
+            } else {
+                // --- Strategy 0: Direct xclip as root (detached) ---
+                // xclip MUST stay alive as clipboard owner — spawn and
+                // forget. We can't use run_cmd_with_stdin() which enforces
+                // a timeout and kills the process.
+                let with_xa = xauth.as_ref().map(|s| s.as_str());
+                if Self::run_xclip_detached(with_xa, disp, text) {
+                    ok_xclip = true;
+                    xclip_log.push(format!("detached xclip(root) XA={:?}: OK", with_xa));
+                } else {
+                    xclip_log.push(format!("detached xclip(root) XA={:?}: FAIL", with_xa));
+                }
+
+                // --- Strategy 1: Direct xclip as root without XAUTHORITY ---
+                if !ok_xclip {
+                    if Self::run_xclip_detached(None, disp, text) {
+                        ok_xclip = true;
+                        xclip_log.push("detached xclip(root) no-XA: OK".to_string());
+                    } else {
+                        xclip_log.push("detached xclip(root) no-XA: FAIL".to_string());
+                    }
+                }
+
+                // --- su approaches as fallback (these use run_cmd_with_stdin
+                //     because su should exit quickly) ---
+                if !ok_xclip && xclip_avail {
+                    let cur_user = Self::current_user();
+                    let mut users_to_try = vec![x11_user.clone()];
+                    if cur_user != x11_user {
+                        users_to_try.push(cur_user);
+                    }
+
+                    for user in &users_to_try {
+                        if !std::process::Command::new("id")
+                            .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
+                            .status().map(|s| s.success()).unwrap_or(false)
+                        {
+                            xclip_log.push(format!("su: user {} not found, skip", user));
+                            continue;
+                        }
+
+                        // su -l (login shell triggers pam_xauth) — background
+                        // xclip so su exits immediately (xclip stays alive)
+                        let copy_path = &self.copy_path;
+                        let cmd1 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < {}' >/dev/null 2>&1 &", disp, copy_path);
+                        let (ok, _) = Self::run_cmd_with_stdin(
+                            std::process::Command::new("su").args(["-l", user, "-c", &cmd1]),
+                            "", 5,
+                        );
+                        if ok {
+                            ok_xclip = true;
+                            xclip_log.push(format!("su -l {}: OK", user));
+                            break;
+                        }
+                        xclip_log.push(format!("su -l {}: FAIL", user));
+
+                        // su with explicit XAUTHORITY
+                        if let Some(ref xa) = xauth {
+                            let cmd2 = format!("nohup sh -c 'XAUTHORITY={} DISPLAY={} xclip -selection clipboard < {}' >/dev/null 2>&1 &", xa, disp, copy_path);
+                            let (ok, _) = Self::run_cmd_with_stdin(
+                                std::process::Command::new("su").args(["-c", &cmd2, user]),
+                                "", 5,
+                            );
+                            if ok {
+                                ok_xclip = true;
+                                xclip_log.push(format!("su {} with-XA: OK", user));
+                                break;
+                            }
+                            xclip_log.push(format!("su {} with-XA: FAIL", user));
+                        }
+
+                        // su without XAUTHORITY (xclip auto-detects)
+                        let cmd3 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < {}' >/dev/null 2>&1 &", disp, copy_path);
+                        let (ok, _) = Self::run_cmd_with_stdin(
+                            std::process::Command::new("su").args(["-c", &cmd3, user]),
+                            "", 5,
+                        );
+                        if ok {
+                            ok_xclip = true;
+                            xclip_log.push(format!("su {} no-XA: OK", user));
+                            break;
+                        }
+                        xclip_log.push(format!("su {} no-XA: FAIL", user));
+                    }
+                }
+            }
         } else {
-            self.clipboard_msg = None;
+            xclip_log.push("no DISPLAY".to_string());
         }
 
-        // 4. Debug log
+        // 4. Compose status message with all findings
+        let details = if !ok_tmux && !ok_xclip {
+            warnings.push("clipboard copy failed");
+            warnings.join("; ")
+        } else if ok_tmux && ok_xclip {
+            String::new()
+        } else if ok_tmux {
+            format!("Copied to tmux buffer ({}b). {}", text.len(), warnings.join("; "))
+        } else {
+            format!("Copied via X11 ({}b). {}", text.len(), warnings.join("; "))
+        };
+        if details.is_empty() {
+            self.clipboard_msg = None;
+        } else {
+            self.clipboard_msg = Some((details, Instant::now()));
+        }
+
+        // 5. Debug log
         let xa_info = xauth.as_deref().unwrap_or("not_set");
         let disp_info = display.as_deref().unwrap_or("not_set");
         let _ = std::fs::write(
-            "/tmp/salt-radar-clip.log",
-            format!("file={}b tmux={} xclip={} display={} xauthority={}", text.len(), if ok_tmux { "ok" } else { "skip" }, if ok_xclip { "ok" } else { "fail" }, disp_info, xa_info),
+            &self.clip_log_path,
+            format!(
+                "file={}b tmux={} xclip={} display={} xauthority={} xclip_installed={}\n{}",
+                text.len(),
+                if ok_tmux { "ok" } else { "skip" },
+                if ok_xclip { "ok" } else { "fail" },
+                disp_info, xa_info, xclip_avail,
+                xclip_log.join("\n"),
+            ),
         );
 
-        // 5. Leave alt screen and show text visibly
+        // 6. Leave alt screen and show text visibly
         use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
         use crossterm::execute;
 
@@ -1206,9 +1620,12 @@ impl App {
         std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "root".to_string())
     }
 
-    /// Tries to find the unprivileged user that owns the X11 session by
-    /// checking ownership of /tmp/.X11-unix/X<display_number>.
+    /// Tries to find the unprivileged user that owns the X11 session by:
+    /// 1. Ownership of /tmp/.X11-unix/X<display_number>
+    /// 2. Ownership of the tmux socket (/tmp/tmux-<uid>/default)
+    /// 3. current_user() as last resort
     fn detect_x11_user(display: &str) -> String {
+        // 1. Try X11 socket ownership
         let dnum = display
             .trim_start_matches("localhost:")
             .trim_start_matches(':')
@@ -1216,38 +1633,59 @@ impl App {
             .next()
             .unwrap_or("")
             .trim();
-        if dnum.is_empty() {
-            return Self::current_user();
-        }
-        if let Ok(entries) = std::fs::read_dir("/tmp/.X11-unix") {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.strip_prefix('X') == Some(dnum) {
-                    if let Ok(meta) = entry.metadata() {
-                        #[cfg(target_os = "linux")]
-                        {
-                            let uid = meta.uid();
-                            if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
-                                for line in passwd.lines() {
-                                    let parts: Vec<&str> = line.split(':').collect();
-                                    let uid_str = parts.get(2).and_then(|s| s.parse::<u32>().ok());
-                                    if uid_str == Some(uid) {
-                                        if let Some(name) = parts.first() {
-                                            return name.to_string();
+        if !dnum.is_empty() {
+            if let Ok(entries) = std::fs::read_dir("/tmp/.X11-unix") {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.strip_prefix('X') == Some(dnum) {
+                        if let Ok(meta) = entry.metadata() {
+                            #[cfg(target_os = "linux")]
+                            {
+                                let uid = meta.uid();
+                                if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
+                                    for line in passwd.lines() {
+                                        let parts: Vec<&str> = line.split(':').collect();
+                                        let uid_str = parts.get(2).and_then(|s| s.parse::<u32>().ok());
+                                        if uid_str == Some(uid) {
+                                            if let Some(name) = parts.first() {
+                                                return name.to_string();
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                        break;
                     }
-                    break;
                 }
             }
         }
+
+        // 2. Try tmux socket ownership — SSH X11 forwarding uses TCP
+        //    (localhost:N) so there's no Unix socket in /tmp/.X11-unix/.
+        //    The tmux socket path contains the real user's UID.
+        if let Some(sock) = Self::tmux_socket_path() {
+            // Parse /tmp/tmux-<uid>/default to extract uid
+            if let Some(tail) = sock.strip_prefix("/tmp/tmux-") {
+                if let Some(uid_str) = tail.split('/').next() {
+                    if let Ok(uid) = uid_str.parse::<u32>() {
+                        return Self::uid_to_username(uid);
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback to current process user
         Self::current_user()
     }
 
-    /// Scan events buffer for fleet scan returns matching the known JID
+    /// Clean up per-instance temp files. Called on exit.
+    pub fn cleanup(&self) {
+        let _ = std::fs::remove_file(&self.cmd_path);
+        let _ = std::fs::remove_file(&self.copy_path);
+        let _ = std::fs::remove_file(&self.clip_log_path);
+        let _ = std::fs::remove_file(&self.clip_debug_path);
+    }
     fn process_fleet_returns(&mut self) {
         let jid = match &self.fleet_scan_jid {
             Some(j) => j.clone(),
@@ -1426,6 +1864,20 @@ impl App {
             self.system_info = collectors::system::collect_system(&cfg.cachedir, &cfg.pki_dir);
         }
 
+        // Compute network transfer rates from cumulative byte counters
+        if let Some(prev_time) = self.prev_network_time {
+            let elapsed = prev_time.elapsed().as_secs_f64();
+            if elapsed > 0.0 {
+                let rx_delta = self.system_info.network_rx_bytes.saturating_sub(self.prev_network_rx_bytes);
+                let tx_delta = self.system_info.network_tx_bytes.saturating_sub(self.prev_network_tx_bytes);
+                self.system_info.network_rx_rate = rx_delta as f64 / elapsed;
+                self.system_info.network_tx_rate = tx_delta as f64 / elapsed;
+            }
+        }
+        self.prev_network_rx_bytes = self.system_info.network_rx_bytes;
+        self.prev_network_tx_bytes = self.system_info.network_tx_bytes;
+        self.prev_network_time = Some(Instant::now());
+
         // Seconds since last event
         self.secs_since_last_event = self.last_event_time
             .map(|t| t.elapsed().as_secs())
@@ -1560,20 +2012,28 @@ impl App {
         let had_popup = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
 
         // Contrast toggle and tab switching work universally (even with popups open)
+        // but are muted when a text input mode is active inside the popup
         if had_popup {
-            match code {
-                KeyCode::Char('c') | KeyCode::Char('C') => {
-                    self.high_contrast = !self.high_contrast;
-                    return false;
+            let popup_text_input = match &self.detail_popup {
+                Some(DetailPopup::EventSniffer(ref s)) => s.highlight_input.is_some(),
+                Some(DetailPopup::JobDetail { return_is_filtering: true, .. }) => true,
+                _ => false,
+            };
+            if !popup_text_input {
+                match code {
+                    KeyCode::Char('c') | KeyCode::Char('C') => {
+                        self.high_contrast = !self.high_contrast;
+                        return false;
+                    }
+                    KeyCode::Tab => { self.current_tab = self.current_tab.next(); return false; }
+                    KeyCode::BackTab => { self.current_tab = self.current_tab.prev(); return false; }
+                    KeyCode::Char('1') => { self.current_tab = Tab::Dashboard; return false; }
+                    KeyCode::Char('2') => { self.current_tab = Tab::Minions; return false; }
+                    KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
+                    KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
+                    KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
+                    _ => {}
                 }
-                KeyCode::Tab => { self.current_tab = self.current_tab.next(); return false; }
-                KeyCode::BackTab => { self.current_tab = self.current_tab.prev(); return false; }
-                KeyCode::Char('1') => { self.current_tab = Tab::Dashboard; return false; }
-                KeyCode::Char('2') => { self.current_tab = Tab::Minions; return false; }
-                KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
-                KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
-                KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
-                _ => {}
             }
         }
 
@@ -1584,73 +2044,108 @@ impl App {
             match *detail {
                 DetailPopup::JobDetail {
                     ref mut selected_return,
-                    ref mut scroll_offset,
-                    ref mut scroll_max,
-                    ref mut scroll_mode,
+                    ref mut minion_scroll,
+                    ref mut return_filter,
+                    ref mut return_is_filtering,
+                    ref mut panel_focus,
+                    ref mut content_scroll,
+                    ref mut content_scroll_max,
+                    ref mut content_scroll_mode,
                     ref lookup,
-                    ref jid, ..
+                    ref jid,
+                    ..
                 } => {
-                    if *scroll_mode {
+                    // Return filter input mode
+                    if *return_is_filtering {
                         match code {
-                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                                *scroll_mode = false;
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                *scroll_offset = scroll_offset.saturating_sub(1);
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                *scroll_offset = scroll_offset.saturating_add(1).min(scroll_max.saturating_sub(1));
-                            }
-                            KeyCode::PageUp => {
-                                *scroll_offset = scroll_offset.saturating_sub(10);
-                            }
-                            KeyCode::PageDown => {
-                                *scroll_offset = scroll_offset.saturating_add(10).min(scroll_max.saturating_sub(1));
-                            }
-                            KeyCode::Home => {
-                                *scroll_offset = 0;
-                            }
-                            KeyCode::End => {
-                                *scroll_offset = usize::MAX / 2;
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match code {
-                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                                self.detail_popup = None;
+                            KeyCode::Esc => {
+                                *return_is_filtering = false;
+                                return_filter.clear();
                             }
                             KeyCode::Enter => {
+                                *return_is_filtering = false;
+                                // Snap selection to nearest matching entry
+                                if !return_filter.is_empty() {
+                                    if let Some(ref l) = lookup {
+                                        let cur = selected_return.unwrap_or(0);
+                                        // Try forward from current position
+                                        let next = (cur..l.returns.len())
+                                            .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
+                                        if let Some(idx) = next {
+                                            *selected_return = Some(idx);
+                                            *minion_scroll = idx.saturating_sub(4);
+                                        } else {
+                                            // Try backward from current position
+                                            let prev = (0..cur).rev()
+                                                .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
+                                            if let Some(idx) = prev {
+                                                *selected_return = Some(idx);
+                                                *minion_scroll = idx.saturating_sub(4);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Backspace => { return_filter.pop(); }
+                            KeyCode::Char(c) => { return_filter.push(c); }
+                            _ => {}
+                        }
+                        return false;
+                    }
+                    // Right panel (content preview) focused
+                    if *panel_focus {
+                        if *content_scroll_mode {
+                            match code {
+                                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                    *content_scroll_mode = false;
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    *content_scroll = content_scroll.saturating_sub(1);
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    *content_scroll += 1;
+                                }
+                                KeyCode::PageUp => {
+                                    *content_scroll = content_scroll.saturating_sub(10);
+                                }
+                                KeyCode::PageDown => {
+                                    *content_scroll += 10;
+                                }
+                                KeyCode::Home => { *content_scroll = 0; }
+                                KeyCode::End => { *content_scroll = usize::MAX / 2; }
+                                _ => {}
+                            }
+                            return false;
+                        }
+                        match code {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                *panel_focus = false;
+                            }
+                            KeyCode::Enter => {
+                                *content_scroll_mode = true;
+                                *content_scroll = 0;
                                 if let Some(ref l) = lookup {
                                     let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
                                     if sel < l.returns.len() {
                                         let display_str = &l.returns[sel].formatted_text;
-                                        *scroll_max = if display_str.is_empty() { 0 } else { display_str.lines().count() };
-                                    }
-                                    *scroll_mode = true;
-                                    *scroll_offset = 0;
-                                }
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                if let Some(ref l) = lookup {
-                                    if !l.returns.is_empty() {
-                                        let cur = selected_return.unwrap_or(0);
-                                        *selected_return = Some(cur.saturating_sub(1));
-                                        *scroll_mode = false;
-                                        *scroll_offset = 0;
+                                        *content_scroll_max = if display_str.is_empty() { 0 } else { display_str.lines().count() };
                                     }
                                 }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                if let Some(ref l) = lookup {
-                                    if !l.returns.is_empty() {
-                                        let cur = selected_return.unwrap_or(0) + 1;
-                                        *selected_return = Some(cur.min(l.returns.len().saturating_sub(1)));
-                                        *scroll_mode = false;
-                                        *scroll_offset = 0;
-                                    }
-                                }
+                                *content_scroll += 1;
                             }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                *content_scroll = content_scroll.saturating_sub(1);
+                            }
+                            KeyCode::PageUp => {
+                                *content_scroll = content_scroll.saturating_sub(10);
+                            }
+                            KeyCode::PageDown => {
+                                *content_scroll += 10;
+                            }
+                            KeyCode::Home => { *content_scroll = 0; }
+                            KeyCode::End => { *content_scroll = usize::MAX / 2; }
                             KeyCode::Char('y') => {
                                 if let Some(ref l) = lookup {
                                     let idx = selected_return.unwrap_or(0);
@@ -1680,7 +2175,140 @@ impl App {
                             }
                             _ => {}
                         }
+                        // Don't return false — let clipboard_text flow through
+                    } else {
+                    // Left panel (return list) focused
+                    match code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            self.detail_popup = None;
+                        }
+                        KeyCode::Enter => {
+                            if lookup.is_some() {
+                                *panel_focus = true;
+                                *content_scroll = 0;
+                                *content_scroll_mode = false;
+                                if let Some(ref l) = lookup {
+                                    let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
+                                    if sel < l.returns.len() {
+                                        let display_str = &l.returns[sel].formatted_text;
+                                        *content_scroll_max = if display_str.is_empty() { 0 } else { display_str.lines().count() };
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char('/') => {
+                            *return_is_filtering = true;
+                            return_filter.clear();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if let Some(ref l) = lookup {
+                                if !l.returns.is_empty() {
+                                    let pat = &*return_filter;
+                                    let cur = selected_return.unwrap_or(0);
+                                    if cur > 0 {
+                                        let mut new_sel = cur.saturating_sub(1);
+                                        loop {
+                                            if pat.is_empty() || l.returns[new_sel].minion_id.contains(pat) { break; }
+                                            if new_sel == 0 { break; }
+                                            new_sel -= 1;
+                                        }
+                                        *selected_return = Some(new_sel);
+                                        if *minion_scroll > 0 && *minion_scroll >= new_sel {
+                                            *minion_scroll = new_sel;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if let Some(ref l) = lookup {
+                                if !l.returns.is_empty() {
+                                    let pat = &*return_filter;
+                                    let cur = selected_return.unwrap_or(0) + 1;
+                                    if cur < l.returns.len() {
+                                        let mut new_sel = cur;
+                                        while new_sel < l.returns.len() {
+                                            if pat.is_empty() || l.returns[new_sel].minion_id.contains(pat) { break; }
+                                            new_sel += 1;
+                                        }
+                                        if new_sel < l.returns.len() {
+                                            *selected_return = Some(new_sel);
+                                            if *minion_scroll + 8 < new_sel {
+                                                *minion_scroll = new_sel.saturating_sub(4);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            if let Some(ref l) = lookup {
+                                if !l.returns.is_empty() {
+                                    let cur = selected_return.unwrap_or(0);
+                                    *selected_return = Some(cur.saturating_sub(10));
+                                    if *minion_scroll >= selected_return.unwrap_or(0) {
+                                        *minion_scroll = selected_return.unwrap_or(0).saturating_sub(4);
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::PageDown => {
+                            if let Some(ref l) = lookup {
+                                if !l.returns.is_empty() {
+                                    let cur = selected_return.unwrap_or(0) + 10;
+                                    *selected_return = Some(cur.min(l.returns.len().saturating_sub(1)));
+                                    if *minion_scroll + 8 < selected_return.unwrap_or(0) {
+                                        *minion_scroll = selected_return.unwrap_or(0).saturating_sub(4);
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Home => {
+                            if let Some(ref l) = lookup {
+                                if !l.returns.is_empty() {
+                                    *selected_return = Some(0);
+                                    *minion_scroll = 0;
+                                }
+                            }
+                        }
+                        KeyCode::End => {
+                            if let Some(ref l) = lookup {
+                                if !l.returns.is_empty() {
+                                    *selected_return = Some(l.returns.len().saturating_sub(1));
+                                    *minion_scroll = l.returns.len().saturating_sub(1);
+                                }
+                            }
+                        }
+                        KeyCode::Char('y') => {
+                            if let Some(ref l) = lookup {
+                                let idx = selected_return.unwrap_or(0);
+                                if idx < l.returns.len() {
+                                    let ret = &l.returns[idx];
+                                    clipboard_text = Some(
+                                        if !ret.formatted_text.is_empty() {
+                                            Self::strip_ansi(&ret.formatted_text)
+                                        } else {
+                                            Self::format_return_as_console(&ret.minion_id, &ret.full_return)
+                                        }
+                                    );
+                                }
+                            }
+                        }
+                        KeyCode::Char('Y') => {
+                            if let Some(ref l) = lookup {
+                                let idx = selected_return.unwrap_or(0);
+                                if idx < l.returns.len() {
+                                    clipboard_text = Some(
+                                        serde_json::to_string_pretty(&l.returns[idx].full_return)
+                                            .unwrap_or_else(|_| l.returns[idx].summary.clone())
+                                    );
+                                }
+                            }
+                            trigger_y_lookup = Some(jid.clone());
+                        }
+                        _ => {}
                     }
+                }
                 }
                 DetailPopup::AdminConfirm => {
                     match code {
@@ -1744,6 +2372,12 @@ impl App {
                         KeyCode::PageDown => {
                             let max = state.buffer.len().saturating_sub(1);
                             state.selected = state.selected.saturating_add(10).min(max);
+                        }
+                        KeyCode::Home => {
+                            state.selected = 0;
+                        }
+                        KeyCode::End => {
+                            state.selected = state.buffer.len().saturating_sub(1);
                         }
                         KeyCode::Char('p') | KeyCode::Char('P') => {
                             state.paused = !state.paused;
