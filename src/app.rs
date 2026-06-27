@@ -76,6 +76,7 @@ pub struct App {
     pub alert_selected: usize,
     pub minion_selected: usize,
     pub pulse_selected: usize,
+    pub pulse_grid_cols: usize,
 
     // Agent NDJSON reader thread
     pub agent_rx: Arc<Mutex<VecDeque<AgentMessage>>>,
@@ -284,6 +285,7 @@ impl App {
             alert_selected: 0,
             minion_selected: 0,
             pulse_selected: 0,
+            pulse_grid_cols: 0,
 
             agent_rx,
             agent_req_id: 0,
@@ -2702,7 +2704,7 @@ impl App {
                 {
                     self.cache_focus = false;
                 } else if self.current_tab == Tab::Pulse && !had_popup {
-                    self.pulse_ring_left();
+                    self.pulse_left();
                 }
             }
             KeyCode::Right => {
@@ -2711,7 +2713,7 @@ impl App {
                 {
                     self.cache_focus = true;
                 } else if self.current_tab == Tab::Pulse && !had_popup {
-                    self.pulse_ring_right();
+                    self.pulse_right();
                 }
             }
             KeyCode::Char('1') => self.current_tab = Tab::Dashboard,
@@ -2721,14 +2723,14 @@ impl App {
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
-                    self.pulse_ring_up();
+                    self.pulse_up();
                 } else {
                     self.move_up();
                 }
             }
             KeyCode::Down => {
                 if self.current_tab == Tab::Pulse && !had_popup {
-                    self.pulse_ring_down();
+                    self.pulse_down();
                 } else {
                     self.move_down();
                 }
@@ -2811,118 +2813,56 @@ impl App {
         }
     }
 
-    /// Compute ring structure for pulse tab navigation.
-    fn pulse_rings(&self, count: usize) -> Vec<usize> {
-        let mut rings = Vec::new();
-        let mut remaining = count;
-        let mut r = 0;
-        while remaining > 0 {
-            let slots = if r == 0 { 1 } else { 8 * r };
-            let take = slots.min(remaining);
-            rings.push(take);
-            remaining -= take;
-            r += 1;
-        }
-        rings
-    }
-
-    /// Navigate Up: switch to previous ring (wrap around).
-    fn pulse_ring_up(&mut self) {
+    /// Navigate left in the grid (wraps).
+    fn pulse_left(&mut self) {
         let count = self.minion_info.len();
         if count == 0 { return; }
-        let rings = self.pulse_rings(count);
-        let idx = self.pulse_selected.min(count - 1);
-
-        // Find current ring
-        let mut accum = 0;
-        let mut current_ring = 0;
-        let mut current_slot = 0;
-        for (ri, &slots) in rings.iter().enumerate() {
-            if accum + slots > idx {
-                current_ring = ri;
-                current_slot = idx - accum;
-                break;
-            }
-            accum += slots;
+        if self.pulse_selected > 0 {
+            self.pulse_selected -= 1;
+        } else {
+            self.pulse_selected = count - 1;
         }
-
-        // Move to previous ring (wrap)
-        let ring_count = rings.len();
-        let prev_ring = (current_ring + ring_count - 1) % ring_count;
-        let prev_slots = rings[prev_ring];
-        let prev_slot = current_slot.min(prev_slots.saturating_sub(1));
-
-        let before: usize = rings.iter().take(prev_ring).sum();
-        self.pulse_selected = (before + prev_slot).min(count - 1);
     }
 
-    /// Navigate Down: switch to next ring (wrap around).
-    fn pulse_ring_down(&mut self) {
+    /// Navigate right in the grid (wraps).
+    fn pulse_right(&mut self) {
         let count = self.minion_info.len();
         if count == 0 { return; }
-        let rings = self.pulse_rings(count);
-        let idx = self.pulse_selected.min(count - 1);
-
-        let mut accum = 0;
-        let mut current_ring = 0;
-        let mut current_slot = 0;
-        for (ri, &slots) in rings.iter().enumerate() {
-            if accum + slots > idx {
-                current_ring = ri;
-                current_slot = idx - accum;
-                break;
-            }
-            accum += slots;
+        if self.pulse_selected + 1 < count {
+            self.pulse_selected += 1;
+        } else {
+            self.pulse_selected = 0;
         }
-
-        // Move to next ring (wrap)
-        let ring_count = rings.len();
-        let next_ring = (current_ring + 1) % ring_count;
-        let next_slots = rings[next_ring];
-        let next_slot = current_slot.min(next_slots.saturating_sub(1));
-
-        let before: usize = rings.iter().take(next_ring).sum();
-        self.pulse_selected = (before + next_slot).min(count - 1);
     }
 
-    /// Navigate Left: previous slot in current ring (wrap).
-    fn pulse_ring_left(&mut self) {
+    /// Navigate up one row in the grid (wraps).
+    fn pulse_up(&mut self) {
         let count = self.minion_info.len();
         if count == 0 { return; }
-        let rings = self.pulse_rings(count);
-        let idx = self.pulse_selected.min(count - 1);
-
-        let mut accum = 0;
-        for (_, &slots) in rings.iter().enumerate() {
-            if accum + slots > idx {
-                let slot = idx - accum;
-                let prev_slot = (slot + slots - 1) % slots;
-                self.pulse_selected = accum + prev_slot;
-                return;
-            }
-            accum += slots;
+        let cols = self.pulse_grid_cols.max(1);
+        if self.pulse_selected >= cols {
+            self.pulse_selected -= cols;
+        } else {
+            // wrap to bottom row at same column
+            let total_rows = (count + cols - 1) / cols;
+            let last_row_start = (total_rows - 1) * cols;
+            let col = self.pulse_selected;
+            self.pulse_selected = (last_row_start + col).min(count - 1);
         }
-        self.pulse_selected = count - 1;
     }
 
-    /// Navigate Right: next slot in current ring (wrap).
-    fn pulse_ring_right(&mut self) {
+    /// Navigate down one row in the grid (wraps).
+    fn pulse_down(&mut self) {
         let count = self.minion_info.len();
         if count == 0 { return; }
-        let rings = self.pulse_rings(count);
-        let idx = self.pulse_selected.min(count - 1);
-
-        let mut accum = 0;
-        for (_, &slots) in rings.iter().enumerate() {
-            if accum + slots > idx {
-                let slot = idx - accum;
-                let next_slot = (slot + 1) % slots;
-                self.pulse_selected = accum + next_slot;
-                return;
-            }
-            accum += slots;
+        let cols = self.pulse_grid_cols.max(1);
+        if self.pulse_selected + cols < count {
+            self.pulse_selected += cols;
+        } else {
+            // wrap to top row at same column
+            let col = self.pulse_selected % cols;
+            self.pulse_selected = col.min(count - 1);
         }
-        self.pulse_selected = 0;
     }
 }
 

@@ -333,8 +333,8 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         }
         Tab::Pulse => {
             let keys = vec![
-                key::render("\u{2191}\u{2193}", "Ring"),
-                key::render("\u{2190}\u{2192}", "Rotate"),
+                key::render("\u{2191}\u{2193}", "Row"),
+                key::render("\u{2190}\u{2192}", "Col"),
             ];
             keys
         }
@@ -542,7 +542,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  \u{2191}\u{2193}\u{2190}\u{2192}", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled("  Navigate rings (Pulse tab)", Style::default().fg(color::TEXT)),
+            Span::styled("  Navigate grid (Pulse tab)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),
