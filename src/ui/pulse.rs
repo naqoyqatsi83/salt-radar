@@ -143,30 +143,32 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn dot_style(minion: &MinionInfo, selected: bool, app: &App) -> (char, Style) {
-    let ch = if selected { '\u{25C9}' } else { '\u{25CF}' };
-
     let flash = app.last_zmq_return.get(&minion.id)
         .map(|t| t.elapsed().as_secs_f64() < 2.0)
         .unwrap_or(false);
 
-    let base = if flash {
-        Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)
+    let has_data = !minion.osfinger.is_empty()
+        || !minion.os.is_empty()
+        || !minion.salt_version.is_empty()
+        || minion.last_seen_epoch > 0;
+
+    let (fg, modif) = if flash {
+        (color::GREEN, Modifier::BOLD)
     } else if minion.timed_out {
-        Style::default().fg(color::RED)
-    } else if minion.connected {
-        Style::default().fg(color::GREEN)
-    } else if !minion.osfinger.is_empty() || !minion.os.is_empty() {
-        // Has data but not currently connected — dim green
-        Style::default().fg(color::GREEN).add_modifier(Modifier::DIM)
+        (color::RED, Modifier::empty())
+    } else if has_data {
+        (color::GREEN, Modifier::empty())
     } else {
-        Style::default().fg(color::TEXT_DIM)
+        (color::TEXT_DIM, Modifier::empty())
     };
 
+    let ch = if selected { '\u{25C9}' } else { '\u{25CF}' };
+    let bg = if selected { color::TAB_ACTIVE_BG } else { color::BG_DARK };
+    let mut style = Style::default().fg(fg).bg(bg).add_modifier(modif);
     if selected {
-        (ch, base.bg(color::BG_LIGHT))
-    } else {
-        (ch, base.bg(color::BG_DARK))
+        style = style.add_modifier(Modifier::REVERSED);
     }
+    (ch, style)
 }
 
 /// Info panel: selected minion details
