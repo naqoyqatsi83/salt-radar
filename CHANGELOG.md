@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Network traffic monitoring on Dashboard Host Resources panel: bytes in/out, current transfer rate (B/s, KB/s, MB/s, GB/s auto-scaled), cumulative totals from `/proc/net/dev`
+- Fleet overview now displays distribution bars incrementally during scan instead of hiding everything until complete
+- Minion list OS column no longer capped at 30 chars — uses available width dynamically
 
 ## [0.4.5] - 2026-06-26
 
