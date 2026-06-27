@@ -168,6 +168,10 @@ pub struct SystemInfo {
     pub cache_disk_usage_pct: f64,
     pub pki_disk_usage_pct: f64,
     pub uptime_secs: u64,
+    pub network_rx_bytes: u64,
+    pub network_tx_bytes: u64,
+    pub network_rx_rate: f64,
+    pub network_tx_rate: f64,
 }
 
 // ─── Config snapshot (from agent) ──────────────────────────────────────────

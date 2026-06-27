@@ -133,6 +133,11 @@ pub struct App {
     /// User-adjustable tick interval in milliseconds (default 2000 = 2s)
     pub tick_interval_ms: u64,
 
+    // Network rate tracking
+    prev_network_rx_bytes: u64,
+    prev_network_tx_bytes: u64,
+    prev_network_time: Option<Instant>,
+
     // Sniffer
     pub sniffer_input_active: bool,
     pub sniffer_input_text: String,
@@ -307,6 +312,10 @@ impl App {
             header_radar_frame: 0,
 
             tick_interval_ms: 2000,
+
+            prev_network_rx_bytes: 0,
+            prev_network_tx_bytes: 0,
+            prev_network_time: None,
 
             pid,
             cmd_path,
@@ -1854,6 +1863,20 @@ impl App {
         if let Some(ref cfg) = self.config_snapshot {
             self.system_info = collectors::system::collect_system(&cfg.cachedir, &cfg.pki_dir);
         }
+
+        // Compute network transfer rates from cumulative byte counters
+        if let Some(prev_time) = self.prev_network_time {
+            let elapsed = prev_time.elapsed().as_secs_f64();
+            if elapsed > 0.0 {
+                let rx_delta = self.system_info.network_rx_bytes.saturating_sub(self.prev_network_rx_bytes);
+                let tx_delta = self.system_info.network_tx_bytes.saturating_sub(self.prev_network_tx_bytes);
+                self.system_info.network_rx_rate = rx_delta as f64 / elapsed;
+                self.system_info.network_tx_rate = tx_delta as f64 / elapsed;
+            }
+        }
+        self.prev_network_rx_bytes = self.system_info.network_rx_bytes;
+        self.prev_network_tx_bytes = self.system_info.network_tx_bytes;
+        self.prev_network_time = Some(Instant::now());
 
         // Seconds since last event
         self.secs_since_last_event = self.last_event_time
