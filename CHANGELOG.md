@@ -18,8 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clipboard: detects X11 user from tmux socket ownership for SSH X11 forwarding (localhost:N) where no /tmp/.X11-unix/X socket exists
 - Clipboard: XAUTHORITY fallback reads home dir from `/etc/passwd` and finds cookie via `/proc/<pid>/environ`
 - Clipboard: also checks `/run/user/<uid>/xauth*` for random-named pam_xauth files on Ubuntu
-- Clipboard: comprehensive X11 diagnostics written to `/tmp/salt-radar-clip-debug.log`
+- Clipboard: comprehensive X11 diagnostics written to `/tmp/.salt-radar-clip-debug-<pid>.log`
 - Clipboard: warnings shown in popup footer (not just status bar) so they're visible during popup usage
+- Temp files now use PID-based names (`/tmp/.salt-radar-*.<pid>.*`) so multiple users/instances don't conflict
+- Temp files cleaned up on exit (agent cmd, clipboard text, debug logs)
 
 ## [0.4.4] - 2026-06-24
 

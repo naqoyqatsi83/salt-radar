@@ -104,6 +104,7 @@ fn main() -> io::Result<()> {
         }
     }
 
+    app.cleanup();
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())

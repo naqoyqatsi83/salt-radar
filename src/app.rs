@@ -112,6 +112,13 @@ pub struct App {
     pub zmq_latency_history: [f64; 2000],
     pub zmq_latency_idx: usize,
 
+    /// PID-based temp paths to avoid conflicts between users/instances
+    pid: u32,
+    cmd_path: String,
+    copy_path: String,
+    clip_log_path: String,
+    clip_debug_path: String,
+
     // ── Activity matrix (job return events per sec) ──────────────────────────
     /// Count of salt/job/*/ret/* events per second for last 60s (ring buffer)
     pub activity_matrix: [u64; 2000],
@@ -179,14 +186,22 @@ impl App {
     pub fn new() -> Self {
         let config = load_config(&std::path::Path::new("salt-radar.toml"));
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let pid = std::process::id();
+
+        // PID-based temp paths to avoid conflicts between multiple users or instances
+        let cmd_path = format!("/tmp/.salt-radar-cmd-{}", pid);
+        let copy_path = format!("/tmp/.salt-radar-copy-{}.txt", pid);
+        let clip_log_path = format!("/tmp/.salt-radar-clip-{}.log", pid);
+        let clip_debug_path = format!("/tmp/.salt-radar-clip-debug-{}.log", pid);
 
         // Spawn agent
         let rx = agent_rx.clone();
         let agent_path = config.agent_path.clone();
         let python_bin = config.python_bin.clone();
         let master_config = config.master_config.clone();
+        let cmd_path_agent = cmd_path.clone();
         std::thread::spawn(move || {
-            crate::agent::agent_main(rx, &agent_path, &python_bin, &master_config);
+            crate::agent::agent_main(rx, &agent_path, &python_bin, &master_config, &cmd_path_agent);
         });
 
         Self {
@@ -292,6 +307,12 @@ impl App {
             header_radar_frame: 0,
 
             tick_interval_ms: 2000,
+
+            pid,
+            cmd_path,
+            copy_path,
+            clip_log_path,
+            clip_debug_path,
         }
     }
 
@@ -467,7 +488,7 @@ impl App {
         }
         if let Some(json) = y_copy_json {
             // Store in a temp file for clipboard
-            let _ = std::fs::write("/tmp/salt-radar-copy.txt", &json);
+            let _ = std::fs::write(&self.copy_path, &json);
             self.clipboard_msg = Some((
                 format!(" Copied {} bytes of JSON job return -- use y for display format ", json.len()),
                 std::time::Instant::now(),
@@ -497,7 +518,7 @@ impl App {
             .create(true)
             .append(true)
             .write(true)
-            .open("/tmp/salt-radar-cmd")
+            .open(&self.cmd_path)
             .and_then(|f| {
                 let mut f = std::io::LineWriter::new(f);
                 f.write_all(payload.as_bytes())
@@ -1237,9 +1258,9 @@ impl App {
         None
     }
 
-    /// Dump comprehensive X11 diagnostics to /tmp/salt-radar-clip-debug.log
-    /// so the user can share what's happening on their system.
-    fn debug_x11(display: &Option<String>, xauth: &Option<String>, x11_user: &str) {
+    /// Dump comprehensive X11 diagnostics to a file so the user can share
+    /// what's happening on their system.
+    fn debug_x11(display: &Option<String>, xauth: &Option<String>, x11_user: &str, debug_path: &str) {
         use std::fmt::Write;
         let mut d = String::new();
         writeln!(d, "=== salt-radar X11 debug ===").ok();
@@ -1346,7 +1367,7 @@ impl App {
         writeln!(d, "  detect_x11_user: {}", tmux_user).ok();
         writeln!(d, "  find_xauthority for this user: {:?}", Self::find_xauthority(&tmux_user)).ok();
 
-        let _ = std::fs::write("/tmp/salt-radar-clip-debug.log", &d);
+        let _ = std::fs::write(debug_path, &d);
     }
 
     fn uid_to_username(uid: u32) -> String {
@@ -1400,7 +1421,7 @@ impl App {
 
     pub fn copy_to_clipboard(&mut self, text: &str) {
         // 1. Write to local file (always works, easy debug)
-        let _ = std::fs::write("/tmp/salt-radar-copy.txt", text);
+        let _ = std::fs::write(&self.copy_path, text);
 
         let mut warnings: Vec<&str> = Vec::new();
         let mut ok_tmux = false;
@@ -1431,7 +1452,7 @@ impl App {
         let x11_user = display.as_ref().map(|d| Self::detect_x11_user(d)).unwrap_or_default();
 
         // Write full diagnostics before attempting anything
-        Self::debug_x11(&display, &xauth, &x11_user);
+        Self::debug_x11(&display, &xauth, &x11_user, &self.clip_debug_path);
 
         let xclip_avail = std::process::Command::new("sh")
             .args(["-c", "command -v xclip"])
@@ -1487,7 +1508,8 @@ impl App {
 
                         // su -l (login shell triggers pam_xauth) — background
                         // xclip so su exits immediately (xclip stays alive)
-                        let cmd1 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < /tmp/salt-radar-copy.txt' >/dev/null 2>&1 &", disp);
+                        let copy_path = &self.copy_path;
+                        let cmd1 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < {}' >/dev/null 2>&1 &", disp, copy_path);
                         let (ok, _) = Self::run_cmd_with_stdin(
                             std::process::Command::new("su").args(["-l", user, "-c", &cmd1]),
                             "", 5,
@@ -1501,7 +1523,7 @@ impl App {
 
                         // su with explicit XAUTHORITY
                         if let Some(ref xa) = xauth {
-                            let cmd2 = format!("nohup sh -c 'XAUTHORITY={} DISPLAY={} xclip -selection clipboard < /tmp/salt-radar-copy.txt' >/dev/null 2>&1 &", xa, disp);
+                            let cmd2 = format!("nohup sh -c 'XAUTHORITY={} DISPLAY={} xclip -selection clipboard < {}' >/dev/null 2>&1 &", xa, disp, copy_path);
                             let (ok, _) = Self::run_cmd_with_stdin(
                                 std::process::Command::new("su").args(["-c", &cmd2, user]),
                                 "", 5,
@@ -1515,7 +1537,7 @@ impl App {
                         }
 
                         // su without XAUTHORITY (xclip auto-detects)
-                        let cmd3 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < /tmp/salt-radar-copy.txt' >/dev/null 2>&1 &", disp);
+                        let cmd3 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < {}' >/dev/null 2>&1 &", disp, copy_path);
                         let (ok, _) = Self::run_cmd_with_stdin(
                             std::process::Command::new("su").args(["-c", &cmd3, user]),
                             "", 5,
@@ -1554,7 +1576,7 @@ impl App {
         let xa_info = xauth.as_deref().unwrap_or("not_set");
         let disp_info = display.as_deref().unwrap_or("not_set");
         let _ = std::fs::write(
-            "/tmp/salt-radar-clip.log",
+            &self.clip_log_path,
             format!(
                 "file={}b tmux={} xclip={} display={} xauthority={} xclip_installed={}\n{}",
                 text.len(),
@@ -1648,7 +1670,13 @@ impl App {
         Self::current_user()
     }
 
-    /// Scan events buffer for fleet scan returns matching the known JID
+    /// Clean up per-instance temp files. Called on exit.
+    pub fn cleanup(&self) {
+        let _ = std::fs::remove_file(&self.cmd_path);
+        let _ = std::fs::remove_file(&self.copy_path);
+        let _ = std::fs::remove_file(&self.clip_log_path);
+        let _ = std::fs::remove_file(&self.clip_debug_path);
+    }
     fn process_fleet_returns(&mut self) {
         let jid = match &self.fleet_scan_jid {
             Some(j) => j.clone(),

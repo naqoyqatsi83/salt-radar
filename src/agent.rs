@@ -11,6 +11,7 @@ pub fn agent_main(
     agent_path: &str,
     python_bin: &str,
     master_config: &str,
+    cmd_path: &str,
 ) {
     // Start the Python agent process
     let mut child = match Command::new(python_bin)
@@ -89,7 +90,6 @@ pub fn agent_main(
 
     // Keep stdin handle alive and write commands from a file-based queue
     let mut stdin = child.stdin.take().unwrap();
-    let cmd_path = "/tmp/salt-radar-cmd";
 
     // Send initial commands
     let init_cmds = vec![
