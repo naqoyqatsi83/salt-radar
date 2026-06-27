@@ -1865,7 +1865,7 @@ impl App {
         // Track return events for Pulse tab flash effect
         for evt in &self.events_since_last_tick {
             if evt.tag.contains("/ret/") {
-                if let Some(mid) = evt.data["id"].as_str() {
+                if let Some(mid) = evt.tag.rsplit('/').next() {
                     if !mid.is_empty() {
                         self.last_zmq_return.insert(mid.to_string(), Instant::now());
                     }
