@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
@@ -75,6 +75,7 @@ pub struct App {
     pub job_selected: usize,
     pub alert_selected: usize,
     pub minion_selected: usize,
+    pub pulse_selected: usize,
 
     // Agent NDJSON reader thread
     pub agent_rx: Arc<Mutex<VecDeque<AgentMessage>>>,
@@ -97,6 +98,8 @@ pub struct App {
     /// Ring buffer of recent event rates for sparkline (60 samples = 1 min)
     pub event_rate_history: [f64; 2000],
     pub event_rate_idx: usize,
+    /// Per-minion last ZMQ return timestamp for Pulse tab flash effect
+    pub last_zmq_return: HashMap<String, Instant>,
     /// Timestamp of last successful clipboard copy (for UI feedback)
     pub clipboard_at: Option<Instant>,
     /// Transient message shown in status bar (e.g. clipboard hints)
@@ -280,6 +283,7 @@ impl App {
             job_selected: 0,
             alert_selected: 0,
             minion_selected: 0,
+            pulse_selected: 0,
 
             agent_rx,
             agent_req_id: 0,
@@ -294,6 +298,7 @@ impl App {
             last_event_time: None,
             event_rate_history: [0.0; 2000],
             event_rate_idx: 0,
+            last_zmq_return: HashMap::new(),
             clipboard_at: None,
             clipboard_msg: None,
             sparkline_style: SparklineStyle::default(),
@@ -1856,6 +1861,17 @@ impl App {
             self.header_radar_frame = (self.header_radar_frame + 1) % 4;
         }
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
+
+        // Track return events for Pulse tab flash effect
+        for evt in &self.events_since_last_tick {
+            if evt.tag.contains("/ret/") {
+                if let Some(mid) = evt.data["id"].as_str() {
+                    if !mid.is_empty() {
+                        self.last_zmq_return.insert(mid.to_string(), Instant::now());
+                    }
+                }
+            }
+        }
         self.events_since_last_tick.clear();
 
 
@@ -2660,7 +2676,9 @@ impl App {
                 };
             }
             KeyCode::Char('/') => {
-                if self.current_tab == Tab::Jobs {
+                if self.current_tab == Tab::Pulse {
+                    // Pulse tab has no filter
+                } else if self.current_tab == Tab::Jobs {
                     if self.cache_focus {
                         self.cache_is_filtering = true;
                         self.cache_filter_text.clear();
@@ -2683,6 +2701,8 @@ impl App {
                     && !self.is_filtering && !self.cache_is_filtering
                 {
                     self.cache_focus = false;
+                } else if self.current_tab == Tab::Pulse && !had_popup {
+                    self.pulse_ring_left();
                 }
             }
             KeyCode::Right => {
@@ -2690,6 +2710,8 @@ impl App {
                     && !self.is_filtering && !self.cache_is_filtering
                 {
                     self.cache_focus = true;
+                } else if self.current_tab == Tab::Pulse && !had_popup {
+                    self.pulse_ring_right();
                 }
             }
             KeyCode::Char('1') => self.current_tab = Tab::Dashboard,
@@ -2697,8 +2719,20 @@ impl App {
             KeyCode::Char('3') => self.current_tab = Tab::Events,
             KeyCode::Char('4') => self.current_tab = Tab::Jobs,
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
-            KeyCode::Up => self.move_up(),
-            KeyCode::Down => self.move_down(),
+            KeyCode::Up => {
+                if self.current_tab == Tab::Pulse && !had_popup {
+                    self.pulse_ring_up();
+                } else {
+                    self.move_up();
+                }
+            }
+            KeyCode::Down => {
+                if self.current_tab == Tab::Pulse && !had_popup {
+                    self.pulse_ring_down();
+                } else {
+                    self.move_down();
+                }
+            }
             KeyCode::PageUp => { for _ in 0..10 { self.move_up(); } }
             KeyCode::PageDown => { for _ in 0..10 { self.move_down(); } }
             KeyCode::Home => self.move_to_first(),
@@ -2721,6 +2755,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
+            Tab::Pulse => self.pulse_selected = self.pulse_selected.saturating_sub(1),
             _ => {}
         }
     }
@@ -2737,6 +2772,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected += 1,
+            Tab::Pulse => self.pulse_selected += 1,
             _ => {}
         }
     }
@@ -2753,6 +2789,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = 0,
+            Tab::Pulse => self.pulse_selected = 0,
             _ => {}
         }
     }
@@ -2769,8 +2806,123 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
+            Tab::Pulse => self.pulse_selected = self.minion_info.len().saturating_sub(1),
             _ => {}
         }
+    }
+
+    /// Compute ring structure for pulse tab navigation.
+    fn pulse_rings(&self, count: usize) -> Vec<usize> {
+        let mut rings = Vec::new();
+        let mut remaining = count;
+        let mut r = 0;
+        while remaining > 0 {
+            let slots = if r == 0 { 1 } else { 8 * r };
+            let take = slots.min(remaining);
+            rings.push(take);
+            remaining -= take;
+            r += 1;
+        }
+        rings
+    }
+
+    /// Navigate Up: switch to previous ring (wrap around).
+    fn pulse_ring_up(&mut self) {
+        let count = self.minion_info.len();
+        if count == 0 { return; }
+        let rings = self.pulse_rings(count);
+        let idx = self.pulse_selected.min(count - 1);
+
+        // Find current ring
+        let mut accum = 0;
+        let mut current_ring = 0;
+        let mut current_slot = 0;
+        for (ri, &slots) in rings.iter().enumerate() {
+            if accum + slots > idx {
+                current_ring = ri;
+                current_slot = idx - accum;
+                break;
+            }
+            accum += slots;
+        }
+
+        // Move to previous ring (wrap)
+        let ring_count = rings.len();
+        let prev_ring = (current_ring + ring_count - 1) % ring_count;
+        let prev_slots = rings[prev_ring];
+        let prev_slot = current_slot.min(prev_slots.saturating_sub(1));
+
+        let before: usize = rings.iter().take(prev_ring).sum();
+        self.pulse_selected = (before + prev_slot).min(count - 1);
+    }
+
+    /// Navigate Down: switch to next ring (wrap around).
+    fn pulse_ring_down(&mut self) {
+        let count = self.minion_info.len();
+        if count == 0 { return; }
+        let rings = self.pulse_rings(count);
+        let idx = self.pulse_selected.min(count - 1);
+
+        let mut accum = 0;
+        let mut current_ring = 0;
+        let mut current_slot = 0;
+        for (ri, &slots) in rings.iter().enumerate() {
+            if accum + slots > idx {
+                current_ring = ri;
+                current_slot = idx - accum;
+                break;
+            }
+            accum += slots;
+        }
+
+        // Move to next ring (wrap)
+        let ring_count = rings.len();
+        let next_ring = (current_ring + 1) % ring_count;
+        let next_slots = rings[next_ring];
+        let next_slot = current_slot.min(next_slots.saturating_sub(1));
+
+        let before: usize = rings.iter().take(next_ring).sum();
+        self.pulse_selected = (before + next_slot).min(count - 1);
+    }
+
+    /// Navigate Left: previous slot in current ring (wrap).
+    fn pulse_ring_left(&mut self) {
+        let count = self.minion_info.len();
+        if count == 0 { return; }
+        let rings = self.pulse_rings(count);
+        let idx = self.pulse_selected.min(count - 1);
+
+        let mut accum = 0;
+        for (_, &slots) in rings.iter().enumerate() {
+            if accum + slots > idx {
+                let slot = idx - accum;
+                let prev_slot = (slot + slots - 1) % slots;
+                self.pulse_selected = accum + prev_slot;
+                return;
+            }
+            accum += slots;
+        }
+        self.pulse_selected = count - 1;
+    }
+
+    /// Navigate Right: next slot in current ring (wrap).
+    fn pulse_ring_right(&mut self) {
+        let count = self.minion_info.len();
+        if count == 0 { return; }
+        let rings = self.pulse_rings(count);
+        let idx = self.pulse_selected.min(count - 1);
+
+        let mut accum = 0;
+        for (_, &slots) in rings.iter().enumerate() {
+            if accum + slots > idx {
+                let slot = idx - accum;
+                let next_slot = (slot + 1) % slots;
+                self.pulse_selected = accum + next_slot;
+                return;
+            }
+            accum += slots;
+        }
+        self.pulse_selected = 0;
     }
 }
 
