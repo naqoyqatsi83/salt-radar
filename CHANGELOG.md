@@ -13,12 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse tab completely reworked: replaced concentric ring constellation with a wrapped activity grid
   that scales from 15 to 4,000+ minions — each minion shown as a colored `·` in reading order
 - Grid navigation: Up/Down rows, Left/Right columns (both wrap), no ring math
-- Color tiers: flash green (<2s), green (<30s), yellow (<5min), grey (older or never seen), red (timed out)
+- Color tiers: bold flash green (<2s), green (<5min), grey (older or never seen), red (timed out)
 - Updated Cargo.toml version to 0.5.0, key hints, and help text
 
 ### Fixed
 - Pulse tab dots now show green for all known minions instead of grey (removed overly strict has_data gate)
 - Pulse tab return tracking now extracts minion ID from event tag (salt/job/*/ret/minion_id) instead of data["id"], matching the existing proven event-parsing pattern
+- Pulse tab green tier extended to 300s (5min) to match minion `/start` interval, removed yellow tier
 
 ## [0.5.0] - 2026-06-27
 

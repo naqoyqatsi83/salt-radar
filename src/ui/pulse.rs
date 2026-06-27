@@ -84,8 +84,7 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
 /// Tiers (from newest to oldest):
 ///   - timed_out          → RED
 ///   - return < 2s ago    → GREEN + BOLD (flash)
-///   - return < 30s ago   → GREEN
-///   - return < 5m ago    → YELLOW
+///   - return < 5m ago    → GREEN
 ///   - return >= 5m ago   → TEXT_DIM (grey)
 ///   - no return ever     → TEXT_DIM
 fn dot_style(minion: &MinionInfo, selected: bool, app: &App) -> Style {
@@ -97,10 +96,8 @@ fn dot_style(minion: &MinionInfo, selected: bool, app: &App) -> Style {
         let secs = dur.as_secs_f64();
         if secs < 2.0 {
             (color::GREEN, Modifier::BOLD)
-        } else if secs < 30.0 {
-            (color::GREEN, Modifier::empty())
         } else if secs < 300.0 {
-            (color::YELLOW, Modifier::empty())
+            (color::GREEN, Modifier::empty())
         } else {
             (color::TEXT_DIM, Modifier::empty())
         }
