@@ -462,6 +462,34 @@ impl App {
                                         info.last_seen_epoch = ts_epoch;
                                     }
                                 }
+                                // Passive harvest: populate minion data from grains.item/items returns
+                                let fun = data["fun"].as_str().unwrap_or("");
+                                if fun == "grains.items" || fun == "grains.item" {
+                                    if let Some(return_data) = data["return"].as_object() {
+                                        let osfinger = return_data.get("osfinger").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let osrelease = return_data.get("osrelease").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let os = return_data.get("os").or_else(|| return_data.get("osfullname")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let salt_version = return_data.get("saltversion").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let cpuarch = return_data.get("cpuarch").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let known = !osfinger.is_empty() || !salt_version.is_empty() || !os.is_empty();
+                                        if known {
+                                            if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                                if !osfinger.is_empty() { existing.osfinger = osfinger; }
+                                                if !osrelease.is_empty() { existing.osrelease = osrelease; }
+                                                if !os.is_empty() { existing.os = os; }
+                                                if !salt_version.is_empty() { existing.salt_version = salt_version; }
+                                                if !cpuarch.is_empty() { existing.cpuarch = cpuarch; }
+                                                existing.timed_out = false;
+                                            } else {
+                                                self.minion_info.push(MinionInfo {
+                                                    id: mid.to_string(),
+                                                    osfinger, osrelease, os, salt_version, cpuarch,
+                                                    ..Default::default()
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

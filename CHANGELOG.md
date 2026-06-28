@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse tab flash now uses bright lime-green `Rgb(120,255,120)` + BOLD for clear visibility
 - Pulse tab broadened to track all minion events: returns (`/ret/`), minion start (`/minion/*/start`), and auth/key events
 - Color tiers: bright green (<5s), green (<5min), orange (<10min), grey (>=10min), red (timed out)
+- Passive grain harvesting: minion data (osfinger, osrelease, os, saltversion, cpuarch) now populated
+  from any grains.item/items return events on the bus, not only during active fleet scans
 
 ## [0.5.0] - 2026-06-27
 
