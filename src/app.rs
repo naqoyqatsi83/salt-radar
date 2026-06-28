@@ -1893,11 +1893,13 @@ impl App {
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
 
         // Track minion events for Pulse tab flash effect
-        // Covers: /ret/ returns, /minion/*/start, salt/auth, salt/key
+        // Covers: /ret/ returns, /minion/*/start, salt/beacon/*, salt/auth, salt/key
         for evt in &self.events_since_last_tick {
             let mid = if evt.tag.contains("/ret/") {
                 evt.tag.rsplit('/').next()
             } else if evt.tag.contains("/minion/") {
+                evt.tag.split('/').nth(2)
+            } else if evt.tag.starts_with("salt/beacon/") {
                 evt.tag.split('/').nth(2)
             } else if evt.tag.ends_with("/auth") || evt.tag.contains("/key") {
                 evt.data["id"].as_str()

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Color tiers: bright green (<5s), green (<5min), orange (<10min), grey (>=10min), red (timed out)
 - Passive grain harvesting: minion data (osfinger, osrelease, os, saltversion, cpuarch) now populated
   from any grains.item/items return events on the bus, not only during active fleet scans
+- Pulse tab now also tracks beacon events (`salt/beacon/*`) as minion activity
 
 ## [0.5.0] - 2026-06-27
 
