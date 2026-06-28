@@ -7,31 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0a] - 2026-06-27
+## [0.5.0] - 2026-06-28
 
 ### Changed
+- Events tab split into left/right panels: event list on left (50%),
+  selected event preview on right (50%) showing tag, timestamps,
+  function, and JSON body inline
 - Pulse tab completely reworked: replaced concentric ring constellation with a wrapped activity grid
   that scales from 15 to 4,000+ minions — each minion shown as a colored `·` in reading order
 - Grid navigation: Up/Down rows, Left/Right columns (both wrap), no ring math
-- Color tiers: bold flash green (<2s), green (<5min), grey (older or never seen), red (timed out)
 - Updated Cargo.toml version to 0.5.0, key hints, and help text
-
-### Fixed
-- Pulse tab dots now show green for all known minions instead of grey (removed overly strict has_data gate)
-- Pulse tab return tracking now extracts minion ID from event tag (salt/job/*/ret/minion_id) instead of data["id"], matching the existing proven event-parsing pattern
-- Pulse tab green tier extended to 300s (5min) to match minion `/start` interval, removed yellow tier
-- Pulse tab flash now uses bright lime-green `Rgb(120,255,120)` + BOLD for clear visibility
-- Pulse tab broadened to track all minion events: returns (`/ret/`), minion start (`/minion/*/start`), and auth/key events
-- Color tiers: bright green (<5s), green (<5min), orange (<10min), grey (>=10min), red (timed out)
-- Passive grain harvesting: minion data (osfinger, osrelease, os, saltversion, cpuarch) now populated
-  from any grains.item/items return events on the bus, not only during active fleet scans
-- Pulse tab now also tracks beacon events (`salt/beacon/*`) as minion activity
-- Pulse tab now catches any event carrying a minion ID in `data["id"]` as a fallback, covering auth, key, and other events
-- Pulse tracking moved to drain_agent_messages() at event receipt time, not deferred to update()
-- Fleet overview now populates from passive grain collection and shows without admin mode
-- Fleet overview labels passive data as such with hint to run full scan for complete results
-
-## [0.5.0] - 2026-06-27
 
 ### Added
 - Network traffic monitoring on Dashboard Host Resources panel: bytes in/out, current transfer rate (B/s, KB/s, MB/s, GB/s auto-scaled), cumulative totals from `/proc/net/dev`
@@ -41,6 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Missing data shown consistently as "?" across OS Distribution, Salt Version, and Architecture in fleet overview
 - Minion list selection highlight now consistent with other tabs — stops at last text character instead of spanning full width
 - README: added fancy badge row (Rust, Linux, ratatui, Salt, MIT)
+- Passive grain harvesting: minion data (osfinger, osrelease, os, saltversion, cpuarch) now populated
+  from any grains.item/items return events on the bus, not only during active fleet scans
+
+### Fixed
+- Pulse tab dots now show green for all known minions instead of grey (removed overly strict has_data gate)
+- Pulse tab return tracking now extracts minion ID from event tag (salt/job/*/ret/minion_id) instead of data["id"], matching the existing proven event-parsing pattern
+- Pulse tab green tier extended to 300s (5min) to match minion `/start` interval, removed yellow tier
+- Pulse tab flash now uses bright lime-green `Rgb(120,255,120)` + BOLD for clear visibility
+- Pulse tab broadened to track all minion events: returns (`/ret/`), minion start (`/minion/*/start`), and auth/key events
+- Color tiers: bright green (<5s), green (<5min), orange (<10min), grey (>=10min), red (timed out)
+- Pulse tab now also tracks beacon events (`salt/beacon/*`) as minion activity
+- Pulse tab now catches any event carrying a minion ID in `data["id"]` as a fallback, covering auth, key, and other events
+- Pulse tracking moved to drain_agent_messages() at event receipt time, not deferred to update()
+- Fleet overview now populates from passive grain collection and shows without admin mode
+- Fleet overview labels passive data as such with hint to run full scan for complete results
 
 ## [0.4.5] - 2026-06-26
 
