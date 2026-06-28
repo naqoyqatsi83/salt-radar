@@ -1892,25 +1892,25 @@ impl App {
         }
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
 
-        // Track minion events for Pulse tab flash effect
-        // Recognizes events where a minion ID can be extracted from the tag
-        // or from data["id"].  This covers /ret/, /minion/*/start,
-        // salt/beacon/*, salt/auth, salt/key, and any other event carrying
-        // a minion ID in its data.
+        // Track minion events for Pulse tab flash effect.
+        // First tries data["id"] (covers salt/auth, salt/key, and any other
+        // event carrying a minion ID in its data), then falls back to
+        // tag-based extraction for /ret/, /minion/, and /beacon/ patterns.
         for evt in &self.events_since_last_tick {
-            let mid = if evt.tag.contains("/ret/") {
-                evt.tag.rsplit('/').next()
-            } else if evt.tag.contains("/minion/") {
-                evt.tag.split('/').nth(2)
-            } else if evt.tag.starts_with("salt/beacon/") {
-                evt.tag.split('/').nth(2)
-            } else {
-                evt.data["id"].as_str()
-            };
+            let mid = evt.data["id"].as_str().filter(|s| !s.is_empty())
+                .or_else(|| {
+                    if evt.tag.contains("/ret/") {
+                        evt.tag.rsplit('/').next().filter(|s| !s.is_empty())
+                    } else if evt.tag.contains("/minion/") {
+                        evt.tag.split('/').nth(2).filter(|s| !s.is_empty())
+                    } else if evt.tag.starts_with("salt/beacon/") {
+                        evt.tag.split('/').nth(2).filter(|s| !s.is_empty())
+                    } else {
+                        None
+                    }
+                });
             if let Some(mid) = mid {
-                if !mid.is_empty() {
-                    self.last_zmq_return.insert(mid.to_string(), Instant::now());
-                }
+                self.last_zmq_return.insert(mid.to_string(), Instant::now());
             }
         }
         self.events_since_last_tick.clear();
