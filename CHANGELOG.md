@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from any grains.item/items return events on the bus, not only during active fleet scans
 - Pulse tab now also tracks beacon events (`salt/beacon/*`) as minion activity
 - Pulse tab now catches any event carrying a minion ID in `data["id"]` as a fallback, covering auth, key, and other events
+- Pulse tracking moved to drain_agent_messages() at event receipt time, not deferred to update()
 
 ## [0.5.0] - 2026-06-27
 

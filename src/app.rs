@@ -492,6 +492,13 @@ impl App {
                                 }
                             }
                         }
+                    } else {
+                        // Non-return events: try extracting minion ID from data for Pulse
+                        if let Some(mid) = data["id"].as_str() {
+                            if !mid.is_empty() {
+                                self.last_zmq_return.insert(mid.to_string(), Instant::now());
+                            }
+                        }
                     }
                     let evt = SaltEvent { tag, data, ts };
                     self.events_since_last_tick.push(evt.clone());
