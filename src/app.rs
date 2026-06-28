@@ -487,9 +487,34 @@ impl App {
                                                     ..Default::default()
                                                 });
                                             }
+                                            // Also populate fleet_data from the merged minion_info
+                                            let fm = self.minion_info.iter().find(|m| m.id == mid).map(|info| FleetMinion {
+                                                id: mid.to_string(),
+                                                osfinger: info.osfinger.clone(),
+                                                osrelease: info.osrelease.clone(),
+                                                saltversion: info.salt_version.clone(),
+                                                cpuarch: info.cpuarch.clone(),
+                                                timed_out: false,
+                                            });
+                                            if let Some(fm) = fm {
+                                                if let Some(ref mut fd) = self.fleet_data {
+                                                    if let Some(existing) = fd.minions.iter_mut().find(|m| m.id == mid) {
+                                                        *existing = fm;
+                                                    } else {
+                                                        fd.minions.push(fm);
+                                                    }
+                                                } else {
+                                                    self.fleet_data = Some(FleetScan {
+                                                        minions: vec![fm],
+                                                        scanned_at: Instant::now(),
+                                                    });
+                                                }
+                                            }
                                         }
                                     }
                                 }
+                                // Pulse tracking: every return event is minion activity
+                                self.last_zmq_return.insert(mid.to_string(), Instant::now());
                             }
                         }
                     } else {
@@ -1898,28 +1923,6 @@ impl App {
             self.header_radar_frame = (self.header_radar_frame + 1) % 4;
         }
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
-
-        // Track minion events for Pulse tab flash effect.
-        // First tries data["id"] (covers salt/auth, salt/key, and any other
-        // event carrying a minion ID in its data), then falls back to
-        // tag-based extraction for /ret/, /minion/, and /beacon/ patterns.
-        for evt in &self.events_since_last_tick {
-            let mid = evt.data["id"].as_str().filter(|s| !s.is_empty())
-                .or_else(|| {
-                    if evt.tag.contains("/ret/") {
-                        evt.tag.rsplit('/').next().filter(|s| !s.is_empty())
-                    } else if evt.tag.contains("/minion/") {
-                        evt.tag.split('/').nth(2).filter(|s| !s.is_empty())
-                    } else if evt.tag.starts_with("salt/beacon/") {
-                        evt.tag.split('/').nth(2).filter(|s| !s.is_empty())
-                    } else {
-                        None
-                    }
-                });
-            if let Some(mid) = mid {
-                self.last_zmq_return.insert(mid.to_string(), Instant::now());
-            }
-        }
         self.events_since_last_tick.clear();
 
 
