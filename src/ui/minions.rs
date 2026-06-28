@@ -189,10 +189,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    if !app.admin_mode {
-        lines.push(Line::from(Span::styled("  Enable admin mode ('a')", Style::default().fg(color::TEXT_DIM))));
-        lines.push(Line::from(Span::styled("  to access fleet overview.", Style::default().fg(color::TEXT_DIM))));
-    } else if let Some(ref fs) = app.fleet_data {
+    if let Some(ref fs) = app.fleet_data {
         // bar_width reserves space for: "  name<22> <count> <bar> <pct>%"
         // = 2 prefix + 22 name + 5 count (sp+4) + 5 pct (sp+3+%) = 34
         let fixed = 35;
