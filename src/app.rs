@@ -64,6 +64,7 @@ pub struct App {
     pub admin_mode: bool,
     pub admin_mode_pending: bool,
     pub fleet_scanning: bool,
+    pub fleet_scan_completed: bool,
     pub fleet_data: Option<FleetScan>,
 
     // Filter state
@@ -275,6 +276,7 @@ impl App {
             admin_mode: false,
             admin_mode_pending: false,
             fleet_scanning: false,
+            fleet_scan_completed: false,
             fleet_data: None,
 
             filter_text: String::new(),
@@ -378,12 +380,14 @@ impl App {
                                 self.fleet_scan_responded.clear();
                                 self.fleet_scan_started_at = Some(Instant::now());
                                 self.fleet_scanning = true;
+                                self.fleet_scan_completed = false;
                                 self.fleet_data = Some(FleetScan {
                                     minions: Vec::new(),
                                     scanned_at: Instant::now(),
                                 });
                             } else {
                                 self.fleet_scanning = false;
+                                self.fleet_scan_completed = true;
                             }
                         }
                         "jobs_list" => {
@@ -1879,6 +1883,7 @@ impl App {
                     self.fleet_scan_expected.clear();
                     self.fleet_scan_started_at = None;
                     self.fleet_scanning = false;
+                    self.fleet_scan_completed = true;
                 }
             }
         }
@@ -2659,6 +2664,7 @@ impl App {
                 if self.admin_mode && self.current_tab == Tab::Minions {
                     // Reset any stuck scan state and start fresh
                     self.fleet_scanning = true;
+                    self.fleet_scan_completed = false;
                     self.fleet_scan_jid = None;
                     self.fleet_scan_started_at = None;
                     self.fleet_data = None;

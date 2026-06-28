@@ -305,6 +305,17 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 ]));
             }
         }
+        if !app.fleet_scan_completed {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  \u{25B8} Passive collection \u{2014} data may be partial",
+                Style::default().fg(color::YELLOW),
+            )));
+            lines.push(Line::from(Span::styled(
+                "    Enable admin mode and press S for full fleet scan",
+                Style::default().fg(color::TEXT_DIM),
+            )));
+        }
     } else if app.fleet_scanning {
         lines.push(Line::from(Span::styled("  Scanning fleet...", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
     } else {
