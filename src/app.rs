@@ -1864,13 +1864,21 @@ impl App {
         }
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
 
-        // Track return events for Pulse tab flash effect
+        // Track minion events for Pulse tab flash effect
+        // Covers: /ret/ returns, /minion/*/start, salt/auth, salt/key
         for evt in &self.events_since_last_tick {
-            if evt.tag.contains("/ret/") {
-                if let Some(mid) = evt.tag.rsplit('/').next() {
-                    if !mid.is_empty() {
-                        self.last_zmq_return.insert(mid.to_string(), Instant::now());
-                    }
+            let mid = if evt.tag.contains("/ret/") {
+                evt.tag.rsplit('/').next()
+            } else if evt.tag.contains("/minion/") {
+                evt.tag.split('/').nth(2)
+            } else if evt.tag.ends_with("/auth") || evt.tag.contains("/key") {
+                evt.data["id"].as_str()
+            } else {
+                None
+            };
+            if let Some(mid) = mid {
+                if !mid.is_empty() {
+                    self.last_zmq_return.insert(mid.to_string(), Instant::now());
                 }
             }
         }

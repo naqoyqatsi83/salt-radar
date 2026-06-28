@@ -8,6 +8,7 @@ use crate::app::App;
 use crate::types::MinionInfo;
 
 use super::color;
+use ratatui::style::Color;
 
 pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App) {
     let cols = Layout::default()
@@ -83,9 +84,10 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
 ///
 /// Tiers (from newest to oldest):
 ///   - timed_out          → RED
-///   - return < 2s ago    → GREEN + BOLD (flash)
-///   - return < 5m ago    → GREEN
-///   - return >= 5m ago   → TEXT_DIM (grey)
+///   - return < 5s ago    → BRIGHT GREEN + BOLD (flash)
+///   - return < 5min ago  → GREEN
+///   - return < 10min ago → ORANGE
+///   - return >= 10min ago→ TEXT_DIM (grey)
 ///   - no return ever     → TEXT_DIM
 fn dot_style(minion: &MinionInfo, selected: bool, app: &App) -> Style {
     let elapsed = app.last_zmq_return.get(&minion.id).map(|t| t.elapsed());
@@ -94,10 +96,12 @@ fn dot_style(minion: &MinionInfo, selected: bool, app: &App) -> Style {
         (color::RED, Modifier::empty())
     } else if let Some(dur) = elapsed {
         let secs = dur.as_secs_f64();
-        if secs < 2.0 {
-            (color::GREEN, Modifier::BOLD)
+        if secs < 5.0 {
+            (Color::Rgb(120, 255, 120), Modifier::BOLD)
         } else if secs < 300.0 {
             (color::GREEN, Modifier::empty())
+        } else if secs < 600.0 {
+            (Color::Rgb(255, 165, 0), Modifier::empty())
         } else {
             (color::TEXT_DIM, Modifier::empty())
         }
@@ -203,8 +207,12 @@ fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
         "  Last return",
         Style::default().fg(color::TEXT_LABEL),
     )]));
-    let flash_color = if flash.starts_with("0.") {
-        color::GREEN
+    let flash_color = if let Some(t) = app.last_zmq_return.get(&minion.id) {
+        let secs = t.elapsed().as_secs_f64();
+        if secs < 5.0 { Color::Rgb(120, 255, 120) }
+        else if secs < 300.0 { color::GREEN }
+        else if secs < 600.0 { Color::Rgb(255, 165, 0) }
+        else { color::TEXT_DIM }
     } else {
         color::TEXT_DIM
     };

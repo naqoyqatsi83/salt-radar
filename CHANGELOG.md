@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse tab dots now show green for all known minions instead of grey (removed overly strict has_data gate)
 - Pulse tab return tracking now extracts minion ID from event tag (salt/job/*/ret/minion_id) instead of data["id"], matching the existing proven event-parsing pattern
 - Pulse tab green tier extended to 300s (5min) to match minion `/start` interval, removed yellow tier
+- Pulse tab flash now uses bright lime-green `Rgb(120,255,120)` + BOLD for clear visibility
+- Pulse tab broadened to track all minion events: returns (`/ret/`), minion start (`/minion/*/start`), and auth/key events
+- Color tiers: bright green (<5s), green (<5min), orange (<10min), grey (>=10min), red (timed out)
 
 ## [0.5.0] - 2026-06-27
 
