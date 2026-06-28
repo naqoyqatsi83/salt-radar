@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
@@ -64,6 +64,7 @@ pub struct App {
     pub admin_mode: bool,
     pub admin_mode_pending: bool,
     pub fleet_scanning: bool,
+    pub fleet_scan_completed: bool,
     pub fleet_data: Option<FleetScan>,
 
     // Filter state
@@ -75,6 +76,8 @@ pub struct App {
     pub job_selected: usize,
     pub alert_selected: usize,
     pub minion_selected: usize,
+    pub pulse_selected: usize,
+    pub pulse_grid_cols: usize,
 
     // Agent NDJSON reader thread
     pub agent_rx: Arc<Mutex<VecDeque<AgentMessage>>>,
@@ -97,6 +100,8 @@ pub struct App {
     /// Ring buffer of recent event rates for sparkline (60 samples = 1 min)
     pub event_rate_history: [f64; 2000],
     pub event_rate_idx: usize,
+    /// Per-minion last ZMQ return timestamp for Pulse tab flash effect
+    pub last_zmq_return: HashMap<String, Instant>,
     /// Timestamp of last successful clipboard copy (for UI feedback)
     pub clipboard_at: Option<Instant>,
     /// Transient message shown in status bar (e.g. clipboard hints)
@@ -271,6 +276,7 @@ impl App {
             admin_mode: false,
             admin_mode_pending: false,
             fleet_scanning: false,
+            fleet_scan_completed: false,
             fleet_data: None,
 
             filter_text: String::new(),
@@ -280,6 +286,8 @@ impl App {
             job_selected: 0,
             alert_selected: 0,
             minion_selected: 0,
+            pulse_selected: 0,
+            pulse_grid_cols: 0,
 
             agent_rx,
             agent_req_id: 0,
@@ -294,6 +302,7 @@ impl App {
             last_event_time: None,
             event_rate_history: [0.0; 2000],
             event_rate_idx: 0,
+            last_zmq_return: HashMap::new(),
             clipboard_at: None,
             clipboard_msg: None,
             sparkline_style: SparklineStyle::default(),
@@ -371,12 +380,14 @@ impl App {
                                 self.fleet_scan_responded.clear();
                                 self.fleet_scan_started_at = Some(Instant::now());
                                 self.fleet_scanning = true;
+                                self.fleet_scan_completed = false;
                                 self.fleet_data = Some(FleetScan {
                                     minions: Vec::new(),
                                     scanned_at: Instant::now(),
                                 });
                             } else {
                                 self.fleet_scanning = false;
+                                self.fleet_scan_completed = true;
                             }
                         }
                         "jobs_list" => {
@@ -455,6 +466,66 @@ impl App {
                                         info.last_seen_epoch = ts_epoch;
                                     }
                                 }
+                                // Passive harvest: populate minion data from grains.item/items returns
+                                let fun = data["fun"].as_str().unwrap_or("");
+                                if fun == "grains.items" || fun == "grains.item" {
+                                    if let Some(return_data) = data["return"].as_object() {
+                                        let osfinger = return_data.get("osfinger").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let osrelease = return_data.get("osrelease").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let os = return_data.get("os").or_else(|| return_data.get("osfullname")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let salt_version = return_data.get("saltversion").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let cpuarch = return_data.get("cpuarch").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let known = !osfinger.is_empty() || !salt_version.is_empty() || !os.is_empty();
+                                        if known {
+                                            if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                                if !osfinger.is_empty() { existing.osfinger = osfinger; }
+                                                if !osrelease.is_empty() { existing.osrelease = osrelease; }
+                                                if !os.is_empty() { existing.os = os; }
+                                                if !salt_version.is_empty() { existing.salt_version = salt_version; }
+                                                if !cpuarch.is_empty() { existing.cpuarch = cpuarch; }
+                                                existing.timed_out = false;
+                                            } else {
+                                                self.minion_info.push(MinionInfo {
+                                                    id: mid.to_string(),
+                                                    osfinger, osrelease, os, salt_version, cpuarch,
+                                                    ..Default::default()
+                                                });
+                                            }
+                                            // Also populate fleet_data from the merged minion_info
+                                            let fm = self.minion_info.iter().find(|m| m.id == mid).map(|info| FleetMinion {
+                                                id: mid.to_string(),
+                                                osfinger: info.osfinger.clone(),
+                                                osrelease: info.osrelease.clone(),
+                                                saltversion: info.salt_version.clone(),
+                                                cpuarch: info.cpuarch.clone(),
+                                                timed_out: false,
+                                            });
+                                            if let Some(fm) = fm {
+                                                if let Some(ref mut fd) = self.fleet_data {
+                                                    if let Some(existing) = fd.minions.iter_mut().find(|m| m.id == mid) {
+                                                        *existing = fm;
+                                                    } else {
+                                                        fd.minions.push(fm);
+                                                    }
+                                                } else {
+                                                    self.fleet_data = Some(FleetScan {
+                                                        minions: vec![fm],
+                                                        scanned_at: Instant::now(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Pulse tracking: every return event is minion activity
+                                self.last_zmq_return.insert(mid.to_string(), Instant::now());
+                            }
+                        }
+                    } else {
+                        // Non-return events: try extracting minion ID from data for Pulse
+                        if let Some(mid) = data["id"].as_str() {
+                            if !mid.is_empty() {
+                                self.last_zmq_return.insert(mid.to_string(), Instant::now());
                             }
                         }
                     }
@@ -1812,6 +1883,7 @@ impl App {
                     self.fleet_scan_expected.clear();
                     self.fleet_scan_started_at = None;
                     self.fleet_scanning = false;
+                    self.fleet_scan_completed = true;
                 }
             }
         }
@@ -2592,6 +2664,7 @@ impl App {
                 if self.admin_mode && self.current_tab == Tab::Minions {
                     // Reset any stuck scan state and start fresh
                     self.fleet_scanning = true;
+                    self.fleet_scan_completed = false;
                     self.fleet_scan_jid = None;
                     self.fleet_scan_started_at = None;
                     self.fleet_data = None;
@@ -2660,7 +2733,9 @@ impl App {
                 };
             }
             KeyCode::Char('/') => {
-                if self.current_tab == Tab::Jobs {
+                if self.current_tab == Tab::Pulse {
+                    // Pulse tab has no filter
+                } else if self.current_tab == Tab::Jobs {
                     if self.cache_focus {
                         self.cache_is_filtering = true;
                         self.cache_filter_text.clear();
@@ -2683,6 +2758,8 @@ impl App {
                     && !self.is_filtering && !self.cache_is_filtering
                 {
                     self.cache_focus = false;
+                } else if self.current_tab == Tab::Pulse && !had_popup {
+                    self.pulse_left();
                 }
             }
             KeyCode::Right => {
@@ -2690,6 +2767,8 @@ impl App {
                     && !self.is_filtering && !self.cache_is_filtering
                 {
                     self.cache_focus = true;
+                } else if self.current_tab == Tab::Pulse && !had_popup {
+                    self.pulse_right();
                 }
             }
             KeyCode::Char('1') => self.current_tab = Tab::Dashboard,
@@ -2697,8 +2776,20 @@ impl App {
             KeyCode::Char('3') => self.current_tab = Tab::Events,
             KeyCode::Char('4') => self.current_tab = Tab::Jobs,
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
-            KeyCode::Up => self.move_up(),
-            KeyCode::Down => self.move_down(),
+            KeyCode::Up => {
+                if self.current_tab == Tab::Pulse && !had_popup {
+                    self.pulse_up();
+                } else {
+                    self.move_up();
+                }
+            }
+            KeyCode::Down => {
+                if self.current_tab == Tab::Pulse && !had_popup {
+                    self.pulse_down();
+                } else {
+                    self.move_down();
+                }
+            }
             KeyCode::PageUp => { for _ in 0..10 { self.move_up(); } }
             KeyCode::PageDown => { for _ in 0..10 { self.move_down(); } }
             KeyCode::Home => self.move_to_first(),
@@ -2721,6 +2812,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
+            Tab::Pulse => self.pulse_selected = self.pulse_selected.saturating_sub(1),
             _ => {}
         }
     }
@@ -2737,6 +2829,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected += 1,
+            Tab::Pulse => self.pulse_selected += 1,
             _ => {}
         }
     }
@@ -2753,6 +2846,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = 0,
+            Tab::Pulse => self.pulse_selected = 0,
             _ => {}
         }
     }
@@ -2769,7 +2863,60 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
+            Tab::Pulse => self.pulse_selected = self.minion_info.len().saturating_sub(1),
             _ => {}
+        }
+    }
+
+    /// Navigate left in the grid (wraps).
+    fn pulse_left(&mut self) {
+        let count = self.minion_info.len();
+        if count == 0 { return; }
+        if self.pulse_selected > 0 {
+            self.pulse_selected -= 1;
+        } else {
+            self.pulse_selected = count - 1;
+        }
+    }
+
+    /// Navigate right in the grid (wraps).
+    fn pulse_right(&mut self) {
+        let count = self.minion_info.len();
+        if count == 0 { return; }
+        if self.pulse_selected + 1 < count {
+            self.pulse_selected += 1;
+        } else {
+            self.pulse_selected = 0;
+        }
+    }
+
+    /// Navigate up one row in the grid (wraps).
+    fn pulse_up(&mut self) {
+        let count = self.minion_info.len();
+        if count == 0 { return; }
+        let cols = self.pulse_grid_cols.max(1);
+        if self.pulse_selected >= cols {
+            self.pulse_selected -= cols;
+        } else {
+            // wrap to bottom row at same column
+            let total_rows = (count + cols - 1) / cols;
+            let last_row_start = (total_rows - 1) * cols;
+            let col = self.pulse_selected;
+            self.pulse_selected = (last_row_start + col).min(count - 1);
+        }
+    }
+
+    /// Navigate down one row in the grid (wraps).
+    fn pulse_down(&mut self) {
+        let count = self.minion_info.len();
+        if count == 0 { return; }
+        let cols = self.pulse_grid_cols.max(1);
+        if self.pulse_selected + cols < count {
+            self.pulse_selected += cols;
+        } else {
+            // wrap to top row at same column
+            let col = self.pulse_selected % cols;
+            self.pulse_selected = col.min(count - 1);
         }
     }
 }

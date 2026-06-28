@@ -10,6 +10,7 @@ pub enum Tab {
     Events,
     Jobs,
     Alerts,
+    Pulse,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,17 +30,19 @@ impl Tab {
             Self::Minions => Self::Events,
             Self::Events => Self::Jobs,
             Self::Jobs => Self::Alerts,
-            Self::Alerts => Self::Dashboard,
+            Self::Alerts => Self::Pulse,
+            Self::Pulse => Self::Dashboard,
         }
     }
 
     pub fn prev(&self) -> Self {
         match self {
-            Self::Dashboard => Self::Alerts,
+            Self::Dashboard => Self::Pulse,
             Self::Minions => Self::Dashboard,
             Self::Events => Self::Minions,
             Self::Jobs => Self::Events,
             Self::Alerts => Self::Jobs,
+            Self::Pulse => Self::Alerts,
         }
     }
 
@@ -50,6 +53,7 @@ impl Tab {
             Self::Events => "Events",
             Self::Jobs => "Jobs",
             Self::Alerts => "Alerts",
+            Self::Pulse => "Pulse",
         }
     }
 }

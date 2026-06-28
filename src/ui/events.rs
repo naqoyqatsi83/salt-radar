@@ -1,4 +1,4 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -27,10 +27,20 @@ fn format_time_utc(ts: f64) -> String {
 }
 
 pub fn draw_events(f: &mut Frame, area: Rect, app: &App) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    draw_event_list(f, cols[0], app);
+    draw_event_preview(f, cols[1], app);
+}
+
+fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Events ({})  {:.1}/s ", app.events_total, app.events_per_sec))
+        .title(format!(" Events ({}) ", app.events_total))
         .style(Style::default().bg(color::BG_DARK));
 
     let inner = block.inner(area);
@@ -39,7 +49,7 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     let total = app.filtered_events_len();
     let selected = app.event_selected.min(total.saturating_sub(1));
-    let visible = (inner.height as usize).saturating_sub(2); // header + filter bar
+    let visible = (inner.height as usize).saturating_sub(2);
 
     // Filter bar
     if app.is_filtering {
@@ -56,7 +66,7 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App) {
         ]));
     } else {
         lines.push(Line::from(vec![
-            Span::styled("   Press / to filter", Style::default().fg(color::TEXT_DIM)),
+            Span::styled("  Press / to filter", Style::default().fg(color::TEXT_DIM)),
         ]));
     }
 
@@ -66,11 +76,9 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(color::TEXT_DIM),
         )));
     } else {
-        // Header (always shown when events exist)
         lines.push(Line::from(vec![
             Span::styled(format!("  {:<19}  {:<19}", "Local", "UTC"), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {:<55}", "Tag"), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled("  Summary", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {:<45}", "Tag"), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         ]));
 
         if total == 0 {
@@ -98,25 +106,108 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App) {
                 let local_t = format_time_local(evt.ts);
                 let utc_t = format_time_utc(evt.ts);
 
-                let tag = if evt.tag.len() > 55 {
-                    format!("{}..", &evt.tag[..53])
+                let tag = if evt.tag.len() > 45 {
+                    format!("{}..", &evt.tag[..43])
                 } else {
                     evt.tag.clone()
                 };
 
-                let summary = evt.data["fun"].as_str()
-                    .or_else(|| {
-                        if evt.tag.contains("/ret/") { Some("return") } else { None }
-                    })
-                    .unwrap_or("");
-
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {}  {}", local_t, utc_t), Style::default().fg(color::TEXT_DIM)),
-                    Span::styled(format!("  {:<55}", tag), Style::default().fg(color::CYAN)),
-                    Span::styled(summary, Style::default().fg(color::TEXT)),
+                    Span::styled(format!("  {:<45}", tag), Style::default().fg(color::CYAN)),
                 ]).style(sel_style));
             }
         }
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        inner,
+    );
+}
+
+/// Right panel: preview of the selected event
+fn draw_event_preview(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::BORDER))
+        .title(" Preview ")
+        .style(Style::default().bg(color::BG_DARK));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let total = app.filtered_events_len();
+    if total == 0 {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled("  No event selected.", Style::default().fg(color::TEXT_DIM))))
+                .style(Style::default().bg(color::BG_DARK)),
+            inner,
+        );
+        return;
+    }
+
+    let selected = app.event_selected.min(total.saturating_sub(1));
+    let evt = match app.get_filtered_event(selected) {
+        Some(e) => e,
+        None => return,
+    };
+
+    let mut lines = Vec::new();
+
+    // Tag
+    lines.push(Line::from(vec![
+        Span::styled("  Tag", Style::default().fg(color::TEXT_LABEL)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {}", evt.tag), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Timestamps
+    lines.push(Line::from(vec![
+        Span::styled("  Timestamp", Style::default().fg(color::TEXT_LABEL)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  Local  {}", format_time_local(evt.ts)), Style::default().fg(color::TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  UTC   {}", format_time_utc(evt.ts)), Style::default().fg(color::TEXT_DIM)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Summary
+    let fun = evt.data["fun"].as_str().unwrap_or("");
+    if !fun.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Function", Style::default().fg(color::TEXT_LABEL)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {}", fun), Style::default().fg(color::YELLOW)),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    // JSON body — render as pretty-printed, truncate to available height
+    lines.push(Line::from(vec![
+        Span::styled("  Body", Style::default().fg(color::TEXT_LABEL)),
+    ]));
+
+    let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
+    let data_lines: Vec<&str> = json_str.lines().collect();
+    let max_body = (inner.height as usize).saturating_sub(lines.len() + 2);
+
+    for data_line in data_lines.iter().take(max_body) {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", data_line),
+            Style::default().fg(color::TEXT),
+        )));
+    }
+    if data_lines.len() > max_body {
+        lines.push(Line::from(Span::styled(
+            "  ... (press Enter to view full)",
+            Style::default().fg(color::YELLOW),
+        )));
     }
 
     f.render_widget(

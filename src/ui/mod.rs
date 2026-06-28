@@ -3,6 +3,7 @@ mod minions;
 mod events;
 mod jobs;
 mod alerts_view;
+mod pulse;
 
 pub mod detail_popup;
 
@@ -103,6 +104,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Events => events::draw_events(f, main_layout[2], app),
         Tab::Jobs => jobs::draw_jobs(f, main_layout[2], app),
         Tab::Alerts => alerts_view::draw_alerts(f, main_layout[2], app),
+        Tab::Pulse => pulse::draw_pulse(f, main_layout[2], app),
     }
 
     draw_key_hints(f, main_layout[3], app);
@@ -172,14 +174,18 @@ fn draw_title_bar(f: &mut Frame, area: Rect, app: &App) {
 // ─── Tab menu ──────────────────────────────────────────────────────────────
 
 fn draw_tab_menu(f: &mut Frame, area: Rect, app: &App) {
-    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts];
+    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Pulse];
     let mut tab_spans: Vec<Span<'static>> = Vec::new();
 
     for (i, tab) in tabs.iter().enumerate() {
         if i > 0 {
             tab_spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
         }
-        let label = format!(" {} {} ", i + 1, tab.label());
+        let label = if i < 5 {
+            format!(" {} {} ", i + 1, tab.label())
+        } else {
+            format!(" \u{25C9} {} ", tab.label())
+        };
         if *tab == app.current_tab {
             tab_spans.push(Span::styled(
                 label,
@@ -325,6 +331,13 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             keys.push(key::render("a", "Admin"));
             keys
         }
+        Tab::Pulse => {
+            let keys = vec![
+                key::render("\u{2191}\u{2193}", "Row"),
+                key::render("\u{2190}\u{2192}", "Col"),
+            ];
+            keys
+        }
         _ => {
             let mut keys = vec![
                 key::render("/", "Filter"),
@@ -416,6 +429,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 Tab::Minions => (app.minion_selected + 1, app.filtered_minions_len()),
                 Tab::Events => (app.event_selected + 1, app.filtered_events_len()),
                 Tab::Alerts => (app.alert_selected + 1, app.filtered_alerts_len()),
+                Tab::Pulse => (app.pulse_selected + 1, app.minion_info.len()),
                 _ => (0, 0),
             };
             if total > 0 {
@@ -525,6 +539,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  x", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Hide/show non-responsive minions (Minions tab)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  \u{2191}\u{2193}\u{2190}\u{2192}", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Navigate grid (Pulse tab)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),
