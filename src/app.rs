@@ -652,6 +652,8 @@ impl App {
             .min(self.filtered_alerts_len().saturating_sub(1));
         self.minion_selected = self.minion_selected
             .min(self.filtered_minions_len().saturating_sub(1));
+        self.pulse_selected = self.pulse_selected
+            .min(self.pulse_minions_count().saturating_sub(1));
     }
 
     fn matches_filter(text: &str, pat: &str) -> bool {
@@ -804,6 +806,16 @@ impl App {
         }
         let pat = &self.filter_text;
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).nth(index)
+    }
+
+    pub fn pulse_minions_count(&self) -> usize {
+        let accepted: HashSet<&str> = self.keys.iter()
+            .filter(|k| k.status == KeyStatus::Accepted)
+            .map(|k| k.id.as_str())
+            .collect();
+        self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()))
+            .count()
     }
 
     pub fn filtered_minions_len(&self) -> usize {
@@ -2812,7 +2824,10 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
-            Tab::Pulse => self.pulse_selected = self.pulse_selected.saturating_sub(1),
+            Tab::Pulse => {
+                let max = self.pulse_minions_count().saturating_sub(1);
+                self.pulse_selected = self.pulse_selected.saturating_sub(1).min(max);
+            }
             _ => {}
         }
     }
@@ -2829,7 +2844,10 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected += 1,
-            Tab::Pulse => self.pulse_selected += 1,
+            Tab::Pulse => {
+                let max = self.pulse_minions_count().saturating_sub(1);
+                self.pulse_selected = self.pulse_selected.saturating_add(1).min(max);
+            }
             _ => {}
         }
     }
@@ -2863,36 +2881,36 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
-            Tab::Pulse => self.pulse_selected = self.minion_info.len().saturating_sub(1),
+            Tab::Pulse => self.pulse_selected = self.pulse_minions_count().saturating_sub(1),
             _ => {}
         }
     }
 
     /// Navigate left in the grid (wraps).
     fn pulse_left(&mut self) {
-        let count = self.minion_info.len();
+        let count = self.pulse_minions_count();
         if count == 0 { return; }
-        if self.pulse_selected > 0 {
-            self.pulse_selected -= 1;
+        self.pulse_selected = if self.pulse_selected > 0 {
+            self.pulse_selected - 1
         } else {
-            self.pulse_selected = count - 1;
-        }
+            count - 1
+        };
     }
 
     /// Navigate right in the grid (wraps).
     fn pulse_right(&mut self) {
-        let count = self.minion_info.len();
+        let count = self.pulse_minions_count();
         if count == 0 { return; }
-        if self.pulse_selected + 1 < count {
-            self.pulse_selected += 1;
+        self.pulse_selected = if self.pulse_selected + 1 < count {
+            self.pulse_selected + 1
         } else {
-            self.pulse_selected = 0;
-        }
+            0
+        };
     }
 
     /// Navigate up one row in the grid (wraps).
     fn pulse_up(&mut self) {
-        let count = self.minion_info.len();
+        let count = self.pulse_minions_count();
         if count == 0 { return; }
         let cols = self.pulse_grid_cols.max(1);
         if self.pulse_selected >= cols {
@@ -2908,7 +2926,7 @@ impl App {
 
     /// Navigate down one row in the grid (wraps).
     fn pulse_down(&mut self) {
-        let count = self.minion_info.len();
+        let count = self.pulse_minions_count();
         if count == 0 { return; }
         let cols = self.pulse_grid_cols.max(1);
         if self.pulse_selected + cols < count {

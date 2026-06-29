@@ -26,7 +26,7 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Minion Pulse ({}) ", app.minion_info.len()))
+        .title(format!(" Minion Pulse ({}) ", app.pulse_minions_count()))
         .style(Style::default().bg(color::BG_DARK));
 
     let inner = block.inner(area);
