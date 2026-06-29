@@ -4,8 +4,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use std::collections::HashSet;
+
 use crate::app::App;
-use crate::types::MinionInfo;
+use crate::types::{KeyStatus, MinionInfo};
 
 use super::color;
 use ratatui::style::Color;
@@ -259,7 +261,14 @@ fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn gather_minions(app: &App) -> Vec<MinionInfo> {
-    let mut minions: Vec<MinionInfo> = app.minion_info.clone();
+    let accepted: HashSet<&str> = app.keys.iter()
+        .filter(|k| k.status == KeyStatus::Accepted)
+        .map(|k| k.id.as_str())
+        .collect();
+    let mut minions: Vec<MinionInfo> = app.minion_info.iter()
+        .filter(|m| accepted.contains(m.id.as_str()))
+        .cloned()
+        .collect();
     minions.sort_by(|a, b| a.id.cmp(&b.id));
     minions
 }
