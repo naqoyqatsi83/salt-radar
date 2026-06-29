@@ -429,7 +429,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 Tab::Minions => (app.minion_selected + 1, app.filtered_minions_len()),
                 Tab::Events => (app.event_selected + 1, app.filtered_events_len()),
                 Tab::Alerts => (app.alert_selected + 1, app.filtered_alerts_len()),
-                Tab::Pulse => (app.pulse_selected + 1, app.minion_info.len()),
+                Tab::Pulse => (app.pulse_selected + 1, app.pulse_minions_count()),
                 _ => (0, 0),
             };
             if total > 0 {
