@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-06-28
+## [0.5.1] - 2026-06-29
 
 ### Changed
 - Events tab split into left/right panels: event list on left (50%),
@@ -16,20 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse tab completely reworked: replaced concentric ring constellation with a wrapped activity grid
   that scales from 15 to 4,000+ minions — each minion shown as a colored `·` in reading order
 - Grid navigation: Up/Down rows, Left/Right columns (both wrap), no ring math
-- Updated Cargo.toml version to 0.5.0, key hints, and help text
+- Updated Cargo.toml version to 0.5.1, key hints, and help text
 
 ### Added
-- Network traffic monitoring on Dashboard Host Resources panel: bytes in/out, current transfer rate (B/s, KB/s, MB/s, GB/s auto-scaled), cumulative totals from `/proc/net/dev`
-- Fleet overview now displays distribution bars incrementally during scan instead of hiding everything until complete
-- Minion list OS column no longer capped at 30 chars — split proportionally with Salt version column so both remain visible
-- Fleet scan progress now counted from accepted keys (not agent's optional expected_minions list), fixing "1/1" display bug
-- Missing data shown consistently as "?" across OS Distribution, Salt Version, and Architecture in fleet overview
-- Minion list selection highlight now consistent with other tabs — stops at last text character instead of spanning full width
-- README: added fancy badge row (Rust, Linux, ratatui, Salt, MIT)
 - Passive grain harvesting: minion data (osfinger, osrelease, os, saltversion, cpuarch) now populated
   from any grains.item/items return events on the bus, not only during active fleet scans
 
 ### Fixed
+- Pulse view now filters to only accepted-key minions, matching Dashboard and Minions views — no longer shows stale entries from deleted keys
 - Pulse tab dots now show green for all known minions instead of grey (removed overly strict has_data gate)
 - Pulse tab return tracking now extracts minion ID from event tag (salt/job/*/ret/minion_id) instead of data["id"], matching the existing proven event-parsing pattern
 - Pulse tab green tier extended to 300s (5min) to match minion `/start` interval, removed yellow tier
@@ -41,6 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse tracking moved to drain_agent_messages() at event receipt time, not deferred to update()
 - Fleet overview now populates from passive grain collection and shows without admin mode
 - Fleet overview labels passive data as such with hint to run full scan for complete results
+
+## [0.5.0] - 2026-06-28
+
+### Added
+- Network traffic monitoring on Dashboard Host Resources panel: bytes in/out, current transfer rate (B/s, KB/s, MB/s, GB/s auto-scaled), cumulative totals from `/proc/net/dev`
+- Fleet overview now displays distribution bars incrementally during scan instead of hiding everything until complete
+- Minion list OS column no longer capped at 30 chars — split proportionally with Salt version column so both remain visible
+- Fleet scan progress now counted from accepted keys (not agent's optional expected_minions list), fixing "1/1" display bug
+- Missing data shown consistently as "?" across OS Distribution, Salt Version, and Architecture in fleet overview
+- Minion list selection highlight now consistent with other tabs — stops at last text character instead of spanning full width
+- README: added fancy badge row (Rust, Linux, ratatui, Salt, MIT)
+
+### Changed
+- Updated Cargo.toml version to 0.5.0, key hints, and help text
 
 ## [0.4.5] - 2026-06-26
 
