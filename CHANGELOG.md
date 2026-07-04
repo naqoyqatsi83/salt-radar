@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc1] - 2026-07-04
+
+### Added
+- Mouse click on Pulse view minion grid now selects the exact minion indicator instead of just left/right half
+- Double-click on list items (Minions, Events, Jobs, Alerts) opens the detail popup (400ms threshold, same cell)
+- Right-click on a popup closes it (except AdminConfirm confirmation dialog)
+- F2 hotkey toggles mouse mode on/off, with visual indicator in the key hints bar (default: enabled)
+
+### Changed
+- List tab click positioning rewritten from proportional calculation to exact row mapping with scroll offset for precise item selection
+- `DBL_CLICK_MS` constant renamed to `dbl_click_ms` for clippy compliance
+
+### Fixed
+- AdminConfirm popup OK/Cancel buttons now correctly distinguished by exact text hitbox coordinates — clicking Cancel no longer enables admin mode
+
 ## [0.5.1] - 2026-06-29
 
 ### Changed

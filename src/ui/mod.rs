@@ -287,6 +287,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         key::render("\u{2191}\u{2193}", "Select"),
         key::render("?", "Help"),
         key::render("c", "Contrast"),
+        if app.mouse_enabled { key::render("F2", "Disable mouse") } else { key::render("F2", "Enable mouse") },
     ];
 
     let tab_keys = match app.current_tab {

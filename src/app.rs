@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::alerts::AlertEngine;
 use crate::collectors;
@@ -143,6 +143,13 @@ pub struct App {
     prev_network_tx_bytes: u64,
     prev_network_time: Option<Instant>,
 
+    // Mouse support
+    pub mouse_enabled: bool,
+    pub needs_mouse_toggle: bool,
+    last_click_at: Option<Instant>,
+    last_click_col: u16,
+    last_click_row: u16,
+
     // Sniffer
     pub sniffer_input_active: bool,
     pub sniffer_input_text: String,
@@ -254,6 +261,11 @@ impl App {
             sniffer_dirty: false,
             return_to_sniffer: None,
             hide_timed_out: false,
+            mouse_enabled: true,
+            needs_mouse_toggle: false,
+            last_click_at: None,
+            last_click_col: 0,
+            last_click_row: 0,
             fleet_scan_jid: None,
             fleet_scan_expected: Vec::new(),
             fleet_scan_responded: HashSet::new(),
@@ -2807,9 +2819,248 @@ impl App {
             KeyCode::Home => self.move_to_first(),
             KeyCode::End => self.move_to_last(),
             KeyCode::Enter => self.open_detail(),
+            KeyCode::F(2) => {
+                self.mouse_enabled = !self.mouse_enabled;
+                self.needs_mouse_toggle = true;
+            }
             _ => {}
         }
         false
+    }
+
+    /// Handle a mouse click at the given (col, row) position.
+    /// Row 1 = tab bar: switch to clicked tab.
+    /// Content area = list tabs: select item by proportional position.
+    pub fn handle_mouse_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
+        let h = frame_size.height as usize;
+
+        // Popup showing — only AdminConfirm is handled via left-click
+        if self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab) {
+            if matches!(self.detail_popup, Some(DetailPopup::AdminConfirm)) {
+                return self.handle_admin_confirm_click(col, row, frame_size);
+            }
+            // Other popups: ignore left-click (right-click closes from main.rs)
+            return false;
+        }
+
+        // Tab bar click (row 1)
+        if row == 1 {
+            self.current_tab = Self::tab_at_col(col);
+            return false;
+        }
+
+        // Content area click (rows 2 to h-2; h-1 = key hints)
+        let r = row as usize;
+        if r < 2 || r >= h.saturating_sub(1) {
+            return false;
+        }
+
+        // Content area height = h-3 (title + tab + key hints)
+        // Inner panel height = (h-3) - 2 (block top/bottom borders) = h-5
+        let inner_h = h.saturating_sub(5);
+
+        match self.current_tab {
+            Tab::Minions => {
+                let total = self.filtered_minions_len();
+                if total == 0 { return false; }
+
+                let overhead = 1 // filter bar
+                    + if self.hide_timed_out { 1 } else { 0 }
+                    + if self.admin_mode { 1 } else { 0 };
+                let visible = inner_h.saturating_sub(overhead).saturating_sub(2).max(1);
+
+                let selected = self.minion_selected.min(total.saturating_sub(1));
+                let scroll = scroll_offset(selected, visible, total);
+
+                // Data starts at: inner.y(3) + overhead + header(1)
+                let data_start = 3 + overhead + 1;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        self.minion_selected = (scroll + visual_idx).min(total - 1);
+                        self.clamp_selection();
+                    }
+                }
+            }
+            Tab::Events | Tab::Alerts => {
+                let total = if self.current_tab == Tab::Events {
+                    self.filtered_events_len()
+                } else {
+                    self.filtered_alerts_len()
+                };
+                if total == 0 { return false; }
+
+                // Events/Alerts: filter(1) + header(1) = 2 lines before data
+                let visible = inner_h.saturating_sub(2).max(1);
+
+                let selected = if self.current_tab == Tab::Events {
+                    self.event_selected.min(total.saturating_sub(1))
+                } else {
+                    self.alert_selected.min(total.saturating_sub(1))
+                };
+                let scroll = scroll_offset(selected, visible, total);
+
+                // Data starts at: inner.y(3) + filter(1) + header(1) = 5
+                let data_start = 3 + 2;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        let new_idx = (scroll + visual_idx).min(total - 1);
+                        if self.current_tab == Tab::Events {
+                            self.event_selected = new_idx;
+                        } else {
+                            self.alert_selected = new_idx;
+                        }
+                        self.clamp_selection();
+                    }
+                }
+            }
+            Tab::Jobs => {
+                // 55/45 split: left = live jobs, right = cache
+                let col_split = (frame_size.width as u16 * 55 / 100) as usize;
+                let live_click = (col as usize) < col_split;
+
+                if self.cache_focus == live_click {
+                    // Click is on the non-focused panel — just switch focus
+                    self.cache_focus = !self.cache_focus;
+                    return false;
+                }
+
+                if self.cache_focus {
+                    let total = self.filtered_cache_len();
+                    if total == 0 { return false; }
+
+                    let visible = inner_h.saturating_sub(2).max(1);
+                    let selected = self.cache_selected.min(total.saturating_sub(1));
+                    let scroll = scroll_offset(selected, visible, total);
+
+                    let data_start = 3 + 2; // inner.y(3) + filter(1) + header(1)
+                    if r >= data_start {
+                        let visual_idx = r - data_start;
+                        if visual_idx < visible {
+                            self.cache_selected = (scroll + visual_idx).min(total - 1);
+                            self.clamp_selection();
+                        }
+                    }
+                } else {
+                    let total = self.filtered_jobs_len();
+                    if total == 0 { return false; }
+
+                    let visible = inner_h.saturating_sub(2).max(1);
+                    let selected = self.job_selected.min(total.saturating_sub(1));
+                    let scroll = scroll_offset(selected, visible, total);
+
+                    let data_start = 3 + 2;
+                    if r >= data_start {
+                        let visual_idx = r - data_start;
+                        if visual_idx < visible {
+                            self.job_selected = (scroll + visual_idx).min(total - 1);
+                            self.clamp_selection();
+                        }
+                    }
+                }
+            }
+            Tab::Pulse => {
+                let w = frame_size.width as usize;
+                let h = frame_size.height as usize;
+
+                // Pulse dot panel: left 65% of content area (y=2), with block border
+                let panel_w = w * 65 / 100;
+                let panel_h = h.saturating_sub(3); // content area height
+                let inner_x = 1;
+                let inner_y = 3; // content y=2 + border=1
+                let inner_w = panel_w.saturating_sub(2);
+
+                let cx = col as usize;
+                let cy = row as usize;
+
+                if cy >= inner_y && cy < inner_y + panel_h.saturating_sub(2)
+                    && cx >= inner_x && cx < inner_x + inner_w
+                {
+                    let grid_col = cx - inner_x;
+                    let grid_row = cy - inner_y;
+                    let cols = self.pulse_grid_cols.max(1);
+                    let idx = grid_row * cols + grid_col;
+                    let count = self.pulse_minions_count();
+                    if idx < count {
+                        self.pulse_selected = idx;
+                    }
+                }
+            }
+            Tab::Dashboard => {}
+        }
+
+        // Double-click detection on list tabs
+        let dbl_click_ms: u128 = 400;
+        if self.current_tab != Tab::Dashboard && self.current_tab != Tab::Pulse {
+            let now = Instant::now();
+            let is_double = self.last_click_at
+                .map(|t| now.duration_since(t).as_millis() < dbl_click_ms && col == self.last_click_col && row == self.last_click_row)
+                .unwrap_or(false);
+            self.last_click_at = Some(now);
+            self.last_click_col = col;
+            self.last_click_row = row;
+            if is_double {
+                self.open_detail();
+            }
+        } else {
+            self.last_click_at = None;
+        }
+
+        false
+    }
+
+    fn handle_admin_confirm_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
+        let area = Self::centered_rect(55, 35, frame_size);
+        let inside = row >= area.top() && row < area.top() + area.height
+            && col >= area.left() && col < area.left() + area.width;
+
+        if inside {
+            let inner_x = col.saturating_sub(area.left() + 1);
+            // "     [ OK ] Enter          [ Cancel ] Esc/q/a"
+            //  [ OK ] at inner_x 5-11
+            if inner_x >= 5 && inner_x <= 11 {
+                self.admin_mode = true;
+            }
+            self.admin_mode_pending = false;
+        } else {
+            self.admin_mode_pending = false;
+        }
+        self.detail_popup = None;
+        false
+    }
+
+    fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+        let pad_v = (100u16.saturating_sub(percent_y)) / 2;
+        let pad_h = (100u16.saturating_sub(percent_x)) / 2;
+        let vertical = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(pad_v),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage(pad_v),
+            ])
+            .split(r);
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(pad_h),
+                Constraint::Percentage(percent_x),
+                Constraint::Percentage(pad_h),
+            ])
+            .split(vertical[1])[1]
+    }
+
+    /// Map a column position on the tab bar (row 1) to a tab.
+    fn tab_at_col(col: u16) -> Tab {
+        match col {
+            0..=12 => Tab::Dashboard,
+            16..=26 => Tab::Minions,
+            30..=39 => Tab::Events,
+            43..=50 => Tab::Jobs,
+            54..=63 => Tab::Alerts,
+            _ => Tab::Pulse,
+        }
     }
 
     fn move_up(&mut self) {
@@ -3177,6 +3428,12 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             });
         }
     }
+}
+
+fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
+    if visible == 0 || total <= visible { return 0; }
+    let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+    scroll.min(total.saturating_sub(visible))
 }
 
 fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
