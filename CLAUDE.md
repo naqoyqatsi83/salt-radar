@@ -1,5 +1,38 @@
 # salt-radar — project conventions
 
+## Deployment target
+
+salt-radar runs directly on a **bare-metal server or full VM** running a SaltStack
+master.  It is NOT deployed inside containers or Kubernetes pods.
+
+- The SaltStack master is installed via **vendor packages** (e.g. `salt-master`
+  from the distro repo, SaltStack's official repo, or EPEL — **never** pip).
+- The Python helper agent uses Salt's own Python (`/opt/saltstack/salt/bin/python3`
+  or the system Python with the distro-packaged `salt` package) and accesses
+  the master's filesystem directly: PKI keys at `/etc/salt/pki/master/minions/`,
+  the job cache at `/var/cache/salt/master/`, `/proc/`, `systemctl`, etc.
+- The Rust TUI and the Python agent run as sibling processes on the same
+  machine (the master), communicating via NDJSON over stdin/stdout.
+- Because the agent has direct filesystem access, there is no need for
+  `kubectl exec` or any Kubernetes-aware fallback strategy.
+
+## Testing on Kubernetes (test environment only)
+
+The development test environment runs the Salt master inside Docker Desktop
+Kubernetes.  This is NOT the deployment target — it's only for development.
+
+- The Rust binary is cross-compiled inside a Docker container (`rust:latest`),
+  then copied to the master pod via `kubectl cp` (or piped through stdin).
+- The Python agent script is also uploaded to the pod separately.
+- **When the salt-master pod is replaced or redeployed, ALL minion pods must
+  also be redeployed** so they re-register with the new master's PKI keys.
+  Salt minions authenticate by the master's key fingerprint; a new pod has a
+  new key, so minions get `authentication failed` until restarted.
+- Build a fully static binary for use inside the pod with
+  `rustup target add x86_64-unknown-linux-musl` then
+  `cargo build --release --target x86_64-unknown-linux-musl` to avoid
+  glibc version mismatches between the build container and the pod.
+
 ## Versioning & tags
 
 - **Format**: `v<major>.<minor>.<patch>` for releases (e.g. `v0.5.0`)
