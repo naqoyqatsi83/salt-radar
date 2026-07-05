@@ -40,7 +40,7 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Events ({}) ", app.events_total))
+        .title(format!(" Events ({}/{}) ", app.events.len(), app.config.event_buffer_size))
         .style(Style::default().bg(color::BG_DARK));
 
     let inner = block.inner(area);

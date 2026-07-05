@@ -5,6 +5,7 @@ mod jobs;
 mod alerts_view;
 mod pulse;
 
+pub mod config_editor;
 pub mod detail_popup;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -110,7 +111,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_key_hints(f, main_layout[3], app);
 
     // Detail popup overlay
-    if app.popup_tab == Some(app.current_tab) { detail_popup::draw_detail_popup(f, app); }
+    if app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))) { detail_popup::draw_detail_popup(f, app); }
 
     // Help overlay
     if app.show_help {
@@ -288,6 +289,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         key::render("?", "Help"),
         key::render("c", "Contrast"),
         if app.mouse_enabled { key::render("F2", "Disable mouse") } else { key::render("F2", "Enable mouse") },
+        key::render("F3", "Config"),
     ];
 
     let tab_keys = match app.current_tab {

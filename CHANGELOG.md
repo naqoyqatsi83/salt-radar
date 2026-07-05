@@ -5,7 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0-rc2] - 2026-07-05
+
+### Added
+- Config editor popup (F3): edit all 12 TOML parameters grouped by section with real-time editing, validation, and save
+- Collapsible timed-out minion section (z key) with expand/collapse indicator on Minions tab
+- Configurable sniffer buffer size via `sniffer_buffer_size` in `salt-radar.toml`
+- Minion list key status column (accepted/pending/rejected/denied) with color coding
+- Full minion grains viewer in detail popup: press `g` in admin mode to fetch and scroll through all grains
+- Minion connection tracking via `alive_check` agent command (passive cache-file check)
+- Admin mode minion ping (`test.ping`) from detail popup with connection result
+- Minion detail popup: key status, connection status, OS, Salt version, CPU architecture, last seen time
+- Agent-based system data collection: key listing, process listing, service discovery, system info, ZMQ connections, minion ping, minion grains commands
+- Agent debug logging to `/tmp/salt-radar-agent-ndjson.log`
+- Deployment target and testing documentation in CLAUDE.md
+- `sniffer_buffer_size` field to config and TOML
+
+### Changed
+- System data collection moved from Rust-side `/proc` collectors to Python agent for reliability
+- Event panel header shows `Events (current/max)` instead of total only
+- Default `event_buffer_size` increased from 5000 to 10000
+- Minion detail popup layout widened to 80% width with split info/grains sections
+- Agent event subscription wrapped in try/except for graceful startup
+- `DetailPopup::Minion` variant refactored to carry ping state, grains data, and scroll position
+- Dashboard key status panel uses max of key list and minion key_status for totals
+- Pulse view filtering uses `key_status` field fallback when key data missing
+
+### Fixed
+- Sniffer buffer now respects configurable `max_size` instead of hardcoded 1000
+- Timed-out minion `key_status` and enriched fields (osfinger, osrelease, salt_version, cpuarch, last_seen) preserved across cache list refreshes
+- Key status shown in minion list even when key data is from minion_info fallback
+- Fleet scan minions get `key_status: Accepted` by default
 
 ## [0.6.0-rc1] - 2026-07-04
 

@@ -186,10 +186,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 // ── Minion Key Status ───────────────────────────────────────────────────────
 
 fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
-    let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted);
-    let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending);
-    let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected);
-    let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied);
+    let accepted = count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted)
+        .max(app.minion_info.iter().filter(|m| m.key_status == Some(crate::types::KeyStatus::Accepted)).count());
+    let pending = count_keys_with_status(&app.keys, crate::types::KeyStatus::Pending)
+        .max(app.minion_info.iter().filter(|m| m.key_status == Some(crate::types::KeyStatus::Pending)).count());
+    let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected)
+        .max(app.minion_info.iter().filter(|m| m.key_status == Some(crate::types::KeyStatus::Rejected)).count());
+    let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied)
+        .max(app.minion_info.iter().filter(|m| m.key_status == Some(crate::types::KeyStatus::Denied)).count());
 
     let block = make_block(" Minion Key Status ".to_string());
     let inner = block.inner(area);

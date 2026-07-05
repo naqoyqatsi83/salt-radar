@@ -266,7 +266,7 @@ fn gather_minions(app: &App) -> Vec<MinionInfo> {
         .map(|k| k.id.as_str())
         .collect();
     let mut minions: Vec<MinionInfo> = app.minion_info.iter()
-        .filter(|m| accepted.contains(m.id.as_str()))
+        .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
         .cloned()
         .collect();
     minions.sort_by(|a, b| a.id.cmp(&b.id));

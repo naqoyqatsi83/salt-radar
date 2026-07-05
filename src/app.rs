@@ -5,7 +5,8 @@ use std::os::unix::fs::MetadataExt;
 use std::process::Stdio;
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -109,6 +110,8 @@ pub struct App {
     pub sparkline_style: SparklineStyle,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
+    /// Set to true when config editor saves — main loop will restart
+    pub needs_restart: bool,
     /// Measured ZMQ/master response latency in milliseconds (from zmq_ping agent command)
     pub zmq_latency_ms: f64,
     /// When the last zmq_ping was sent (for Rust-side round-trip measurement)
@@ -159,6 +162,8 @@ pub struct App {
 
     /// Hide timed-out (non-responsive) minions from list
     pub hide_timed_out: bool,
+    /// Collapse the timed-out minion section header
+    pub timed_out_collapsed: bool,
 
     /// Fleet scan async tracking (JID from cmd_async + event-driven returns)
     pub fleet_scan_jid: Option<String>,
@@ -190,18 +195,57 @@ pub enum AgentMessage {
 }
 
 #[derive(Clone, Debug)]
+pub enum PingState {
+    Idle,
+    Pinging(Instant),
+    Result(bool),
+}
+
+// ─── Config editor ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum ConfigFieldKind {
+    Section,
+    Str,
+    U64,
+    F64,
+    SaveButton,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigField {
+    pub label: &'static str,
+    pub label_value: String,
+    pub kind: ConfigFieldKind,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigEditorState {
+    pub fields: Vec<ConfigField>,
+    pub selected: usize,
+    pub editing: bool,
+    pub input: String,
+    pub save_error: Option<String>,
+}
+
+// ─── Detail popup variants ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
 pub enum DetailPopup {
-    Minion(MinionInfo),
+    Minion(String, PingState, Option<Vec<(String, String)>>, usize),
     SaltEvent(SaltEvent, usize, bool),
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_max: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
     EventSniffer(crate::types::SnifferState),
+    ConfigEditor(ConfigEditorState),
 }
 
 impl App {
     pub fn new() -> Self {
         let config = load_config(&std::path::Path::new("salt-radar.toml"));
+        let config_secs = config.config_secs;
+        let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
         let pid = std::process::id();
 
@@ -242,7 +286,7 @@ impl App {
 
             minion_info: Vec::new(),
 
-            events: VecDeque::with_capacity(5000),
+            events: VecDeque::with_capacity(event_buffer_size),
             events_since_last_tick: Vec::new(),
             events_per_sec: 0.0,
 
@@ -261,6 +305,7 @@ impl App {
             sniffer_dirty: false,
             return_to_sniffer: None,
             hide_timed_out: false,
+            timed_out_collapsed: false,
             mouse_enabled: true,
             needs_mouse_toggle: false,
             last_click_at: None,
@@ -303,7 +348,7 @@ impl App {
 
             agent_rx,
             agent_req_id: 0,
-            config_tick: 0,
+            config_tick: config_secs,
             pending_jid_lookup: None,
             pending_jid_lookup_at: None,
             pending_y_copy: None,
@@ -319,6 +364,7 @@ impl App {
             clipboard_msg: None,
             sparkline_style: SparklineStyle::default(),
             needs_terminal_clear: false,
+            needs_restart: false,
             zmq_latency_ms: 0.0,
             zmq_ping_sent_at: None,
             zmq_latency_history: [0.0; 2000],
@@ -370,7 +416,57 @@ impl App {
                             self.config_snapshot = Some(parse_config_snapshot(&data));
                         }
                         "minion_cache_list" => {
-                            self.minion_info = parse_minion_list(&data);
+                            let mut minions = parse_minion_list(&data);
+                            for minion in &mut minions {
+                                if minion.key_status.is_none() {
+                                    minion.key_status = Some(KeyStatus::Accepted);
+                                }
+                                minion.connected = true;
+                                // Preserve enriched fields from event processing
+                                if let Some(existing) = self.minion_info.iter().find(|m| m.id == minion.id) {
+                                    if !existing.osfinger.is_empty() { minion.osfinger.clone_from(&existing.osfinger); }
+                                    if !existing.osrelease.is_empty() { minion.osrelease.clone_from(&existing.osrelease); }
+                                    if !existing.salt_version.is_empty() { minion.salt_version.clone_from(&existing.salt_version); }
+                                    if !existing.cpuarch.is_empty() { minion.cpuarch.clone_from(&existing.cpuarch); }
+                                    if !existing.os.is_empty() { minion.os.clone_from(&existing.os); }
+                                    if existing.last_seen_epoch > minion.last_seen_epoch { minion.last_seen_epoch = existing.last_seen_epoch; }
+                                    if existing.cache_updated_epoch > minion.cache_updated_epoch { minion.cache_updated_epoch = existing.cache_updated_epoch; }
+                                    // Fleet scan timed_out status is not known to the cache — preserve it
+                                    if existing.timed_out { minion.timed_out = true; }
+                                }
+                            }
+                            // Sort: timed-out last, then by ID
+                            minions.sort_by(|a, b| {
+                                a.timed_out
+                                    .cmp(&b.timed_out)
+                                    .then(a.id.cmp(&b.id))
+                            });
+                            self.minion_info = minions;
+                        }
+                        "list_keys" => {
+                            if ok {
+                                self.keys = serde_json::from_value(data["keys"].clone()).unwrap_or_default();
+                            }
+                        }
+                        "list_processes" => {
+                            if ok {
+                                self.processes = serde_json::from_value(data["processes"].clone()).unwrap_or_default();
+                            }
+                        }
+                        "list_services" => {
+                            if ok {
+                                self.services = serde_json::from_value(data["services"].clone()).unwrap_or_default();
+                            }
+                        }
+                        "get_system_info" => {
+                            if ok {
+                                self.system_info = serde_json::from_value(data.clone()).unwrap_or_default();
+                            }
+                        }
+                        "get_zmq_connections" => {
+                            if ok {
+                                self.zmq_connections = serde_json::from_value(data["connections"].clone()).unwrap_or_default();
+                            }
                         }
                         "zmq_ping" => {
                             if let Some(sent) = self.zmq_ping_sent_at {
@@ -380,6 +476,50 @@ impl App {
                                 self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
                             }
                             self.zmq_ping_sent_at = None;
+                        }
+                        "alive_check" => {
+                            if ok {
+                                let up: Vec<String> = data["up"].as_array()
+                                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                    .unwrap_or_default();
+                                // Mark up minions connected, clear others
+                                for minion in &mut self.minion_info {
+                                    minion.connected = up.contains(&minion.id);
+                                }
+                            }
+                        }
+                        "minion_ping" => {
+                            if let Some(mid) = data["minion_id"].as_str() {
+                                let ping_ok = data["connected"].as_bool().unwrap_or(false);
+                                if let Some(minion) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                    minion.connected = ping_ok;
+                                }
+                                // Update popup state
+                                if let Some(DetailPopup::Minion(ref popup_id, ref mut state, _, _)) = self.detail_popup {
+                                    if popup_id == mid {
+                                        *state = PingState::Result(ping_ok);
+                                    }
+                                }
+                            }
+                        }
+                        "minion_grains" => {
+                            if let Some(mid) = data["minion_id"].as_str() {
+                                let pairs: Vec<(String, String)> = data["grains"].as_array()
+                                    .map(|arr| {
+                                        arr.iter().filter_map(|v| {
+                                            let obj = v.as_object()?;
+                                            let key = obj.get("key")?.as_str()?;
+                                            let val = obj.get("value")?.as_str()?;
+                                            Some((key.to_string(), val.to_string()))
+                                        }).collect()
+                                    })
+                                    .unwrap_or_default();
+                                if let Some(DetailPopup::Minion(ref popup_id, _, ref mut grains, _)) = self.detail_popup {
+                                    if popup_id == mid {
+                                        *grains = Some(pairs);
+                                    }
+                                }
+                            }
                         }
                         "fleet_scan" => {
                             if ok {
@@ -477,6 +617,10 @@ impl App {
                                     if ts_epoch > info.last_seen_epoch {
                                         info.last_seen_epoch = ts_epoch;
                                     }
+                                    info.connected = true;
+                                    if info.key_status.is_none() {
+                                        info.key_status = Some(KeyStatus::Accepted);
+                                    }
                                 }
                                 // Passive harvest: populate minion data from grains.item/items returns
                                 let fun = data["fun"].as_str().unwrap_or("");
@@ -496,10 +640,16 @@ impl App {
                                                 if !salt_version.is_empty() { existing.salt_version = salt_version; }
                                                 if !cpuarch.is_empty() { existing.cpuarch = cpuarch; }
                                                 existing.timed_out = false;
+                                                existing.connected = true;
+                                                if existing.key_status.is_none() {
+                                                    existing.key_status = Some(KeyStatus::Accepted);
+                                                }
                                             } else {
                                                 self.minion_info.push(MinionInfo {
                                                     id: mid.to_string(),
                                                     osfinger, osrelease, os, salt_version, cpuarch,
+                                                    connected: true,
+                                                    key_status: Some(KeyStatus::Accepted),
                                                     ..Default::default()
                                                 });
                                             }
@@ -560,7 +710,7 @@ impl App {
                         if !state.paused {
                             if let Some(evt) = self.events.back() {
                                 if Self::matches_sniffer_event(evt, &state.minion_ids) {
-                                    if state.buffer.len() >= 1000 {
+                                    if state.buffer.len() >= state.max_size {
                                         state.buffer.pop_front();
                                     }
                                     state.buffer.push_back(evt.clone());
@@ -740,7 +890,7 @@ impl App {
             || Self::matches_filter(&alert.description, pat)
     }
 
-    fn matches_minion(minion: &MinionInfo, pat: &str) -> bool {
+    pub fn matches_minion(minion: &MinionInfo, pat: &str) -> bool {
         if pat.is_empty() { return true; }
         Self::matches_filter(&minion.id, pat)
             || Self::matches_filter(&minion.os, pat)
@@ -826,7 +976,7 @@ impl App {
             .map(|k| k.id.as_str())
             .collect();
         self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()))
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
             .count()
     }
 
@@ -837,11 +987,21 @@ impl App {
             .collect();
         let hide = self.hide_timed_out;
         let pat = &self.filter_text;
-        self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()))
-            .filter(|m| !hide || !m.timed_out)
+        let resp_count = self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
             .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
-            .count()
+            .filter(|m| !m.timed_out)
+            .count();
+        let to_count = self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
+            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+            .filter(|m| m.timed_out)
+            .count();
+        if hide || to_count == 0 {
+            resp_count
+        } else {
+            resp_count + 1 + if self.timed_out_collapsed { 0 } else { to_count }
+        }
     }
 
     pub fn get_filtered_minion(&self, index: usize) -> Option<&MinionInfo> {
@@ -851,11 +1011,259 @@ impl App {
             .collect();
         let hide = self.hide_timed_out;
         let pat = &self.filter_text;
-        self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()))
-            .filter(|m| !hide || !m.timed_out)
+
+        let resp_count = self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
             .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
-            .nth(index)
+            .filter(|m| !m.timed_out)
+            .count();
+
+        if index < resp_count {
+            return self.minion_info.iter()
+                .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
+                .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+                .filter(|m| !m.timed_out)
+                .nth(index);
+        }
+
+        if hide { return None; }
+
+        // index == resp_count is the collapsible section header (not a minion)
+        let to_idx = index.wrapping_sub(resp_count).wrapping_sub(1);
+        self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
+            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+            .filter(|m| m.timed_out)
+            .nth(to_idx)
+    }
+
+    fn open_config_editor(&mut self) {
+        // Clone the current config into an editable state
+        let cfg = &self.config;
+        self.detail_popup = Some(DetailPopup::ConfigEditor(ConfigEditorState {
+            fields: vec![
+                ConfigField { label: "[salt]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "python_bin", label_value: cfg.python_bin.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "master_config", label_value: cfg.master_config.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "[refresh]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "dashboard_secs", label_value: cfg.dashboard_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "minions_secs", label_value: cfg.minions_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "config_secs", label_value: cfg.config_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "[events]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "buffer_size", label_value: cfg.event_buffer_size.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "sniffer_buffer_size", label_value: cfg.sniffer_buffer_size.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "[alerts]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "stale_minion_secs", label_value: cfg.stale_minion_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "pending_key_secs", label_value: cfg.pending_key_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "job_straggler_secs", label_value: cfg.job_straggler_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "disk_usage_pct", label_value: cfg.disk_usage_pct.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
+            ],
+            selected: 1, // first editable field (skip section header)
+            editing: false,
+            input: String::new(),
+            save_error: None,
+        }));
+        self.popup_tab = None; // global — works from any tab
+    }
+
+    fn save_config_from_editor(&mut self) -> Result<(), String> {
+        let fields = match self.detail_popup {
+            Some(DetailPopup::ConfigEditor(ref state)) => &state.fields,
+            _ => return Err("No editor state".into()),
+        };
+        // Extract values by label
+        let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for f in fields {
+            match f.kind {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 => {
+                    vals.insert(f.label, f.label_value.as_str());
+                }
+                _ => {}
+            }
+        }
+        // Parse and build new config
+        let parse_u64 = |key| vals.get(key).and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
+        let parse_usize = |key| vals.get(key).and_then(|v| v.parse::<usize>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
+        let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
+
+        let new_config = AppConfig {
+            agent_path: vals.get("agent_path").unwrap_or(&"").to_string(),
+            python_bin: vals.get("python_bin").unwrap_or(&"").to_string(),
+            master_config: vals.get("master_config").unwrap_or(&"").to_string(),
+            dashboard_secs: parse_u64("dashboard_secs")?,
+            minions_secs: parse_u64("minions_secs")?,
+            config_secs: parse_u64("config_secs")?,
+            event_buffer_size: parse_usize("buffer_size")?,
+            sniffer_buffer_size: parse_usize("sniffer_buffer_size")?,
+            stale_minion_secs: parse_u64("stale_minion_secs")?,
+            pending_key_secs: parse_u64("pending_key_secs")?,
+            job_straggler_secs: parse_u64("job_straggler_secs")?,
+            disk_usage_pct: parse_f64("disk_usage_pct")?,
+        };
+
+        crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
+            .map_err(|e| format!("Write failed: {}", e))?;
+        self.config = new_config;
+        Ok(())
+    }
+
+    fn handle_config_editor_key(&mut self, code: KeyCode) -> bool {
+        // --- Editing mode (borrow state) ---
+        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+            if s.editing {
+                match code {
+                    KeyCode::Enter => {
+                        if let Some(field) = s.fields.get_mut(s.selected) {
+                            field.label_value = s.input.clone();
+                        }
+                        s.editing = false;
+                        s.input.clear();
+                    }
+                    KeyCode::Esc => {
+                        s.editing = false;
+                        s.input.clear();
+                    }
+                    KeyCode::Backspace => { s.input.pop(); }
+                    KeyCode::Char(c) => { s.input.push(c); }
+                    _ => {}
+                }
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        // --- Navigation / action mode (borrow state per arm, not function-level) ---
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    let mut new_sel = s.selected;
+                    loop {
+                        if new_sel == 0 { break; }
+                        new_sel = new_sel.saturating_sub(1);
+                        if let Some(f) = s.fields.get(new_sel) {
+                            if !matches!(f.kind, ConfigFieldKind::Section) {
+                                s.selected = new_sel;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    let last = s.fields.len().saturating_sub(1);
+                    let mut new_sel = s.selected;
+                    loop {
+                        if new_sel >= last { break; }
+                        new_sel = new_sel.saturating_add(1);
+                        if let Some(f) = s.fields.get(new_sel) {
+                            if !matches!(f.kind, ConfigFieldKind::Section) {
+                                s.selected = new_sel;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::PageUp => {
+                for _ in 0..5 {
+                    if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                        let mut new_sel = s.selected;
+                        loop {
+                            if new_sel == 0 { break; }
+                            new_sel = new_sel.saturating_sub(1);
+                            if let Some(f) = s.fields.get(new_sel) {
+                                if !matches!(f.kind, ConfigFieldKind::Section) {
+                                    s.selected = new_sel;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::PageDown => {
+                for _ in 0..5 {
+                    if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                        let last = s.fields.len().saturating_sub(1);
+                        let mut new_sel = s.selected;
+                        loop {
+                            if new_sel >= last { break; }
+                            new_sel = new_sel.saturating_add(1);
+                            if let Some(f) = s.fields.get(new_sel) {
+                                if !matches!(f.kind, ConfigFieldKind::Section) {
+                                    s.selected = new_sel;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Home => {
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    s.selected = 1;
+                }
+            }
+            KeyCode::End => {
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    s.selected = s.fields.len().saturating_sub(1);
+                }
+            }
+            KeyCode::Enter => {
+                // Determine action from field at current selection (immutable borrow)
+                let action = match self.detail_popup {
+                    Some(DetailPopup::ConfigEditor(ref s)) => {
+                        match s.fields.get(s.selected).map(|f| &f.kind) {
+                            Some(ConfigFieldKind::SaveButton) => Some("save"),
+                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) => {
+                                Some("edit")
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                match action {
+                    Some("save") => {
+                        match self.save_config_from_editor() {
+                            Ok(()) => {
+                                self.detail_popup = None;
+                                self.clipboard_msg = Some((" Config saved ".into(), std::time::Instant::now()));
+                            }
+                            Err(e) => {
+                                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                                    s.save_error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                    Some("edit") => {
+                        let val = match self.detail_popup {
+                            Some(DetailPopup::ConfigEditor(ref s)) => {
+                                s.fields.get(s.selected).map(|f| f.label_value.clone())
+                            }
+                            _ => None,
+                        };
+                        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                            if let Some(v) = val {
+                                s.input = v;
+                                s.editing = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.detail_popup = None;
+            }
+            _ => {}
+        }
+        false
     }
 
     fn open_detail(&mut self) {
@@ -935,8 +1343,18 @@ impl App {
             }
             Tab::Minions => {
                 if let Some(minion) = self.get_filtered_minion(self.minion_selected) {
-                    self.detail_popup = Some(DetailPopup::Minion(minion.clone()));
+                    let mid = minion.id.clone();
+                    let state = if self.admin_mode {
+                        self.send_agent_cmd("minion_ping", Some(serde_json::json!({"minion_id": &mid})));
+                        PingState::Pinging(Instant::now())
+                    } else {
+                        PingState::Idle
+                    };
+                    self.detail_popup = Some(DetailPopup::Minion(mid, state, None, 0));
                     self.popup_tab = Some(self.current_tab);
+                } else if !self.hide_timed_out {
+                    // Header row selected — toggle collapse
+                    self.timed_out_collapsed = !self.timed_out_collapsed;
                 }
             }
             _ => {}
@@ -1814,6 +2232,9 @@ impl App {
                 existing.salt_version = saltversion.clone();
                 existing.cpuarch = cpuarch.clone();
                 existing.timed_out = false;
+                if existing.key_status.is_none() {
+                    existing.key_status = Some(KeyStatus::Accepted);
+                }
             } else {
                 self.minion_info.push(MinionInfo {
                     id: mid.clone(),
@@ -1821,6 +2242,7 @@ impl App {
                     osrelease: osrelease.clone(),
                     salt_version: saltversion.clone(),
                     cpuarch: cpuarch.clone(),
+                    key_status: Some(KeyStatus::Accepted),
                     ..Default::default()
                 });
             }
@@ -1881,10 +2303,14 @@ impl App {
                         // Mark in minion_info
                         if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id.as_str() == mid) {
                             existing.timed_out = true;
+                            if existing.key_status.is_none() {
+                                existing.key_status = Some(KeyStatus::Accepted);
+                            }
                         } else {
                             self.minion_info.push(MinionInfo {
                                 id: mid.clone(),
                                 timed_out: true,
+                                key_status: Some(KeyStatus::Accepted),
                                 ..Default::default()
                             });
                         }
@@ -1923,13 +2349,14 @@ impl App {
         if let Some(ref cfg) = self.config_snapshot {
             let interval = self.config.dashboard_secs.max(1);
             if self.tick_count % interval == 0 {
-                self.keys = collectors::keys::collect_keys(&cfg.pki_dir);
-                self.processes = collectors::processes::collect_processes();
-                self.services = collectors::services::collect_services();
-                self.system_info = collectors::system::collect_system(&cfg.cachedir, &cfg.pki_dir);
+                self.send_agent_cmd("minion_cache_list", None);
+                self.send_agent_cmd("list_keys", None);
+                self.send_agent_cmd("list_processes", None);
+                self.send_agent_cmd("list_services", None);
+                self.send_agent_cmd("get_system_info", None);
             }
             // Connections are cheap — /proc/net/tcp reads — refresh every tick
-            self.zmq_connections = collectors::connections::collect_connections_with_api(cfg.publish_port, cfg.ret_port, cfg.api_port);
+            self.send_agent_cmd("get_zmq_connections", None);
         }
 
         // Calculate events/sec
@@ -1957,7 +2384,7 @@ impl App {
 
         // Update host uptime from collector
         if let Some(ref cfg) = self.config_snapshot {
-            self.system_info = collectors::system::collect_system(&cfg.cachedir, &cfg.pki_dir);
+            // Handled by agent cmd in interval block
         }
 
         // Compute network transfer rates from cumulative byte counters
@@ -1989,6 +2416,11 @@ impl App {
         // ZMQ latency ping every tick (same cadence as event rate / activity)
         self.zmq_ping_sent_at = Some(Instant::now());
         self.send_agent_cmd("zmq_ping", None);
+
+        // Alive detection every 5 ticks
+        if self.tick_count % 5 == 0 {
+            self.send_agent_cmd("alive_check", None);
+        }
 
         // Alert engine checks
         let recent_events: Vec<SaltEvent> = self.events.iter().rev().take(500).cloned().collect();
@@ -2063,6 +2495,11 @@ impl App {
             return false;
         }
 
+        // Config editor is a global overlay — handle it early regardless of tab
+        if matches!(self.detail_popup, Some(DetailPopup::ConfigEditor(_))) {
+            return self.handle_config_editor_key(code);
+        }
+
         // Sniffer input mode (text entry before launching, only on Events tab)
         if self.sniffer_input_active && self.current_tab == Tab::Events {
             match code {
@@ -2077,10 +2514,12 @@ impl App {
                         .filter(|s| !s.is_empty())
                         .collect();
                     if !ids.is_empty() {
+                        let sniffer_max = self.config.sniffer_buffer_size;
                         self.detail_popup = Some(DetailPopup::EventSniffer(
                             crate::types::SnifferState {
                                 minion_ids: ids.clone(),
-                                buffer: std::collections::VecDeque::with_capacity(1000),
+                                buffer: std::collections::VecDeque::with_capacity(sniffer_max),
+                                max_size: sniffer_max,
                                 paused: false,
                                 selected: 0,
                                 highlight_keywords: ids,
@@ -2128,6 +2567,7 @@ impl App {
                     KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
                     KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
+                    KeyCode::F(3) => { self.open_config_editor(); return false; }
                     _ => {}
                 }
             }
@@ -2135,6 +2575,7 @@ impl App {
 
         // Local variable to defer jid_lookup agent command (avoids borrow conflict)
         let mut trigger_y_lookup: Option<String> = None;
+        let mut trigger_grains_fetch: Option<String> = None;
         if self.popup_tab == Some(self.current_tab) {
             if let Some(ref mut detail) = self.detail_popup {
             match *detail {
@@ -2577,14 +3018,37 @@ impl App {
                         _ => {}
                     }
                 }
-                _ => {
+                DetailPopup::Minion(ref mid, _, ref mut grains, ref mut grains_scroll) => {
                     match code {
                         KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             self.detail_popup = None;
                         }
+                        KeyCode::Char('g') | KeyCode::Char('G') if self.admin_mode => {
+                            trigger_grains_fetch = Some(mid.clone());
+                            *grains = Some(Vec::new());
+                            *grains_scroll = 0;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            *grains_scroll = grains_scroll.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            *grains_scroll += 1;
+                        }
+                        KeyCode::PageUp => {
+                            *grains_scroll = grains_scroll.saturating_sub(10);
+                        }
+                        KeyCode::PageDown => {
+                            *grains_scroll += 10;
+                        }
+                        KeyCode::Home => { *grains_scroll = 0; }
+                        KeyCode::End => { *grains_scroll = usize::MAX / 2; }
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            clipboard_text = Some(mid.clone());
+                        }
                         _ => {}
                     }
                 }
+                DetailPopup::ConfigEditor(_) => {}
             }
         }
         if let Some(text) = clipboard_text {
@@ -2596,6 +3060,9 @@ impl App {
         if let Some(jid) = trigger_y_lookup {
             let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
             self.pending_y_copy = Some((req_id, jid));
+        }
+        if let Some(mid) = trigger_grains_fetch {
+            self.send_agent_cmd("minion_grains", Some(serde_json::json!({"minion_id": mid})));
         }
         if had_popup {
             return false;
@@ -2698,6 +3165,12 @@ impl App {
             KeyCode::Char('x') | KeyCode::Char('X') => {
                 if self.current_tab == Tab::Minions && self.fleet_data.is_some() {
                     self.hide_timed_out = !self.hide_timed_out;
+                    self.clamp_selection();
+                }
+            }
+            KeyCode::Char('z') | KeyCode::Char('Z') => {
+                if self.current_tab == Tab::Minions && !self.hide_timed_out {
+                    self.timed_out_collapsed = !self.timed_out_collapsed;
                     self.clamp_selection();
                 }
             }
@@ -2823,6 +3296,7 @@ impl App {
                 self.mouse_enabled = !self.mouse_enabled;
                 self.needs_mouse_toggle = true;
             }
+            KeyCode::F(3) => self.open_config_editor(),
             _ => {}
         }
         false
@@ -2865,7 +3339,7 @@ impl App {
                 if total == 0 { return false; }
 
                 let overhead = 1 // filter bar
-                    + if self.hide_timed_out { 1 } else { 0 }
+                    + if self.fleet_data.is_some() { 1 } else { 0 }
                     + if self.admin_mode { 1 } else { 0 };
                 let visible = inner_h.saturating_sub(overhead).saturating_sub(2).max(1);
 
