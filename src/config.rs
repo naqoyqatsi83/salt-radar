@@ -9,6 +9,7 @@ pub struct AppConfig {
     pub minions_secs: u64,
     pub config_secs: u64,
     pub event_buffer_size: usize,
+    pub sniffer_buffer_size: usize,
     pub stale_minion_secs: u64,
     pub pending_key_secs: u64,
     pub job_straggler_secs: u64,
@@ -24,7 +25,8 @@ impl Default for AppConfig {
             dashboard_secs: 2,
             minions_secs: 5,
             config_secs: 60,
-            event_buffer_size: 5000,
+            event_buffer_size: 10000,
+            sniffer_buffer_size: 1000,
             stale_minion_secs: 3600,
             pending_key_secs: 3600,
             job_straggler_secs: 120,
@@ -58,6 +60,7 @@ struct RefreshConfig {
 #[derive(serde::Deserialize)]
 struct EventsConfig {
     buffer_size: Option<usize>,
+    sniffer_buffer_size: Option<usize>,
 }
 
 #[derive(serde::Deserialize)]
@@ -66,6 +69,43 @@ struct AlertsConfig {
     pending_key_secs: Option<u64>,
     job_straggler_secs: Option<u64>,
     disk_usage_pct: Option<f64>,
+}
+
+pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
+    let toml = format!(
+        "[salt]\n\
+         agent_path = {:?}\n\
+         python_bin = {:?}\n\
+         master_config = {:?}\n\
+         \n\
+         [refresh]\n\
+         dashboard_secs = {}\n\
+         minions_secs = {}\n\
+         config_secs = {}\n\
+         \n\
+         [events]\n\
+         buffer_size = {}\n\
+         sniffer_buffer_size = {}\n\
+         \n\
+         [alerts]\n\
+         stale_minion_secs = {}\n\
+         pending_key_secs = {}\n\
+         job_straggler_secs = {}\n\
+         disk_usage_pct = {}\n",
+        config.agent_path,
+        config.python_bin,
+        config.master_config,
+        config.dashboard_secs,
+        config.minions_secs,
+        config.config_secs,
+        config.event_buffer_size,
+        config.sniffer_buffer_size,
+        config.stale_minion_secs,
+        config.pending_key_secs,
+        config.job_straggler_secs,
+        config.disk_usage_pct,
+    );
+    std::fs::write(path, toml)
 }
 
 pub fn load_config(path: &Path) -> AppConfig {
@@ -85,6 +125,7 @@ pub fn load_config(path: &Path) -> AppConfig {
             }
             if let Some(e) = toml_cfg.events {
                 if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
+                if let Some(v) = e.sniffer_buffer_size { cfg.sniffer_buffer_size = v; }
             }
             if let Some(a) = toml_cfg.alerts {
                 if let Some(v) = a.stale_minion_secs { cfg.stale_minion_secs = v; }
