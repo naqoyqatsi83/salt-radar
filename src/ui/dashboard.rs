@@ -46,13 +46,14 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     draw_host_row(f, sections[0], app);
 
-    // Services + Minion key status: 50/50 horizontal split
+    // Services + Minion key status + Event breakdown: 33/33/33 horizontal split
     let mid = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Percentage(33), Constraint::Percentage(33), Constraint::Percentage(33)])
         .split(sections[1]);
     draw_proc_row(f, mid[0], app);
     draw_key_status(f, mid[1], app);
+    draw_event_breakdown(f, mid[2], app);
 
     draw_job_pulse(f, sections[2], app);
 
@@ -566,6 +567,47 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+// ── Event Type Breakdown ────────────────────────────────────────────────────
+
+fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
+    let block = make_block(" Event Types ".to_string());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let bd = &app.event_breakdown;
+    let cats = [
+        ("Auth",  bd.auth,  color::YELLOW),
+        ("Job",   bd.job_return, color::CYAN),
+        ("Start", bd.start, color::GREEN),
+        ("Beacon", bd.beacon, color::PURPLE),
+        ("Other", bd.other, color::TEXT_DIM),
+    ];
+    let max_count = cats.iter().map(|(_, c, _)| *c).max().unwrap_or(1).max(1);
+
+    let mut lines: Vec<Line> = vec![];
+    if bd.total > 0 {
+        for (label, count, color) in &cats {
+            let bar_max = inner.width.saturating_sub(14);
+            let bar_len = ((*count as f64 / max_count as f64) * bar_max as f64).round() as usize;
+            let bar = "\u{2588}".repeat(bar_len);
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {:<6}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{:>5} ", count), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(bar, Style::default().fg(*color)),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled(" waiting for events...", Style::default().fg(color::TEXT_DIM)),
+        ]));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        inner,
+    );
+}
+
 // ── Event Rate ───────────────────────────────────────────────────────────────
 
 fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
@@ -614,13 +656,13 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
+    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
+
     let last_seen = if app.secs_since_last_event == u64::MAX {
         "\u{2014}".to_string()
     } else {
         format!("{}s ago", app.secs_since_last_event)
     };
-
-    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
 
     let stats_line = Line::from(vec![
         Span::styled("  Rate: ", Style::default().fg(color::TEXT_LABEL)),

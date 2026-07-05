@@ -204,6 +204,35 @@ pub struct ConfigSnapshot {
     pub hostname: String,
 }
 
+// ─── Event type breakdown ─────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EventBreakdown {
+    pub auth: u64,
+    pub job_return: u64,
+    pub start: u64,
+    pub beacon: u64,
+    pub other: u64,
+    pub total: u64,
+}
+
+impl EventBreakdown {
+    pub fn record(&mut self, tag: &str) {
+        self.total += 1;
+        if tag.starts_with("salt/auth") {
+            self.auth += 1;
+        } else if tag.contains("/ret/") {
+            self.job_return += 1;
+        } else if tag.starts_with("salt/minion/") && tag.contains("/start") {
+            self.start += 1;
+        } else if tag.starts_with("salt/beacon") {
+            self.beacon += 1;
+        } else {
+            self.other += 1;
+        }
+    }
+}
+
 // ─── Event bus event ──────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]

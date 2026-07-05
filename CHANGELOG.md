@@ -5,9 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0-rc2] - 2026-07-05
+## [Unreleased]
 
 ### Added
+- Event type breakdown panel on Dashboard mid section: real-time counts and proportional bars for auth, job return, minion start, beacon, and other events — shown alongside Services and Minion Keys in a 3-column layout
 - Config editor popup (F3): edit all 12 TOML parameters grouped by section with real-time editing, validation, and save
 - Collapsible timed-out minion section (z key) with expand/collapse indicator on Minions tab
 - Configurable sniffer buffer size via `sniffer_buffer_size` in `salt-radar.toml`

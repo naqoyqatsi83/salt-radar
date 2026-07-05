@@ -45,6 +45,7 @@ pub struct App {
     // Events buffer
     pub events: VecDeque<SaltEvent>,
     pub events_since_last_tick: Vec<SaltEvent>,
+    pub event_breakdown: EventBreakdown,
     pub events_per_sec: f64,
 
     // Live jobs
@@ -288,6 +289,7 @@ impl App {
 
             events: VecDeque::with_capacity(event_buffer_size),
             events_since_last_tick: Vec::new(),
+            event_breakdown: EventBreakdown::default(),
             events_per_sec: 0.0,
 
             jobs: Vec::new(),
@@ -602,6 +604,9 @@ impl App {
                     }
                 }
                 AgentMessage::Event { tag, data, ts } => {
+                    // Track event breakdown
+                    self.event_breakdown.record(&tag);
+
                     // ── Normal event processing ─────────────────────────
                     // Track return events for activity matrix
                     if tag.contains("/ret/") {
