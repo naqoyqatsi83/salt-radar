@@ -144,6 +144,7 @@ jobs:
       - name: Create RPM package
         run: |
           VERSION="$VERSION_STRIPPED"
+          RPM_VERSION="${VERSION/-/_}"
           mkdir -p $HOME/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 
           # Extract binary from .deb
@@ -154,7 +155,7 @@ jobs:
           # Write spec file
           {
             printf 'Name: salt-radar\n'
-            printf 'Version: %s\n' "$VERSION"
+            printf 'Version: %s\n' "$RPM_VERSION"
             printf 'Release: 1%%{?dist}\n'
             printf 'Summary: Non-intrusive read-only TUI for monitoring a Salt Master\n'
             printf 'License: MIT\n'
