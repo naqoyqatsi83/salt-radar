@@ -62,8 +62,9 @@ jobs:
       - name: Create .deb package (${{ matrix.arch.deb_arch }})
         run: |
           VERSION="$VERSION_STRIPPED"
+          DPKG_VERSION="${VERSION/-rc/~rc}"
           BINARY="${{ github.workspace }}/target/${{ matrix.arch.rust_target }}/release/salt-radar"
-          PKG_ROOT="${{ runner.temp }}/deb/salt-radar_${VERSION}_${{ matrix.arch.deb_arch }}"
+          PKG_ROOT="${{ runner.temp }}/deb/salt-radar_${DPKG_VERSION}_${{ matrix.arch.deb_arch }}"
 
           mkdir -p "$PKG_ROOT/DEBIAN"
           mkdir -p "$PKG_ROOT/usr/bin"
@@ -77,7 +78,7 @@ jobs:
 
           {
             printf 'Package: salt-radar\n'
-            printf 'Version: %s\n' "$VERSION"
+            printf 'Version: %s\n' "$DPKG_VERSION"
             printf 'Section: admin\n'
             printf 'Priority: optional\n'
             printf 'Architecture: %s\n' "${{ matrix.arch.deb_arch }}"
@@ -91,7 +92,7 @@ jobs:
             printf 'Homepage: https://github.com/naqoyqatsi83/salt-radar\n'
           } > "$PKG_ROOT/DEBIAN/control"
 
-          dpkg-deb --build "$PKG_ROOT" "${{ runner.temp }}/deb/salt-radar_${VERSION}_${{ matrix.arch.deb_arch }}.deb"
+          dpkg-deb --build "$PKG_ROOT" "${{ runner.temp }}/deb/salt-radar_${DPKG_VERSION}_${{ matrix.arch.deb_arch }}.deb"
 
       - name: Create tarball (${{ matrix.arch.target }})
         run: |

@@ -28,7 +28,8 @@ jobs:
       - name: Package .deb
         run: |
           VERSION="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | jq -r '.packages[0].version' 2>/dev/null || echo "0.0.0")"
-          PKG_ROOT="${{ runner.temp }}/deb/salt-radar_${VERSION}_amd64"
+          DPKG_VERSION="${VERSION/-rc/~rc}"
+          PKG_ROOT="${{ runner.temp }}/deb/salt-radar_${DPKG_VERSION}_amd64"
           mkdir -p "$PKG_ROOT/DEBIAN"
           mkdir -p "$PKG_ROOT/usr/bin"
           mkdir -p "$PKG_ROOT/usr/share/salt-radar"
@@ -39,7 +40,7 @@ jobs:
           cp README.md "$PKG_ROOT/usr/share/doc/salt-radar/"
           {
             printf 'Package: salt-radar\n'
-            printf 'Version: %s\n' "$VERSION"
+            printf 'Version: %s\n' "$DPKG_VERSION"
             printf 'Section: admin\n'
             printf 'Priority: optional\n'
             printf 'Architecture: amd64\n'
@@ -52,7 +53,7 @@ jobs:
             printf ' communicate with Salt APIs via NDJSON over stdin/stdout.\n'
             printf 'Homepage: https://github.com/naqoyqatsi83/salt-radar\n'
           } > "$PKG_ROOT/DEBIAN/control"
-          dpkg-deb --build "$PKG_ROOT" "${{ runner.temp }}/deb/salt-radar_${VERSION}_amd64.deb"
+          dpkg-deb --build "$PKG_ROOT" "${{ runner.temp }}/deb/salt-radar_${DPKG_VERSION}_amd64.deb"
 
       - name: Upload binary
         uses: actions/upload-artifact@v5
