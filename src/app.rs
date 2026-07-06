@@ -649,19 +649,6 @@ impl App {
                                                 if existing.key_status.is_none() {
                                                     existing.key_status = Some(KeyStatus::Accepted);
                                                 }
-                                            } else {
-                                                // Only add new minion if it has an accepted key
-                                                let has_accepted_key = self.keys.iter()
-                                                    .any(|k| k.id == mid && k.status == KeyStatus::Accepted);
-                                                if has_accepted_key {
-                                                    self.minion_info.push(MinionInfo {
-                                                        id: mid.to_string(),
-                                                        osfinger, osrelease, os, salt_version, cpuarch,
-                                                        connected: true,
-                                                        key_status: Some(KeyStatus::Accepted),
-                                                        ..Default::default()
-                                                    });
-                                                }
                                             }
                                             // Also populate fleet_data from the merged minion_info
                                             let fm = self.minion_info.iter().find(|m| m.id == mid).map(|info| FleetMinion {
@@ -2244,21 +2231,6 @@ impl App {
                 existing.timed_out = false;
                 if existing.key_status.is_none() {
                     existing.key_status = Some(KeyStatus::Accepted);
-                }
-            } else {
-                // Only add if minion has an accepted key
-                let has_accepted_key = self.keys.iter()
-                    .any(|k| k.id == mid && k.status == KeyStatus::Accepted);
-                if has_accepted_key {
-                    self.minion_info.push(MinionInfo {
-                        id: mid.clone(),
-                        osfinger: osfinger.clone(),
-                        osrelease: osrelease.clone(),
-                        salt_version: saltversion.clone(),
-                        cpuarch: cpuarch.clone(),
-                        key_status: Some(KeyStatus::Accepted),
-                        ..Default::default()
-                    });
                 }
             }
 
