@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Ghost minion entries: event processing now checks accepted keys before adding minions; stale entries purged when keys are refreshed
 - Agent service discovery: rewrite systemd integration to use `systemctl show --property=` instead of column-position parsing; memory, uptime, and substate now correctly populated from MainPID; services filtered to `salt-*` units only
 
 ### Added
