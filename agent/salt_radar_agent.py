@@ -177,26 +177,79 @@ def cmd_list_services(opts, req):
     services = []
     try:
         import subprocess as sp
+        import os
+
+        # Get all salt-* service properties from systemd in one call
         cp = sp.run(
-            ["systemctl", "list-units", "--type=service", "--all", "--no-legend"],
+            ["systemctl", "show", "salt-*.service",
+             "--property=Id,ActiveState,SubState,MainPID,ActiveEnterTimestamp"],
             capture_output=True, text=True, timeout=10
         )
-        for line in cp.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 4:
-                unit = parts[0]
-                active = parts[3] == "active"
-                state = parts[4] if len(parts) > 4 else ""
+
+        if cp.returncode == 0 and cp.stdout.strip():
+            # Each service block is separated by a blank line
+            for block in cp.stdout.strip().split("\n\n"):
+                props = {}
+                for line in block.strip().split("\n"):
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        props[k] = v
+
+                unit = props.get("Id", "")
+                if not unit:
+                    continue
+
+                active_state = props.get("ActiveState", "inactive")
+                sub_state = props.get("SubState", "")
+                main_pid = int(props.get("MainPID", "0"))
+
+                active = active_state == "active"
+
+                state_map = {
+                    "running": "running",
+                    "exited": "exited",
+                    "dead": "dead",
+                    "failed": "failed",
+                    "auto-restart": "restarting",
+                }
+                state = state_map.get(sub_state, sub_state)
+
+                # Memory and uptime from /proc if MainPID is available
+                memory_kb = 0
+                uptime_seconds = 0
+                if main_pid > 0:
+                    try:
+                        with open("/proc/{}/status".format(main_pid), "r") as f:
+                            for line in f:
+                                if line.startswith("VmRSS:"):
+                                    memory_kb = int(line.split()[1])
+                                    break
+                    except Exception:
+                        pass
+                    try:
+                        with open("/proc/{}/stat".format(main_pid), "r") as f:
+                            stat_line = f.read()
+                        start_ticks = int(stat_line.split(")")[1].strip().split()[19])
+                        with open("/proc/uptime", "r") as f:
+                            uptime = float(f.read().split()[0])
+                        clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+                        uptime_seconds = int(uptime - start_ticks / clk_tck)
+                    except Exception:
+                        pass
+
                 services.append({
                     "unit": unit,
                     "active": active,
                     "state": state,
-                    "uptime_seconds": 0,
-                    "active_enter_timestamp": "",
-                    "memory_kb": 0,
+                    "uptime_seconds": uptime_seconds,
+                    "active_enter_timestamp": props.get("ActiveEnterTimestamp", ""),
+                    "memory_kb": memory_kb,
                 })
     except Exception:
-        # systemctl not available (e.g. inside a container) — fallback to /proc scan
+        pass
+
+    # Fallback: /proc scan for salt processes when systemctl unavailable or found nothing
+    if not services:
         import os, time
         now = time.time()
         for entry in os.listdir("/proc"):
@@ -208,18 +261,15 @@ def cmd_list_services(opts, req):
                     raw = f.read().replace("\0", " ").strip()
                 if not raw or "salt" not in raw:
                     continue
-                # Determine unit name from the binary being run
                 parts = raw.split()
                 binary = parts[0].split("/")[-1] if parts else "?"
                 unit = "{}.service".format(binary)
-                # Check status via /proc/pid/stat — process is "active" if alive
                 with open("/proc/{}/stat".format(pid), "r") as f:
                     stat_line = f.read()
                 state_char = stat_line.split(")")[1].strip().split()[0] if ")" in stat_line else "?"
                 active = state_char not in ("Z", "T", "X")
                 state = {"R": "running", "S": "sleeping", "D": "waiting",
                          "Z": "zombie", "T": "stopped", "X": "dead"}.get(state_char, "?")
-                # Memory from /proc/pid/status
                 rss_kb = 0
                 try:
                     with open("/proc/{}/status".format(pid), "r") as f:
@@ -229,7 +279,6 @@ def cmd_list_services(opts, req):
                                 break
                 except Exception:
                     pass
-                # Uptime from /proc/pid/stat clock ticks
                 start_ticks = 0
                 try:
                     start_ticks = int(stat_line.split(")")[1].strip().split()[19])
@@ -244,7 +293,6 @@ def cmd_list_services(opts, req):
                         uptime_seconds = int(uptime - start_ticks / clk_tck)
                     except Exception:
                         pass
-                # Deduplicate by unit name — keep the one with the lowest PID (main process)
                 existing = next((s for s in services if s["unit"] == unit), None)
                 if existing is None:
                     services.append({
@@ -255,7 +303,6 @@ def cmd_list_services(opts, req):
                         "active_enter_timestamp": "",
                         "memory_kb": rss_kb,
                     })
-                # For salt-master workers, add a per-worker entry
                 elif "MWorker" in raw or "ReqServer" in raw:
                     services.append({
                         "unit": unit,
@@ -267,6 +314,7 @@ def cmd_list_services(opts, req):
                     })
             except (IOError, OSError, ValueError, IndexError):
                 continue
+
     result(req["id"], "list_services", data={"services": services})
 
 

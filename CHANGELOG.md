@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Agent service discovery: rewrite systemd integration to use `systemctl show --property=` instead of column-position parsing; memory, uptime, and substate now correctly populated from MainPID; services filtered to `salt-*` units only
+
 ### Added
 - Event type breakdown panel on Dashboard mid section: real-time counts and proportional bars for auth, job return, minion start, beacon, and other events — shown alongside Services and Minion Keys in a 3-column layout
 - Config editor popup (F3): edit all 12 TOML parameters grouped by section with real-time editing, validation, and save
