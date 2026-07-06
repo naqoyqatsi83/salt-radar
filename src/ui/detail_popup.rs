@@ -23,7 +23,8 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
         DetailPopup::SaltEvent(evt, scroll_offset, scroll_mode) => {
             let area = centered_rect(75, 70, f.area());
             f.render_widget(Clear, area);
-            draw_event_detail(f, area, evt, *scroll_offset, *scroll_mode, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+            let highlight = app.return_to_minion_events.as_ref().map(|(id, _)| id.as_str());
+            draw_event_detail(f, area, evt, *scroll_offset, *scroll_mode, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()), highlight);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, job_fun, job_tgt, job_start_epoch, minion_scroll, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
@@ -44,6 +45,9 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             let area = centered_rect(80, 85, f.area());
             f.render_widget(Clear, area);
             draw_event_sniffer(f, area, state, app.clipboard_at, app.high_contrast, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+        }
+        DetailPopup::MinionEvents { minion_id, selected } => {
+            super::minion_events::draw_minion_events(f, f.area(), app, minion_id, *selected);
         }
         DetailPopup::ConfigEditor(_) => {
             super::config_editor::draw_config_editor(f, app);
@@ -275,7 +279,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_mode: bool, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_mode: bool, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
     let mut lines = header_lines(" Event Detail ");
     lines.push(row("Tag", evt.tag.clone(), color::CYAN));
     lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
@@ -295,6 +299,25 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
     };
 
     for line in data_lines.iter().skip(effective_scroll) {
+        if let Some(h) = highlight {
+            if !h.is_empty() && line.contains(h) {
+                let mut spans = Vec::new();
+                let mut remaining = *line;
+                while let Some(pos) = remaining.find(h) {
+                    let before = &remaining[..pos];
+                    if !before.is_empty() {
+                        spans.push(Span::styled(before.to_string(), Style::default().fg(color::TEXT)));
+                    }
+                    spans.push(Span::styled(h.to_string(), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)));
+                    remaining = &remaining[pos + h.len()..];
+                }
+                if !remaining.is_empty() {
+                    spans.push(Span::styled(remaining.to_string(), Style::default().fg(color::TEXT)));
+                }
+                lines.push(Line::from(spans));
+                continue;
+            }
+        }
         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
     }
 

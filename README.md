@@ -154,6 +154,7 @@ disk_usage_pct = 85.0
 | Tab | Key | Action |
 |-----|-----|--------|
 | Events | `n` | Launch event sniffer |
+| Minions | `r` | Minion event/return history popup |
 | Minions | `s` | Fleet scan (admin mode only) |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |

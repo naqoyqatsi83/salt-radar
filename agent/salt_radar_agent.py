@@ -358,6 +358,24 @@ def cmd_get_system_info(opts, req):
             except OSError:
                 pass
 
+        # Network traffic (cumulative bytes since boot)
+        try:
+            rx_total = 0
+            tx_total = 0
+            with open("/proc/net/dev", "r") as f:
+                for line in f.readlines()[2:]:
+                    line = line.strip()
+                    if not line or line.startswith("lo:"):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 10:
+                        rx_total += int(parts[1])
+                        tx_total += int(parts[9])
+            info["network_rx_bytes"] = rx_total
+            info["network_tx_bytes"] = tx_total
+        except Exception:
+            pass
+
     except Exception:
         pass
     result(req["id"], "get_system_info", data=info)

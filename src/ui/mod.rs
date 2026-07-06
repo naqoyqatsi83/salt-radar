@@ -4,6 +4,7 @@ mod events;
 mod jobs;
 mod alerts_view;
 mod pulse;
+mod minion_events;
 
 pub mod config_editor;
 pub mod detail_popup;
@@ -304,6 +305,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         }
         Tab::Minions => {
             let mut keys = vec![key::render("/", "Filter"), key::render("Enter", "Detail")];
+            keys.push(key::render("r", "Events"));
             keys.push(key::render("a", "Admin"));
             if app.fleet_data.is_some() {
                 keys.push(key::render("x", "Hide unresponsive"));
@@ -534,6 +536,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  n", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Event sniffer (Events tab)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  r", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Minion event history (Minions tab)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  s", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),

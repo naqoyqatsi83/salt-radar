@@ -160,6 +160,8 @@ pub struct App {
     pub sniffer_dirty: bool,
     /// When viewing event detail from sniffer, pressing q returns to sniffer popup
     pub return_to_sniffer: Option<SnifferState>,
+    /// When viewing event detail from MinionEvents, pressing q returns to the list
+    pub return_to_minion_events: Option<(String, usize)>,
 
     /// Hide timed-out (non-responsive) minions from list
     pub hide_timed_out: bool,
@@ -229,6 +231,32 @@ pub struct ConfigEditorState {
     pub save_error: Option<String>,
 }
 
+/// A single item in the unified per-minion activity view.
+#[derive(Clone, Debug)]
+pub enum MinionActivityItem {
+    Event(usize, SaltEvent),
+    CacheJob(CacheJobEntry),
+    Alert(AlertEntry),
+}
+
+impl MinionActivityItem {
+    pub fn ts(&self) -> f64 {
+        match self {
+            MinionActivityItem::Event(_, evt) => evt.ts,
+            MinionActivityItem::CacheJob(job) => job.start_epoch,
+            MinionActivityItem::Alert(_) => 0.0,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            MinionActivityItem::Event(_, evt) => &evt.tag,
+            MinionActivityItem::CacheJob(job) => &job.fun,
+            MinionActivityItem::Alert(alert) => &alert.description,
+        }
+    }
+}
+
 // ─── Detail popup variants ──────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -240,6 +268,7 @@ pub enum DetailPopup {
     AdminConfirm,
     EventSniffer(crate::types::SnifferState),
     ConfigEditor(ConfigEditorState),
+    MinionEvents { minion_id: String, selected: usize },
 }
 
 impl App {
@@ -306,6 +335,7 @@ impl App {
             sniffer_input_text: String::new(),
             sniffer_dirty: false,
             return_to_sniffer: None,
+            return_to_minion_events: None,
             hide_timed_out: false,
             timed_out_collapsed: false,
             mouse_enabled: true,
@@ -775,6 +805,7 @@ impl App {
                 if started.elapsed().as_secs() > 65 {
                     self.pending_jid_lookup = None;
                     self.pending_jid_lookup_at = None;
+                    self.return_to_minion_events = None;
                     self.detail_popup = None;
                 }
             }
@@ -919,6 +950,52 @@ impl App {
         let pat = &self.filter_text;
         let known = self.accepted_ids();
         self.events.iter().rev().filter(|e| Self::matches_event(e, pat, &known)).nth(index)
+    }
+
+    /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
+    /// newest first. Matches on data["id"], tag patterns /ret/<id>, salt/minion/<id>/start,
+    /// and salt/beacon/<id>. Returns owned SaltEvents to avoid borrow conflicts.
+    pub fn events_for_minion(&self, minion_id: &str) -> Vec<(usize, SaltEvent)> {
+        self.events
+            .iter()
+            .rev()
+            .enumerate()
+            .filter(|(_idx, evt)| {
+                evt.data["id"].as_str() == Some(minion_id)
+                    || evt.tag.ends_with(&format!("/ret/{}", minion_id))
+                    || evt.tag == format!("salt/minion/{}/start", minion_id)
+                    || evt.tag.starts_with(&format!("salt/beacon/{}", minion_id))
+            })
+            .map(|(idx, evt)| (idx, evt.clone()))
+            .collect()
+    }
+
+    /// Unified activity list for a minion: events + cache jobs + alerts.
+    pub fn minion_activity(&self, minion_id: &str) -> Vec<MinionActivityItem> {
+        let mut items: Vec<MinionActivityItem> = Vec::new();
+
+        // Events from event buffer
+        for (idx, evt) in self.events_for_minion(minion_id) {
+            items.push(MinionActivityItem::Event(idx, evt));
+        }
+
+        // Cache jobs targeting this minion
+        for job in &self.jobs_cache {
+            if job.tgt == "*" || job.tgt == minion_id {
+                items.push(MinionActivityItem::CacheJob(job.clone()));
+            }
+        }
+
+        // Alerts mentioning this minion
+        for alert in &self.alert_engine.alerts {
+            if alert.description.contains(minion_id) || alert.details.iter().any(|d| d.contains(minion_id)) {
+                items.push(MinionActivityItem::Alert(alert.clone()));
+            }
+        }
+
+        // Sort by timestamp descending (alerts with ts=0.0 fall to end)
+        items.sort_by(|a, b| b.ts().partial_cmp(&a.ts()).unwrap_or(std::cmp::Ordering::Equal));
+        items
     }
 
     pub fn filtered_jobs_len(&self) -> usize {
@@ -1266,6 +1343,8 @@ impl App {
     fn open_detail(&mut self) {
         match self.current_tab {
             Tab::Events => {
+                self.return_to_minion_events = None;
+                self.return_to_sniffer = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
                     self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
                     self.popup_tab = Some(self.current_tab);
@@ -2572,6 +2651,14 @@ impl App {
         // Local variable to defer jid_lookup agent command (avoids borrow conflict)
         let mut trigger_y_lookup: Option<String> = None;
         let mut trigger_grains_fetch: Option<String> = None;
+        // Pre-compute events for MinionEvents popup to avoid borrow conflict
+        let mut minion_events_cache: Option<(String, Vec<MinionActivityItem>)> = None;
+        if let Some(DetailPopup::MinionEvents { ref minion_id, .. }) = self.detail_popup {
+            let items = self.minion_activity(minion_id);
+            if self.popup_tab == Some(self.current_tab) {
+                minion_events_cache = Some((minion_id.clone(), items));
+            }
+        }
         if self.popup_tab == Some(self.current_tab) {
             if let Some(ref mut detail) = self.detail_popup {
             match *detail {
@@ -2713,7 +2800,13 @@ impl App {
                     // Left panel (return list) focused
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            self.detail_popup = None;
+                            if let Some((mid, sel)) = self.return_to_minion_events.take() {
+                                self.detail_popup = Some(DetailPopup::MinionEvents {
+                                    minion_id: mid, selected: sel,
+                                });
+                            } else {
+                                self.detail_popup = None;
+                            }
                         }
                         KeyCode::Enter => {
                             if lookup.is_some() {
@@ -2968,6 +3061,11 @@ impl App {
                             if let Some(sniffer) = self.return_to_sniffer.take() {
                                 self.detail_popup = Some(DetailPopup::EventSniffer(sniffer));
                                 self.popup_tab = Some(self.current_tab);
+                            } else if let Some((mid, sel)) = self.return_to_minion_events.take() {
+                                self.detail_popup = Some(DetailPopup::MinionEvents {
+                                    minion_id: mid, selected: sel,
+                                });
+                                self.popup_tab = Some(self.current_tab);
                             } else {
                                 self.detail_popup = None;
                             }
@@ -2993,7 +3091,13 @@ impl App {
                 DetailPopup::Alert(ref alert) => {
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            self.detail_popup = None;
+                            if let Some((mid, sel)) = self.return_to_minion_events.take() {
+                                self.detail_popup = Some(DetailPopup::MinionEvents {
+                                    minion_id: mid, selected: sel,
+                                });
+                            } else {
+                                self.detail_popup = None;
+                            }
                         }
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             let mut text = format!(
@@ -3042,6 +3146,95 @@ impl App {
                             clipboard_text = Some(mid.clone());
                         }
                         _ => {}
+                    }
+                }
+                DetailPopup::MinionEvents { ref minion_id, ref mut selected } => {
+                    let items = minion_events_cache.as_ref()
+                        .filter(|(id, _)| id == minion_id)
+                        .map(|(_, e)| e.clone())
+                        .unwrap_or_default();
+                    let items_len = items.len();
+                    let max_idx = items_len.saturating_sub(1);
+                    let evt_enter = match code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            self.return_to_minion_events = None;
+                            self.detail_popup = None;
+                            None
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            *selected = selected.saturating_sub(1);
+                            None
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            *selected = (*selected + 1).min(max_idx);
+                            None
+                        }
+                        KeyCode::PageUp => {
+                            *selected = selected.saturating_sub(10);
+                            None
+                        }
+                        KeyCode::PageDown => {
+                            *selected = (*selected + 10).min(max_idx);
+                            None
+                        }
+                        KeyCode::Home => { *selected = 0; None }
+                        KeyCode::End => { *selected = max_idx; None }
+                        KeyCode::Enter => {
+                            self.return_to_minion_events = Some((minion_id.clone(), *selected));
+                            items.get(*selected).and_then(|item| match item {
+                                MinionActivityItem::Event(_, evt) => Some(evt.clone()),
+                                MinionActivityItem::CacheJob(job) => {
+                                    let jid = job.jid.clone();
+                                    let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                                    self.pending_jid_lookup = Some((req_id, jid.clone()));
+                                    self.pending_jid_lookup_at = Some(Instant::now());
+                                    self.detail_popup = Some(DetailPopup::JobDetail {
+                                        jid,
+                                        lookup: None,
+                                        selected_return: None,
+                                        job_fun: job.fun.clone(),
+                                        job_tgt: job.tgt.clone(),
+                                        job_start_epoch: job.start_epoch,
+                                        minion_scroll: 0,
+                                        return_filter: String::new(),
+                                        return_is_filtering: false,
+                                        panel_focus: false,
+                                        content_scroll: 0,
+                                        content_scroll_max: 0,
+                                        content_scroll_mode: false,
+                                    });
+                                    self.popup_tab = Some(self.current_tab);
+                                    None
+                                }
+                                MinionActivityItem::Alert(alert) => {
+                                    self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                                    None
+                                }
+                            })
+                        }
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            if let Some(item) = items.get(*selected) {
+                                match item {
+                                    MinionActivityItem::Event(_, evt) => {
+                                        clipboard_text = Some(serde_json::to_string_pretty(&evt.data)
+                                            .unwrap_or_else(|_| evt.tag.clone()));
+                                    }
+                                    MinionActivityItem::CacheJob(job) => {
+                                        clipboard_text = Some(format!("{} {} {} {}",
+                                            job.jid, job.fun, job.tgt, job.start_time));
+                                    }
+                                    MinionActivityItem::Alert(alert) => {
+                                        clipboard_text = Some(format!("[{}] {}: {}",
+                                            alert.severity.label(), alert.rule, alert.description));
+                                    }
+                                }
+                            }
+                            None
+                        }
+                        _ => None,
+                    };
+                    if let Some(evt) = evt_enter {
+                        self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0, false));
                     }
                 }
                 DetailPopup::ConfigEditor(_) => {}
@@ -3177,7 +3370,18 @@ impl App {
                 }
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
-                if self.current_tab == Tab::Jobs && !self.cache_loading {
+                if self.current_tab == Tab::Minions {
+                    if let Some(minion) = self.get_filtered_minion(self.minion_selected) {
+                        self.detail_popup = Some(DetailPopup::MinionEvents {
+                            minion_id: minion.id.clone(),
+                            selected: 0,
+                        });
+                        self.popup_tab = Some(self.current_tab);
+                        if !self.cache_loaded {
+                            self.send_cache_jobs_list(None, false);
+                        }
+                    }
+                } else if self.current_tab == Tab::Jobs && !self.cache_loading {
                     let ft = self.cache_server_filter.clone();
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
@@ -3304,10 +3508,13 @@ impl App {
     pub fn handle_mouse_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
         let h = frame_size.height as usize;
 
-        // Popup showing — only AdminConfirm is handled via left-click
+        // Popup showing — AdminConfirm and MinionEvents handle left-click
         if self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab) {
             if matches!(self.detail_popup, Some(DetailPopup::AdminConfirm)) {
                 return self.handle_admin_confirm_click(col, row, frame_size);
+            }
+            if matches!(self.detail_popup, Some(DetailPopup::MinionEvents { .. })) {
+                return self.handle_minion_events_click(col, row, frame_size);
             }
             // Other popups: ignore left-click (right-click closes from main.rs)
             return false;
@@ -3352,22 +3559,18 @@ impl App {
                     }
                 }
             }
-            Tab::Events | Tab::Alerts => {
-                let total = if self.current_tab == Tab::Events {
-                    self.filtered_events_len()
-                } else {
-                    self.filtered_alerts_len()
-                };
+            Tab::Events => {
+                // Events has 50/50 horizontal split: only left half is the event list
+                let split_col = (frame_size.width / 2) as usize;
+                if (col as usize) >= split_col {
+                    return false;
+                }
+                let total = self.filtered_events_len();
                 if total == 0 { return false; }
 
-                // Events/Alerts: filter(1) + header(1) = 2 lines before data
+                // Events: filter(1) + header(1) = 2 lines before data
                 let visible = inner_h.saturating_sub(2).max(1);
-
-                let selected = if self.current_tab == Tab::Events {
-                    self.event_selected.min(total.saturating_sub(1))
-                } else {
-                    self.alert_selected.min(total.saturating_sub(1))
-                };
+                let selected = self.event_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
                 // Data starts at: inner.y(3) + filter(1) + header(1) = 5
@@ -3375,12 +3578,25 @@ impl App {
                 if r >= data_start {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
-                        let new_idx = (scroll + visual_idx).min(total - 1);
-                        if self.current_tab == Tab::Events {
-                            self.event_selected = new_idx;
-                        } else {
-                            self.alert_selected = new_idx;
-                        }
+                        self.event_selected = (scroll + visual_idx).min(total - 1);
+                        self.clamp_selection();
+                    }
+                }
+            }
+            Tab::Alerts => {
+                let total = self.filtered_alerts_len();
+                if total == 0 { return false; }
+
+                // Alerts: filter(1) + header(1) = 2 lines before data
+                let visible = inner_h.saturating_sub(2).max(1);
+                let selected = self.alert_selected.min(total.saturating_sub(1));
+                let scroll = scroll_offset(selected, visible, total);
+
+                let data_start = 3 + 2;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        self.alert_selected = (scroll + visual_idx).min(total - 1);
                         self.clamp_selection();
                     }
                 }
@@ -3497,6 +3713,102 @@ impl App {
             self.admin_mode_pending = false;
         }
         self.detail_popup = None;
+        false
+    }
+
+    fn handle_minion_events_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
+        let mid = match self.detail_popup {
+            Some(DetailPopup::MinionEvents { ref minion_id, .. }) => minion_id.clone(),
+            _ => return false,
+        };
+
+        let area = Self::centered_rect(85, 80, frame_size);
+        let ix = area.x + 1;
+        let iy = area.y + 1;
+        let iw = area.width.saturating_sub(2);
+        let ih = area.height.saturating_sub(2);
+
+        if col < ix || col >= ix + iw
+            || row < iy || row >= iy + ih.saturating_sub(1)
+        {
+            return false;
+        }
+
+        let para_row = (row - iy) as usize;
+        if para_row < 4 {
+            return false;
+        }
+
+        let items = self.minion_activity(&mid);
+        let total = items.len();
+        if total == 0 { return false; }
+
+        let current_sel = match self.detail_popup {
+            Some(DetailPopup::MinionEvents { selected, .. }) => selected,
+            _ => return false,
+        };
+        let sel = current_sel.min(total.saturating_sub(1));
+
+        let content_h = (ih as usize).saturating_sub(4);
+        let scroll = if sel > content_h / 2 {
+            sel.saturating_sub(content_h / 2).min(total.saturating_sub(1).saturating_sub(content_h / 2).max(0))
+        } else {
+            0
+        };
+
+        let item_idx = scroll + para_row - 4;
+        if item_idx >= total { return false; }
+
+        if let Some(DetailPopup::MinionEvents { ref mut selected, .. }) = self.detail_popup {
+            *selected = item_idx;
+
+            let dbl_click_ms: u128 = 400;
+            let now = Instant::now();
+            let is_double = self.last_click_at
+                .map(|t| now.duration_since(t).as_millis() < dbl_click_ms && col == self.last_click_col && row == self.last_click_row)
+                .unwrap_or(false);
+            self.last_click_at = Some(now);
+            self.last_click_col = col;
+            self.last_click_row = row;
+            if is_double {
+                if let Some(item) = items.get(item_idx) {
+                    match item {
+                        MinionActivityItem::Event(_, evt) => {
+                            self.return_to_minion_events = Some((mid, item_idx));
+                            self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
+                        }
+                        MinionActivityItem::CacheJob(job) => {
+                            self.return_to_minion_events = Some((mid, item_idx));
+                            let jid = job.jid.clone();
+                            let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                            self.pending_jid_lookup = Some((req_id, jid.clone()));
+                            self.pending_jid_lookup_at = Some(Instant::now());
+                            self.detail_popup = Some(DetailPopup::JobDetail {
+                                jid,
+                                lookup: None,
+                                selected_return: None,
+                                job_fun: job.fun.clone(),
+                                job_tgt: job.tgt.clone(),
+                                job_start_epoch: job.start_epoch,
+                                minion_scroll: 0,
+                                return_filter: String::new(),
+                                return_is_filtering: false,
+                                panel_focus: false,
+                                content_scroll: 0,
+                                content_scroll_max: 0,
+                                content_scroll_mode: false,
+                            });
+                            self.popup_tab = Some(self.current_tab);
+                        }
+                        MinionActivityItem::Alert(alert) => {
+                            self.return_to_minion_events = Some((mid, item_idx));
+                            self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
         false
     }
 

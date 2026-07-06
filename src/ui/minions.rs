@@ -47,14 +47,14 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
     } else {
-        lines.push(Line::from(Span::styled("   Press / to filter", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("   // filter  r events", Style::default().fg(color::TEXT_DIM))));
     }
 
     // ── Hide/collapse hints ──────────────────────────────────────────────
     if app.hide_timed_out {
         lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]  x to toggle", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
     } else if app.fleet_data.is_some() {
-        lines.push(Line::from(Span::styled("  x Hide  z Toggle section", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("  x Hide  z Toggle  r Events", Style::default().fg(color::TEXT_DIM))));
     }
 
     // ── Admin status line ─────────────────────────────────────────────────

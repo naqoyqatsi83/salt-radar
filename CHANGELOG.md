@@ -7,11 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- Ghost minion entries: event processing now only enriches existing entries; `minion_cache_list` is the sole source for the minion roster; per-tick purge removes entries without accepted keys
-- Agent service discovery: rewrite systemd integration to use `systemctl show --property=` instead of column-position parsing; memory, uptime, and substate now correctly populated from MainPID; services filtered to `salt-*` units only
+## [0.6.0-rc4] - 2026-07-07
 
 ### Added
+- Per-minion event/return history view on Minions tab: press `r` to open a filtered popup showing all events, returns, starts, beacons, cache jobs, and alerts for the selected minion
 - Event type breakdown panel on Dashboard mid section: real-time counts and proportional bars for auth, job return, minion start, beacon, and other events — shown alongside Services and Minion Keys in a 3-column layout
 - Config editor popup (F3): edit all 12 TOML parameters grouped by section with real-time editing, validation, and save
 - Collapsible timed-out minion section (z key) with expand/collapse indicator on Minions tab
@@ -37,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse view filtering uses `key_status` field fallback when key data missing
 
 ### Fixed
+- Agent system info collector: add `/proc/net/dev` parsing to `cmd_get_system_info` so Dashboard network panel shows actual byte counts and transfer rates
+- MinionEvents popup: auto-load job cache data when popup opens instead of requiring manual Jobs tab visit
+- MinionEvents popup: use distinct cyan color for cache job JID column instead of dim gray that merged with stale entries
 - Sniffer buffer now respects configurable `max_size` instead of hardcoded 1000
 - Timed-out minion `key_status` and enriched fields (osfinger, osrelease, salt_version, cpuarch, last_seen) preserved across cache list refreshes
 - Key status shown in minion list even when key data is from minion_info fallback

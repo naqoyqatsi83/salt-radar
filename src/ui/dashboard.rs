@@ -49,7 +49,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // Services + Minion key status + Event breakdown: 33/33/33 horizontal split
     let mid = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(33), Constraint::Percentage(33), Constraint::Percentage(33)])
+        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
         .split(sections[1]);
     draw_proc_row(f, mid[0], app);
     draw_key_status(f, mid[1], app);

@@ -117,12 +117,17 @@ fn main() -> io::Result<()> {
                             need_redraw = true;
                         }
                         MouseEventKind::Down(MouseButton::Right) => {
-                            if app.detail_popup.is_some() && app.popup_tab == Some(app.current_tab) {
-                                if !matches!(app.detail_popup, Some(crate::app::DetailPopup::AdminConfirm)) {
-                                    app.detail_popup = None;
-                                    need_redraw = true;
-                                }
+                            app.detail_popup = None;
+                            if let Some((mid, sel)) = app.return_to_minion_events.take() {
+                                app.detail_popup = Some(crate::app::DetailPopup::MinionEvents {
+                                    minion_id: mid, selected: sel,
+                                });
+                                app.popup_tab = Some(app.current_tab);
+                            } else if let Some(sniffer) = app.return_to_sniffer.take() {
+                                app.detail_popup = Some(crate::app::DetailPopup::EventSniffer(sniffer));
+                                app.popup_tab = Some(app.current_tab);
                             }
+                            need_redraw = true;
                         }
                         _ => {}
                     }
