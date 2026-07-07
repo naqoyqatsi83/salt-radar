@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse view filtering uses `key_status` field fallback when key data missing
 
 ### Fixed
+- Ghost minions: `cmd_minion_cache_list` now uses `salt-key -L` as the sole source for the minion roster; cache entries (which can contain stale/removed minions) only enrich existing entries
 - Agent system info collector: add `/proc/net/dev` parsing to `cmd_get_system_info` so Dashboard network panel shows actual byte counts and transfer rates
 - MinionEvents popup: auto-load job cache data when popup opens instead of requiring manual Jobs tab visit
 - MinionEvents popup: use distinct cyan color for cache job JID column instead of dim gray that merged with stale entries

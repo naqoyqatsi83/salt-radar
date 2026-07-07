@@ -544,9 +544,6 @@ def cmd_minion_cache_list(opts, req):
                         if e["id"] == mid:
                             e.update(entry)
                             break
-                else:
-                    minions.append(entry)
-                    seen.add(mid)
     except Exception:
         pass
 
