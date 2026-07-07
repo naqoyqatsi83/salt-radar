@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent system info collector: add `/proc/net/dev` parsing to `cmd_get_system_info` so Dashboard network panel shows actual byte counts and transfer rates
 - MinionEvents popup: auto-load job cache data when popup opens instead of requiring manual Jobs tab visit
 - MinionEvents popup: use distinct cyan color for cache job JID column instead of dim gray that merged with stale entries
+- MinionEvents popup: apply uniform TEXT_DIM to all columns (not just time) when event is older than 5 minutes
+- MinionEvents popup: fix minion connected/disconnected flapping in header by removing `connected = true` from event processing, making alive_check the sole source
 - Sniffer buffer now respects configurable `max_size` instead of hardcoded 1000
 - Timed-out minion `key_status` and enriched fields (osfinger, osrelease, salt_version, cpuarch, last_seen) preserved across cache list refreshes
 - Key status shown in minion list even when key data is from minion_info fallback

@@ -652,7 +652,6 @@ impl App {
                                     if ts_epoch > info.last_seen_epoch {
                                         info.last_seen_epoch = ts_epoch;
                                     }
-                                    info.connected = true;
                                     if info.key_status.is_none() {
                                         info.key_status = Some(KeyStatus::Accepted);
                                     }
@@ -675,7 +674,6 @@ impl App {
                                                 if !salt_version.is_empty() { existing.salt_version = salt_version; }
                                                 if !cpuarch.is_empty() { existing.cpuarch = cpuarch; }
                                                 existing.timed_out = false;
-                                                existing.connected = true;
                                                 if existing.key_status.is_none() {
                                                     existing.key_status = Some(KeyStatus::Accepted);
                                                 }

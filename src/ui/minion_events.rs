@@ -127,7 +127,6 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
             match item {
                 MinionActivityItem::Event(_, evt) => {
                     let is_stale = now - evt.ts > stale_threshold;
-                    let base_fg = if is_stale { color::TEXT_DIM } else { color::TEXT };
                     let local_t = format_time_local(evt.ts);
                     let (etype, ecolor, extra) = classify_tag(&evt.tag, &evt.data);
 
@@ -146,13 +145,13 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
 
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {:<tw$}", local_t, tw = time_w),
-                            Style::default().fg(base_fg)),
+                            Style::default().fg(if is_stale { color::TEXT_DIM } else { color::TEXT })),
                         Span::styled(format!("  {:<tyw$}", etype, tyw = type_w),
-                            Style::default().fg(ecolor).add_modifier(Modifier::BOLD)),
+                            Style::default().fg(if is_stale { color::TEXT_DIM } else { ecolor }).add_modifier(Modifier::BOLD)),
                         Span::styled(format!("  {:<jw$}", extra_disp, jw = jid_w),
-                            Style::default().fg(if etype == "return" { color::YELLOW } else { base_fg })),
+                            Style::default().fg(if is_stale { color::TEXT_DIM } else if etype == "return" { color::YELLOW } else { color::TEXT })),
                         Span::styled(format!("  {:<tag_w$}", tag_disp, tag_w = tag_w),
-                            Style::default().fg(color::CYAN)),
+                            Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN })),
                     ]).style(sel_style));
                 }
                 MinionActivityItem::CacheJob(job) => {
