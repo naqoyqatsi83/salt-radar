@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- MinionEvents popup: filter items by keyword with `/` key (matches tag, JID, function, description)
+- `minion_start` event tag recognized by both EventBreakdown and MinionEvents popup (was falling into "other" bucket)
+
+### Fixed
+- MinionEvents popup: selection highlight now stops at content width instead of filling full popup width
+- MinionEvents popup: selection highlight width limited to text content using per-span background styling
+
 ## [0.6.0-rc4] - 2026-07-07
 
 ### Added

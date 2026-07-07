@@ -223,7 +223,7 @@ impl EventBreakdown {
             self.auth += 1;
         } else if tag.contains("/ret/") {
             self.job_return += 1;
-        } else if tag.starts_with("salt/minion/") && tag.contains("/start") {
+        } else if (tag.starts_with("salt/minion/") && tag.contains("/start")) || tag.contains("minion_start") {
             self.start += 1;
         } else if tag.starts_with("salt/beacon") {
             self.beacon += 1;

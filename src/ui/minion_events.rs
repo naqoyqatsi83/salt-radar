@@ -28,7 +28,7 @@ fn classify_tag(tag: &str, data: &serde_json::Value) -> (&'static str, Color, Op
         let fun = data["fun"].as_str().unwrap_or("return");
         return ("return", color::GREEN, Some(format!("{}/{}", fun, jid.unwrap_or_default())));
     }
-    if tag.contains("/start") {
+    if tag.contains("/start") || tag.contains("minion_start") {
         return ("start", color::CYAN, None);
     }
     if tag.starts_with("salt/beacon/") {
@@ -118,10 +118,9 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         for idx in 0..total {
             let item = &items[idx];
             let is_sel = idx == sel;
-            let sel_style = if is_sel {
-                color::select_bg(app.high_contrast)
-            } else {
-                Style::default().bg(color::BG_POPUP)
+            let sel_bg = if is_sel { color::select_bg(app.high_contrast).bg } else { None };
+            let span_style = |s: Style| -> Style {
+                match sel_bg { Some(bg) => s.bg(bg), None => s }
             };
 
             match item {
@@ -145,14 +144,14 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
 
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {:<tw$}", local_t, tw = time_w),
-                            Style::default().fg(if is_stale { color::TEXT_DIM } else { color::TEXT })),
+                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::TEXT }))),
                         Span::styled(format!("  {:<tyw$}", etype, tyw = type_w),
-                            Style::default().fg(if is_stale { color::TEXT_DIM } else { ecolor }).add_modifier(Modifier::BOLD)),
+                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { ecolor }).add_modifier(Modifier::BOLD))),
                         Span::styled(format!("  {:<jw$}", extra_disp, jw = jid_w),
-                            Style::default().fg(if is_stale { color::TEXT_DIM } else if etype == "return" { color::YELLOW } else { color::TEXT })),
+                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else if etype == "return" { color::YELLOW } else { color::TEXT }))),
                         Span::styled(format!("  {:<tag_w$}", tag_disp, tag_w = tag_w),
-                            Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN })),
-                    ]).style(sel_style));
+                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN }))),
+                    ]));
                 }
                 MinionActivityItem::CacheJob(job) => {
                     let is_stale = now - job.start_epoch > stale_threshold;
@@ -166,14 +165,14 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
 
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {:<tw$}", local_t, tw = time_w),
-                            Style::default().fg(base_fg)),
+                            span_style(Style::default().fg(base_fg))),
                         Span::styled(format!("  {:<tyw$}", "job_cache", tyw = type_w),
-                            Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN }).add_modifier(Modifier::BOLD)),
+                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN }).add_modifier(Modifier::BOLD))),
                         Span::styled(format!("  {:<jw$}", job.fun, jw = jid_w),
-                            Style::default().fg(if is_stale { color::TEXT_DIM } else { color::YELLOW })),
+                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::YELLOW }))),
                         Span::styled(format!("  {:<tag_w$}", jid_disp, tag_w = tag_w),
-                            Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN })),
-                    ]).style(sel_style));
+                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN }))),
+                    ]));
                 }
                 MinionActivityItem::Alert(alert) => {
                     let acolor = alert_color(alert.severity);
@@ -185,14 +184,14 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
 
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {:<tw$}", "  --", tw = time_w),
-                            Style::default().fg(color::TEXT_DIM)),
+                            span_style(Style::default().fg(color::TEXT_DIM))),
                         Span::styled(format!("  {:<tyw$}", "alert", tyw = type_w),
-                            Style::default().fg(acolor).add_modifier(Modifier::BOLD)),
+                            span_style(Style::default().fg(acolor).add_modifier(Modifier::BOLD))),
                         Span::styled(format!("  {:<jw$}", alert.severity.label(), jw = jid_w),
-                            Style::default().fg(acolor)),
+                            span_style(Style::default().fg(acolor))),
                         Span::styled(format!("  {:<tag_w$}", desc_disp, tag_w = tag_w),
-                            Style::default().fg(color::TEXT)),
-                    ]).style(sel_style));
+                            span_style(Style::default().fg(color::TEXT))),
+                    ]));
                 }
             }
         }
@@ -213,10 +212,17 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
     };
 
     // Footer
-    let footer = Line::from(Span::styled(
-        "  [ Esc/q close | \u{2191}\u{2193} navigate | Enter=detail | y=copy ]",
-        Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-    ));
+    let footer = if app.minion_events_is_filtering {
+        Line::from(Span::styled(
+            format!("  /{}_ [Esc=cancel Enter=apply]", app.minion_events_filter),
+            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        Line::from(Span::styled(
+            "  [ Esc/q close | \u{2191}\u{2193} navigate | Enter=detail | /=filter | y=copy ]",
+            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
+        ))
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

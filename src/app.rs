@@ -162,6 +162,9 @@ pub struct App {
     pub return_to_sniffer: Option<SnifferState>,
     /// When viewing event detail from MinionEvents, pressing q returns to the list
     pub return_to_minion_events: Option<(String, usize)>,
+    /// Filter state for MinionEvents popup
+    pub minion_events_filter: String,
+    pub minion_events_is_filtering: bool,
 
     /// Hide timed-out (non-responsive) minions from list
     pub hide_timed_out: bool,
@@ -336,6 +339,8 @@ impl App {
             sniffer_dirty: false,
             return_to_sniffer: None,
             return_to_minion_events: None,
+            minion_events_filter: String::new(),
+            minion_events_is_filtering: false,
             hide_timed_out: false,
             timed_out_collapsed: false,
             mouse_enabled: true,
@@ -2652,7 +2657,12 @@ impl App {
         // Pre-compute events for MinionEvents popup to avoid borrow conflict
         let mut minion_events_cache: Option<(String, Vec<MinionActivityItem>)> = None;
         if let Some(DetailPopup::MinionEvents { ref minion_id, .. }) = self.detail_popup {
-            let items = self.minion_activity(minion_id);
+            let mut items = self.minion_activity(minion_id);
+            // Apply filter if set
+            if !self.minion_events_filter.is_empty() {
+                let pat = self.minion_events_filter.to_lowercase();
+                items.retain(|item| matches_filter(item, &pat));
+            }
             if self.popup_tab == Some(self.current_tab) {
                 minion_events_cache = Some((minion_id.clone(), items));
             }
@@ -3153,86 +3163,114 @@ impl App {
                         .unwrap_or_default();
                     let items_len = items.len();
                     let max_idx = items_len.saturating_sub(1);
-                    let evt_enter = match code {
-                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            self.return_to_minion_events = None;
-                            self.detail_popup = None;
-                            None
+
+                    if self.minion_events_is_filtering {
+                        match code {
+                            KeyCode::Esc => {
+                                self.minion_events_is_filtering = false;
+                                self.minion_events_filter.clear();
+                            }
+                            KeyCode::Enter => {
+                                self.minion_events_is_filtering = false;
+                                *selected = 0;
+                            }
+                            KeyCode::Backspace => {
+                                self.minion_events_filter.pop();
+                            }
+                            KeyCode::Char(c) if !c.is_control() => {
+                                self.minion_events_filter.push(c);
+                            }
+                            _ => {}
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            *selected = selected.saturating_sub(1);
-                            None
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            *selected = (*selected + 1).min(max_idx);
-                            None
-                        }
-                        KeyCode::PageUp => {
-                            *selected = selected.saturating_sub(10);
-                            None
-                        }
-                        KeyCode::PageDown => {
-                            *selected = (*selected + 10).min(max_idx);
-                            None
-                        }
-                        KeyCode::Home => { *selected = 0; None }
-                        KeyCode::End => { *selected = max_idx; None }
-                        KeyCode::Enter => {
-                            self.return_to_minion_events = Some((minion_id.clone(), *selected));
-                            items.get(*selected).and_then(|item| match item {
-                                MinionActivityItem::Event(_, evt) => Some(evt.clone()),
-                                MinionActivityItem::CacheJob(job) => {
-                                    let jid = job.jid.clone();
-                                    let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
-                                    self.pending_jid_lookup = Some((req_id, jid.clone()));
-                                    self.pending_jid_lookup_at = Some(Instant::now());
-                                    self.detail_popup = Some(DetailPopup::JobDetail {
-                                        jid,
-                                        lookup: None,
-                                        selected_return: None,
-                                        job_fun: job.fun.clone(),
-                                        job_tgt: job.tgt.clone(),
-                                        job_start_epoch: job.start_epoch,
-                                        minion_scroll: 0,
-                                        return_filter: String::new(),
-                                        return_is_filtering: false,
-                                        panel_focus: false,
-                                        content_scroll: 0,
-                                        content_scroll_max: 0,
-                                        content_scroll_mode: false,
-                                    });
-                                    self.popup_tab = Some(self.current_tab);
-                                    None
-                                }
-                                MinionActivityItem::Alert(alert) => {
-                                    self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
-                                    None
-                                }
-                            })
-                        }
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            if let Some(item) = items.get(*selected) {
-                                match item {
-                                    MinionActivityItem::Event(_, evt) => {
-                                        clipboard_text = Some(serde_json::to_string_pretty(&evt.data)
-                                            .unwrap_or_else(|_| evt.tag.clone()));
-                                    }
+                    } else {
+                        let evt_enter = match code {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                self.return_to_minion_events = None;
+                                self.minion_events_is_filtering = false;
+                                self.minion_events_filter.clear();
+                                self.detail_popup = None;
+                                None
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                *selected = selected.saturating_sub(1);
+                                None
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                *selected = (*selected + 1).min(max_idx);
+                                None
+                            }
+                            KeyCode::PageUp => {
+                                *selected = selected.saturating_sub(10);
+                                None
+                            }
+                            KeyCode::PageDown => {
+                                *selected = (*selected + 10).min(max_idx);
+                                None
+                            }
+                            KeyCode::Home => { *selected = 0; None }
+                            KeyCode::End => { *selected = max_idx; None }
+                            KeyCode::Char('/') => {
+                                self.minion_events_is_filtering = true;
+                                self.minion_events_filter.clear();
+                                None
+                            }
+                            KeyCode::Enter => {
+                                self.return_to_minion_events = Some((minion_id.clone(), *selected));
+                                items.get(*selected).and_then(|item| match item {
+                                    MinionActivityItem::Event(_, evt) => Some(evt.clone()),
                                     MinionActivityItem::CacheJob(job) => {
-                                        clipboard_text = Some(format!("{} {} {} {}",
-                                            job.jid, job.fun, job.tgt, job.start_time));
+                                        let jid = job.jid.clone();
+                                        let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                                        self.pending_jid_lookup = Some((req_id, jid.clone()));
+                                        self.pending_jid_lookup_at = Some(Instant::now());
+                                        self.detail_popup = Some(DetailPopup::JobDetail {
+                                            jid,
+                                            lookup: None,
+                                            selected_return: None,
+                                            job_fun: job.fun.clone(),
+                                            job_tgt: job.tgt.clone(),
+                                            job_start_epoch: job.start_epoch,
+                                            minion_scroll: 0,
+                                            return_filter: String::new(),
+                                            return_is_filtering: false,
+                                            panel_focus: false,
+                                            content_scroll: 0,
+                                            content_scroll_max: 0,
+                                            content_scroll_mode: false,
+                                        });
+                                        self.popup_tab = Some(self.current_tab);
+                                        None
                                     }
                                     MinionActivityItem::Alert(alert) => {
-                                        clipboard_text = Some(format!("[{}] {}: {}",
-                                            alert.severity.label(), alert.rule, alert.description));
+                                        self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                                        None
+                                    }
+                                })
+                            }
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                if let Some(item) = items.get(*selected) {
+                                    match item {
+                                        MinionActivityItem::Event(_, evt) => {
+                                            clipboard_text = Some(serde_json::to_string_pretty(&evt.data)
+                                                .unwrap_or_else(|_| evt.tag.clone()));
+                                        }
+                                        MinionActivityItem::CacheJob(job) => {
+                                            clipboard_text = Some(format!("{} {} {} {}",
+                                                job.jid, job.fun, job.tgt, job.start_time));
+                                        }
+                                        MinionActivityItem::Alert(alert) => {
+                                            clipboard_text = Some(format!("[{}] {}: {}",
+                                                alert.severity.label(), alert.rule, alert.description));
+                                        }
                                     }
                                 }
+                                None
                             }
-                            None
+                            _ => None,
+                        };
+                        if let Some(evt) = evt_enter {
+                            self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0, false));
                         }
-                        _ => None,
-                    };
-                    if let Some(evt) = evt_enter {
-                        self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0, false));
                     }
                 }
                 DetailPopup::ConfigEditor(_) => {}
@@ -4232,4 +4270,22 @@ fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
     }
     result.sort_by(|a, b| a.id.cmp(&b.id));
     result
+}
+
+/// Check if a MinionActivityItem matches a lowercase filter pattern.
+fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
+    match item {
+        MinionActivityItem::Event(_, evt) => {
+            evt.tag.to_lowercase().contains(pat)
+                || evt.data.to_string().to_lowercase().contains(pat)
+        }
+        MinionActivityItem::CacheJob(job) => {
+            job.jid.to_lowercase().contains(pat)
+                || job.fun.to_lowercase().contains(pat)
+        }
+        MinionActivityItem::Alert(alert) => {
+            alert.description.to_lowercase().contains(pat)
+                || alert.key.to_lowercase().contains(pat)
+        }
+    }
 }
