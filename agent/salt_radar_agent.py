@@ -48,12 +48,6 @@ def ndjson(obj):
     fd = _OUTPUT_FD if _OUTPUT_FD is not None else 1
     data = json.dumps(obj, default=str) + "\n"
     os.write(fd, data.encode())
-    # Debug logging
-    try:
-        with open("/tmp/salt-radar-agent-ndjson.log", "a") as _f:
-            _f.write(data)
-    except Exception:
-        pass
 
 
 def result(id_val, cmd, ok=True, data=None):
@@ -982,13 +976,6 @@ def _run_handler(handler, opts, req):
             req.get("id", 0), cmd, ok=False,
             data={"error": "{}: {}".format(cmd, str(exc))},
         )
-        # Log exception to debug file
-        try:
-            with open("/tmp/salt-radar-agent-ndjson.log", "a") as _f:
-                _f.write("!!! EXCEPTION in {}: {}\n".format(cmd, str(exc)))
-                traceback.print_exc(file=_f)
-        except Exception:
-            pass
         traceback.print_exc(file=sys.stderr)
 
 
@@ -1007,13 +994,6 @@ def main():
     # Save a reference to the real stdout fd so ndjson() / event thread
     # are immune to fd-1 redirects (used by fleet scan).
     _init_output()
-
-    # Debug: clear log on startup
-    try:
-        with open("/tmp/salt-radar-agent-ndjson.log", "w") as _f:
-            _f.write("=== agent started ===\n")
-    except Exception:
-        pass
 
     # Load opts once at startup
     salt = _import_salt()
@@ -1035,12 +1015,6 @@ def main():
         except json.JSONDecodeError as exc:
             error(None, "parse error: {}".format(str(exc)))
             continue
-        # Debug log incoming command
-        try:
-            with open("/tmp/salt-radar-agent-ndjson.log", "a") as _f:
-                _f.write(">>> CMD: {}\n".format(req.get("cmd", "?")))
-        except Exception:
-            pass
         dispatch(opts, req)
 
 

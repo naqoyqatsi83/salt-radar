@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MinionEvents popup: selection highlight width limited to text content using per-span background styling
 - `last_zmq_return` no longer grows unbounded on minion churn — stale entries are pruned on each roster refresh
 - Roster reconciliation on `minion_cache_list` refresh and per-event grains harvest now uses an ID-indexed lookup instead of an O(n) scan per minion/event
+- Minion roster is only re-sorted when a change actually affects ordering, instead of every tick
+- Remove unbounded debug logging to `/tmp/salt-radar-agent-ndjson.log` in the agent (was leftover dev instrumentation with no rotation/cap)
 
 ## [0.6.0-rc4] - 2026-07-07
 

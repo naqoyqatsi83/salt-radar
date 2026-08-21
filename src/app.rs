@@ -41,6 +41,9 @@ pub struct App {
 
     // Minion cache (from agent)
     pub minion_info: Vec<MinionInfo>,
+    // Set whenever minion_info is mutated; the per-tick sort in update()
+    // only runs when this is set, then clears it.
+    minion_info_dirty: bool,
 
     // Events buffer
     pub events: VecDeque<SaltEvent>,
@@ -318,6 +321,7 @@ impl App {
             system_info: SystemInfo::default(),
 
             minion_info: Vec::new(),
+            minion_info_dirty: false,
 
             events: VecDeque::with_capacity(event_buffer_size),
             events_since_last_tick: Vec::new(),
@@ -699,7 +703,10 @@ impl App {
                                                 if !os.is_empty() { existing.os = os; }
                                                 if !salt_version.is_empty() { existing.salt_version = salt_version; }
                                                 if !cpuarch.is_empty() { existing.cpuarch = cpuarch; }
-                                                existing.timed_out = false;
+                                                if existing.timed_out {
+                                                    existing.timed_out = false;
+                                                    self.minion_info_dirty = true;
+                                                }
                                                 if existing.key_status.is_none() {
                                                     existing.key_status = Some(KeyStatus::Accepted);
                                                 }
@@ -2333,7 +2340,10 @@ impl App {
                 existing.osrelease = osrelease.clone();
                 existing.salt_version = saltversion.clone();
                 existing.cpuarch = cpuarch.clone();
-                existing.timed_out = false;
+                if existing.timed_out {
+                    existing.timed_out = false;
+                    self.minion_info_dirty = true;
+                }
                 if existing.key_status.is_none() {
                     existing.key_status = Some(KeyStatus::Accepted);
                 }
@@ -2394,7 +2404,10 @@ impl App {
                         }
                         // Mark in minion_info
                         if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id.as_str() == mid) {
-                            existing.timed_out = true;
+                            if !existing.timed_out {
+                                existing.timed_out = true;
+                                self.minion_info_dirty = true;
+                            }
                             if existing.key_status.is_none() {
                                 existing.key_status = Some(KeyStatus::Accepted);
                             }
@@ -2405,6 +2418,7 @@ impl App {
                                 key_status: Some(KeyStatus::Accepted),
                                 ..Default::default()
                             });
+                            self.minion_info_dirty = true;
                         }
                         // Mark in fleet_data
                         if let Some(ref mut fd) = self.fleet_data {
@@ -2430,12 +2444,16 @@ impl App {
             }
         }
 
-        // Sort minions: alive first, timed-out last, each group alphabetically by ID
-        self.minion_info.sort_by(|a, b| {
-            a.timed_out
-                .cmp(&b.timed_out)
-                .then(a.id.cmp(&b.id))
-        });
+        // Sort minions: alive first, timed-out last, each group alphabetically by ID.
+        // Only when something actually changed the roster this tick.
+        if self.minion_info_dirty {
+            self.minion_info.sort_by(|a, b| {
+                a.timed_out
+                    .cmp(&b.timed_out)
+                    .then(a.id.cmp(&b.id))
+            });
+            self.minion_info_dirty = false;
+        }
 
         // Refresh collectors at interval, not every tick
         if let Some(ref cfg) = self.config_snapshot {
