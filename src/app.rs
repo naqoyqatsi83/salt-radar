@@ -437,6 +437,14 @@ impl App {
         let mut y_copy_json: Option<String> = None;
         let mut processed = 0;
         const MAX_PER_DRAIN: usize = 200;
+        // Index by minion ID to avoid an O(n) Vec scan per minion/event in
+        // this batch. Rebuilt whenever minion_info is structurally replaced
+        // (see the "minion_cache_list" arm below).
+        let mut minion_index: HashMap<String, usize> = self.minion_info
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.id.clone(), i))
+            .collect();
         while let Some(msg) = q.pop_front() {
             processed += 1;
             match msg {
@@ -460,7 +468,8 @@ impl App {
                                 }
                                 minion.connected = true;
                                 // Preserve enriched fields from event processing
-                                if let Some(existing) = self.minion_info.iter().find(|m| m.id == minion.id) {
+                                if let Some(&i) = minion_index.get(&minion.id) {
+                                    let existing = &self.minion_info[i];
                                     if !existing.osfinger.is_empty() { minion.osfinger.clone_from(&existing.osfinger); }
                                     if !existing.osrelease.is_empty() { minion.osrelease.clone_from(&existing.osrelease); }
                                     if !existing.salt_version.is_empty() { minion.salt_version.clone_from(&existing.salt_version); }
@@ -479,6 +488,15 @@ impl App {
                                     .then(a.id.cmp(&b.id))
                             });
                             self.minion_info = minions;
+                            // Roster changed shape — reindex, and drop pulse-tracking
+                            // entries for minions no longer in the roster so
+                            // last_zmq_return doesn't grow unbounded on churn.
+                            minion_index = self.minion_info
+                                .iter()
+                                .enumerate()
+                                .map(|(i, m)| (m.id.clone(), i))
+                                .collect();
+                            self.last_zmq_return.retain(|id, _| minion_index.contains_key(id));
                         }
                         "list_keys" => {
                             if ok {
@@ -653,7 +671,9 @@ impl App {
                                 self.last_activity_at = Instant::now();
                                 // Update last_seen for this minion from return events
                                 let ts_epoch = ts as u64;
-                                if let Some(info) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                let minion_pos = minion_index.get(mid).copied();
+                                if let Some(i) = minion_pos {
+                                    let info = &mut self.minion_info[i];
                                     if ts_epoch > info.last_seen_epoch {
                                         info.last_seen_epoch = ts_epoch;
                                     }
@@ -672,7 +692,8 @@ impl App {
                                         let cpuarch = return_data.get("cpuarch").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                         let known = !osfinger.is_empty() || !salt_version.is_empty() || !os.is_empty();
                                         if known {
-                                            if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                            let fm = if let Some(i) = minion_pos {
+                                                let existing = &mut self.minion_info[i];
                                                 if !osfinger.is_empty() { existing.osfinger = osfinger; }
                                                 if !osrelease.is_empty() { existing.osrelease = osrelease; }
                                                 if !os.is_empty() { existing.os = os; }
@@ -682,16 +703,18 @@ impl App {
                                                 if existing.key_status.is_none() {
                                                     existing.key_status = Some(KeyStatus::Accepted);
                                                 }
-                                            }
-                                            // Also populate fleet_data from the merged minion_info
-                                            let fm = self.minion_info.iter().find(|m| m.id == mid).map(|info| FleetMinion {
-                                                id: mid.to_string(),
-                                                osfinger: info.osfinger.clone(),
-                                                osrelease: info.osrelease.clone(),
-                                                saltversion: info.salt_version.clone(),
-                                                cpuarch: info.cpuarch.clone(),
-                                                timed_out: false,
-                                            });
+                                                // Also populate fleet_data from the merged minion_info
+                                                Some(FleetMinion {
+                                                    id: mid.to_string(),
+                                                    osfinger: existing.osfinger.clone(),
+                                                    osrelease: existing.osrelease.clone(),
+                                                    saltversion: existing.salt_version.clone(),
+                                                    cpuarch: existing.cpuarch.clone(),
+                                                    timed_out: false,
+                                                })
+                                            } else {
+                                                None
+                                            };
                                             if let Some(fm) = fm {
                                                 if let Some(ref mut fd) = self.fleet_data {
                                                     if let Some(existing) = fd.minions.iter_mut().find(|m| m.id == mid) {

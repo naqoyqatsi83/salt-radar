@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - MinionEvents popup: selection highlight now stops at content width instead of filling full popup width
 - MinionEvents popup: selection highlight width limited to text content using per-span background styling
+- `last_zmq_return` no longer grows unbounded on minion churn — stale entries are pruned on each roster refresh
+- Roster reconciliation on `minion_cache_list` refresh and per-event grains harvest now uses an ID-indexed lookup instead of an O(n) scan per minion/event
 
 ## [0.6.0-rc4] - 2026-07-07
 
