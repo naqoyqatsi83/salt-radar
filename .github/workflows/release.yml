@@ -110,12 +110,18 @@ jobs:
         with:
           name: salt-radar-${{ matrix.arch.deb_arch }}.deb
           path: ${{ runner.temp }}/deb/salt-radar_*.deb
+          # Only a hand-off to the release job below (download-artifact),
+          # which either republishes it as a permanent Release asset (tag
+          # push) or repackages it into salt-radar-all-artifacts (manual
+          # run) -- no reason to keep this intermediate copy around.
+          retention-days: 1
 
       - name: Upload tarball artifact
         uses: actions/upload-artifact@v5
         with:
           name: salt-radar-${{ matrix.arch.pkg_suffix }}-tar.gz
           path: ${{ runner.temp }}/salt-radar-*.tar.gz
+          retention-days: 1
 
   rpm:
     runs-on: ubuntu-latest
@@ -195,6 +201,7 @@ jobs:
         with:
           name: salt-radar-x86_64.rpm
           path: ~/rpmbuild/RPMS/x86_64/salt-radar-*.rpm
+          retention-days: 1
 
   release:
     runs-on: ubuntu-latest
@@ -227,6 +234,7 @@ jobs:
         with:
           name: salt-radar-all-artifacts
           path: ${{ runner.temp }}/upload/
+          retention-days: 7
 
       - name: Create release (tag push only)
         if: github.ref_type == 'tag'

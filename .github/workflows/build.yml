@@ -56,9 +56,11 @@ jobs:
         with:
           name: salt-radar-amd64
           path: target/release/salt-radar
+          retention-days: 7
 
       - name: Upload .deb
         uses: actions/upload-artifact@v5
         with:
           name: salt-radar-amd64.deb
           path: ${{ runner.temp }}/deb/salt-radar_*.deb
+          retention-days: 7
