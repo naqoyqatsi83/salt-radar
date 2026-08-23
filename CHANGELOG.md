@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc6] - 2026-08-23
+
 ### Added
 - MinionEvents popup: filter items by keyword with `/` key (matches tag, JID, function, description)
 - `minion_start` event tag recognized by both EventBreakdown and MinionEvents popup (was falling into "other" bucket)
