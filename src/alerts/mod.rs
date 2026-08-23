@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::types::{
-    AlertEntry, AlertSeverity, KeyInfo, KeyStatus, MinionInfo, SaltEvent, ServiceHealth, SystemInfo,
+    AlertEntry, AlertSeverity, JobEntry, KeyInfo, KeyStatus, MinionInfo, SaltEvent, ServiceHealth, SystemInfo,
 };
 
 /// Lightweight representation of an active alert condition.
@@ -34,6 +34,13 @@ impl AlertEngine {
         stale_minion_secs: u64,
         pending_key_secs: u64,
         disk_usage_pct: f64,
+        jobs: &[JobEntry],
+        job_straggler_secs: u64,
+        auth_rate: f64,
+        worker_busy_pct: Option<f64>,
+        auth_storm_rate_per_sec: f64,
+        worker_saturation_pct: f64,
+        pending_key_churn_threshold: u64,
     ) {
         let mut active = Vec::new();
 
@@ -190,6 +197,55 @@ impl AlertEngine {
                 severity: AlertSeverity::Crit,
                 description: format!("{} auth failure(s) on ZMQ bus", auth_fails.len()),
                 details: auth_fails,
+            });
+        }
+
+        // Rule 8: Stuck job
+        for job in jobs {
+            if job.target_count > 0 && job.returned < job.target_count && job.age_seconds > job_straggler_secs {
+                active.push(ActiveAlert {
+                    key: format!("stuck-job:{}", job.jid),
+                    rule: "Stuck job",
+                    severity: AlertSeverity::Warn,
+                    description: format!(
+                        "{} ({}) {}/{} returned after {}s",
+                        job.jid, job.fun, job.returned, job.target_count, job.age_seconds
+                    ),
+                    details: Vec::new(),
+                });
+            }
+        }
+
+        // Rule 9: Reauth storm — auth rate and worker saturation elevated together
+        if auth_rate > auth_storm_rate_per_sec && worker_busy_pct.unwrap_or(0.0) > worker_saturation_pct {
+            active.push(ActiveAlert {
+                key: "reauth-storm".to_string(),
+                rule: "Reauth storm",
+                severity: AlertSeverity::Crit,
+                description: format!(
+                    "auth rate {:.1}/s with workers at {:.0}% busy",
+                    auth_rate, worker_busy_pct.unwrap_or(0.0)
+                ),
+                details: Vec::new(),
+            });
+        }
+
+        // Rule 10: Pending-key churn — new pending keys arriving too fast
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let churn = keys.iter().filter(|k| {
+            k.status == KeyStatus::Pending && k.mtime_epoch > 0
+                && now.saturating_sub(k.mtime_epoch) < 60
+        }).count() as u64;
+        if churn > pending_key_churn_threshold {
+            active.push(ActiveAlert {
+                key: "pending-key-churn".to_string(),
+                rule: "Pending key churn",
+                severity: AlertSeverity::Warn,
+                description: format!("{} new pending key(s) in the last minute", churn),
+                details: Vec::new(),
             });
         }
 

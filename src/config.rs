@@ -14,6 +14,9 @@ pub struct AppConfig {
     pub pending_key_secs: u64,
     pub job_straggler_secs: u64,
     pub disk_usage_pct: f64,
+    pub auth_storm_rate_per_sec: f64,
+    pub worker_saturation_pct: f64,
+    pub pending_key_churn_per_min: u64,
 }
 
 impl Default for AppConfig {
@@ -31,6 +34,9 @@ impl Default for AppConfig {
             pending_key_secs: 3600,
             job_straggler_secs: 120,
             disk_usage_pct: 85.0,
+            auth_storm_rate_per_sec: 5.0,
+            worker_saturation_pct: 85.0,
+            pending_key_churn_per_min: 10,
         }
     }
 }
@@ -69,6 +75,9 @@ struct AlertsConfig {
     pending_key_secs: Option<u64>,
     job_straggler_secs: Option<u64>,
     disk_usage_pct: Option<f64>,
+    auth_storm_rate_per_sec: Option<f64>,
+    worker_saturation_pct: Option<f64>,
+    pending_key_churn_per_min: Option<u64>,
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
@@ -91,7 +100,10 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          stale_minion_secs = {}\n\
          pending_key_secs = {}\n\
          job_straggler_secs = {}\n\
-         disk_usage_pct = {}\n",
+         disk_usage_pct = {}\n\
+         auth_storm_rate_per_sec = {}\n\
+         worker_saturation_pct = {}\n\
+         pending_key_churn_per_min = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -104,6 +116,9 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.pending_key_secs,
         config.job_straggler_secs,
         config.disk_usage_pct,
+        config.auth_storm_rate_per_sec,
+        config.worker_saturation_pct,
+        config.pending_key_churn_per_min,
     );
     std::fs::write(path, toml)
 }
@@ -132,6 +147,9 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.pending_key_secs { cfg.pending_key_secs = v; }
                 if let Some(v) = a.job_straggler_secs { cfg.job_straggler_secs = v; }
                 if let Some(v) = a.disk_usage_pct { cfg.disk_usage_pct = v; }
+                if let Some(v) = a.auth_storm_rate_per_sec { cfg.auth_storm_rate_per_sec = v; }
+                if let Some(v) = a.worker_saturation_pct { cfg.worker_saturation_pct = v; }
+                if let Some(v) = a.pending_key_churn_per_min { cfg.pending_key_churn_per_min = v; }
             }
         }
     }

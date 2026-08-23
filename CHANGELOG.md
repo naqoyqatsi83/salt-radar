@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - MinionEvents popup: filter items by keyword with `/` key (matches tag, JID, function, description)
 - `minion_start` event tag recognized by both EventBreakdown and MinionEvents popup (was falling into "other" bucket)
+- Job Pulse panel on Dashboard now shows rolling job-health KPIs: return success rate, stuck/in-flight job count, completion latency (p50/p95), and partial-return rate
+- "Stuck job" alert rule: fires when a dispatched job hasn't fully returned within `job_straggler_secs`
+- Worker pool saturation gauge on Dashboard Services panel (`Workers X% busy`), from real per-process CPU sampling
+- Auth event rate shown on Dashboard Event Types panel (events/sec)
+- "Reauth storm" alert rule: fires when auth rate and worker saturation are elevated together (`auth_storm_rate_per_sec`, `worker_saturation_pct`)
+- Pending-key churn rate shown on Dashboard Minion Key Status panel and as a new alert rule (`pending_key_churn_per_min`)
+- Check-in age percentiles (p50/p90/p99) on the Minions tab Fleet Overview panel
 
 ### Fixed
 - MinionEvents popup: selection highlight now stops at content width instead of filling full popup width
@@ -18,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Roster reconciliation on `minion_cache_list` refresh and per-event grains harvest now uses an ID-indexed lookup instead of an O(n) scan per minion/event
 - Minion roster is only re-sorted when a change actually affects ordering, instead of every tick
 - Remove unbounded debug logging to `/tmp/salt-radar-agent-ndjson.log` in the agent (was leftover dev instrumentation with no rotation/cap)
+- `self.jobs` no longer grows unbounded — `JobEntry.age_seconds` was never actually updated after creation, so the age-out cleanup never removed anything
+- Process role classification (Master/Worker/API/Syndic/...) now reads `/proc/<pid>/cmdline` instead of `/proc/<pid>/comm`, which was always the truncated interpreter path and never matched any role — `SaltProcess.role` was effectively always `Unknown`
+- `SaltProcess.cpu_percent` is now real (computed from `/proc/<pid>/stat` utime/stime deltas between polls) instead of a hardcoded `0.0`
+- `KeyInfo.mtime_epoch` is now real (read from the PKI key file's mtime) instead of a hardcoded `0`, for both the `salt.key.Key` and `salt-key -L` fallback paths
 
 ## [0.6.0-rc4] - 2026-07-07
 

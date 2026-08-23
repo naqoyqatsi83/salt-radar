@@ -39,7 +39,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
         .constraints([
             Constraint::Length(5),  // Host Resources
             Constraint::Length(mid_h), // Services + Key Status (exact-fit)
-            Constraint::Length(3),  // Job Pulse
+            Constraint::Length(4),  // Job Pulse (KPI line + up to 3 jobs)
             Constraint::Min(6),     // Sparklines (at least 6 lines = 3×2 for 3 panels)
         ])
         .split(body);
@@ -84,7 +84,7 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(4),
             Constraint::Length(4),
             Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ])
         .split(area);
 
@@ -192,7 +192,15 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
     let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected);
     let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied);
 
-    let block = make_block(" Minion Key Status ".to_string());
+    let churn = app.pending_key_churn_per_min();
+    let title = Line::from(vec![
+        Span::styled(" Minion Key Status ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(
+            format!("churn:{}/min", churn),
+            Style::default().fg(if churn > 0 { color::YELLOW } else { color::TEXT_DIM }),
+        ),
+    ]);
+    let block = make_block_line(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -251,12 +259,16 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
 
+    let workers_label = match app.worker_busy_pct() {
+        Some(pct) => format!("  Workers {:.0}% busy", pct),
+        None => "  Workers --".to_string(),
+    };
     let gauge = Gauge::default()
         .gauge_style(pct_gauge_style(mem_pct))
         .percent((mem_pct.round() as u16).min(100))
         .label(format!(
-            "Salt RSS {} MB ({} proc)  {} minions",
-            total_rss_used / 1024, proc_count, app.filtered_minions_len(),
+            "Salt RSS {} MB ({} proc)  {} minions{}",
+            total_rss_used / 1024, proc_count, app.filtered_minions_len(), workers_label,
         ));
 
     let mut service_lines: Vec<Line<'static>> = vec![];
@@ -586,11 +598,15 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
             let bar_max = inner.width.saturating_sub(14);
             let bar_len = ((*count as f64 / max_count as f64) * bar_max as f64).round() as usize;
             let bar = "\u{2588}".repeat(bar_len);
-            lines.push(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!(" {:<6}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{:>5} ", count), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(bar, Style::default().fg(*color)),
-            ]));
+            ];
+            if *label == "Auth" {
+                spans.push(Span::styled(format!(" ({:.1}/s)", app.current_auth_rate), Style::default().fg(color::TEXT_DIM)));
+            }
+            lines.push(Line::from(spans));
         }
     } else {
         lines.push(Line::from(vec![
@@ -774,20 +790,36 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let success = app.job_success_pct().map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into());
+    let stuck = app.job_stuck_count();
+    let (p50, p95) = app.job_completion_latency_p50_p95().unwrap_or((0.0, 0.0));
+    let partial = app.job_partial_pct().map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into());
+
+    let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
+        Span::styled("  success:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(success, Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(" stuck:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(stuck.to_string(), Style::default().fg(if stuck > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+        Span::styled(" p50/p95:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{:.1}s/{:.1}s", p50, p95), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(" partial:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(partial, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+    ])];
+
     if app.jobs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no active jobs",
+            Style::default().fg(color::TEXT_DIM),
+        )));
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "  no active jobs",
-                Style::default().fg(color::TEXT_DIM),
-            ))).style(Style::default().bg(color::BG_DARK)),
+            Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
             inner,
         );
         return;
     }
 
-    // Show up to 4 latest jobs, sorted by most recent
-    let count = app.jobs.len().min(4);
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(count);
+    // Show up to 3 latest jobs, sorted by most recent
+    let count = app.jobs.len().min(3);
     for job in app.jobs.iter().rev().take(count) {
         let progress = if job.target_count > 0 {
             let pct = (job.returned as f64 / job.target_count as f64).min(1.0);

@@ -85,6 +85,14 @@ def _run_salt_cmd(args, timeout=30, env=None):
     return None
 
 
+def _key_mtime(opts, subdir, mid):
+    try:
+        path = os.path.join(opts.get("pki_dir", "/etc/salt/pki"), "master", subdir, mid)
+        return int(os.path.getmtime(path))
+    except OSError:
+        return 0
+
+
 def cmd_list_keys(opts, req):
     """Fetch minion key data — salt.key.Key first, then salt-key -L fallback."""
     keys = []
@@ -103,7 +111,7 @@ def cmd_list_keys(opts, req):
                 keys.append({
                     "id": mid,
                     "status": status,
-                    "mtime_epoch": 0,
+                    "mtime_epoch": _key_mtime(opts, subdir, mid),
                 })
     except Exception:
         pass
@@ -116,13 +124,13 @@ def cmd_list_keys(opts, req):
             if output:
                 key_data = json_mod.loads(output)
                 for mid in key_data.get("minions", []):
-                    keys.append({"id": mid, "status": "Accepted", "mtime_epoch": 0})
+                    keys.append({"id": mid, "status": "Accepted", "mtime_epoch": _key_mtime(opts, "minions", mid)})
                 for mid in key_data.get("minions_pre", []):
-                    keys.append({"id": mid, "status": "Pending", "mtime_epoch": 0})
+                    keys.append({"id": mid, "status": "Pending", "mtime_epoch": _key_mtime(opts, "minions_pre", mid)})
                 for mid in key_data.get("minions_rejected", []):
-                    keys.append({"id": mid, "status": "Rejected", "mtime_epoch": 0})
+                    keys.append({"id": mid, "status": "Rejected", "mtime_epoch": _key_mtime(opts, "minions_rejected", mid)})
                 for mid in key_data.get("minions_denied", []):
-                    keys.append({"id": mid, "status": "Denied", "mtime_epoch": 0})
+                    keys.append({"id": mid, "status": "Denied", "mtime_epoch": _key_mtime(opts, "minions_denied", mid)})
         except Exception:
             pass
 
@@ -137,34 +145,39 @@ def cmd_list_processes(opts, req):
             if pid_dir.isdigit():
                 pid = int(pid_dir)
                 try:
-                    with open(os.path.join("/proc", pid_dir, "comm"), "r") as f:
-                        comm = f.read().strip()
+                    # /proc/<pid>/comm is just the truncated interpreter name
+                    # (e.g. "/opt/saltstack/") for onedir-packaged Salt — the
+                    # real process title Salt sets (MWorker-0, EventPublisher,
+                    # ...) only shows up in cmdline.
+                    with open(os.path.join("/proc", pid_dir, "cmdline"), "rb") as f:
+                        cmdline = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
                     with open(os.path.join("/proc", pid_dir, "stat"), "r") as f:
                         stat = f.read().split()
                         # rss is index 23, pages are usually 4KB
                         rss_kb = int(stat[23]) * 4
-                        # cpu_percent is harder from /proc/stat alone,
-                        # but for now we'll return 0.0 or a dummy
-                        cpu_percent = 0.0
+                        # utime (14th field) + stime (15th field), in clock ticks
+                        cpu_ticks = int(stat[13]) + int(stat[14])
 
                     # Determine role
                     role = "Unknown"
-                    if "salt-master" in comm: role = "Master"
-                    elif "salt-worker" in comm: role = "Worker"
-                    elif "salt-api" in comm: role = "API"
-                    elif "salt-syndic" in comm: role = "Syndic"
+                    if "MWorker-" in cmdline: role = "Worker"
+                    elif "EventPublisher" in cmdline: role = "EventPublisher"
+                    elif "ReqServer" in cmdline: role = "ReqServer"
+                    elif "salt-master" in cmdline: role = "Master"
+                    elif "salt-api" in cmdline: role = "API"
+                    elif "salt-syndic" in cmdline: role = "Syndic"
 
                     processes.append({
                         "pid": pid,
                         "role": role,
                         "rss_kb": rss_kb,
-                        "cpu_percent": cpu_percent,
+                        "cpu_ticks": cpu_ticks,
                     })
                 except (OSError, IndexError, ValueError):
                     continue
     except OSError:
         pass
-    result(req["id"], "list_processes", data={"processes": processes})
+    result(req["id"], "list_processes", data={"processes": processes, "clk_tck": os.sysconf("SC_CLK_TCK")})
 
 
 def cmd_list_services(opts, req):

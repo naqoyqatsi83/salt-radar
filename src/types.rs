@@ -110,6 +110,11 @@ pub struct SaltProcess {
     pub pid: u32,
     pub role: SaltProcessRole,
     pub rss_kb: u64,
+    /// Raw utime+stime clock ticks from the agent; cpu_percent is computed
+    /// Rust-side from the delta between consecutive polls (see App::prev_proc_cpu).
+    #[serde(default)]
+    pub cpu_ticks: u64,
+    #[serde(default)]
     pub cpu_percent: f32,
 }
 
@@ -268,6 +273,7 @@ pub struct JobEntry {
     pub age_seconds: u64,
     pub created_epoch: f64,
     pub local: bool,
+    pub finalized: bool,
 }
 
 // ─── Cache job entry (from agent jobs.list_jobs) ──────────────────────────

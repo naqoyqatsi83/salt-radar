@@ -19,6 +19,8 @@ use crate::collectors;
 use crate::config::{load_config, AppConfig};
 use crate::types::*;
 
+const JOB_STATS_WINDOW: usize = 500;
+
 pub struct App {
     // Config
     pub config: AppConfig,
@@ -123,6 +125,27 @@ pub struct App {
     /// Ring buffer of recent latency samples for sparkline (60 samples = 1 per tick)
     pub zmq_latency_history: [f64; 2000],
     pub zmq_latency_idx: usize,
+
+    /// Rolling window of individual job-return outcomes (success/fail)
+    pub job_returns_window: VecDeque<bool>,
+    /// Rolling window of full-completion latencies in seconds
+    pub job_completion_latencies: VecDeque<f64>,
+    /// Rolling window of job close-out outcomes (true = partial return)
+    pub job_outcome_window: VecDeque<bool>,
+
+    /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
+    /// used to compute cpu_percent from the delta between polls.
+    prev_proc_cpu: HashMap<u32, (u64, Instant)>,
+    /// Clock ticks per second on the master host (from the agent's os.sysconf(SC_CLK_TCK))
+    clk_tck: f64,
+
+    /// salt/auth events seen in the current 1s window
+    auth_events_this_sec: u64,
+    /// Ring buffer of recent auth rates (events/sec) for sparkline
+    pub auth_rate_history: [f64; 2000],
+    pub auth_rate_idx: usize,
+    /// Most recent auth events/sec sample
+    pub current_auth_rate: f64,
 
     /// PID-based temp paths to avoid conflicts between users/instances
     pid: u32,
@@ -410,6 +433,15 @@ impl App {
             zmq_ping_sent_at: None,
             zmq_latency_history: [0.0; 2000],
             zmq_latency_idx: 0,
+            job_returns_window: VecDeque::new(),
+            job_completion_latencies: VecDeque::new(),
+            job_outcome_window: VecDeque::new(),
+            prev_proc_cpu: HashMap::new(),
+            clk_tck: 100.0,
+            auth_events_this_sec: 0,
+            auth_rate_history: [0.0; 2000],
+            auth_rate_idx: 0,
+            current_auth_rate: 0.0,
 
             activity_matrix: [0; 2000],
             activity_matrix_idx: 0,
@@ -509,7 +541,24 @@ impl App {
                         }
                         "list_processes" => {
                             if ok {
+                                if let Some(tck) = data["clk_tck"].as_f64() {
+                                    self.clk_tck = tck;
+                                }
                                 self.processes = serde_json::from_value(data["processes"].clone()).unwrap_or_default();
+                                let now = Instant::now();
+                                let mut seen_pids: HashSet<u32> = HashSet::new();
+                                for p in self.processes.iter_mut() {
+                                    seen_pids.insert(p.pid);
+                                    if let Some((prev_ticks, prev_at)) = self.prev_proc_cpu.get(&p.pid) {
+                                        let elapsed = now.duration_since(*prev_at).as_secs_f64();
+                                        if elapsed > 0.0 {
+                                            let tick_delta = p.cpu_ticks.saturating_sub(*prev_ticks);
+                                            p.cpu_percent = ((tick_delta as f64 / self.clk_tck) / elapsed * 100.0) as f32;
+                                        }
+                                    }
+                                    self.prev_proc_cpu.insert(p.pid, (p.cpu_ticks, now));
+                                }
+                                self.prev_proc_cpu.retain(|pid, _| seen_pids.contains(pid));
                             }
                         }
                         "list_services" => {
@@ -663,11 +712,18 @@ impl App {
                 AgentMessage::Event { tag, data, ts } => {
                     // Track event breakdown
                     self.event_breakdown.record(&tag);
+                    if tag.starts_with("salt/auth") {
+                        self.auth_events_this_sec += 1;
+                    }
 
                     // ── Normal event processing ─────────────────────────
                     // Track return events for activity matrix
                     if tag.contains("/ret/") {
                         self.current_sec_returns += 1;
+                        let success = data["success"].as_bool()
+                            .unwrap_or_else(|| derive_success_retcode(&data["return"]).1);
+                        self.job_returns_window.push_back(success);
+                        if self.job_returns_window.len() > JOB_STATS_WINDOW { self.job_returns_window.pop_front(); }
                         if let Some(mid) = tag.rsplit('/').next() {
                             if !mid.is_empty() {
                                 self.last_activity_minion = mid.to_string();
@@ -1031,6 +1087,81 @@ impl App {
         items
     }
 
+    /// Rolling percentage of job returns with success == true, over the last
+    /// JOB_STATS_WINDOW returns. None until at least one return has been seen.
+    pub fn job_success_pct(&self) -> Option<f64> {
+        if self.job_returns_window.is_empty() { return None; }
+        let ok = self.job_returns_window.iter().filter(|s| **s).count();
+        Some(100.0 * ok as f64 / self.job_returns_window.len() as f64)
+    }
+
+    /// Count of active jobs dispatched but not fully returned past job_straggler_secs.
+    pub fn job_stuck_count(&self) -> usize {
+        self.jobs.iter().filter(|j| {
+            j.target_count > 0 && j.returned < j.target_count
+                && j.age_seconds > self.config.job_straggler_secs
+        }).count()
+    }
+
+    /// p50/p95 job completion latency in seconds, over the last JOB_STATS_WINDOW
+    /// fully-completed jobs. None until at least one job has fully completed.
+    pub fn job_completion_latency_p50_p95(&self) -> Option<(f64, f64)> {
+        if self.job_completion_latencies.is_empty() { return None; }
+        let mut v: Vec<f64> = self.job_completion_latencies.iter().copied().collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pick = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        Some((pick(0.50), pick(0.95)))
+    }
+
+    /// Rolling percentage of closed-out jobs where returned < target_count,
+    /// over the last JOB_STATS_WINDOW closed jobs. None until one has closed.
+    pub fn job_partial_pct(&self) -> Option<f64> {
+        if self.job_outcome_window.is_empty() { return None; }
+        let partial = self.job_outcome_window.iter().filter(|p| **p).count();
+        Some(100.0 * partial as f64 / self.job_outcome_window.len() as f64)
+    }
+
+    /// Worker pool saturation: sum of Worker-role process CPU%, normalized
+    /// against the configured worker_threads count. None until both the
+    /// worker_threads config and at least one CPU sample are available.
+    pub fn worker_busy_pct(&self) -> Option<f64> {
+        let worker_threads = self.config_snapshot.as_ref()?.worker_threads?;
+        if worker_threads <= 0 { return None; }
+        let total_cpu: f64 = self.processes.iter()
+            .filter(|p| p.role == SaltProcessRole::Worker)
+            .map(|p| p.cpu_percent as f64)
+            .sum();
+        Some((total_cpu / (worker_threads as f64 * 100.0) * 100.0).clamp(0.0, 100.0))
+    }
+
+    /// Count of pending keys whose PKI file mtime is within the last minute.
+    pub fn pending_key_churn_per_min(&self) -> usize {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.keys.iter().filter(|k| {
+            k.status == KeyStatus::Pending && k.mtime_epoch > 0
+                && now.saturating_sub(k.mtime_epoch) < 60
+        }).count()
+    }
+
+    /// p50/p90/p99 check-in age (now - last_seen_epoch) across the fleet, in seconds.
+    pub fn checkin_age_percentiles(&self) -> Option<(u64, u64, u64)> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut ages: Vec<u64> = self.minion_info.iter()
+            .filter(|m| m.last_seen_epoch > 0)
+            .map(|m| now.saturating_sub(m.last_seen_epoch))
+            .collect();
+        if ages.is_empty() { return None; }
+        ages.sort_unstable();
+        let pick = |p: f64| ages[((ages.len() - 1) as f64 * p).round() as usize];
+        Some((pick(0.50), pick(0.90), pick(0.99)))
+    }
+
     pub fn filtered_jobs_len(&self) -> usize {
         if self.filter_text.is_empty() {
             return self.jobs.len();
@@ -1165,6 +1296,9 @@ impl App {
                 ConfigField { label: "pending_key_secs", label_value: cfg.pending_key_secs.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "job_straggler_secs", label_value: cfg.job_straggler_secs.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "disk_usage_pct", label_value: cfg.disk_usage_pct.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "auth_storm_rate_per_sec", label_value: cfg.auth_storm_rate_per_sec.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "worker_saturation_pct", label_value: cfg.worker_saturation_pct.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "pending_key_churn_per_min", label_value: cfg.pending_key_churn_per_min.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -1208,6 +1342,9 @@ impl App {
             pending_key_secs: parse_u64("pending_key_secs")?,
             job_straggler_secs: parse_u64("job_straggler_secs")?,
             disk_usage_pct: parse_f64("disk_usage_pct")?,
+            auth_storm_rate_per_sec: parse_f64("auth_storm_rate_per_sec")?,
+            worker_saturation_pct: parse_f64("worker_saturation_pct")?,
+            pending_key_churn_per_min: parse_u64("pending_key_churn_per_min")?,
         };
 
         crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
@@ -2480,6 +2617,12 @@ impl App {
             self.event_rate_history[self.event_rate_idx] = self.events_per_sec;
             self.event_rate_idx = (self.event_rate_idx + 1) % 2000;
 
+            // Auth rate: same per-second treatment
+            self.current_auth_rate = self.auth_events_this_sec as f64 / elapsed;
+            self.auth_events_this_sec = 0;
+            self.auth_rate_history[self.auth_rate_idx] = self.current_auth_rate;
+            self.auth_rate_idx = (self.auth_rate_idx + 1) % 2000;
+
             // Activity matrix: store return count for this second
             self.activity_matrix[self.activity_matrix_idx] = self.current_sec_returns;
             self.activity_matrix_idx = (self.activity_matrix_idx + 1) % 2000;
@@ -2532,8 +2675,20 @@ impl App {
             self.send_agent_cmd("alive_check", None);
         }
 
+        // Update job ages from dispatch time (previously always 0 — also fixes
+        // self.jobs growing unbounded since the age-out retain below never removed anything)
+        let now_epoch_f64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let now_epoch = now_epoch_f64 as u64;
+        for job in self.jobs.iter_mut() {
+            job.age_seconds = now_epoch.saturating_sub(job.created_epoch as u64);
+        }
+
         // Alert engine checks
         let recent_events: Vec<SaltEvent> = self.events.iter().rev().take(500).cloned().collect();
+        let worker_busy_pct = self.worker_busy_pct();
         self.alert_engine.tick(
             &self.minion_info,
             &self.keys,
@@ -2543,11 +2698,39 @@ impl App {
             self.config.stale_minion_secs,
             self.config.pending_key_secs,
             self.config.disk_usage_pct,
+            &self.jobs,
+            self.config.job_straggler_secs,
+            self.current_auth_rate,
+            worker_busy_pct,
+            self.config.auth_storm_rate_per_sec,
+            self.config.worker_saturation_pct,
+            self.config.pending_key_churn_per_min,
         );
 
-        // Age out old jobs
+        // Eagerly finalize jobs that reached full completion — record completion
+        // latency and a non-partial outcome for the rolling job-health KPIs.
+        for job in self.jobs.iter_mut() {
+            if !job.finalized && job.target_count > 0 && job.returned >= job.target_count {
+                job.finalized = true;
+                self.job_completion_latencies.push_back((now_epoch_f64 - job.created_epoch).max(0.0));
+                if self.job_completion_latencies.len() > JOB_STATS_WINDOW { self.job_completion_latencies.pop_front(); }
+                self.job_outcome_window.push_back(false);
+                if self.job_outcome_window.len() > JOB_STATS_WINDOW { self.job_outcome_window.pop_front(); }
+            }
+        }
+
+        // Age out old jobs — anything removed while still unfinished is a partial close-out
         let max_age = self.config.config_secs * 60; // 60 min default
-        self.jobs.retain(|j| j.age_seconds < max_age);
+        let mut kept_jobs = Vec::with_capacity(self.jobs.len());
+        for job in self.jobs.drain(..) {
+            if job.age_seconds < max_age {
+                kept_jobs.push(job);
+            } else if !job.finalized {
+                self.job_outcome_window.push_back(true);
+                if self.job_outcome_window.len() > JOB_STATS_WINDOW { self.job_outcome_window.pop_front(); }
+            }
+        }
+        self.jobs = kept_jobs;
 
         // Auto-load job cache when first viewing Jobs tab
         if self.current_tab == Tab::Jobs && !self.cache_loaded && !self.cache_loading && self.cache_load_error.is_none() {
@@ -4262,6 +4445,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             age_seconds: 0,
             created_epoch: evt.ts,
             local: false,
+            finalized: false,
         });
     } else if evt.tag.contains("/ret/") {
         let jid = evt.tag
@@ -4284,6 +4468,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
                 age_seconds: 0,
                 created_epoch: evt.ts,
                 local: true,
+                finalized: false,
             });
         }
     }

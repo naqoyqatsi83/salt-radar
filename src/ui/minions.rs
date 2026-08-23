@@ -208,6 +208,24 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line> = Vec::new();
 
+    lines.push(Line::from(Span::styled("  Check-in Age:", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))));
+    match app.checkin_age_percentiles() {
+        Some((p50, p90, p99)) => {
+            lines.push(Line::from(vec![
+                Span::styled("  p50:", Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{}s", p50), Style::default().fg(color::TEXT)),
+                Span::styled("  p90:", Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{}s", p90), Style::default().fg(color::YELLOW)),
+                Span::styled("  p99:", Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{}s", p99), Style::default().fg(color::ORANGE)),
+            ]));
+        }
+        None => {
+            lines.push(Line::from(Span::styled("  no data yet", Style::default().fg(color::TEXT_DIM))));
+        }
+    }
+    lines.push(Line::from(""));
+
     if let Some(ref fs) = app.fleet_data {
         // bar_width reserves space for: "  name<22> <count> <bar> <pct>%"
         // = 2 prefix + 22 name + 5 count (sp+4) + 5 pct (sp+3+%) = 34

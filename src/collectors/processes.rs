@@ -48,6 +48,7 @@ pub fn collect_processes() -> Vec<SaltProcess> {
             pid,
             role,
             rss_kb,
+            cpu_ticks: 0,
             cpu_percent: 0.0,
         });
     }
