@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Agent's `/proc/<pid>/stat` parser was splitting on whitespace with fixed field indices, which silently misaligned every field (RSS, utime, stime) for any process whose `comm` contains a space — inflated the Dashboard's Services memory panel by orders of magnitude. Now locates the `comm` field by its closing paren instead of a fixed-index split.
+- Service memory in the Dashboard `Unit` table now reads the systemd unit's cgroup `MemoryCurrent` (covers the whole process tree, shared pages counted once) instead of just the main process's own `VmRSS` (missed all forked Worker/ReqServer/EventPublisher children). Falls back to `VmRSS` of the main process if cgroup accounting is unavailable.
+
 ## [0.6.0-rc6] - 2026-08-23
 
 ### Added

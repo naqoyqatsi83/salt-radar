@@ -152,11 +152,17 @@ def cmd_list_processes(opts, req):
                     with open(os.path.join("/proc", pid_dir, "cmdline"), "rb") as f:
                         cmdline = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
                     with open(os.path.join("/proc", pid_dir, "stat"), "r") as f:
-                        stat = f.read().split()
-                        # rss is index 23, pages are usually 4KB
-                        rss_kb = int(stat[23]) * 4
-                        # utime (14th field) + stime (15th field), in clock ticks
-                        cpu_ticks = int(stat[13]) + int(stat[14])
+                        content = f.read()
+                        # comm (field 2) is parenthesized and can itself contain
+                        # spaces or parens (e.g. "(sd-pam)"), so locate it by the
+                        # last ')' rather than naive whitespace splitting -- a
+                        # fixed-index split silently misaligns every field after
+                        # it for any process whose name has embedded whitespace.
+                        rest = content[content.rindex(")") + 2:].split()
+                        # rest[0] is field 3 (state); rss is field 24 -> index 21
+                        rss_kb = int(rest[21]) * 4
+                        # utime (field 14) + stime (field 15) -> indices 11, 12
+                        cpu_ticks = int(rest[11]) + int(rest[12])
 
                     # Determine role
                     role = "Unknown"
@@ -189,7 +195,7 @@ def cmd_list_services(opts, req):
         # Get all salt-* service properties from systemd in one call
         cp = sp.run(
             ["systemctl", "show", "salt-*.service",
-             "--property=Id,ActiveState,SubState,MainPID,ActiveEnterTimestamp"],
+             "--property=Id,ActiveState,SubState,MainPID,ActiveEnterTimestamp,MemoryCurrent"],
             capture_output=True, text=True, timeout=10
         )
 
@@ -221,10 +227,20 @@ def cmd_list_services(opts, req):
                 }
                 state = state_map.get(sub_state, sub_state)
 
-                # Memory and uptime from /proc if MainPID is available
+                # Memory: prefer the unit's cgroup accounting (MemoryCurrent),
+                # which reflects the whole service tree (e.g. salt-master plus
+                # all its forked Worker/ReqServer/EventPublisher children) with
+                # shared pages counted once -- unlike summing each process's own
+                # /proc/<pid>/stat RSS independently (as the process-role panel
+                # does), which double-counts memory those forked children share
+                # with their parent via copy-on-write. Falls back to the main
+                # process's own VmRSS if cgroup accounting isn't available.
                 memory_kb = 0
                 uptime_seconds = 0
-                if main_pid > 0:
+                mem_current = props.get("MemoryCurrent", "")
+                if mem_current.isdigit():
+                    memory_kb = int(mem_current) // 1024
+                elif main_pid > 0:
                     try:
                         with open("/proc/{}/status".format(main_pid), "r") as f:
                             for line in f:
@@ -233,6 +249,7 @@ def cmd_list_services(opts, req):
                                     break
                     except Exception:
                         pass
+                if main_pid > 0:
                     try:
                         with open("/proc/{}/stat".format(main_pid), "r") as f:
                             stat_line = f.read()

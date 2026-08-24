@@ -196,6 +196,28 @@ The Rust TUI spawns a Python agent subprocess and communicates via NDJSON over a
 
 All data stays local — no external dependencies, no database, no HTTP server.
 
+### A note on the two memory numbers on the Dashboard
+
+The **Services** panel shows two different memory readings that measure different
+things and are not expected to match:
+
+- **Per-role breakdown** (`Master x4: 212MB`, `Worker x5: 299MB`, etc.) — the sum
+  of each individual process's own RSS (`/proc/<pid>/stat`), independently, across
+  every process matching that role. Since Salt's Worker/ReqServer/EventPublisher
+  children are forked from the master and share most of their loaded code/library
+  pages with it via copy-on-write, summing their RSS independently counts those
+  shared pages once per process — so this number is a reasonable *upper bound*,
+  not the service's true footprint.
+- **`Unit` table memory** (`salt-master.service 51 MB`) — the systemd unit's
+  cgroup memory accounting (`MemoryCurrent`), which counts each physical page
+  once no matter how many of the service's processes share it, and covers the
+  whole process tree (main daemon plus all forked children). This is the more
+  accurate figure for "how much RAM does this service actually cost."
+
+If cgroup memory accounting isn't available for a unit, the `Unit` table falls
+back to the main process's own `VmRSS`, which — like the per-role breakdown —
+only reflects that one process, not its forked children.
+
 ## Development
 
 ```bash
