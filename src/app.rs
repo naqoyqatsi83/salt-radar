@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -20,6 +20,17 @@ use crate::config::{load_config, AppConfig};
 use crate::types::*;
 
 const JOB_STATS_WINDOW: usize = 500;
+const SERVICE_TREND_WINDOW: Duration = Duration::from_secs(24 * 3600);
+const SERVICE_MEM_SAMPLE_MIN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Per-unit restart/flap timestamps and memory sample history, used to derive
+/// rolling-24h flap counts and memory-growth trends (see update_service_trends).
+#[derive(Debug, Default)]
+pub struct ServiceTrend {
+    last_uptime_seconds: u64,
+    restart_events: VecDeque<Instant>,
+    mem_samples: VecDeque<(Instant, u64)>,
+}
 
 pub struct App {
     // Config
@@ -38,6 +49,8 @@ pub struct App {
     pub keys: Vec<KeyInfo>,
     pub processes: Vec<SaltProcess>,
     pub services: Vec<ServiceHealth>,
+    /// Per-unit restart/flap history and memory sample history, keyed by unit name.
+    pub service_trends: HashMap<String, ServiceTrend>,
     pub zmq_connections: Vec<ZmqConn>,
     pub system_info: SystemInfo,
 
@@ -340,6 +353,7 @@ impl App {
             keys: Vec::new(),
             processes: Vec::new(),
             services: Vec::new(),
+            service_trends: HashMap::new(),
             zmq_connections: Vec::new(),
             system_info: SystemInfo::default(),
 
@@ -564,6 +578,7 @@ impl App {
                         "list_services" => {
                             if ok {
                                 self.services = serde_json::from_value(data["services"].clone()).unwrap_or_default();
+                                update_service_trends(&mut self.service_trends, &self.services);
                             }
                         }
                         "get_system_info" => {
@@ -1162,6 +1177,44 @@ impl App {
         Some((pick(0.50), pick(0.90), pick(0.99)))
     }
 
+    /// Restart/flap count for a unit over the last 24h.
+    pub fn service_restart_count_24h(&self, unit: &str) -> usize {
+        self.service_trends.get(unit).map_or(0, |t| t.restart_events.len())
+    }
+
+    /// Memory growth rate in MB/hour (linear-regression slope over the sample
+    /// window) and whether the most recent third of the window is still
+    /// trending upward (vs. having grown then plateaued). None until enough
+    /// samples have accumulated for the unit.
+    pub fn service_memory_growth(&self, unit: &str) -> Option<(f64, bool)> {
+        let trend = self.service_trends.get(unit)?;
+        if trend.mem_samples.len() < 6 { return None; }
+        let t0 = trend.mem_samples.front()?.0;
+        let pts: Vec<(f64, f64)> = trend.mem_samples.iter()
+            .map(|(t, kb)| (t.duration_since(t0).as_secs_f64(), *kb as f64 / 1024.0))
+            .collect();
+        let full_slope_mb_per_sec = linreg_slope_per_sec(&pts);
+        let recent_start = pts.len() - pts.len() / 3;
+        let recent_slope_mb_per_sec = linreg_slope_per_sec(&pts[recent_start..]);
+        Some((full_slope_mb_per_sec * 3600.0, recent_slope_mb_per_sec > 0.0))
+    }
+
+    /// Per-unit restart/flap + memory-growth snapshot, for the alert engine.
+    pub fn service_trend_snapshots(&self) -> Vec<ServiceTrendSnapshot> {
+        self.services.iter().map(|svc| {
+            let (mem_growth_mb_per_hour, mem_still_growing) = match self.service_memory_growth(&svc.unit) {
+                Some((rate, growing)) => (Some(rate), growing),
+                None => (None, false),
+            };
+            ServiceTrendSnapshot {
+                unit: svc.unit.clone(),
+                restart_count_24h: self.service_restart_count_24h(&svc.unit),
+                mem_growth_mb_per_hour,
+                mem_still_growing,
+            }
+        }).collect()
+    }
+
     pub fn filtered_jobs_len(&self) -> usize {
         if self.filter_text.is_empty() {
             return self.jobs.len();
@@ -1299,6 +1352,8 @@ impl App {
                 ConfigField { label: "auth_storm_rate_per_sec", label_value: cfg.auth_storm_rate_per_sec.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "worker_saturation_pct", label_value: cfg.worker_saturation_pct.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "pending_key_churn_per_min", label_value: cfg.pending_key_churn_per_min.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "service_flap_threshold_24h", label_value: cfg.service_flap_threshold_24h.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "service_mem_growth_mb_per_hour", label_value: cfg.service_mem_growth_mb_per_hour.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -1345,6 +1400,8 @@ impl App {
             auth_storm_rate_per_sec: parse_f64("auth_storm_rate_per_sec")?,
             worker_saturation_pct: parse_f64("worker_saturation_pct")?,
             pending_key_churn_per_min: parse_u64("pending_key_churn_per_min")?,
+            service_flap_threshold_24h: parse_u64("service_flap_threshold_24h")?,
+            service_mem_growth_mb_per_hour: parse_f64("service_mem_growth_mb_per_hour")?,
         };
 
         crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
@@ -2705,6 +2762,9 @@ impl App {
             self.config.auth_storm_rate_per_sec,
             self.config.worker_saturation_pct,
             self.config.pending_key_churn_per_min,
+            &self.service_trend_snapshots(),
+            self.config.service_flap_threshold_24h,
+            self.config.service_mem_growth_mb_per_hour,
         );
 
         // Eagerly finalize jobs that reached full completion — record completion
@@ -4293,6 +4353,59 @@ fn parse_minion_list(data: &serde_json::Value) -> Vec<MinionInfo> {
 }
 
 /// Build a JidLookup directly from events in the buffer (no agent call).
+/// Update per-unit restart/flap and memory-sample history from the latest
+/// services snapshot. Called after each `list_services` refresh. Takes
+/// disjoint field references rather than `&mut App` so it can be called
+/// while other App fields (e.g. the locked agent_rx queue) are borrowed.
+fn update_service_trends(trends: &mut HashMap<String, ServiceTrend>, services: &[ServiceHealth]) {
+    let now = Instant::now();
+    for svc in services {
+        let trend = trends.entry(svc.unit.clone()).or_insert_with(|| ServiceTrend {
+            last_uptime_seconds: svc.uptime_seconds,
+            restart_events: VecDeque::new(),
+            mem_samples: VecDeque::new(),
+        });
+
+        // Uptime dropping between polls (rather than growing monotonically)
+        // means the unit restarted since the last sample.
+        if svc.uptime_seconds < trend.last_uptime_seconds {
+            trend.restart_events.push_back(now);
+        }
+        trend.last_uptime_seconds = svc.uptime_seconds;
+        while trend.restart_events.front().is_some_and(|t| now.duration_since(*t) > SERVICE_TREND_WINDOW) {
+            trend.restart_events.pop_front();
+        }
+
+        // Downsample memory history so a 24h window stays bounded regardless
+        // of how often list_services is actually polled.
+        let should_sample = trend.mem_samples.back()
+            .is_none_or(|(t, _)| now.duration_since(*t) >= SERVICE_MEM_SAMPLE_MIN_INTERVAL);
+        if should_sample && svc.memory_kb > 0 {
+            trend.mem_samples.push_back((now, svc.memory_kb));
+        }
+        while trend.mem_samples.front().is_some_and(|(t, _)| now.duration_since(*t) > SERVICE_TREND_WINDOW) {
+            trend.mem_samples.pop_front();
+        }
+    }
+    // Drop history for units that no longer appear (service removed/renamed).
+    let live: HashSet<&str> = services.iter().map(|s| s.unit.as_str()).collect();
+    trends.retain(|k, _| live.contains(k.as_str()));
+}
+
+/// Least-squares slope (units of y per unit of x) over a set of points.
+/// Returns 0.0 for fewer than 2 points or a degenerate (zero-variance) x range.
+fn linreg_slope_per_sec(points: &[(f64, f64)]) -> f64 {
+    let n = points.len() as f64;
+    if n < 2.0 { return 0.0; }
+    let sum_x: f64 = points.iter().map(|(x, _)| *x).sum();
+    let sum_y: f64 = points.iter().map(|(_, y)| *y).sum();
+    let sum_xy: f64 = points.iter().map(|(x, y)| x * y).sum();
+    let sum_xx: f64 = points.iter().map(|(x, _)| x * x).sum();
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom.abs() < f64::EPSILON { return 0.0; }
+    (n * sum_xy - sum_x * sum_y) / denom
+}
+
 fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Option<JidLookup> {
     let prefix = format!("salt/job/{}/ret/", jid);
     let mut returns: Vec<JidReturn> = Vec::new();

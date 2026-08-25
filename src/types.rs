@@ -157,6 +157,20 @@ pub struct ServiceHealth {
     pub memory_kb: u64,
 }
 
+// ─── Service trend snapshot (restart/flap + memory growth) ────────────────
+
+#[derive(Clone, Debug)]
+pub struct ServiceTrendSnapshot {
+    pub unit: String,
+    pub restart_count_24h: usize,
+    /// MB/hour linear-regression slope over the memory sample window; None
+    /// until enough samples have accumulated.
+    pub mem_growth_mb_per_hour: Option<f64>,
+    /// Whether the most recent third of the sample window is still trending
+    /// upward (distinguishes an active leak from growth that has plateaued).
+    pub mem_still_growing: bool,
+}
+
 // ─── ZMQ connection ───────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, serde::Deserialize)]
