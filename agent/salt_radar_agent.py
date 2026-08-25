@@ -172,6 +172,7 @@ def cmd_list_processes(opts, req):
                     elif "salt-master" in cmdline: role = "Master"
                     elif "salt-api" in cmdline: role = "API"
                     elif "salt-syndic" in cmdline: role = "Syndic"
+                    elif "salt-minion" in cmdline: role = "Minion"
 
                     processes.append({
                         "pid": pid,

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Agent's `/proc/<pid>/stat` parser was splitting on whitespace with fixed field indices, which silently misaligned every field (RSS, utime, stime) for any process whose `comm` contains a space — inflated the Dashboard's Services memory panel by orders of magnitude. Now locates the `comm` field by its closing paren instead of a fixed-index split.
 - Service memory in the Dashboard `Unit` table now reads the systemd unit's cgroup `MemoryCurrent` (covers the whole process tree, shared pages counted once) instead of just the main process's own `VmRSS` (missed all forked Worker/ReqServer/EventPublisher children). Falls back to `VmRSS` of the main process if cgroup accounting is unavailable.
+- Salt processes are now classified with a `Minion` role (was falling into `Unknown`/`?` for any master that also runs a co-located minion). The Services panel's per-role memory line now wraps across multiple rows instead of being hard-clipped mid-word when it doesn't fit on one line, and the panel now reserves the right amount of height for it instead of pushing service rows off the bottom.
 
 ## [0.6.0-rc6] - 2026-08-23
 
