@@ -19,6 +19,51 @@ salt-radar gives you a live, at-a-glance view of your Salt Master infrastructure
 
 No database, no web server, no JavaScript. Just a single binary and a Python agent.
 
+## Screenshots
+
+<table>
+<tr><td colspan="2">
+
+**Dashboard** — host resources, real systemd services, minion keys, event types, job pulse, and live ZMQ/event/minion activity sparklines
+<img src="docs/screenshots/dashboard.png" alt="Dashboard tab">
+
+</td></tr>
+<tr>
+<td width="50%">
+
+**Minions** — fleet list plus OS/version/arch distribution
+<img src="docs/screenshots/minions.png" alt="Minions tab">
+
+</td>
+<td width="50%">
+
+**Events** — live event bus stream with pretty-printed detail preview
+<img src="docs/screenshots/events.png" alt="Events tab">
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Jobs** — live jobs from the event bus alongside the paginated job cache
+<img src="docs/screenshots/jobs.png" alt="Jobs tab">
+
+</td>
+<td width="50%">
+
+**Alerts** — staleness, key, service, and disk threshold monitoring
+<img src="docs/screenshots/alerts.png" alt="Alerts tab">
+
+</td>
+</tr>
+<tr><td colspan="2">
+
+**Pulse** — per-minion return activity at a glance, with connection detail on the side
+<img src="docs/screenshots/pulse.png" alt="Pulse tab">
+
+</td></tr>
+</table>
+
 ## Features
 
 ### Dashboard
