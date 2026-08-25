@@ -19,6 +19,51 @@ salt-radar gives you a live, at-a-glance view of your Salt Master infrastructure
 
 No database, no web server, no JavaScript. Just a single binary and a Python agent.
 
+## Screenshots
+
+<table>
+<tr><td colspan="2">
+
+**Dashboard** — host resources, real systemd services, minion keys, event types, job pulse, and live ZMQ/event/minion activity sparklines
+<img src="docs/screenshots/dashboard.png" alt="Dashboard tab">
+
+</td></tr>
+<tr>
+<td width="50%">
+
+**Minions** — fleet list plus OS/version/arch distribution
+<img src="docs/screenshots/minions.png" alt="Minions tab">
+
+</td>
+<td width="50%">
+
+**Events** — live event bus stream with pretty-printed detail preview
+<img src="docs/screenshots/events.png" alt="Events tab">
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Jobs** — live jobs from the event bus alongside the paginated job cache
+<img src="docs/screenshots/jobs.png" alt="Jobs tab">
+
+</td>
+<td width="50%">
+
+**Alerts** — staleness, key, service, and disk threshold monitoring
+<img src="docs/screenshots/alerts.png" alt="Alerts tab">
+
+</td>
+</tr>
+<tr><td colspan="2">
+
+**Pulse** — per-minion return activity at a glance, with connection detail on the side
+<img src="docs/screenshots/pulse.png" alt="Pulse tab">
+
+</td></tr>
+</table>
+
 ## Features
 
 ### Dashboard
@@ -154,6 +199,7 @@ disk_usage_pct = 85.0
 | Tab | Key | Action |
 |-----|-----|--------|
 | Events | `n` | Launch event sniffer |
+| Minions | `r` | Minion event/return history popup |
 | Minions | `s` | Fleet scan (admin mode only) |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
@@ -194,6 +240,28 @@ disk_usage_pct = 85.0
 The Rust TUI spawns a Python agent subprocess and communicates via NDJSON over a file-based command queue. The agent subscribes to the Salt event bus (ZMQ) and dispatches commands to Salt's client/runners. Meanwhile, the Rust side collects OS-level data directly from `/proc` and `systemctl` for the dashboard panels.
 
 All data stays local — no external dependencies, no database, no HTTP server.
+
+### A note on the two memory numbers on the Dashboard
+
+The **Services** panel shows two different memory readings that measure different
+things and are not expected to match:
+
+- **Per-role breakdown** (`Master x4: 212MB`, `Worker x5: 299MB`, etc.) — the sum
+  of each individual process's own RSS (`/proc/<pid>/stat`), independently, across
+  every process matching that role. Since Salt's Worker/ReqServer/EventPublisher
+  children are forked from the master and share most of their loaded code/library
+  pages with it via copy-on-write, summing their RSS independently counts those
+  shared pages once per process — so this number is a reasonable *upper bound*,
+  not the service's true footprint.
+- **`Unit` table memory** (`salt-master.service 51 MB`) — the systemd unit's
+  cgroup memory accounting (`MemoryCurrent`), which counts each physical page
+  once no matter how many of the service's processes share it, and covers the
+  whole process tree (main daemon plus all forked children). This is the more
+  accurate figure for "how much RAM does this service actually cost."
+
+If cgroup memory accounting isn't available for a unit, the `Unit` table falls
+back to the main process's own `VmRSS`, which — like the per-role breakdown —
+only reflects that one process, not its forked children.
 
 ## Development
 

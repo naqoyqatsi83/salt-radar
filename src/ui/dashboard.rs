@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline};
+use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
@@ -31,7 +31,17 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // Top section: fixed-height info panels
     // Bottom section: stacked full-width sparklines fill remaining space
     let key_status_h = 8u16; // 4 key rows + separator + total + 2 border
-    let services_h = (5 + app.services.len() as u16).min(25); // gauge + proc line + header + N services + 2 border
+    // Services panel is the first of a 3-way horizontal split of `body`; mirror
+    // that split just for its width so the proc-row estimate matches what
+    // draw_proc_row actually renders with, rather than assuming a fixed 1 line.
+    let services_col_width = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+        .split(Rect::new(0, 0, body.width, 1))[0]
+        .width
+        .saturating_sub(2); // block borders
+    let proc_rows = proc_rows_for(&group_processes(&app.processes), services_col_width);
+    let services_h = (4 + proc_rows + app.services.len() as u16).min(25); // gauge + proc lines + header + N services + 2 border
     let mid_h = key_status_h.max(services_h);
 
     let sections = Layout::default()
@@ -39,20 +49,21 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
         .constraints([
             Constraint::Length(5),  // Host Resources
             Constraint::Length(mid_h), // Services + Key Status (exact-fit)
-            Constraint::Length(3),  // Job Pulse
+            Constraint::Length(4),  // Job Pulse (KPI line + up to 3 jobs)
             Constraint::Min(6),     // Sparklines (at least 6 lines = 3×2 for 3 panels)
         ])
         .split(body);
 
     draw_host_row(f, sections[0], app);
 
-    // Services + Minion key status: 50/50 horizontal split
+    // Services + Minion key status + Event breakdown: 33/33/33 horizontal split
     let mid = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
         .split(sections[1]);
     draw_proc_row(f, mid[0], app);
     draw_key_status(f, mid[1], app);
+    draw_event_breakdown(f, mid[2], app);
 
     draw_job_pulse(f, sections[2], app);
 
@@ -73,7 +84,8 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
 /// Fallback for small terminals: vertical stacked layout (same as original)
 fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
-    let services_height = (4 + app.services.len()) as u16;
+    let proc_rows = proc_rows_for(&group_processes(&app.processes), area.width.saturating_sub(2));
+    let services_height = 4 + proc_rows + app.services.len() as u16;
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -83,7 +95,7 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(4),
             Constraint::Length(4),
             Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ])
         .split(area);
 
@@ -191,7 +203,15 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
     let rejected = count_keys_with_status(&app.keys, crate::types::KeyStatus::Rejected);
     let denied = count_keys_with_status(&app.keys, crate::types::KeyStatus::Denied);
 
-    let block = make_block(" Minion Key Status ".to_string());
+    let churn = app.pending_key_churn_per_min();
+    let title = Line::from(vec![
+        Span::styled(" Minion Key Status ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(
+            format!("churn:{}/min", churn),
+            Style::default().fg(if churn > 0 { color::YELLOW } else { color::TEXT_DIM }),
+        ),
+    ]);
+    let block = make_block_line(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -229,6 +249,51 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
 
 // ── Processes & Services ─────────────────────────────────────────────────────
 
+/// Group processes by role for the Services panel's per-role memory line.
+/// Returns (role_label, total_rss_kb, process_count) in first-seen order.
+fn group_processes(processes: &[crate::types::SaltProcess]) -> Vec<(String, u64, usize)> {
+    let mut groups: Vec<(String, u64, usize)> = vec![];
+    for p in processes {
+        let label = match p.role {
+            crate::types::SaltProcessRole::Master => "Master",
+            crate::types::SaltProcessRole::API => "API",
+            crate::types::SaltProcessRole::Worker => "Worker",
+            crate::types::SaltProcessRole::Syndic => "Syndic",
+            crate::types::SaltProcessRole::Minion => "Minion",
+            crate::types::SaltProcessRole::EventPublisher => "EventPub",
+            crate::types::SaltProcessRole::ReqServer => "ReqSrv",
+            crate::types::SaltProcessRole::Unknown => "?",
+        };
+        if let Some((_, total, count)) = groups.iter_mut().find(|(l, _, _)| l == label) {
+            *total += p.rss_kb;
+            *count += 1;
+        } else {
+            groups.push((label.to_string(), p.rss_kb, 1));
+        }
+    }
+    groups
+}
+
+fn proc_group_text(label: &str, rss_kb: u64, count: usize) -> String {
+    let mb = rss_kb / 1024;
+    if count > 1 {
+        format!("{} x{}: {}MB  ", label, count, mb)
+    } else {
+        format!("{}: {}MB  ", label, mb)
+    }
+}
+
+/// How many lines the wrapped per-role memory breakdown needs at a given
+/// panel width, so callers can reserve the right amount of vertical space
+/// instead of letting it silently get clipped (or clipping something below
+/// it). Capped at 3: a pathological number of role groups still degrades
+/// gracefully rather than eating the whole panel.
+fn proc_rows_for(groups: &[(String, u64, usize)], width: u16) -> u16 {
+    let text_len: usize = groups.iter().map(|(l, kb, c)| proc_group_text(l, *kb, *c).len()).sum();
+    let row_width = width.max(1) as usize;
+    (text_len.div_ceil(row_width)).clamp(1, 3) as u16
+}
+
 fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     let total_rss_used: u64 = app.processes.iter().map(|p| p.rss_kb).sum();
     let mem_total_kb = app.system_info.mem_total_kb.max(1);
@@ -245,17 +310,38 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Per-process memory breakdown -- built before the layout so its wrapped
+    // height (it can span multiple lines once there are enough role groups,
+    // e.g. once a co-located Minion role is present alongside Master/Worker/
+    // ReqSrv/EventPub) is known when carving up the block's rows.
+    let proc_groups = group_processes(&app.processes);
+    let proc_rows = proc_rows_for(&proc_groups, inner.width);
+    let mut proc_spans: Vec<Span<'static>> = vec![];
+    for (label, rss_kb, count) in &proc_groups {
+        let color = match label.as_str() {
+            "API" => color::PURPLE,
+            "Master" => color::GREEN,
+            "Worker" => color::CYAN,
+            _ => color::TEXT,
+        };
+        proc_spans.push(Span::styled(proc_group_text(label, *rss_kb, *count), Style::default().fg(color)));
+    }
+
     let inner_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
+        .constraints([Constraint::Length(1), Constraint::Length(proc_rows), Constraint::Min(0)])
         .split(inner);
 
+    let workers_label = match app.worker_busy_pct() {
+        Some(pct) => format!("  Workers {:.0}% busy", pct),
+        None => "  Workers --".to_string(),
+    };
     let gauge = Gauge::default()
         .gauge_style(pct_gauge_style(mem_pct))
         .percent((mem_pct.round() as u16).min(100))
         .label(format!(
-            "Salt RSS {} MB ({} proc)  {} minions",
-            total_rss_used / 1024, proc_count, app.filtered_minions_len(),
+            "Salt RSS {} MB ({} proc)  {} minions{}",
+            total_rss_used / 1024, proc_count, app.filtered_minions_len(), workers_label,
         ));
 
     let mut service_lines: Vec<Line<'static>> = vec![];
@@ -309,43 +395,10 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(gauge, inner_layout[0]);
 
-    // Per-process memory breakdown
-    let mut proc_spans: Vec<Span<'static>> = vec![];
-    let mut proc_groups: Vec<(String, u64, usize)> = vec![]; // (role_label, total_kb, count)
-    for p in &app.processes {
-        let label = match p.role {
-            crate::types::SaltProcessRole::Master => "Master",
-            crate::types::SaltProcessRole::API => "API",
-            crate::types::SaltProcessRole::Worker => "Worker",
-            crate::types::SaltProcessRole::Syndic => "Syndic",
-            crate::types::SaltProcessRole::EventPublisher => "EventPub",
-            crate::types::SaltProcessRole::ReqServer => "ReqSrv",
-            crate::types::SaltProcessRole::Unknown => "?",
-        };
-        if let Some((_, total, count)) = proc_groups.iter_mut().find(|(l, _, _)| l == label) {
-            *total += p.rss_kb;
-            *count += 1;
-        } else {
-            proc_groups.push((label.to_string(), p.rss_kb, 1));
-        }
-    }
-    for (label, rss_kb, count) in &proc_groups {
-        let mb = rss_kb / 1024;
-        let color = match label.as_str() {
-            "API" => color::PURPLE,
-            "Master" => color::GREEN,
-            "Worker" => color::CYAN,
-            _ => color::TEXT,
-        };
-        let text = if *count > 1 {
-            format!("{} x{}: {}MB  ", label, count, mb)
-        } else {
-            format!("{}: {}MB  ", label, mb)
-        };
-        proc_spans.push(Span::styled(text, Style::default().fg(color)));
-    }
     f.render_widget(
-        Paragraph::new(Line::from(proc_spans)).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(Line::from(proc_spans))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(color::BG_DARK)),
         inner_layout[1],
     );
 
@@ -562,6 +615,51 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+// ── Event Type Breakdown ────────────────────────────────────────────────────
+
+fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
+    let block = make_block(" Event Types ".to_string());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let bd = &app.event_breakdown;
+    let cats = [
+        ("Auth",  bd.auth,  color::YELLOW),
+        ("Job",   bd.job_return, color::CYAN),
+        ("Start", bd.start, color::GREEN),
+        ("Beacon", bd.beacon, color::PURPLE),
+        ("Other", bd.other, color::TEXT_DIM),
+    ];
+    let max_count = cats.iter().map(|(_, c, _)| *c).max().unwrap_or(1).max(1);
+
+    let mut lines: Vec<Line> = vec![];
+    if bd.total > 0 {
+        for (label, count, color) in &cats {
+            let bar_max = inner.width.saturating_sub(14);
+            let bar_len = ((*count as f64 / max_count as f64) * bar_max as f64).round() as usize;
+            let bar = "\u{2588}".repeat(bar_len);
+            let mut spans = vec![
+                Span::styled(format!(" {:<6}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{:>5} ", count), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(bar, Style::default().fg(*color)),
+            ];
+            if *label == "Auth" {
+                spans.push(Span::styled(format!(" ({:.1}/s)", app.current_auth_rate), Style::default().fg(color::TEXT_DIM)));
+            }
+            lines.push(Line::from(spans));
+        }
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled(" waiting for events...", Style::default().fg(color::TEXT_DIM)),
+        ]));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        inner,
+    );
+}
+
 // ── Event Rate ───────────────────────────────────────────────────────────────
 
 fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
@@ -610,13 +708,13 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
+    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
+
     let last_seen = if app.secs_since_last_event == u64::MAX {
         "\u{2014}".to_string()
     } else {
         format!("{}s ago", app.secs_since_last_event)
     };
-
-    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
 
     let stats_line = Line::from(vec![
         Span::styled("  Rate: ", Style::default().fg(color::TEXT_LABEL)),
@@ -732,20 +830,36 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let success = app.job_success_pct().map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into());
+    let stuck = app.job_stuck_count();
+    let (p50, p95) = app.job_completion_latency_p50_p95().unwrap_or((0.0, 0.0));
+    let partial = app.job_partial_pct().map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into());
+
+    let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
+        Span::styled("  success:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(success, Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(" stuck:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(stuck.to_string(), Style::default().fg(if stuck > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+        Span::styled(" p50/p95:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{:.1}s/{:.1}s", p50, p95), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(" partial:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(partial, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+    ])];
+
     if app.jobs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no active jobs",
+            Style::default().fg(color::TEXT_DIM),
+        )));
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "  no active jobs",
-                Style::default().fg(color::TEXT_DIM),
-            ))).style(Style::default().bg(color::BG_DARK)),
+            Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
             inner,
         );
         return;
     }
 
-    // Show up to 4 latest jobs, sorted by most recent
-    let count = app.jobs.len().min(4);
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(count);
+    // Show up to 3 latest jobs, sorted by most recent
+    let count = app.jobs.len().min(3);
     for job in app.jobs.iter().rev().take(count) {
         let progress = if job.target_count > 0 {
             let pct = (job.returned as f64 / job.target_count as f64).min(1.0);

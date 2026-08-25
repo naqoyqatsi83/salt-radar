@@ -4,8 +4,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use std::collections::HashSet;
+
 use crate::app::App;
-use crate::types::MinionInfo;
+use crate::types::{KeyStatus, MinionInfo};
 
 use super::color;
 use ratatui::style::Color;
@@ -24,7 +26,7 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Minion Pulse ({}) ", app.minion_info.len()))
+        .title(format!(" Minion Pulse ({}) ", app.pulse_minions_count()))
         .style(Style::default().bg(color::BG_DARK));
 
     let inner = block.inner(area);
@@ -259,7 +261,14 @@ fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn gather_minions(app: &App) -> Vec<MinionInfo> {
-    let mut minions: Vec<MinionInfo> = app.minion_info.clone();
+    let accepted: HashSet<&str> = app.keys.iter()
+        .filter(|k| k.status == KeyStatus::Accepted)
+        .map(|k| k.id.as_str())
+        .collect();
+    let mut minions: Vec<MinionInfo> = app.minion_info.iter()
+        .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
+        .cloned()
+        .collect();
     minions.sort_by(|a, b| a.id.cmp(&b.id));
     minions
 }

@@ -47,14 +47,14 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
     } else {
-        lines.push(Line::from(Span::styled("   Press / to filter", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("   // filter  r events", Style::default().fg(color::TEXT_DIM))));
     }
 
-    // ── Hide timed-out indicator ─────────────────────────────────────────
+    // ── Hide/collapse hints ──────────────────────────────────────────────
     if app.hide_timed_out {
         lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]  x to toggle", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
     } else if app.fleet_data.is_some() {
-        lines.push(Line::from(Span::styled("  x Hide non-responsive", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("  x Hide  z Toggle  r Events", Style::default().fg(color::TEXT_DIM))));
     }
 
     // ── Admin status line ─────────────────────────────────────────────────
@@ -108,14 +108,22 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                 key_map.insert(k.id.clone(), k.status);
             }
 
+            // Pre-compute filtered timed-out count for the section header
+            let accepted_keys: std::collections::HashSet<&str> = app.keys.iter()
+                .filter(|k| k.status == crate::types::KeyStatus::Accepted)
+                .map(|k| k.id.as_str())
+                .collect();
+            let to_count = app.minion_info.iter()
+                .filter(|m| accepted_keys.contains(m.id.as_str()) || m.key_status == Some(crate::types::KeyStatus::Accepted))
+                .filter(|m| app.filter_text.is_empty() || crate::app::App::matches_minion(m, &app.filter_text))
+                .filter(|m| m.timed_out)
+                .count();
+
             let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
             let scroll = scroll.min(total.saturating_sub(visible));
 
             for idx in scroll..(scroll + visible).min(total) {
-                let minion = match app.get_filtered_minion(idx) {
-                    Some(m) => m,
-                    None => break,
-                };
+                let minion = app.get_filtered_minion(idx);
 
                 let is_selected = idx == selected;
                 let sel_style = if is_selected {
@@ -124,39 +132,50 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().bg(color::BG_DARK)
                 };
 
-                let ks = key_map.get(&minion.id).copied();
-                let (ks_label, ks_color) = match ks {
-                    Some(crate::types::KeyStatus::Accepted) => ("accepted", color::GREEN),
-                    Some(crate::types::KeyStatus::Pending) => ("pending", color::YELLOW),
-                    Some(crate::types::KeyStatus::Rejected) => ("rejected", color::RED),
-                    Some(crate::types::KeyStatus::Denied) => ("denied", color::ORANGE),
-                    None => ("\u{2014}", color::TEXT_DIM),
-                };
-                let os_str = if !minion.osfinger.is_empty() {
-                    minion.osfinger.clone()
-                } else if !minion.osrelease.is_empty() {
-                    format!("{} {}", minion.os, minion.osrelease)
-                } else {
-                    minion.os.clone()
-                };
+                if let Some(minion) = minion {
+                    let ks = key_map.get(&minion.id).copied().or(minion.key_status);
+                    let (ks_label, ks_color) = match ks {
+                        Some(crate::types::KeyStatus::Accepted) => ("accepted", color::GREEN),
+                        Some(crate::types::KeyStatus::Pending) => ("pending", color::YELLOW),
+                        Some(crate::types::KeyStatus::Rejected) => ("rejected", color::RED),
+                        Some(crate::types::KeyStatus::Denied) => ("denied", color::ORANGE),
+                        None => ("\u{2014}", color::TEXT_DIM),
+                    };
+                    let os_str = if !minion.osfinger.is_empty() {
+                        minion.osfinger.clone()
+                    } else if !minion.osrelease.is_empty() {
+                        format!("{} {}", minion.os, minion.osrelease)
+                    } else {
+                        minion.os.clone()
+                    };
 
-                let id_str = truncate(&minion.id, id_w);
-                let os_str = truncate(&os_str, os_w);
-                let ver_str = truncate(&minion.salt_version, sal_w);
+                    let id_str = truncate(&minion.id, id_w);
+                    let os_str = truncate(&os_str, os_w);
+                    let ver_str = truncate(&minion.salt_version, sal_w);
 
-                let fg = if minion.timed_out { color::TEXT_DIM } else { color::TEXT };
-                let label_color = if minion.timed_out { color::TEXT_DIM } else { ks_color };
-                let os_color = if minion.timed_out { color::TEXT_DIM } else { color::CYAN };
-                let os_display = if minion.timed_out { "\u{2014}" } else { &os_str };
-                let ver_display = if minion.timed_out { "\u{2014}" } else { &ver_str };
+                    let fg = if minion.timed_out { color::TEXT_DIM } else { color::TEXT };
+                    let label_color = if minion.timed_out { color::TEXT_DIM } else { ks_color };
+                    let os_color = if minion.timed_out { color::TEXT_DIM } else { color::CYAN };
+                    let os_display = if minion.timed_out { "\u{2014}" } else { &os_str };
+                    let ver_display = if minion.timed_out { "\u{2014}" } else { &ver_str };
 
-                let line = Line::from(vec![
-                    Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(label_color)),
-                    Span::styled(format!("  {:<os_w$}", os_display, os_w = os_w), Style::default().fg(os_color)),
-                    Span::styled(format!("{}", ver_display), Style::default().fg(color::TEXT_DIM)),
-                ]);
-                lines.push(line.style(sel_style));
+                    let line = Line::from(vec![
+                        Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(label_color)),
+                        Span::styled(format!("  {:<os_w$}", os_display, os_w = os_w), Style::default().fg(os_color)),
+                        Span::styled(format!("{}", ver_display), Style::default().fg(color::TEXT_DIM)),
+                    ]);
+                    lines.push(line.style(sel_style));
+                } else if to_count > 0 && !app.hide_timed_out {
+                    // Collapsible section header row
+                    let prefix = if app.timed_out_collapsed { "\u{25B6}" } else { "\u{25BC}" };
+                    let hint = if app.timed_out_collapsed { "  z/Enter to expand" } else { "" };
+                    let line = Line::from(vec![
+                        Span::styled(format!("  {} Timed out ({}){}", prefix, to_count, hint),
+                            Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+                    ]);
+                    lines.push(line.style(sel_style));
+                }
             }
         }
     }
@@ -188,6 +207,24 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(Span::styled("  Check-in Age:", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))));
+    match app.checkin_age_percentiles() {
+        Some((p50, p90, p99)) => {
+            lines.push(Line::from(vec![
+                Span::styled("  p50:", Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{}s", p50), Style::default().fg(color::TEXT)),
+                Span::styled("  p90:", Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{}s", p90), Style::default().fg(color::YELLOW)),
+                Span::styled("  p99:", Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{}s", p99), Style::default().fg(color::ORANGE)),
+            ]));
+        }
+        None => {
+            lines.push(Line::from(Span::styled("  no data yet", Style::default().fg(color::TEXT_DIM))));
+        }
+    }
+    lines.push(Line::from(""));
 
     if let Some(ref fs) = app.fleet_data {
         // bar_width reserves space for: "  name<22> <count> <bar> <pct>%"

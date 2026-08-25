@@ -7,7 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-06-28
+## [0.6.0-rc7] - 2026-08-25
+
+### Added
+- Screenshots for every tab in README.md
+
+### Fixed
+- Agent's `/proc/<pid>/stat` parser was splitting on whitespace with fixed field indices, which silently misaligned every field (RSS, utime, stime) for any process whose `comm` contains a space — inflated the Dashboard's Services memory panel by orders of magnitude. Now locates the `comm` field by its closing paren instead of a fixed-index split.
+- Service memory in the Dashboard `Unit` table now reads the systemd unit's cgroup `MemoryCurrent` (covers the whole process tree, shared pages counted once) instead of just the main process's own `VmRSS` (missed all forked Worker/ReqServer/EventPublisher children). Falls back to `VmRSS` of the main process if cgroup accounting is unavailable.
+- Salt processes are now classified with a `Minion` role (was falling into `Unknown`/`?` for any master that also runs a co-located minion). The Services panel's per-role memory line now wraps across multiple rows instead of being hard-clipped mid-word when it doesn't fit on one line, and the panel now reserves the right amount of height for it instead of pushing service rows off the bottom.
+
+## [0.6.0-rc6] - 2026-08-23
+
+### Added
+- MinionEvents popup: filter items by keyword with `/` key (matches tag, JID, function, description)
+- `minion_start` event tag recognized by both EventBreakdown and MinionEvents popup (was falling into "other" bucket)
+- Job Pulse panel on Dashboard now shows rolling job-health KPIs: return success rate, stuck/in-flight job count, completion latency (p50/p95), and partial-return rate
+- "Stuck job" alert rule: fires when a dispatched job hasn't fully returned within `job_straggler_secs`
+- Worker pool saturation gauge on Dashboard Services panel (`Workers X% busy`), from real per-process CPU sampling
+- Auth event rate shown on Dashboard Event Types panel (events/sec)
+- "Reauth storm" alert rule: fires when auth rate and worker saturation are elevated together (`auth_storm_rate_per_sec`, `worker_saturation_pct`)
+- Pending-key churn rate shown on Dashboard Minion Key Status panel and as a new alert rule (`pending_key_churn_per_min`)
+- Check-in age percentiles (p50/p90/p99) on the Minions tab Fleet Overview panel
+
+### Fixed
+- MinionEvents popup: selection highlight now stops at content width instead of filling full popup width
+- MinionEvents popup: selection highlight width limited to text content using per-span background styling
+- `last_zmq_return` no longer grows unbounded on minion churn — stale entries are pruned on each roster refresh
+- Roster reconciliation on `minion_cache_list` refresh and per-event grains harvest now uses an ID-indexed lookup instead of an O(n) scan per minion/event
+- Minion roster is only re-sorted when a change actually affects ordering, instead of every tick
+- Remove unbounded debug logging to `/tmp/salt-radar-agent-ndjson.log` in the agent (was leftover dev instrumentation with no rotation/cap)
+- `self.jobs` no longer grows unbounded — `JobEntry.age_seconds` was never actually updated after creation, so the age-out cleanup never removed anything
+- Process role classification (Master/Worker/API/Syndic/...) now reads `/proc/<pid>/cmdline` instead of `/proc/<pid>/comm`, which was always the truncated interpreter path and never matched any role — `SaltProcess.role` was effectively always `Unknown`
+- `SaltProcess.cpu_percent` is now real (computed from `/proc/<pid>/stat` utime/stime deltas between polls) instead of a hardcoded `0.0`
+- `KeyInfo.mtime_epoch` is now real (read from the PKI key file's mtime) instead of a hardcoded `0`, for both the `salt.key.Key` and `salt-key -L` fallback paths
+
+## [0.6.0-rc4] - 2026-07-07
+
+### Added
+- Per-minion event/return history view on Minions tab: press `r` to open a filtered popup showing all events, returns, starts, beacons, cache jobs, and alerts for the selected minion
+- Event type breakdown panel on Dashboard mid section: real-time counts and proportional bars for auth, job return, minion start, beacon, and other events — shown alongside Services and Minion Keys in a 3-column layout
+- Config editor popup (F3): edit all 12 TOML parameters grouped by section with real-time editing, validation, and save
+- Collapsible timed-out minion section (z key) with expand/collapse indicator on Minions tab
+- Configurable sniffer buffer size via `sniffer_buffer_size` in `salt-radar.toml`
+- Minion list key status column (accepted/pending/rejected/denied) with color coding
+- Full minion grains viewer in detail popup: press `g` in admin mode to fetch and scroll through all grains
+- Minion connection tracking via `alive_check` agent command (passive cache-file check)
+- Admin mode minion ping (`test.ping`) from detail popup with connection result
+- Minion detail popup: key status, connection status, OS, Salt version, CPU architecture, last seen time
+- Agent-based system data collection: key listing, process listing, service discovery, system info, ZMQ connections, minion ping, minion grains commands
+- Agent debug logging to `/tmp/salt-radar-agent-ndjson.log`
+- Deployment target and testing documentation in CLAUDE.md
+- `sniffer_buffer_size` field to config and TOML
+
+### Changed
+- System data collection moved from Rust-side `/proc` collectors to Python agent for reliability
+- Event panel header shows `Events (current/max)` instead of total only
+- Default `event_buffer_size` increased from 5000 to 10000
+- Minion detail popup layout widened to 80% width with split info/grains sections
+- Agent event subscription wrapped in try/except for graceful startup
+- `DetailPopup::Minion` variant refactored to carry ping state, grains data, and scroll position
+- Dashboard key status panel uses max of key list and minion key_status for totals
+- Pulse view filtering uses `key_status` field fallback when key data missing
+
+### Fixed
+- Ghost minions: `cmd_minion_cache_list` now uses `salt-key -L` as the sole source for the minion roster; cache entries (which can contain stale/removed minions) only enrich existing entries
+- Agent system info collector: add `/proc/net/dev` parsing to `cmd_get_system_info` so Dashboard network panel shows actual byte counts and transfer rates
+- MinionEvents popup: auto-load job cache data when popup opens instead of requiring manual Jobs tab visit
+- MinionEvents popup: use distinct cyan color for cache job JID column instead of dim gray that merged with stale entries
+- MinionEvents popup: apply uniform TEXT_DIM to all columns (not just time) when event is older than 5 minutes
+- MinionEvents popup: fix minion connected/disconnected flapping in header by removing `connected = true` from event processing, making alive_check the sole source
+- Sniffer buffer now respects configurable `max_size` instead of hardcoded 1000
+- Timed-out minion `key_status` and enriched fields (osfinger, osrelease, salt_version, cpuarch, last_seen) preserved across cache list refreshes
+- Key status shown in minion list even when key data is from minion_info fallback
+- Fleet scan minions get `key_status: Accepted` by default
+
+## [0.6.0-rc1] - 2026-07-04
+
+### Added
+- Mouse click on Pulse view minion grid now selects the exact minion indicator instead of just left/right half
+- Double-click on list items (Minions, Events, Jobs, Alerts) opens the detail popup (400ms threshold, same cell)
+- Right-click on a popup closes it (except AdminConfirm confirmation dialog)
+- F2 hotkey toggles mouse mode on/off, with visual indicator in the key hints bar (default: enabled)
+
+### Changed
+- List tab click positioning rewritten from proportional calculation to exact row mapping with scroll offset for precise item selection
+- `DBL_CLICK_MS` constant renamed to `dbl_click_ms` for clippy compliance
+
+### Fixed
+- AdminConfirm popup OK/Cancel buttons now correctly distinguished by exact text hitbox coordinates — clicking Cancel no longer enables admin mode
+
+## [0.5.1] - 2026-06-29
 
 ### Changed
 - Events tab split into left/right panels: event list on left (50%),
@@ -16,20 +106,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse tab completely reworked: replaced concentric ring constellation with a wrapped activity grid
   that scales from 15 to 4,000+ minions — each minion shown as a colored `·` in reading order
 - Grid navigation: Up/Down rows, Left/Right columns (both wrap), no ring math
-- Updated Cargo.toml version to 0.5.0, key hints, and help text
+- Updated Cargo.toml version to 0.5.1, key hints, and help text
 
 ### Added
-- Network traffic monitoring on Dashboard Host Resources panel: bytes in/out, current transfer rate (B/s, KB/s, MB/s, GB/s auto-scaled), cumulative totals from `/proc/net/dev`
-- Fleet overview now displays distribution bars incrementally during scan instead of hiding everything until complete
-- Minion list OS column no longer capped at 30 chars — split proportionally with Salt version column so both remain visible
-- Fleet scan progress now counted from accepted keys (not agent's optional expected_minions list), fixing "1/1" display bug
-- Missing data shown consistently as "?" across OS Distribution, Salt Version, and Architecture in fleet overview
-- Minion list selection highlight now consistent with other tabs — stops at last text character instead of spanning full width
-- README: added fancy badge row (Rust, Linux, ratatui, Salt, MIT)
 - Passive grain harvesting: minion data (osfinger, osrelease, os, saltversion, cpuarch) now populated
   from any grains.item/items return events on the bus, not only during active fleet scans
 
 ### Fixed
+- Pulse view now filters to only accepted-key minions, matching Dashboard and Minions views — no longer shows stale entries from deleted keys
 - Pulse tab dots now show green for all known minions instead of grey (removed overly strict has_data gate)
 - Pulse tab return tracking now extracts minion ID from event tag (salt/job/*/ret/minion_id) instead of data["id"], matching the existing proven event-parsing pattern
 - Pulse tab green tier extended to 300s (5min) to match minion `/start` interval, removed yellow tier
@@ -41,6 +125,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse tracking moved to drain_agent_messages() at event receipt time, not deferred to update()
 - Fleet overview now populates from passive grain collection and shows without admin mode
 - Fleet overview labels passive data as such with hint to run full scan for complete results
+
+## [0.5.0] - 2026-06-28
+
+### Added
+- Network traffic monitoring on Dashboard Host Resources panel: bytes in/out, current transfer rate (B/s, KB/s, MB/s, GB/s auto-scaled), cumulative totals from `/proc/net/dev`
+- Fleet overview now displays distribution bars incrementally during scan instead of hiding everything until complete
+- Minion list OS column no longer capped at 30 chars — split proportionally with Salt version column so both remain visible
+- Fleet scan progress now counted from accepted keys (not agent's optional expected_minions list), fixing "1/1" display bug
+- Missing data shown consistently as "?" across OS Distribution, Salt Version, and Architecture in fleet overview
+- Minion list selection highlight now consistent with other tabs — stops at last text character instead of spanning full width
+- README: added fancy badge row (Rust, Linux, ratatui, Salt, MIT)
+
+### Changed
+- Updated Cargo.toml version to 0.5.0, key hints, and help text
 
 ## [0.4.5] - 2026-06-26
 

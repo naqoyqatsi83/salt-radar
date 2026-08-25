@@ -4,8 +4,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, DetailPopup};
-use crate::types::SnifferState;
+use crate::app::{App, DetailPopup, PingState};
+use crate::types::{KeyStatus, SnifferState};
 
 use super::color;
 
@@ -13,15 +13,18 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
     let Some(ref detail) = app.detail_popup else { return };
 
     match detail {
-        DetailPopup::Minion(minion) => {
-            let area = centered_rect(65, 50, f.area());
+        DetailPopup::Minion(minion_id, ping_state, grains, grains_scroll) => {
+            let area = centered_rect(80, 70, f.area());
             f.render_widget(Clear, area);
-            draw_minion_detail(f, area, minion);
+            if let Some(minion) = app.minion_info.iter().find(|m| m.id == *minion_id) {
+                draw_minion_detail(f, area, minion, ping_state, grains, *grains_scroll, app);
+            }
         }
         DetailPopup::SaltEvent(evt, scroll_offset, scroll_mode) => {
             let area = centered_rect(75, 70, f.area());
             f.render_widget(Clear, area);
-            draw_event_detail(f, area, evt, *scroll_offset, *scroll_mode, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+            let highlight = app.return_to_minion_events.as_ref().map(|(id, _)| id.as_str());
+            draw_event_detail(f, area, evt, *scroll_offset, *scroll_mode, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()), highlight);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, job_fun, job_tgt, job_start_epoch, minion_scroll, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
@@ -42,6 +45,12 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             let area = centered_rect(80, 85, f.area());
             f.render_widget(Clear, area);
             draw_event_sniffer(f, area, state, app.clipboard_at, app.high_contrast, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+        }
+        DetailPopup::MinionEvents { minion_id, selected } => {
+            super::minion_events::draw_minion_events(f, f.area(), app, minion_id, *selected);
+        }
+        DetailPopup::ConfigEditor(_) => {
+            super::config_editor::draw_config_editor(f, app);
         }
     }
 }
@@ -153,9 +162,44 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], footer: Opti
     }
 }
 
-fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo) {
+fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo, ping_state: &PingState, grains: &Option<Vec<(String, String)>>, grains_scroll: usize, app: &App) {
     let mut lines = header_lines(" Minion Detail ");
     lines.push(row("ID", minion.id.clone(), color::CYAN));
+
+    let key_status_text = match minion.key_status {
+        Some(KeyStatus::Accepted) => "accepted".to_string(),
+        Some(KeyStatus::Pending) => "pending".to_string(),
+        Some(KeyStatus::Rejected) => "rejected".to_string(),
+        Some(KeyStatus::Denied) => "denied".to_string(),
+        None => "unknown".to_string(),
+    };
+    let key_status_color = match minion.key_status {
+        Some(KeyStatus::Accepted) => color::GREEN,
+        Some(KeyStatus::Pending) => color::YELLOW,
+        Some(KeyStatus::Rejected) | Some(KeyStatus::Denied) => color::RED,
+        None => color::TEXT_DIM,
+    };
+    lines.push(row("Key Status", key_status_text, key_status_color));
+
+    // Connection status — depends on PingState
+    let (connected_text, connected_color) = match *ping_state {
+        PingState::Idle => (
+            "Admin mode required (press A)".to_string(),
+            color::TEXT_DIM,
+        ),
+        PingState::Pinging(started) => {
+            if started.elapsed().as_secs() > 15 {
+                ("test.ping timed out".to_string(), color::RED)
+            } else {
+                ("test.ping in progress...".to_string(), color::YELLOW)
+            }
+        },
+        PingState::Result(true) => ("connected".to_string(), color::GREEN),
+        PingState::Result(false) => ("disconnected".to_string(), color::RED),
+    };
+    lines.push(row("Connection", connected_text, connected_color));
+
+    // OS information
     let os_display = if !minion.osfinger.is_empty() {
         minion.osfinger.clone()
     } else if !minion.osrelease.is_empty() {
@@ -167,17 +211,75 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     if !minion.osfinger.is_empty() && !minion.osrelease.is_empty() {
         lines.push(row("OS Release", minion.osrelease.clone(), color::TEXT));
     }
+
+    // Grains information
     lines.push(row("Salt Version", minion.salt_version.clone(), color::YELLOW));
-    lines.push(row("Arch", minion.cpuarch.clone(), color::TEXT));
+    lines.push(row("CPU Arch", minion.cpuarch.clone(), color::TEXT));
+
+    // Last seen information
     lines.push(row("Last Seen", format_epoch(minion.last_seen_epoch), color::TEXT_DIM));
+
+    // ── Grains section ────────────────────────────────────────────────────
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  \u{2500}\u{2500}\u{2500}\u{2500} Full Grains \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        Style::default().fg(Color::Rgb(35, 50, 80)),
+    )));
+
+    match grains {
+        None => {
+            if app.admin_mode {
+                lines.push(Line::from(Span::styled(
+                    "  Press g to retrieve full grains from this minion",
+                    Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "  Admin mode required to fetch grains (press A)",
+                    Style::default().fg(color::TEXT_DIM),
+                )));
+            }
+        }
+        Some(pairs) => {
+            if pairs.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "  Loading grains...",
+                    Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+                )));
+            } else {
+                // Compute available height for grains
+                let used = lines.len();
+                let avail = (area.height as usize).saturating_sub(used).saturating_sub(4); // borders(2) + footer(1) + spacing
+                let scroll = grains_scroll.min(pairs.len().saturating_sub(avail));
+                let end = (scroll + avail).min(pairs.len());
+                for (key, val) in pairs.iter().skip(scroll).take(end.saturating_sub(scroll)) {
+                    let display = format!("  {}: {}", key, val);
+                    lines.push(Line::from(Span::styled(display, Style::default().fg(color::TEXT))));
+                }
+                if pairs.len() > avail {
+                    let pct = if pairs.len() > 0 { (scroll * 100) / pairs.len() } else { 0 };
+                    lines.push(Line::from(Span::styled(
+                        format!("  \u{25B2}\u{25BC} scroll: {} items ({}%)", pairs.len(), pct),
+                        Style::default().fg(color::TEXT_DIM),
+                    )));
+                }
+            }
+        }
+    }
+
+    let help_parts = if app.admin_mode {
+        " Esc/q close | y copy | g fetch grains | \u{2191}\u{2193} scroll grains "
+    } else {
+        " Esc/q close | y copy | A admin mode for grains "
+    };
     let footer = Line::from(Span::styled(
-        "  [ Esc / q to close ]",
+        format!("  [{}]", help_parts),
         Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
     ));
     render_popup(f, area, &lines, Some(footer), 0);
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_mode: bool, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_mode: bool, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
     let mut lines = header_lines(" Event Detail ");
     lines.push(row("Tag", evt.tag.clone(), color::CYAN));
     lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
@@ -197,6 +299,25 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
     };
 
     for line in data_lines.iter().skip(effective_scroll) {
+        if let Some(h) = highlight {
+            if !h.is_empty() && line.contains(h) {
+                let mut spans = Vec::new();
+                let mut remaining = *line;
+                while let Some(pos) = remaining.find(h) {
+                    let before = &remaining[..pos];
+                    if !before.is_empty() {
+                        spans.push(Span::styled(before.to_string(), Style::default().fg(color::TEXT)));
+                    }
+                    spans.push(Span::styled(h.to_string(), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)));
+                    remaining = &remaining[pos + h.len()..];
+                }
+                if !remaining.is_empty() {
+                    spans.push(Span::styled(remaining.to_string(), Style::default().fg(color::TEXT)));
+                }
+                lines.push(Line::from(spans));
+                continue;
+            }
+        }
         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
     }
 

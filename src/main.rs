@@ -11,7 +11,7 @@ mod ui;
 use std::io;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyEventKind, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyEventKind, KeyCode, KeyModifiers, MouseEventKind, MouseButton};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -26,6 +26,10 @@ fn main() -> io::Result<()> {
     io::stdout().execute(EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
+
+    // Enable mouse capture for click/scroll support
+    use crossterm::event::{EnableMouseCapture, DisableMouseCapture};
+    io::stdout().execute(EnableMouseCapture)?;
 
     let mut app = App::new();
 
@@ -88,7 +92,56 @@ fn main() -> io::Result<()> {
                 Event::Resize(_, _) => {
                     need_redraw = true;
                 }
+                Event::Mouse(mouse) if app.mouse_enabled => {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            if app.handle_key(KeyCode::Up) { break; }
+                            need_redraw = true;
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if app.handle_key(KeyCode::Down) { break; }
+                            need_redraw = true;
+                        }
+                        MouseEventKind::ScrollLeft => {
+                            if app.handle_key(KeyCode::Left) { break; }
+                            need_redraw = true;
+                        }
+                        MouseEventKind::ScrollRight => {
+                            if app.handle_key(KeyCode::Right) { break; }
+                            need_redraw = true;
+                        }
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            if app.handle_mouse_click(mouse.column, mouse.row, app.last_frame_size) {
+                                break;
+                            }
+                            need_redraw = true;
+                        }
+                        MouseEventKind::Down(MouseButton::Right) => {
+                            app.detail_popup = None;
+                            if let Some((mid, sel)) = app.return_to_minion_events.take() {
+                                app.detail_popup = Some(crate::app::DetailPopup::MinionEvents {
+                                    minion_id: mid, selected: sel,
+                                });
+                                app.popup_tab = Some(app.current_tab);
+                            } else if let Some(sniffer) = app.return_to_sniffer.take() {
+                                app.detail_popup = Some(crate::app::DetailPopup::EventSniffer(sniffer));
+                                app.popup_tab = Some(app.current_tab);
+                            }
+                            need_redraw = true;
+                        }
+                        _ => {}
+                    }
+                }
                 _ => {}
+            }
+        }
+
+        if app.needs_mouse_toggle {
+            app.needs_mouse_toggle = false;
+            if app.mouse_enabled {
+                io::stdout().execute(EnableMouseCapture)?;
+            } else {
+                io::stdout().execute(DisableMouseCapture)?;
             }
         }
 
@@ -106,6 +159,7 @@ fn main() -> io::Result<()> {
 
     app.cleanup();
     disable_raw_mode()?;
+    io::stdout().execute(DisableMouseCapture)?;
     io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())
 }

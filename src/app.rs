@@ -5,18 +5,21 @@ use std::os::unix::fs::MetadataExt;
 use std::process::Stdio;
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::alerts::AlertEngine;
 use crate::collectors;
 use crate::config::{load_config, AppConfig};
 use crate::types::*;
+
+const JOB_STATS_WINDOW: usize = 500;
 
 pub struct App {
     // Config
@@ -40,10 +43,14 @@ pub struct App {
 
     // Minion cache (from agent)
     pub minion_info: Vec<MinionInfo>,
+    // Set whenever minion_info is mutated; the per-tick sort in update()
+    // only runs when this is set, then clears it.
+    minion_info_dirty: bool,
 
     // Events buffer
     pub events: VecDeque<SaltEvent>,
     pub events_since_last_tick: Vec<SaltEvent>,
+    pub event_breakdown: EventBreakdown,
     pub events_per_sec: f64,
 
     // Live jobs
@@ -109,6 +116,8 @@ pub struct App {
     pub sparkline_style: SparklineStyle,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
+    /// Set to true when config editor saves — main loop will restart
+    pub needs_restart: bool,
     /// Measured ZMQ/master response latency in milliseconds (from zmq_ping agent command)
     pub zmq_latency_ms: f64,
     /// When the last zmq_ping was sent (for Rust-side round-trip measurement)
@@ -116,6 +125,27 @@ pub struct App {
     /// Ring buffer of recent latency samples for sparkline (60 samples = 1 per tick)
     pub zmq_latency_history: [f64; 2000],
     pub zmq_latency_idx: usize,
+
+    /// Rolling window of individual job-return outcomes (success/fail)
+    pub job_returns_window: VecDeque<bool>,
+    /// Rolling window of full-completion latencies in seconds
+    pub job_completion_latencies: VecDeque<f64>,
+    /// Rolling window of job close-out outcomes (true = partial return)
+    pub job_outcome_window: VecDeque<bool>,
+
+    /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
+    /// used to compute cpu_percent from the delta between polls.
+    prev_proc_cpu: HashMap<u32, (u64, Instant)>,
+    /// Clock ticks per second on the master host (from the agent's os.sysconf(SC_CLK_TCK))
+    clk_tck: f64,
+
+    /// salt/auth events seen in the current 1s window
+    auth_events_this_sec: u64,
+    /// Ring buffer of recent auth rates (events/sec) for sparkline
+    pub auth_rate_history: [f64; 2000],
+    pub auth_rate_idx: usize,
+    /// Most recent auth events/sec sample
+    pub current_auth_rate: f64,
 
     /// PID-based temp paths to avoid conflicts between users/instances
     pid: u32,
@@ -143,15 +173,29 @@ pub struct App {
     prev_network_tx_bytes: u64,
     prev_network_time: Option<Instant>,
 
+    // Mouse support
+    pub mouse_enabled: bool,
+    pub needs_mouse_toggle: bool,
+    last_click_at: Option<Instant>,
+    last_click_col: u16,
+    last_click_row: u16,
+
     // Sniffer
     pub sniffer_input_active: bool,
     pub sniffer_input_text: String,
     pub sniffer_dirty: bool,
     /// When viewing event detail from sniffer, pressing q returns to sniffer popup
     pub return_to_sniffer: Option<SnifferState>,
+    /// When viewing event detail from MinionEvents, pressing q returns to the list
+    pub return_to_minion_events: Option<(String, usize)>,
+    /// Filter state for MinionEvents popup
+    pub minion_events_filter: String,
+    pub minion_events_is_filtering: bool,
 
     /// Hide timed-out (non-responsive) minions from list
     pub hide_timed_out: bool,
+    /// Collapse the timed-out minion section header
+    pub timed_out_collapsed: bool,
 
     /// Fleet scan async tracking (JID from cmd_async + event-driven returns)
     pub fleet_scan_jid: Option<String>,
@@ -183,18 +227,84 @@ pub enum AgentMessage {
 }
 
 #[derive(Clone, Debug)]
+pub enum PingState {
+    Idle,
+    Pinging(Instant),
+    Result(bool),
+}
+
+// ─── Config editor ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum ConfigFieldKind {
+    Section,
+    Str,
+    U64,
+    F64,
+    SaveButton,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigField {
+    pub label: &'static str,
+    pub label_value: String,
+    pub kind: ConfigFieldKind,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigEditorState {
+    pub fields: Vec<ConfigField>,
+    pub selected: usize,
+    pub editing: bool,
+    pub input: String,
+    pub save_error: Option<String>,
+}
+
+/// A single item in the unified per-minion activity view.
+#[derive(Clone, Debug)]
+pub enum MinionActivityItem {
+    Event(usize, SaltEvent),
+    CacheJob(CacheJobEntry),
+    Alert(AlertEntry),
+}
+
+impl MinionActivityItem {
+    pub fn ts(&self) -> f64 {
+        match self {
+            MinionActivityItem::Event(_, evt) => evt.ts,
+            MinionActivityItem::CacheJob(job) => job.start_epoch,
+            MinionActivityItem::Alert(_) => 0.0,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            MinionActivityItem::Event(_, evt) => &evt.tag,
+            MinionActivityItem::CacheJob(job) => &job.fun,
+            MinionActivityItem::Alert(alert) => &alert.description,
+        }
+    }
+}
+
+// ─── Detail popup variants ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
 pub enum DetailPopup {
-    Minion(MinionInfo),
+    Minion(String, PingState, Option<Vec<(String, String)>>, usize),
     SaltEvent(SaltEvent, usize, bool),
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_max: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
     EventSniffer(crate::types::SnifferState),
+    ConfigEditor(ConfigEditorState),
+    MinionEvents { minion_id: String, selected: usize },
 }
 
 impl App {
     pub fn new() -> Self {
         let config = load_config(&std::path::Path::new("salt-radar.toml"));
+        let config_secs = config.config_secs;
+        let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
         let pid = std::process::id();
 
@@ -234,9 +344,11 @@ impl App {
             system_info: SystemInfo::default(),
 
             minion_info: Vec::new(),
+            minion_info_dirty: false,
 
-            events: VecDeque::with_capacity(5000),
+            events: VecDeque::with_capacity(event_buffer_size),
             events_since_last_tick: Vec::new(),
+            event_breakdown: EventBreakdown::default(),
             events_per_sec: 0.0,
 
             jobs: Vec::new(),
@@ -253,7 +365,16 @@ impl App {
             sniffer_input_text: String::new(),
             sniffer_dirty: false,
             return_to_sniffer: None,
+            return_to_minion_events: None,
+            minion_events_filter: String::new(),
+            minion_events_is_filtering: false,
             hide_timed_out: false,
+            timed_out_collapsed: false,
+            mouse_enabled: true,
+            needs_mouse_toggle: false,
+            last_click_at: None,
+            last_click_col: 0,
+            last_click_row: 0,
             fleet_scan_jid: None,
             fleet_scan_expected: Vec::new(),
             fleet_scan_responded: HashSet::new(),
@@ -291,7 +412,7 @@ impl App {
 
             agent_rx,
             agent_req_id: 0,
-            config_tick: 0,
+            config_tick: config_secs,
             pending_jid_lookup: None,
             pending_jid_lookup_at: None,
             pending_y_copy: None,
@@ -307,10 +428,20 @@ impl App {
             clipboard_msg: None,
             sparkline_style: SparklineStyle::default(),
             needs_terminal_clear: false,
+            needs_restart: false,
             zmq_latency_ms: 0.0,
             zmq_ping_sent_at: None,
             zmq_latency_history: [0.0; 2000],
             zmq_latency_idx: 0,
+            job_returns_window: VecDeque::new(),
+            job_completion_latencies: VecDeque::new(),
+            job_outcome_window: VecDeque::new(),
+            prev_proc_cpu: HashMap::new(),
+            clk_tck: 100.0,
+            auth_events_this_sec: 0,
+            auth_rate_history: [0.0; 2000],
+            auth_rate_idx: 0,
+            current_auth_rate: 0.0,
 
             activity_matrix: [0; 2000],
             activity_matrix_idx: 0,
@@ -342,6 +473,14 @@ impl App {
         let mut y_copy_json: Option<String> = None;
         let mut processed = 0;
         const MAX_PER_DRAIN: usize = 200;
+        // Index by minion ID to avoid an O(n) Vec scan per minion/event in
+        // this batch. Rebuilt whenever minion_info is structurally replaced
+        // (see the "minion_cache_list" arm below).
+        let mut minion_index: HashMap<String, usize> = self.minion_info
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.id.clone(), i))
+            .collect();
         while let Some(msg) = q.pop_front() {
             processed += 1;
             match msg {
@@ -358,7 +497,84 @@ impl App {
                             self.config_snapshot = Some(parse_config_snapshot(&data));
                         }
                         "minion_cache_list" => {
-                            self.minion_info = parse_minion_list(&data);
+                            let mut minions = parse_minion_list(&data);
+                            for minion in &mut minions {
+                                if minion.key_status.is_none() {
+                                    minion.key_status = Some(KeyStatus::Accepted);
+                                }
+                                minion.connected = true;
+                                // Preserve enriched fields from event processing
+                                if let Some(&i) = minion_index.get(&minion.id) {
+                                    let existing = &self.minion_info[i];
+                                    if !existing.osfinger.is_empty() { minion.osfinger.clone_from(&existing.osfinger); }
+                                    if !existing.osrelease.is_empty() { minion.osrelease.clone_from(&existing.osrelease); }
+                                    if !existing.salt_version.is_empty() { minion.salt_version.clone_from(&existing.salt_version); }
+                                    if !existing.cpuarch.is_empty() { minion.cpuarch.clone_from(&existing.cpuarch); }
+                                    if !existing.os.is_empty() { minion.os.clone_from(&existing.os); }
+                                    if existing.last_seen_epoch > minion.last_seen_epoch { minion.last_seen_epoch = existing.last_seen_epoch; }
+                                    if existing.cache_updated_epoch > minion.cache_updated_epoch { minion.cache_updated_epoch = existing.cache_updated_epoch; }
+                                    // Fleet scan timed_out status is not known to the cache — preserve it
+                                    if existing.timed_out { minion.timed_out = true; }
+                                }
+                            }
+                            // Sort: timed-out last, then by ID
+                            minions.sort_by(|a, b| {
+                                a.timed_out
+                                    .cmp(&b.timed_out)
+                                    .then(a.id.cmp(&b.id))
+                            });
+                            self.minion_info = minions;
+                            // Roster changed shape — reindex, and drop pulse-tracking
+                            // entries for minions no longer in the roster so
+                            // last_zmq_return doesn't grow unbounded on churn.
+                            minion_index = self.minion_info
+                                .iter()
+                                .enumerate()
+                                .map(|(i, m)| (m.id.clone(), i))
+                                .collect();
+                            self.last_zmq_return.retain(|id, _| minion_index.contains_key(id));
+                        }
+                        "list_keys" => {
+                            if ok {
+                                self.keys = serde_json::from_value(data["keys"].clone()).unwrap_or_default();
+                            }
+                        }
+                        "list_processes" => {
+                            if ok {
+                                if let Some(tck) = data["clk_tck"].as_f64() {
+                                    self.clk_tck = tck;
+                                }
+                                self.processes = serde_json::from_value(data["processes"].clone()).unwrap_or_default();
+                                let now = Instant::now();
+                                let mut seen_pids: HashSet<u32> = HashSet::new();
+                                for p in self.processes.iter_mut() {
+                                    seen_pids.insert(p.pid);
+                                    if let Some((prev_ticks, prev_at)) = self.prev_proc_cpu.get(&p.pid) {
+                                        let elapsed = now.duration_since(*prev_at).as_secs_f64();
+                                        if elapsed > 0.0 {
+                                            let tick_delta = p.cpu_ticks.saturating_sub(*prev_ticks);
+                                            p.cpu_percent = ((tick_delta as f64 / self.clk_tck) / elapsed * 100.0) as f32;
+                                        }
+                                    }
+                                    self.prev_proc_cpu.insert(p.pid, (p.cpu_ticks, now));
+                                }
+                                self.prev_proc_cpu.retain(|pid, _| seen_pids.contains(pid));
+                            }
+                        }
+                        "list_services" => {
+                            if ok {
+                                self.services = serde_json::from_value(data["services"].clone()).unwrap_or_default();
+                            }
+                        }
+                        "get_system_info" => {
+                            if ok {
+                                self.system_info = serde_json::from_value(data.clone()).unwrap_or_default();
+                            }
+                        }
+                        "get_zmq_connections" => {
+                            if ok {
+                                self.zmq_connections = serde_json::from_value(data["connections"].clone()).unwrap_or_default();
+                            }
                         }
                         "zmq_ping" => {
                             if let Some(sent) = self.zmq_ping_sent_at {
@@ -368,6 +584,50 @@ impl App {
                                 self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
                             }
                             self.zmq_ping_sent_at = None;
+                        }
+                        "alive_check" => {
+                            if ok {
+                                let up: Vec<String> = data["up"].as_array()
+                                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                    .unwrap_or_default();
+                                // Mark up minions connected, clear others
+                                for minion in &mut self.minion_info {
+                                    minion.connected = up.contains(&minion.id);
+                                }
+                            }
+                        }
+                        "minion_ping" => {
+                            if let Some(mid) = data["minion_id"].as_str() {
+                                let ping_ok = data["connected"].as_bool().unwrap_or(false);
+                                if let Some(minion) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                    minion.connected = ping_ok;
+                                }
+                                // Update popup state
+                                if let Some(DetailPopup::Minion(ref popup_id, ref mut state, _, _)) = self.detail_popup {
+                                    if popup_id == mid {
+                                        *state = PingState::Result(ping_ok);
+                                    }
+                                }
+                            }
+                        }
+                        "minion_grains" => {
+                            if let Some(mid) = data["minion_id"].as_str() {
+                                let pairs: Vec<(String, String)> = data["grains"].as_array()
+                                    .map(|arr| {
+                                        arr.iter().filter_map(|v| {
+                                            let obj = v.as_object()?;
+                                            let key = obj.get("key")?.as_str()?;
+                                            let val = obj.get("value")?.as_str()?;
+                                            Some((key.to_string(), val.to_string()))
+                                        }).collect()
+                                    })
+                                    .unwrap_or_default();
+                                if let Some(DetailPopup::Minion(ref popup_id, _, ref mut grains, _)) = self.detail_popup {
+                                    if popup_id == mid {
+                                        *grains = Some(pairs);
+                                    }
+                                }
+                            }
                         }
                         "fleet_scan" => {
                             if ok {
@@ -450,10 +710,20 @@ impl App {
                     }
                 }
                 AgentMessage::Event { tag, data, ts } => {
+                    // Track event breakdown
+                    self.event_breakdown.record(&tag);
+                    if tag.starts_with("salt/auth") {
+                        self.auth_events_this_sec += 1;
+                    }
+
                     // ── Normal event processing ─────────────────────────
                     // Track return events for activity matrix
                     if tag.contains("/ret/") {
                         self.current_sec_returns += 1;
+                        let success = data["success"].as_bool()
+                            .unwrap_or_else(|| derive_success_retcode(&data["return"]).1);
+                        self.job_returns_window.push_back(success);
+                        if self.job_returns_window.len() > JOB_STATS_WINDOW { self.job_returns_window.pop_front(); }
                         if let Some(mid) = tag.rsplit('/').next() {
                             if !mid.is_empty() {
                                 self.last_activity_minion = mid.to_string();
@@ -461,9 +731,14 @@ impl App {
                                 self.last_activity_at = Instant::now();
                                 // Update last_seen for this minion from return events
                                 let ts_epoch = ts as u64;
-                                if let Some(info) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                let minion_pos = minion_index.get(mid).copied();
+                                if let Some(i) = minion_pos {
+                                    let info = &mut self.minion_info[i];
                                     if ts_epoch > info.last_seen_epoch {
                                         info.last_seen_epoch = ts_epoch;
+                                    }
+                                    if info.key_status.is_none() {
+                                        info.key_status = Some(KeyStatus::Accepted);
                                     }
                                 }
                                 // Passive harvest: populate minion data from grains.item/items returns
@@ -477,29 +752,32 @@ impl App {
                                         let cpuarch = return_data.get("cpuarch").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                         let known = !osfinger.is_empty() || !salt_version.is_empty() || !os.is_empty();
                                         if known {
-                                            if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id == mid) {
+                                            let fm = if let Some(i) = minion_pos {
+                                                let existing = &mut self.minion_info[i];
                                                 if !osfinger.is_empty() { existing.osfinger = osfinger; }
                                                 if !osrelease.is_empty() { existing.osrelease = osrelease; }
                                                 if !os.is_empty() { existing.os = os; }
                                                 if !salt_version.is_empty() { existing.salt_version = salt_version; }
                                                 if !cpuarch.is_empty() { existing.cpuarch = cpuarch; }
-                                                existing.timed_out = false;
-                                            } else {
-                                                self.minion_info.push(MinionInfo {
+                                                if existing.timed_out {
+                                                    existing.timed_out = false;
+                                                    self.minion_info_dirty = true;
+                                                }
+                                                if existing.key_status.is_none() {
+                                                    existing.key_status = Some(KeyStatus::Accepted);
+                                                }
+                                                // Also populate fleet_data from the merged minion_info
+                                                Some(FleetMinion {
                                                     id: mid.to_string(),
-                                                    osfinger, osrelease, os, salt_version, cpuarch,
-                                                    ..Default::default()
-                                                });
-                                            }
-                                            // Also populate fleet_data from the merged minion_info
-                                            let fm = self.minion_info.iter().find(|m| m.id == mid).map(|info| FleetMinion {
-                                                id: mid.to_string(),
-                                                osfinger: info.osfinger.clone(),
-                                                osrelease: info.osrelease.clone(),
-                                                saltversion: info.salt_version.clone(),
-                                                cpuarch: info.cpuarch.clone(),
-                                                timed_out: false,
-                                            });
+                                                    osfinger: existing.osfinger.clone(),
+                                                    osrelease: existing.osrelease.clone(),
+                                                    saltversion: existing.salt_version.clone(),
+                                                    cpuarch: existing.cpuarch.clone(),
+                                                    timed_out: false,
+                                                })
+                                            } else {
+                                                None
+                                            };
                                             if let Some(fm) = fm {
                                                 if let Some(ref mut fd) = self.fleet_data {
                                                     if let Some(existing) = fd.minions.iter_mut().find(|m| m.id == mid) {
@@ -548,7 +826,7 @@ impl App {
                         if !state.paused {
                             if let Some(evt) = self.events.back() {
                                 if Self::matches_sniffer_event(evt, &state.minion_ids) {
-                                    if state.buffer.len() >= 1000 {
+                                    if state.buffer.len() >= state.max_size {
                                         state.buffer.pop_front();
                                     }
                                     state.buffer.push_back(evt.clone());
@@ -616,6 +894,7 @@ impl App {
                 if started.elapsed().as_secs() > 65 {
                     self.pending_jid_lookup = None;
                     self.pending_jid_lookup_at = None;
+                    self.return_to_minion_events = None;
                     self.detail_popup = None;
                 }
             }
@@ -652,6 +931,8 @@ impl App {
             .min(self.filtered_alerts_len().saturating_sub(1));
         self.minion_selected = self.minion_selected
             .min(self.filtered_minions_len().saturating_sub(1));
+        self.pulse_selected = self.pulse_selected
+            .min(self.pulse_minions_count().saturating_sub(1));
     }
 
     fn matches_filter(text: &str, pat: &str) -> bool {
@@ -726,7 +1007,7 @@ impl App {
             || Self::matches_filter(&alert.description, pat)
     }
 
-    fn matches_minion(minion: &MinionInfo, pat: &str) -> bool {
+    pub fn matches_minion(minion: &MinionInfo, pat: &str) -> bool {
         if pat.is_empty() { return true; }
         Self::matches_filter(&minion.id, pat)
             || Self::matches_filter(&minion.os, pat)
@@ -758,6 +1039,127 @@ impl App {
         let pat = &self.filter_text;
         let known = self.accepted_ids();
         self.events.iter().rev().filter(|e| Self::matches_event(e, pat, &known)).nth(index)
+    }
+
+    /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
+    /// newest first. Matches on data["id"], tag patterns /ret/<id>, salt/minion/<id>/start,
+    /// and salt/beacon/<id>. Returns owned SaltEvents to avoid borrow conflicts.
+    pub fn events_for_minion(&self, minion_id: &str) -> Vec<(usize, SaltEvent)> {
+        self.events
+            .iter()
+            .rev()
+            .enumerate()
+            .filter(|(_idx, evt)| {
+                evt.data["id"].as_str() == Some(minion_id)
+                    || evt.tag.ends_with(&format!("/ret/{}", minion_id))
+                    || evt.tag == format!("salt/minion/{}/start", minion_id)
+                    || evt.tag.starts_with(&format!("salt/beacon/{}", minion_id))
+            })
+            .map(|(idx, evt)| (idx, evt.clone()))
+            .collect()
+    }
+
+    /// Unified activity list for a minion: events + cache jobs + alerts.
+    pub fn minion_activity(&self, minion_id: &str) -> Vec<MinionActivityItem> {
+        let mut items: Vec<MinionActivityItem> = Vec::new();
+
+        // Events from event buffer
+        for (idx, evt) in self.events_for_minion(minion_id) {
+            items.push(MinionActivityItem::Event(idx, evt));
+        }
+
+        // Cache jobs targeting this minion
+        for job in &self.jobs_cache {
+            if job.tgt == "*" || job.tgt == minion_id {
+                items.push(MinionActivityItem::CacheJob(job.clone()));
+            }
+        }
+
+        // Alerts mentioning this minion
+        for alert in &self.alert_engine.alerts {
+            if alert.description.contains(minion_id) || alert.details.iter().any(|d| d.contains(minion_id)) {
+                items.push(MinionActivityItem::Alert(alert.clone()));
+            }
+        }
+
+        // Sort by timestamp descending (alerts with ts=0.0 fall to end)
+        items.sort_by(|a, b| b.ts().partial_cmp(&a.ts()).unwrap_or(std::cmp::Ordering::Equal));
+        items
+    }
+
+    /// Rolling percentage of job returns with success == true, over the last
+    /// JOB_STATS_WINDOW returns. None until at least one return has been seen.
+    pub fn job_success_pct(&self) -> Option<f64> {
+        if self.job_returns_window.is_empty() { return None; }
+        let ok = self.job_returns_window.iter().filter(|s| **s).count();
+        Some(100.0 * ok as f64 / self.job_returns_window.len() as f64)
+    }
+
+    /// Count of active jobs dispatched but not fully returned past job_straggler_secs.
+    pub fn job_stuck_count(&self) -> usize {
+        self.jobs.iter().filter(|j| {
+            j.target_count > 0 && j.returned < j.target_count
+                && j.age_seconds > self.config.job_straggler_secs
+        }).count()
+    }
+
+    /// p50/p95 job completion latency in seconds, over the last JOB_STATS_WINDOW
+    /// fully-completed jobs. None until at least one job has fully completed.
+    pub fn job_completion_latency_p50_p95(&self) -> Option<(f64, f64)> {
+        if self.job_completion_latencies.is_empty() { return None; }
+        let mut v: Vec<f64> = self.job_completion_latencies.iter().copied().collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pick = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        Some((pick(0.50), pick(0.95)))
+    }
+
+    /// Rolling percentage of closed-out jobs where returned < target_count,
+    /// over the last JOB_STATS_WINDOW closed jobs. None until one has closed.
+    pub fn job_partial_pct(&self) -> Option<f64> {
+        if self.job_outcome_window.is_empty() { return None; }
+        let partial = self.job_outcome_window.iter().filter(|p| **p).count();
+        Some(100.0 * partial as f64 / self.job_outcome_window.len() as f64)
+    }
+
+    /// Worker pool saturation: sum of Worker-role process CPU%, normalized
+    /// against the configured worker_threads count. None until both the
+    /// worker_threads config and at least one CPU sample are available.
+    pub fn worker_busy_pct(&self) -> Option<f64> {
+        let worker_threads = self.config_snapshot.as_ref()?.worker_threads?;
+        if worker_threads <= 0 { return None; }
+        let total_cpu: f64 = self.processes.iter()
+            .filter(|p| p.role == SaltProcessRole::Worker)
+            .map(|p| p.cpu_percent as f64)
+            .sum();
+        Some((total_cpu / (worker_threads as f64 * 100.0) * 100.0).clamp(0.0, 100.0))
+    }
+
+    /// Count of pending keys whose PKI file mtime is within the last minute.
+    pub fn pending_key_churn_per_min(&self) -> usize {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.keys.iter().filter(|k| {
+            k.status == KeyStatus::Pending && k.mtime_epoch > 0
+                && now.saturating_sub(k.mtime_epoch) < 60
+        }).count()
+    }
+
+    /// p50/p90/p99 check-in age (now - last_seen_epoch) across the fleet, in seconds.
+    pub fn checkin_age_percentiles(&self) -> Option<(u64, u64, u64)> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut ages: Vec<u64> = self.minion_info.iter()
+            .filter(|m| m.last_seen_epoch > 0)
+            .map(|m| now.saturating_sub(m.last_seen_epoch))
+            .collect();
+        if ages.is_empty() { return None; }
+        ages.sort_unstable();
+        let pick = |p: f64| ages[((ages.len() - 1) as f64 * p).round() as usize];
+        Some((pick(0.50), pick(0.90), pick(0.99)))
     }
 
     pub fn filtered_jobs_len(&self) -> usize {
@@ -806,6 +1208,16 @@ impl App {
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).nth(index)
     }
 
+    pub fn pulse_minions_count(&self) -> usize {
+        let accepted: HashSet<&str> = self.keys.iter()
+            .filter(|k| k.status == KeyStatus::Accepted)
+            .map(|k| k.id.as_str())
+            .collect();
+        self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
+            .count()
+    }
+
     pub fn filtered_minions_len(&self) -> usize {
         let accepted: HashSet<&str> = self.keys.iter()
             .filter(|k| k.status == KeyStatus::Accepted)
@@ -813,11 +1225,21 @@ impl App {
             .collect();
         let hide = self.hide_timed_out;
         let pat = &self.filter_text;
-        self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()))
-            .filter(|m| !hide || !m.timed_out)
+        let resp_count = self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
             .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
-            .count()
+            .filter(|m| !m.timed_out)
+            .count();
+        let to_count = self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
+            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+            .filter(|m| m.timed_out)
+            .count();
+        if hide || to_count == 0 {
+            resp_count
+        } else {
+            resp_count + 1 + if self.timed_out_collapsed { 0 } else { to_count }
+        }
     }
 
     pub fn get_filtered_minion(&self, index: usize) -> Option<&MinionInfo> {
@@ -827,16 +1249,272 @@ impl App {
             .collect();
         let hide = self.hide_timed_out;
         let pat = &self.filter_text;
-        self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()))
-            .filter(|m| !hide || !m.timed_out)
+
+        let resp_count = self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
             .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
-            .nth(index)
+            .filter(|m| !m.timed_out)
+            .count();
+
+        if index < resp_count {
+            return self.minion_info.iter()
+                .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
+                .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+                .filter(|m| !m.timed_out)
+                .nth(index);
+        }
+
+        if hide { return None; }
+
+        // index == resp_count is the collapsible section header (not a minion)
+        let to_idx = index.wrapping_sub(resp_count).wrapping_sub(1);
+        self.minion_info.iter()
+            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
+            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+            .filter(|m| m.timed_out)
+            .nth(to_idx)
+    }
+
+    fn open_config_editor(&mut self) {
+        // Clone the current config into an editable state
+        let cfg = &self.config;
+        self.detail_popup = Some(DetailPopup::ConfigEditor(ConfigEditorState {
+            fields: vec![
+                ConfigField { label: "[salt]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "python_bin", label_value: cfg.python_bin.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "master_config", label_value: cfg.master_config.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "[refresh]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "dashboard_secs", label_value: cfg.dashboard_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "minions_secs", label_value: cfg.minions_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "config_secs", label_value: cfg.config_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "[events]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "buffer_size", label_value: cfg.event_buffer_size.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "sniffer_buffer_size", label_value: cfg.sniffer_buffer_size.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "[alerts]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "stale_minion_secs", label_value: cfg.stale_minion_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "pending_key_secs", label_value: cfg.pending_key_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "job_straggler_secs", label_value: cfg.job_straggler_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "disk_usage_pct", label_value: cfg.disk_usage_pct.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "auth_storm_rate_per_sec", label_value: cfg.auth_storm_rate_per_sec.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "worker_saturation_pct", label_value: cfg.worker_saturation_pct.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "pending_key_churn_per_min", label_value: cfg.pending_key_churn_per_min.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
+            ],
+            selected: 1, // first editable field (skip section header)
+            editing: false,
+            input: String::new(),
+            save_error: None,
+        }));
+        self.popup_tab = None; // global — works from any tab
+    }
+
+    fn save_config_from_editor(&mut self) -> Result<(), String> {
+        let fields = match self.detail_popup {
+            Some(DetailPopup::ConfigEditor(ref state)) => &state.fields,
+            _ => return Err("No editor state".into()),
+        };
+        // Extract values by label
+        let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for f in fields {
+            match f.kind {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 => {
+                    vals.insert(f.label, f.label_value.as_str());
+                }
+                _ => {}
+            }
+        }
+        // Parse and build new config
+        let parse_u64 = |key| vals.get(key).and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
+        let parse_usize = |key| vals.get(key).and_then(|v| v.parse::<usize>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
+        let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
+
+        let new_config = AppConfig {
+            agent_path: vals.get("agent_path").unwrap_or(&"").to_string(),
+            python_bin: vals.get("python_bin").unwrap_or(&"").to_string(),
+            master_config: vals.get("master_config").unwrap_or(&"").to_string(),
+            dashboard_secs: parse_u64("dashboard_secs")?,
+            minions_secs: parse_u64("minions_secs")?,
+            config_secs: parse_u64("config_secs")?,
+            event_buffer_size: parse_usize("buffer_size")?,
+            sniffer_buffer_size: parse_usize("sniffer_buffer_size")?,
+            stale_minion_secs: parse_u64("stale_minion_secs")?,
+            pending_key_secs: parse_u64("pending_key_secs")?,
+            job_straggler_secs: parse_u64("job_straggler_secs")?,
+            disk_usage_pct: parse_f64("disk_usage_pct")?,
+            auth_storm_rate_per_sec: parse_f64("auth_storm_rate_per_sec")?,
+            worker_saturation_pct: parse_f64("worker_saturation_pct")?,
+            pending_key_churn_per_min: parse_u64("pending_key_churn_per_min")?,
+        };
+
+        crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
+            .map_err(|e| format!("Write failed: {}", e))?;
+        self.config = new_config;
+        Ok(())
+    }
+
+    fn handle_config_editor_key(&mut self, code: KeyCode) -> bool {
+        // --- Editing mode (borrow state) ---
+        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+            if s.editing {
+                match code {
+                    KeyCode::Enter => {
+                        if let Some(field) = s.fields.get_mut(s.selected) {
+                            field.label_value = s.input.clone();
+                        }
+                        s.editing = false;
+                        s.input.clear();
+                    }
+                    KeyCode::Esc => {
+                        s.editing = false;
+                        s.input.clear();
+                    }
+                    KeyCode::Backspace => { s.input.pop(); }
+                    KeyCode::Char(c) => { s.input.push(c); }
+                    _ => {}
+                }
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        // --- Navigation / action mode (borrow state per arm, not function-level) ---
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    let mut new_sel = s.selected;
+                    loop {
+                        if new_sel == 0 { break; }
+                        new_sel = new_sel.saturating_sub(1);
+                        if let Some(f) = s.fields.get(new_sel) {
+                            if !matches!(f.kind, ConfigFieldKind::Section) {
+                                s.selected = new_sel;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    let last = s.fields.len().saturating_sub(1);
+                    let mut new_sel = s.selected;
+                    loop {
+                        if new_sel >= last { break; }
+                        new_sel = new_sel.saturating_add(1);
+                        if let Some(f) = s.fields.get(new_sel) {
+                            if !matches!(f.kind, ConfigFieldKind::Section) {
+                                s.selected = new_sel;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::PageUp => {
+                for _ in 0..5 {
+                    if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                        let mut new_sel = s.selected;
+                        loop {
+                            if new_sel == 0 { break; }
+                            new_sel = new_sel.saturating_sub(1);
+                            if let Some(f) = s.fields.get(new_sel) {
+                                if !matches!(f.kind, ConfigFieldKind::Section) {
+                                    s.selected = new_sel;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::PageDown => {
+                for _ in 0..5 {
+                    if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                        let last = s.fields.len().saturating_sub(1);
+                        let mut new_sel = s.selected;
+                        loop {
+                            if new_sel >= last { break; }
+                            new_sel = new_sel.saturating_add(1);
+                            if let Some(f) = s.fields.get(new_sel) {
+                                if !matches!(f.kind, ConfigFieldKind::Section) {
+                                    s.selected = new_sel;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Home => {
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    s.selected = 1;
+                }
+            }
+            KeyCode::End => {
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    s.selected = s.fields.len().saturating_sub(1);
+                }
+            }
+            KeyCode::Enter => {
+                // Determine action from field at current selection (immutable borrow)
+                let action = match self.detail_popup {
+                    Some(DetailPopup::ConfigEditor(ref s)) => {
+                        match s.fields.get(s.selected).map(|f| &f.kind) {
+                            Some(ConfigFieldKind::SaveButton) => Some("save"),
+                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) => {
+                                Some("edit")
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                match action {
+                    Some("save") => {
+                        match self.save_config_from_editor() {
+                            Ok(()) => {
+                                self.detail_popup = None;
+                                self.clipboard_msg = Some((" Config saved ".into(), std::time::Instant::now()));
+                            }
+                            Err(e) => {
+                                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                                    s.save_error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                    Some("edit") => {
+                        let val = match self.detail_popup {
+                            Some(DetailPopup::ConfigEditor(ref s)) => {
+                                s.fields.get(s.selected).map(|f| f.label_value.clone())
+                            }
+                            _ => None,
+                        };
+                        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                            if let Some(v) = val {
+                                s.input = v;
+                                s.editing = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.detail_popup = None;
+            }
+            _ => {}
+        }
+        false
     }
 
     fn open_detail(&mut self) {
         match self.current_tab {
             Tab::Events => {
+                self.return_to_minion_events = None;
+                self.return_to_sniffer = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
                     self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
                     self.popup_tab = Some(self.current_tab);
@@ -911,8 +1589,18 @@ impl App {
             }
             Tab::Minions => {
                 if let Some(minion) = self.get_filtered_minion(self.minion_selected) {
-                    self.detail_popup = Some(DetailPopup::Minion(minion.clone()));
+                    let mid = minion.id.clone();
+                    let state = if self.admin_mode {
+                        self.send_agent_cmd("minion_ping", Some(serde_json::json!({"minion_id": &mid})));
+                        PingState::Pinging(Instant::now())
+                    } else {
+                        PingState::Idle
+                    };
+                    self.detail_popup = Some(DetailPopup::Minion(mid, state, None, 0));
                     self.popup_tab = Some(self.current_tab);
+                } else if !self.hide_timed_out {
+                    // Header row selected — toggle collapse
+                    self.timed_out_collapsed = !self.timed_out_collapsed;
                 }
             }
             _ => {}
@@ -1789,16 +2477,13 @@ impl App {
                 existing.osrelease = osrelease.clone();
                 existing.salt_version = saltversion.clone();
                 existing.cpuarch = cpuarch.clone();
-                existing.timed_out = false;
-            } else {
-                self.minion_info.push(MinionInfo {
-                    id: mid.clone(),
-                    osfinger: osfinger.clone(),
-                    osrelease: osrelease.clone(),
-                    salt_version: saltversion.clone(),
-                    cpuarch: cpuarch.clone(),
-                    ..Default::default()
-                });
+                if existing.timed_out {
+                    existing.timed_out = false;
+                    self.minion_info_dirty = true;
+                }
+                if existing.key_status.is_none() {
+                    existing.key_status = Some(KeyStatus::Accepted);
+                }
             }
 
             // Merge into fleet_data for overview
@@ -1856,13 +2541,21 @@ impl App {
                         }
                         // Mark in minion_info
                         if let Some(existing) = self.minion_info.iter_mut().find(|m| m.id.as_str() == mid) {
-                            existing.timed_out = true;
+                            if !existing.timed_out {
+                                existing.timed_out = true;
+                                self.minion_info_dirty = true;
+                            }
+                            if existing.key_status.is_none() {
+                                existing.key_status = Some(KeyStatus::Accepted);
+                            }
                         } else {
                             self.minion_info.push(MinionInfo {
                                 id: mid.clone(),
                                 timed_out: true,
+                                key_status: Some(KeyStatus::Accepted),
                                 ..Default::default()
                             });
+                            self.minion_info_dirty = true;
                         }
                         // Mark in fleet_data
                         if let Some(ref mut fd) = self.fleet_data {
@@ -1888,24 +2581,29 @@ impl App {
             }
         }
 
-        // Sort minions: alive first, timed-out last, each group alphabetically by ID
-        self.minion_info.sort_by(|a, b| {
-            a.timed_out
-                .cmp(&b.timed_out)
-                .then(a.id.cmp(&b.id))
-        });
+        // Sort minions: alive first, timed-out last, each group alphabetically by ID.
+        // Only when something actually changed the roster this tick.
+        if self.minion_info_dirty {
+            self.minion_info.sort_by(|a, b| {
+                a.timed_out
+                    .cmp(&b.timed_out)
+                    .then(a.id.cmp(&b.id))
+            });
+            self.minion_info_dirty = false;
+        }
 
         // Refresh collectors at interval, not every tick
         if let Some(ref cfg) = self.config_snapshot {
             let interval = self.config.dashboard_secs.max(1);
             if self.tick_count % interval == 0 {
-                self.keys = collectors::keys::collect_keys(&cfg.pki_dir);
-                self.processes = collectors::processes::collect_processes();
-                self.services = collectors::services::collect_services();
-                self.system_info = collectors::system::collect_system(&cfg.cachedir, &cfg.pki_dir);
+                self.send_agent_cmd("minion_cache_list", None);
+                self.send_agent_cmd("list_keys", None);
+                self.send_agent_cmd("list_processes", None);
+                self.send_agent_cmd("list_services", None);
+                self.send_agent_cmd("get_system_info", None);
             }
             // Connections are cheap — /proc/net/tcp reads — refresh every tick
-            self.zmq_connections = collectors::connections::collect_connections_with_api(cfg.publish_port, cfg.ret_port, cfg.api_port);
+            self.send_agent_cmd("get_zmq_connections", None);
         }
 
         // Calculate events/sec
@@ -1918,6 +2616,12 @@ impl App {
             // Record into ring buffer for sparkline
             self.event_rate_history[self.event_rate_idx] = self.events_per_sec;
             self.event_rate_idx = (self.event_rate_idx + 1) % 2000;
+
+            // Auth rate: same per-second treatment
+            self.current_auth_rate = self.auth_events_this_sec as f64 / elapsed;
+            self.auth_events_this_sec = 0;
+            self.auth_rate_history[self.auth_rate_idx] = self.current_auth_rate;
+            self.auth_rate_idx = (self.auth_rate_idx + 1) % 2000;
 
             // Activity matrix: store return count for this second
             self.activity_matrix[self.activity_matrix_idx] = self.current_sec_returns;
@@ -1933,7 +2637,7 @@ impl App {
 
         // Update host uptime from collector
         if let Some(ref cfg) = self.config_snapshot {
-            self.system_info = collectors::system::collect_system(&cfg.cachedir, &cfg.pki_dir);
+            // Handled by agent cmd in interval block
         }
 
         // Compute network transfer rates from cumulative byte counters
@@ -1966,8 +2670,25 @@ impl App {
         self.zmq_ping_sent_at = Some(Instant::now());
         self.send_agent_cmd("zmq_ping", None);
 
+        // Alive detection every 5 ticks
+        if self.tick_count % 5 == 0 {
+            self.send_agent_cmd("alive_check", None);
+        }
+
+        // Update job ages from dispatch time (previously always 0 — also fixes
+        // self.jobs growing unbounded since the age-out retain below never removed anything)
+        let now_epoch_f64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let now_epoch = now_epoch_f64 as u64;
+        for job in self.jobs.iter_mut() {
+            job.age_seconds = now_epoch.saturating_sub(job.created_epoch as u64);
+        }
+
         // Alert engine checks
         let recent_events: Vec<SaltEvent> = self.events.iter().rev().take(500).cloned().collect();
+        let worker_busy_pct = self.worker_busy_pct();
         self.alert_engine.tick(
             &self.minion_info,
             &self.keys,
@@ -1977,11 +2698,39 @@ impl App {
             self.config.stale_minion_secs,
             self.config.pending_key_secs,
             self.config.disk_usage_pct,
+            &self.jobs,
+            self.config.job_straggler_secs,
+            self.current_auth_rate,
+            worker_busy_pct,
+            self.config.auth_storm_rate_per_sec,
+            self.config.worker_saturation_pct,
+            self.config.pending_key_churn_per_min,
         );
 
-        // Age out old jobs
+        // Eagerly finalize jobs that reached full completion — record completion
+        // latency and a non-partial outcome for the rolling job-health KPIs.
+        for job in self.jobs.iter_mut() {
+            if !job.finalized && job.target_count > 0 && job.returned >= job.target_count {
+                job.finalized = true;
+                self.job_completion_latencies.push_back((now_epoch_f64 - job.created_epoch).max(0.0));
+                if self.job_completion_latencies.len() > JOB_STATS_WINDOW { self.job_completion_latencies.pop_front(); }
+                self.job_outcome_window.push_back(false);
+                if self.job_outcome_window.len() > JOB_STATS_WINDOW { self.job_outcome_window.pop_front(); }
+            }
+        }
+
+        // Age out old jobs — anything removed while still unfinished is a partial close-out
         let max_age = self.config.config_secs * 60; // 60 min default
-        self.jobs.retain(|j| j.age_seconds < max_age);
+        let mut kept_jobs = Vec::with_capacity(self.jobs.len());
+        for job in self.jobs.drain(..) {
+            if job.age_seconds < max_age {
+                kept_jobs.push(job);
+            } else if !job.finalized {
+                self.job_outcome_window.push_back(true);
+                if self.job_outcome_window.len() > JOB_STATS_WINDOW { self.job_outcome_window.pop_front(); }
+            }
+        }
+        self.jobs = kept_jobs;
 
         // Auto-load job cache when first viewing Jobs tab
         if self.current_tab == Tab::Jobs && !self.cache_loaded && !self.cache_loading && self.cache_load_error.is_none() {
@@ -2010,6 +2759,15 @@ impl App {
         }
 
         self.tick_count += 1;
+
+        // Purge minion_info entries without accepted keys (ghost protection)
+        if !self.keys.is_empty() {
+            let accepted: HashSet<&str> = self.keys.iter()
+                .filter(|k| k.status == KeyStatus::Accepted)
+                .map(|k| k.id.as_str())
+                .collect();
+            self.minion_info.retain(|m| accepted.contains(m.id.as_str()));
+        }
     }
 
     fn send_cache_jobs_list(&mut self, filter: Option<&str>, reset_offset: bool) {
@@ -2039,6 +2797,11 @@ impl App {
             return false;
         }
 
+        // Config editor is a global overlay — handle it early regardless of tab
+        if matches!(self.detail_popup, Some(DetailPopup::ConfigEditor(_))) {
+            return self.handle_config_editor_key(code);
+        }
+
         // Sniffer input mode (text entry before launching, only on Events tab)
         if self.sniffer_input_active && self.current_tab == Tab::Events {
             match code {
@@ -2053,10 +2816,12 @@ impl App {
                         .filter(|s| !s.is_empty())
                         .collect();
                     if !ids.is_empty() {
+                        let sniffer_max = self.config.sniffer_buffer_size;
                         self.detail_popup = Some(DetailPopup::EventSniffer(
                             crate::types::SnifferState {
                                 minion_ids: ids.clone(),
-                                buffer: std::collections::VecDeque::with_capacity(1000),
+                                buffer: std::collections::VecDeque::with_capacity(sniffer_max),
+                                max_size: sniffer_max,
                                 paused: false,
                                 selected: 0,
                                 highlight_keywords: ids,
@@ -2104,6 +2869,7 @@ impl App {
                     KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
                     KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
+                    KeyCode::F(3) => { self.open_config_editor(); return false; }
                     _ => {}
                 }
             }
@@ -2111,6 +2877,20 @@ impl App {
 
         // Local variable to defer jid_lookup agent command (avoids borrow conflict)
         let mut trigger_y_lookup: Option<String> = None;
+        let mut trigger_grains_fetch: Option<String> = None;
+        // Pre-compute events for MinionEvents popup to avoid borrow conflict
+        let mut minion_events_cache: Option<(String, Vec<MinionActivityItem>)> = None;
+        if let Some(DetailPopup::MinionEvents { ref minion_id, .. }) = self.detail_popup {
+            let mut items = self.minion_activity(minion_id);
+            // Apply filter if set
+            if !self.minion_events_filter.is_empty() {
+                let pat = self.minion_events_filter.to_lowercase();
+                items.retain(|item| matches_filter(item, &pat));
+            }
+            if self.popup_tab == Some(self.current_tab) {
+                minion_events_cache = Some((minion_id.clone(), items));
+            }
+        }
         if self.popup_tab == Some(self.current_tab) {
             if let Some(ref mut detail) = self.detail_popup {
             match *detail {
@@ -2252,7 +3032,13 @@ impl App {
                     // Left panel (return list) focused
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            self.detail_popup = None;
+                            if let Some((mid, sel)) = self.return_to_minion_events.take() {
+                                self.detail_popup = Some(DetailPopup::MinionEvents {
+                                    minion_id: mid, selected: sel,
+                                });
+                            } else {
+                                self.detail_popup = None;
+                            }
                         }
                         KeyCode::Enter => {
                             if lookup.is_some() {
@@ -2507,6 +3293,11 @@ impl App {
                             if let Some(sniffer) = self.return_to_sniffer.take() {
                                 self.detail_popup = Some(DetailPopup::EventSniffer(sniffer));
                                 self.popup_tab = Some(self.current_tab);
+                            } else if let Some((mid, sel)) = self.return_to_minion_events.take() {
+                                self.detail_popup = Some(DetailPopup::MinionEvents {
+                                    minion_id: mid, selected: sel,
+                                });
+                                self.popup_tab = Some(self.current_tab);
                             } else {
                                 self.detail_popup = None;
                             }
@@ -2532,7 +3323,13 @@ impl App {
                 DetailPopup::Alert(ref alert) => {
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            self.detail_popup = None;
+                            if let Some((mid, sel)) = self.return_to_minion_events.take() {
+                                self.detail_popup = Some(DetailPopup::MinionEvents {
+                                    minion_id: mid, selected: sel,
+                                });
+                            } else {
+                                self.detail_popup = None;
+                            }
                         }
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             let mut text = format!(
@@ -2553,14 +3350,154 @@ impl App {
                         _ => {}
                     }
                 }
-                _ => {
+                DetailPopup::Minion(ref mid, _, ref mut grains, ref mut grains_scroll) => {
                     match code {
                         KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             self.detail_popup = None;
                         }
+                        KeyCode::Char('g') | KeyCode::Char('G') if self.admin_mode => {
+                            trigger_grains_fetch = Some(mid.clone());
+                            *grains = Some(Vec::new());
+                            *grains_scroll = 0;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            *grains_scroll = grains_scroll.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            *grains_scroll += 1;
+                        }
+                        KeyCode::PageUp => {
+                            *grains_scroll = grains_scroll.saturating_sub(10);
+                        }
+                        KeyCode::PageDown => {
+                            *grains_scroll += 10;
+                        }
+                        KeyCode::Home => { *grains_scroll = 0; }
+                        KeyCode::End => { *grains_scroll = usize::MAX / 2; }
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            clipboard_text = Some(mid.clone());
+                        }
                         _ => {}
                     }
                 }
+                DetailPopup::MinionEvents { ref minion_id, ref mut selected } => {
+                    let items = minion_events_cache.as_ref()
+                        .filter(|(id, _)| id == minion_id)
+                        .map(|(_, e)| e.clone())
+                        .unwrap_or_default();
+                    let items_len = items.len();
+                    let max_idx = items_len.saturating_sub(1);
+
+                    if self.minion_events_is_filtering {
+                        match code {
+                            KeyCode::Esc => {
+                                self.minion_events_is_filtering = false;
+                                self.minion_events_filter.clear();
+                            }
+                            KeyCode::Enter => {
+                                self.minion_events_is_filtering = false;
+                                *selected = 0;
+                            }
+                            KeyCode::Backspace => {
+                                self.minion_events_filter.pop();
+                            }
+                            KeyCode::Char(c) if !c.is_control() => {
+                                self.minion_events_filter.push(c);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        let evt_enter = match code {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                self.return_to_minion_events = None;
+                                self.minion_events_is_filtering = false;
+                                self.minion_events_filter.clear();
+                                self.detail_popup = None;
+                                None
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                *selected = selected.saturating_sub(1);
+                                None
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                *selected = (*selected + 1).min(max_idx);
+                                None
+                            }
+                            KeyCode::PageUp => {
+                                *selected = selected.saturating_sub(10);
+                                None
+                            }
+                            KeyCode::PageDown => {
+                                *selected = (*selected + 10).min(max_idx);
+                                None
+                            }
+                            KeyCode::Home => { *selected = 0; None }
+                            KeyCode::End => { *selected = max_idx; None }
+                            KeyCode::Char('/') => {
+                                self.minion_events_is_filtering = true;
+                                self.minion_events_filter.clear();
+                                None
+                            }
+                            KeyCode::Enter => {
+                                self.return_to_minion_events = Some((minion_id.clone(), *selected));
+                                items.get(*selected).and_then(|item| match item {
+                                    MinionActivityItem::Event(_, evt) => Some(evt.clone()),
+                                    MinionActivityItem::CacheJob(job) => {
+                                        let jid = job.jid.clone();
+                                        let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                                        self.pending_jid_lookup = Some((req_id, jid.clone()));
+                                        self.pending_jid_lookup_at = Some(Instant::now());
+                                        self.detail_popup = Some(DetailPopup::JobDetail {
+                                            jid,
+                                            lookup: None,
+                                            selected_return: None,
+                                            job_fun: job.fun.clone(),
+                                            job_tgt: job.tgt.clone(),
+                                            job_start_epoch: job.start_epoch,
+                                            minion_scroll: 0,
+                                            return_filter: String::new(),
+                                            return_is_filtering: false,
+                                            panel_focus: false,
+                                            content_scroll: 0,
+                                            content_scroll_max: 0,
+                                            content_scroll_mode: false,
+                                        });
+                                        self.popup_tab = Some(self.current_tab);
+                                        None
+                                    }
+                                    MinionActivityItem::Alert(alert) => {
+                                        self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                                        None
+                                    }
+                                })
+                            }
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                if let Some(item) = items.get(*selected) {
+                                    match item {
+                                        MinionActivityItem::Event(_, evt) => {
+                                            clipboard_text = Some(serde_json::to_string_pretty(&evt.data)
+                                                .unwrap_or_else(|_| evt.tag.clone()));
+                                        }
+                                        MinionActivityItem::CacheJob(job) => {
+                                            clipboard_text = Some(format!("{} {} {} {}",
+                                                job.jid, job.fun, job.tgt, job.start_time));
+                                        }
+                                        MinionActivityItem::Alert(alert) => {
+                                            clipboard_text = Some(format!("[{}] {}: {}",
+                                                alert.severity.label(), alert.rule, alert.description));
+                                        }
+                                    }
+                                }
+                                None
+                            }
+                            _ => None,
+                        };
+                        if let Some(evt) = evt_enter {
+                            self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0, false));
+                        }
+                    }
+                }
+                DetailPopup::ConfigEditor(_) => {}
             }
         }
         if let Some(text) = clipboard_text {
@@ -2572,6 +3509,9 @@ impl App {
         if let Some(jid) = trigger_y_lookup {
             let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
             self.pending_y_copy = Some((req_id, jid));
+        }
+        if let Some(mid) = trigger_grains_fetch {
+            self.send_agent_cmd("minion_grains", Some(serde_json::json!({"minion_id": mid})));
         }
         if had_popup {
             return false;
@@ -2677,6 +3617,12 @@ impl App {
                     self.clamp_selection();
                 }
             }
+            KeyCode::Char('z') | KeyCode::Char('Z') => {
+                if self.current_tab == Tab::Minions && !self.hide_timed_out {
+                    self.timed_out_collapsed = !self.timed_out_collapsed;
+                    self.clamp_selection();
+                }
+            }
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 if self.current_tab == Tab::Events && self.detail_popup.is_none() && !self.is_filtering {
                     self.sniffer_input_active = true;
@@ -2684,7 +3630,18 @@ impl App {
                 }
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
-                if self.current_tab == Tab::Jobs && !self.cache_loading {
+                if self.current_tab == Tab::Minions {
+                    if let Some(minion) = self.get_filtered_minion(self.minion_selected) {
+                        self.detail_popup = Some(DetailPopup::MinionEvents {
+                            minion_id: minion.id.clone(),
+                            selected: 0,
+                        });
+                        self.popup_tab = Some(self.current_tab);
+                        if !self.cache_loaded {
+                            self.send_cache_jobs_list(None, false);
+                        }
+                    }
+                } else if self.current_tab == Tab::Jobs && !self.cache_loading {
                     let ft = self.cache_server_filter.clone();
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
@@ -2795,9 +3752,357 @@ impl App {
             KeyCode::Home => self.move_to_first(),
             KeyCode::End => self.move_to_last(),
             KeyCode::Enter => self.open_detail(),
+            KeyCode::F(2) => {
+                self.mouse_enabled = !self.mouse_enabled;
+                self.needs_mouse_toggle = true;
+            }
+            KeyCode::F(3) => self.open_config_editor(),
             _ => {}
         }
         false
+    }
+
+    /// Handle a mouse click at the given (col, row) position.
+    /// Row 1 = tab bar: switch to clicked tab.
+    /// Content area = list tabs: select item by proportional position.
+    pub fn handle_mouse_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
+        let h = frame_size.height as usize;
+
+        // Popup showing — AdminConfirm and MinionEvents handle left-click
+        if self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab) {
+            if matches!(self.detail_popup, Some(DetailPopup::AdminConfirm)) {
+                return self.handle_admin_confirm_click(col, row, frame_size);
+            }
+            if matches!(self.detail_popup, Some(DetailPopup::MinionEvents { .. })) {
+                return self.handle_minion_events_click(col, row, frame_size);
+            }
+            // Other popups: ignore left-click (right-click closes from main.rs)
+            return false;
+        }
+
+        // Tab bar click (row 1)
+        if row == 1 {
+            self.current_tab = Self::tab_at_col(col);
+            return false;
+        }
+
+        // Content area click (rows 2 to h-2; h-1 = key hints)
+        let r = row as usize;
+        if r < 2 || r >= h.saturating_sub(1) {
+            return false;
+        }
+
+        // Content area height = h-3 (title + tab + key hints)
+        // Inner panel height = (h-3) - 2 (block top/bottom borders) = h-5
+        let inner_h = h.saturating_sub(5);
+
+        match self.current_tab {
+            Tab::Minions => {
+                let total = self.filtered_minions_len();
+                if total == 0 { return false; }
+
+                let overhead = 1 // filter bar
+                    + if self.fleet_data.is_some() { 1 } else { 0 }
+                    + if self.admin_mode { 1 } else { 0 };
+                let visible = inner_h.saturating_sub(overhead).saturating_sub(2).max(1);
+
+                let selected = self.minion_selected.min(total.saturating_sub(1));
+                let scroll = scroll_offset(selected, visible, total);
+
+                // Data starts at: inner.y(3) + overhead + header(1)
+                let data_start = 3 + overhead + 1;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        self.minion_selected = (scroll + visual_idx).min(total - 1);
+                        self.clamp_selection();
+                    }
+                }
+            }
+            Tab::Events => {
+                // Events has 50/50 horizontal split: only left half is the event list
+                let split_col = (frame_size.width / 2) as usize;
+                if (col as usize) >= split_col {
+                    return false;
+                }
+                let total = self.filtered_events_len();
+                if total == 0 { return false; }
+
+                // Events: filter(1) + header(1) = 2 lines before data
+                let visible = inner_h.saturating_sub(2).max(1);
+                let selected = self.event_selected.min(total.saturating_sub(1));
+                let scroll = scroll_offset(selected, visible, total);
+
+                // Data starts at: inner.y(3) + filter(1) + header(1) = 5
+                let data_start = 3 + 2;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        self.event_selected = (scroll + visual_idx).min(total - 1);
+                        self.clamp_selection();
+                    }
+                }
+            }
+            Tab::Alerts => {
+                let total = self.filtered_alerts_len();
+                if total == 0 { return false; }
+
+                // Alerts: filter(1) + header(1) = 2 lines before data
+                let visible = inner_h.saturating_sub(2).max(1);
+                let selected = self.alert_selected.min(total.saturating_sub(1));
+                let scroll = scroll_offset(selected, visible, total);
+
+                let data_start = 3 + 2;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        self.alert_selected = (scroll + visual_idx).min(total - 1);
+                        self.clamp_selection();
+                    }
+                }
+            }
+            Tab::Jobs => {
+                // 55/45 split: left = live jobs, right = cache
+                let col_split = (frame_size.width as u16 * 55 / 100) as usize;
+                let live_click = (col as usize) < col_split;
+
+                if self.cache_focus == live_click {
+                    // Click is on the non-focused panel — just switch focus
+                    self.cache_focus = !self.cache_focus;
+                    return false;
+                }
+
+                if self.cache_focus {
+                    let total = self.filtered_cache_len();
+                    if total == 0 { return false; }
+
+                    let visible = inner_h.saturating_sub(2).max(1);
+                    let selected = self.cache_selected.min(total.saturating_sub(1));
+                    let scroll = scroll_offset(selected, visible, total);
+
+                    let data_start = 3 + 2; // inner.y(3) + filter(1) + header(1)
+                    if r >= data_start {
+                        let visual_idx = r - data_start;
+                        if visual_idx < visible {
+                            self.cache_selected = (scroll + visual_idx).min(total - 1);
+                            self.clamp_selection();
+                        }
+                    }
+                } else {
+                    let total = self.filtered_jobs_len();
+                    if total == 0 { return false; }
+
+                    let visible = inner_h.saturating_sub(2).max(1);
+                    let selected = self.job_selected.min(total.saturating_sub(1));
+                    let scroll = scroll_offset(selected, visible, total);
+
+                    let data_start = 3 + 2;
+                    if r >= data_start {
+                        let visual_idx = r - data_start;
+                        if visual_idx < visible {
+                            self.job_selected = (scroll + visual_idx).min(total - 1);
+                            self.clamp_selection();
+                        }
+                    }
+                }
+            }
+            Tab::Pulse => {
+                let w = frame_size.width as usize;
+                let h = frame_size.height as usize;
+
+                // Pulse dot panel: left 65% of content area (y=2), with block border
+                let panel_w = w * 65 / 100;
+                let panel_h = h.saturating_sub(3); // content area height
+                let inner_x = 1;
+                let inner_y = 3; // content y=2 + border=1
+                let inner_w = panel_w.saturating_sub(2);
+
+                let cx = col as usize;
+                let cy = row as usize;
+
+                if cy >= inner_y && cy < inner_y + panel_h.saturating_sub(2)
+                    && cx >= inner_x && cx < inner_x + inner_w
+                {
+                    let grid_col = cx - inner_x;
+                    let grid_row = cy - inner_y;
+                    let cols = self.pulse_grid_cols.max(1);
+                    let idx = grid_row * cols + grid_col;
+                    let count = self.pulse_minions_count();
+                    if idx < count {
+                        self.pulse_selected = idx;
+                    }
+                }
+            }
+            Tab::Dashboard => {}
+        }
+
+        // Double-click detection on list tabs
+        let dbl_click_ms: u128 = 400;
+        if self.current_tab != Tab::Dashboard && self.current_tab != Tab::Pulse {
+            let now = Instant::now();
+            let is_double = self.last_click_at
+                .map(|t| now.duration_since(t).as_millis() < dbl_click_ms && col == self.last_click_col && row == self.last_click_row)
+                .unwrap_or(false);
+            self.last_click_at = Some(now);
+            self.last_click_col = col;
+            self.last_click_row = row;
+            if is_double {
+                self.open_detail();
+            }
+        } else {
+            self.last_click_at = None;
+        }
+
+        false
+    }
+
+    fn handle_admin_confirm_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
+        let area = Self::centered_rect(55, 35, frame_size);
+        let inside = row >= area.top() && row < area.top() + area.height
+            && col >= area.left() && col < area.left() + area.width;
+
+        if inside {
+            let inner_x = col.saturating_sub(area.left() + 1);
+            // "     [ OK ] Enter          [ Cancel ] Esc/q/a"
+            //  [ OK ] at inner_x 5-11
+            if inner_x >= 5 && inner_x <= 11 {
+                self.admin_mode = true;
+            }
+            self.admin_mode_pending = false;
+        } else {
+            self.admin_mode_pending = false;
+        }
+        self.detail_popup = None;
+        false
+    }
+
+    fn handle_minion_events_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
+        let mid = match self.detail_popup {
+            Some(DetailPopup::MinionEvents { ref minion_id, .. }) => minion_id.clone(),
+            _ => return false,
+        };
+
+        let area = Self::centered_rect(85, 80, frame_size);
+        let ix = area.x + 1;
+        let iy = area.y + 1;
+        let iw = area.width.saturating_sub(2);
+        let ih = area.height.saturating_sub(2);
+
+        if col < ix || col >= ix + iw
+            || row < iy || row >= iy + ih.saturating_sub(1)
+        {
+            return false;
+        }
+
+        let para_row = (row - iy) as usize;
+        if para_row < 4 {
+            return false;
+        }
+
+        let items = self.minion_activity(&mid);
+        let total = items.len();
+        if total == 0 { return false; }
+
+        let current_sel = match self.detail_popup {
+            Some(DetailPopup::MinionEvents { selected, .. }) => selected,
+            _ => return false,
+        };
+        let sel = current_sel.min(total.saturating_sub(1));
+
+        let content_h = (ih as usize).saturating_sub(4);
+        let scroll = if sel > content_h / 2 {
+            sel.saturating_sub(content_h / 2).min(total.saturating_sub(1).saturating_sub(content_h / 2).max(0))
+        } else {
+            0
+        };
+
+        let item_idx = scroll + para_row - 4;
+        if item_idx >= total { return false; }
+
+        if let Some(DetailPopup::MinionEvents { ref mut selected, .. }) = self.detail_popup {
+            *selected = item_idx;
+
+            let dbl_click_ms: u128 = 400;
+            let now = Instant::now();
+            let is_double = self.last_click_at
+                .map(|t| now.duration_since(t).as_millis() < dbl_click_ms && col == self.last_click_col && row == self.last_click_row)
+                .unwrap_or(false);
+            self.last_click_at = Some(now);
+            self.last_click_col = col;
+            self.last_click_row = row;
+            if is_double {
+                if let Some(item) = items.get(item_idx) {
+                    match item {
+                        MinionActivityItem::Event(_, evt) => {
+                            self.return_to_minion_events = Some((mid, item_idx));
+                            self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
+                        }
+                        MinionActivityItem::CacheJob(job) => {
+                            self.return_to_minion_events = Some((mid, item_idx));
+                            let jid = job.jid.clone();
+                            let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                            self.pending_jid_lookup = Some((req_id, jid.clone()));
+                            self.pending_jid_lookup_at = Some(Instant::now());
+                            self.detail_popup = Some(DetailPopup::JobDetail {
+                                jid,
+                                lookup: None,
+                                selected_return: None,
+                                job_fun: job.fun.clone(),
+                                job_tgt: job.tgt.clone(),
+                                job_start_epoch: job.start_epoch,
+                                minion_scroll: 0,
+                                return_filter: String::new(),
+                                return_is_filtering: false,
+                                panel_focus: false,
+                                content_scroll: 0,
+                                content_scroll_max: 0,
+                                content_scroll_mode: false,
+                            });
+                            self.popup_tab = Some(self.current_tab);
+                        }
+                        MinionActivityItem::Alert(alert) => {
+                            self.return_to_minion_events = Some((mid, item_idx));
+                            self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+        let pad_v = (100u16.saturating_sub(percent_y)) / 2;
+        let pad_h = (100u16.saturating_sub(percent_x)) / 2;
+        let vertical = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(pad_v),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage(pad_v),
+            ])
+            .split(r);
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(pad_h),
+                Constraint::Percentage(percent_x),
+                Constraint::Percentage(pad_h),
+            ])
+            .split(vertical[1])[1]
+    }
+
+    /// Map a column position on the tab bar (row 1) to a tab.
+    fn tab_at_col(col: u16) -> Tab {
+        match col {
+            0..=12 => Tab::Dashboard,
+            16..=26 => Tab::Minions,
+            30..=39 => Tab::Events,
+            43..=50 => Tab::Jobs,
+            54..=63 => Tab::Alerts,
+            _ => Tab::Pulse,
+        }
     }
 
     fn move_up(&mut self) {
@@ -2812,7 +4117,10 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
-            Tab::Pulse => self.pulse_selected = self.pulse_selected.saturating_sub(1),
+            Tab::Pulse => {
+                let max = self.pulse_minions_count().saturating_sub(1);
+                self.pulse_selected = self.pulse_selected.saturating_sub(1).min(max);
+            }
             _ => {}
         }
     }
@@ -2829,7 +4137,10 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected += 1,
-            Tab::Pulse => self.pulse_selected += 1,
+            Tab::Pulse => {
+                let max = self.pulse_minions_count().saturating_sub(1);
+                self.pulse_selected = self.pulse_selected.saturating_add(1).min(max);
+            }
             _ => {}
         }
     }
@@ -2863,36 +4174,36 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
-            Tab::Pulse => self.pulse_selected = self.minion_info.len().saturating_sub(1),
+            Tab::Pulse => self.pulse_selected = self.pulse_minions_count().saturating_sub(1),
             _ => {}
         }
     }
 
     /// Navigate left in the grid (wraps).
     fn pulse_left(&mut self) {
-        let count = self.minion_info.len();
+        let count = self.pulse_minions_count();
         if count == 0 { return; }
-        if self.pulse_selected > 0 {
-            self.pulse_selected -= 1;
+        self.pulse_selected = if self.pulse_selected > 0 {
+            self.pulse_selected - 1
         } else {
-            self.pulse_selected = count - 1;
-        }
+            count - 1
+        };
     }
 
     /// Navigate right in the grid (wraps).
     fn pulse_right(&mut self) {
-        let count = self.minion_info.len();
+        let count = self.pulse_minions_count();
         if count == 0 { return; }
-        if self.pulse_selected + 1 < count {
-            self.pulse_selected += 1;
+        self.pulse_selected = if self.pulse_selected + 1 < count {
+            self.pulse_selected + 1
         } else {
-            self.pulse_selected = 0;
-        }
+            0
+        };
     }
 
     /// Navigate up one row in the grid (wraps).
     fn pulse_up(&mut self) {
-        let count = self.minion_info.len();
+        let count = self.pulse_minions_count();
         if count == 0 { return; }
         let cols = self.pulse_grid_cols.max(1);
         if self.pulse_selected >= cols {
@@ -2908,7 +4219,7 @@ impl App {
 
     /// Navigate down one row in the grid (wraps).
     fn pulse_down(&mut self) {
-        let count = self.minion_info.len();
+        let count = self.pulse_minions_count();
         if count == 0 { return; }
         let cols = self.pulse_grid_cols.max(1);
         if self.pulse_selected + cols < count {
@@ -3134,6 +4445,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             age_seconds: 0,
             created_epoch: evt.ts,
             local: false,
+            finalized: false,
         });
     } else if evt.tag.contains("/ret/") {
         let jid = evt.tag
@@ -3156,9 +4468,16 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
                 age_seconds: 0,
                 created_epoch: evt.ts,
                 local: true,
+                finalized: false,
             });
         }
     }
+}
+
+fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
+    if visible == 0 || total <= visible { return 0; }
+    let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+    scroll.min(total.saturating_sub(visible))
 }
 
 fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
@@ -3177,4 +4496,22 @@ fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
     }
     result.sort_by(|a, b| a.id.cmp(&b.id));
     result
+}
+
+/// Check if a MinionActivityItem matches a lowercase filter pattern.
+fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
+    match item {
+        MinionActivityItem::Event(_, evt) => {
+            evt.tag.to_lowercase().contains(pat)
+                || evt.data.to_string().to_lowercase().contains(pat)
+        }
+        MinionActivityItem::CacheJob(job) => {
+            job.jid.to_lowercase().contains(pat)
+                || job.fun.to_lowercase().contains(pat)
+        }
+        MinionActivityItem::Alert(alert) => {
+            alert.description.to_lowercase().contains(pat)
+                || alert.key.to_lowercase().contains(pat)
+        }
+    }
 }

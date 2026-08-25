@@ -60,14 +60,14 @@ impl Tab {
 
 // ─── Key types ─────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct KeyInfo {
     pub id: String,
     pub status: KeyStatus,
     pub mtime_epoch: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 pub enum KeyStatus {
     Accepted,
     Pending,
@@ -105,20 +105,26 @@ pub struct MinionInfo {
 
 // ─── Process info ──────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct SaltProcess {
     pub pid: u32,
     pub role: SaltProcessRole,
     pub rss_kb: u64,
+    /// Raw utime+stime clock ticks from the agent; cpu_percent is computed
+    /// Rust-side from the delta between consecutive polls (see App::prev_proc_cpu).
+    #[serde(default)]
+    pub cpu_ticks: u64,
+    #[serde(default)]
     pub cpu_percent: f32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub enum SaltProcessRole {
     Master,
     Worker,
     API,
     Syndic,
+    Minion,
     EventPublisher,
     ReqServer,
     Unknown,
@@ -131,6 +137,7 @@ impl SaltProcessRole {
             Self::Worker => "worker",
             Self::API => "salt-api",
             Self::Syndic => "salt-syndic",
+            Self::Minion => "salt-minion",
             Self::EventPublisher => "EventPublisher",
             Self::ReqServer => "ReqServer",
             Self::Unknown => "unknown",
@@ -140,7 +147,7 @@ impl SaltProcessRole {
 
 // ─── Service health ────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct ServiceHealth {
     pub unit: String,
     pub active: bool,
@@ -152,7 +159,7 @@ pub struct ServiceHealth {
 
 // ─── ZMQ connection ───────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct ZmqConn {
     pub local_port: u16,
     pub remote_addr: String,
@@ -162,7 +169,7 @@ pub struct ZmqConn {
 
 // ─── System info ───────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct SystemInfo {
     pub load_1: f64,
     pub load_5: f64,
@@ -204,6 +211,35 @@ pub struct ConfigSnapshot {
     pub hostname: String,
 }
 
+// ─── Event type breakdown ─────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EventBreakdown {
+    pub auth: u64,
+    pub job_return: u64,
+    pub start: u64,
+    pub beacon: u64,
+    pub other: u64,
+    pub total: u64,
+}
+
+impl EventBreakdown {
+    pub fn record(&mut self, tag: &str) {
+        self.total += 1;
+        if tag.starts_with("salt/auth") {
+            self.auth += 1;
+        } else if tag.contains("/ret/") {
+            self.job_return += 1;
+        } else if (tag.starts_with("salt/minion/") && tag.contains("/start")) || tag.contains("minion_start") {
+            self.start += 1;
+        } else if tag.starts_with("salt/beacon") {
+            self.beacon += 1;
+        } else {
+            self.other += 1;
+        }
+    }
+}
+
 // ─── Event bus event ──────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -219,6 +255,7 @@ pub struct SaltEvent {
 pub struct SnifferState {
     pub minion_ids: Vec<String>,
     pub buffer: VecDeque<SaltEvent>,
+    pub max_size: usize,
     pub paused: bool,
     pub selected: usize,
     pub highlight_keywords: Vec<String>,
@@ -238,6 +275,7 @@ pub struct JobEntry {
     pub age_seconds: u64,
     pub created_epoch: f64,
     pub local: bool,
+    pub finalized: bool,
 }
 
 // ─── Cache job entry (from agent jobs.list_jobs) ──────────────────────────

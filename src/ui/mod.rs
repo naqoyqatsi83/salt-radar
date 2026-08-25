@@ -4,7 +4,9 @@ mod events;
 mod jobs;
 mod alerts_view;
 mod pulse;
+mod minion_events;
 
+pub mod config_editor;
 pub mod detail_popup;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -110,7 +112,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_key_hints(f, main_layout[3], app);
 
     // Detail popup overlay
-    if app.popup_tab == Some(app.current_tab) { detail_popup::draw_detail_popup(f, app); }
+    if app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))) { detail_popup::draw_detail_popup(f, app); }
 
     // Help overlay
     if app.show_help {
@@ -287,6 +289,8 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         key::render("\u{2191}\u{2193}", "Select"),
         key::render("?", "Help"),
         key::render("c", "Contrast"),
+        if app.mouse_enabled { key::render("F2", "Disable mouse") } else { key::render("F2", "Enable mouse") },
+        key::render("F3", "Config"),
     ];
 
     let tab_keys = match app.current_tab {
@@ -301,6 +305,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         }
         Tab::Minions => {
             let mut keys = vec![key::render("/", "Filter"), key::render("Enter", "Detail")];
+            keys.push(key::render("r", "Events"));
             keys.push(key::render("a", "Admin"));
             if app.fleet_data.is_some() {
                 keys.push(key::render("x", "Hide unresponsive"));
@@ -429,7 +434,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 Tab::Minions => (app.minion_selected + 1, app.filtered_minions_len()),
                 Tab::Events => (app.event_selected + 1, app.filtered_events_len()),
                 Tab::Alerts => (app.alert_selected + 1, app.filtered_alerts_len()),
-                Tab::Pulse => (app.pulse_selected + 1, app.minion_info.len()),
+                Tab::Pulse => (app.pulse_selected + 1, app.pulse_minions_count()),
                 _ => (0, 0),
             };
             if total > 0 {
@@ -531,6 +536,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  n", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Event sniffer (Events tab)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  r", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Minion event history (Minions tab)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  s", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
