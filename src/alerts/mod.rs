@@ -1,7 +1,8 @@
 use std::time::Instant;
 
 use crate::types::{
-    AlertEntry, AlertSeverity, JobEntry, KeyInfo, KeyStatus, MinionInfo, SaltEvent, ServiceHealth, SystemInfo,
+    AlertEntry, AlertSeverity, JobEntry, KeyInfo, KeyStatus, MinionInfo, SaltEvent, ServiceHealth,
+    ServiceTrendSnapshot, SystemInfo,
 };
 
 /// Lightweight representation of an active alert condition.
@@ -41,6 +42,9 @@ impl AlertEngine {
         auth_storm_rate_per_sec: f64,
         worker_saturation_pct: f64,
         pending_key_churn_threshold: u64,
+        service_trends: &[ServiceTrendSnapshot],
+        service_flap_threshold_24h: u64,
+        service_mem_growth_mb_per_hour: f64,
     ) {
         let mut active = Vec::new();
 
@@ -247,6 +251,35 @@ impl AlertEngine {
                 description: format!("{} new pending key(s) in the last minute", churn),
                 details: Vec::new(),
             });
+        }
+
+        // Rule 11: Service flapping — unit restarted too many times in 24h
+        for t in service_trends {
+            if t.restart_count_24h as u64 >= service_flap_threshold_24h {
+                active.push(ActiveAlert {
+                    key: format!("svc-flap:{}", t.unit),
+                    rule: "Service flapping",
+                    severity: AlertSeverity::Crit,
+                    description: format!("{} restarted {} time(s) in the last 24h", t.unit, t.restart_count_24h),
+                    details: Vec::new(),
+                });
+            }
+        }
+
+        // Rule 12: Sustained service memory growth — independent of flapping,
+        // catches a slow leak in a unit that never actually restarts.
+        for t in service_trends {
+            if let Some(rate) = t.mem_growth_mb_per_hour {
+                if t.mem_still_growing && rate > service_mem_growth_mb_per_hour {
+                    active.push(ActiveAlert {
+                        key: format!("svc-mem-growth:{}", t.unit),
+                        rule: "Service memory growth",
+                        severity: AlertSeverity::Warn,
+                        description: format!("{} memory growing at {:.1} MB/h", t.unit, rate),
+                        details: Vec::new(),
+                    });
+                }
+            }
         }
 
         // Sync active alerts into the engine

@@ -349,8 +349,10 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     service_lines.push(Line::from(vec![
         Span::styled("Unit                    ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled("Status", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(" State            ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(" State      ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(" Flp", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled(" Memory ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(" T", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled(" Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
     ]));
 
@@ -384,11 +386,41 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             service.unit.clone()
         };
 
+        let state_display = if service.state.len() > 11 {
+            format!("{}..", &service.state[..9])
+        } else {
+            service.state.clone()
+        };
+
+        // Restart/flap count over the last 24h (see update_service_trends in app.rs).
+        let flap_count = app.service_restart_count_24h(&service.unit);
+        let flap_text = if flap_count > 0 { flap_count.to_string() } else { "-".to_string() };
+        let flap_color = if flap_count as u64 >= app.config.service_flap_threshold_24h {
+            color::RED
+        } else if flap_count > 0 {
+            color::YELLOW
+        } else {
+            color::TEXT_DIM
+        };
+
+        // Memory growth trend indicator, from a rolling linear-regression slope.
+        let (trend_char, trend_color) = match app.service_memory_growth(&service.unit) {
+            Some((rate_mb_per_hour, still_growing)) if still_growing && rate_mb_per_hour > app.config.service_mem_growth_mb_per_hour => {
+                ("\u{2191}", color::RED) // sustained leak-rate growth
+            }
+            Some((rate_mb_per_hour, _)) if rate_mb_per_hour > 1.0 => ("\u{2197}", color::YELLOW), // mild growth
+            Some((rate_mb_per_hour, _)) if rate_mb_per_hour < -1.0 => ("\u{2193}", color::GREEN), // shrinking
+            Some(_) => ("\u{2192}", color::TEXT_DIM), // flat
+            None => ("\u{00b7}", color::TEXT_DIM), // not enough samples yet
+        };
+
         service_lines.push(Line::from(vec![
             Span::styled(format!("{:<24}", unit_display), Style::default().fg(color::CYAN)),
             Span::styled(format!(" {:<6}", status_icon), Style::default().fg(status_color)),
-            Span::styled(format!(" {:<17}", service.state), Style::default().fg(color::TEXT)),
+            Span::styled(format!(" {:<11}", state_display), Style::default().fg(color::TEXT)),
+            Span::styled(format!(" {:>3}", flap_text), Style::default().fg(flap_color)),
             Span::styled(format!(" {:>6} ", memory_text), Style::default().fg(color::YELLOW)),
+            Span::styled(format!(" {}", trend_char), Style::default().fg(trend_color)),
             Span::styled(format!(" {:>6}", uptime_text), Style::default().fg(color::TEXT_DIM)),
         ]));
     }

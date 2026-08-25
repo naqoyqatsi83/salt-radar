@@ -40,3 +40,11 @@
 
 # Disk usage percentage threshold for alert
 # disk_usage_pct = 85.0
+
+# Restart/flap count over a rolling 24h window that triggers a "Service
+# flapping" alert for a salt-* systemd unit
+# service_flap_threshold_24h = 3
+
+# Sustained memory growth rate (MB/hour, linear-regression slope over sampled
+# history) that triggers a "Service memory growth" alert for a salt-* unit
+# service_mem_growth_mb_per_hour = 50.0

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc8] - 2026-08-26
+
+### Added
+- Service restart/flap count (rolling 24h) and memory growth trend detection on the Dashboard Services panel: new `Flp` (flap count) and `T` (memory trend arrow) columns per unit, plus two new alert rules — "Service flapping" (`service_flap_threshold_24h`) and "Service memory growth" (`service_mem_growth_mb_per_hour`) — the latter using a linear-regression slope over sampled memory history rather than a static high-water-mark, and requiring the most recent portion of the window to still be trending upward so growth that plateaued (e.g. warm-up/caching) doesn't alert (#24)
+
 ## [0.6.0-rc7] - 2026-08-25
 
 ### Added

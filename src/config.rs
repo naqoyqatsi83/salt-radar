@@ -17,6 +17,8 @@ pub struct AppConfig {
     pub auth_storm_rate_per_sec: f64,
     pub worker_saturation_pct: f64,
     pub pending_key_churn_per_min: u64,
+    pub service_flap_threshold_24h: u64,
+    pub service_mem_growth_mb_per_hour: f64,
 }
 
 impl Default for AppConfig {
@@ -37,6 +39,8 @@ impl Default for AppConfig {
             auth_storm_rate_per_sec: 5.0,
             worker_saturation_pct: 85.0,
             pending_key_churn_per_min: 10,
+            service_flap_threshold_24h: 3,
+            service_mem_growth_mb_per_hour: 50.0,
         }
     }
 }
@@ -78,6 +82,8 @@ struct AlertsConfig {
     auth_storm_rate_per_sec: Option<f64>,
     worker_saturation_pct: Option<f64>,
     pending_key_churn_per_min: Option<u64>,
+    service_flap_threshold_24h: Option<u64>,
+    service_mem_growth_mb_per_hour: Option<f64>,
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
@@ -103,7 +109,9 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          disk_usage_pct = {}\n\
          auth_storm_rate_per_sec = {}\n\
          worker_saturation_pct = {}\n\
-         pending_key_churn_per_min = {}\n",
+         pending_key_churn_per_min = {}\n\
+         service_flap_threshold_24h = {}\n\
+         service_mem_growth_mb_per_hour = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -119,6 +127,8 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.auth_storm_rate_per_sec,
         config.worker_saturation_pct,
         config.pending_key_churn_per_min,
+        config.service_flap_threshold_24h,
+        config.service_mem_growth_mb_per_hour,
     );
     std::fs::write(path, toml)
 }
@@ -150,6 +160,8 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.auth_storm_rate_per_sec { cfg.auth_storm_rate_per_sec = v; }
                 if let Some(v) = a.worker_saturation_pct { cfg.worker_saturation_pct = v; }
                 if let Some(v) = a.pending_key_churn_per_min { cfg.pending_key_churn_per_min = v; }
+                if let Some(v) = a.service_flap_threshold_24h { cfg.service_flap_threshold_24h = v; }
+                if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
             }
         }
     }
