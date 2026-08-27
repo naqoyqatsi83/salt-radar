@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Job Pulse `p50/p95` completion latency stuck at `0.0s/0.0s` for jobs dispatched against targets whose minion list isn't resolved at dispatch time (e.g. some glob/compound matchers, async batches) — `target_count` stayed 0 forever so those jobs never met the `returned >= target_count` finalize condition. Jobs with an unknown target count now finalize on first return instead of never (#25)
 - Check-in Age `p50/p90/p99` on the Minions view could read stuck at `0s` on large fleets — the agent's per-minion grains-cache enrichment loop (`minion_cache_list`) ran under a single `try/except` covering the whole batch, so one bad cache lookup aborted enrichment for every minion after it, leaving them at `last_seen: 0` and silently excluded from the percentile population. Each minion is now looked up independently so one failure no longer drops the rest of the fleet (#26)
+- Dashboard Services panel: data rows were one column narrower than the header in the `Status` field, shifting every column after it (`State`/`Flp`/`Memory`/`T`/`Uptime`) out from under its label; `Memory` and `Uptime` also right-aligned their combined value+unit string as one blob, so the unit suffix landed in a different column depending on the value's digit count. Number and unit now render in their own fixed-width sub-fields (#28)
+- Dashboard Services/Key Status/Event Types row: rebalanced the even 3-way split to 2/1/2 since Key Status only ever needs a handful of fixed-format count rows, leaving Services and Event Types cramped at equal thirds; Event Types' panel title now renders in the same title color as its row-mates instead of ratatui's dimmer default (#27)
 
 ## [0.6.0-rc8] - 2026-08-26
 

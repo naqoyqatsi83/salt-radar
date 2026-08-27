@@ -12,6 +12,13 @@ use super::color;
 const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
 // Frames: ◔ ◑ ◕ ◐
 
+// Services / Minion Key Status / Event Types horizontal split, out of 5 parts.
+// Key Status only ever shows 4 fixed-format count rows + a churn line, so it
+// needs far less width than Services (gauge + per-role mem + service list) or
+// Event Types; used both for the actual row layout and for estimating the
+// Services column's wrapped height below, which must stay in sync with it.
+const MID_ROW_RATIO: [u32; 3] = [2, 1, 2];
+
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // Small terminal fallback: vertical stacked layout
     if area.height < 26 {
@@ -36,7 +43,11 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // draw_proc_row actually renders with, rather than assuming a fixed 1 line.
     let services_col_width = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+        .constraints([
+            Constraint::Ratio(MID_ROW_RATIO[0], 5),
+            Constraint::Ratio(MID_ROW_RATIO[1], 5),
+            Constraint::Ratio(MID_ROW_RATIO[2], 5),
+        ])
         .split(Rect::new(0, 0, body.width, 1))[0]
         .width
         .saturating_sub(2); // block borders
@@ -56,10 +67,14 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     draw_host_row(f, sections[0], app);
 
-    // Services + Minion key status + Event breakdown: 33/33/33 horizontal split
+    // Services + Minion key status + Event breakdown horizontal split
     let mid = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+        .constraints([
+            Constraint::Ratio(MID_ROW_RATIO[0], 5),
+            Constraint::Ratio(MID_ROW_RATIO[1], 5),
+            Constraint::Ratio(MID_ROW_RATIO[2], 5),
+        ])
         .split(sections[1]);
     draw_proc_row(f, mid[0], app);
     draw_key_status(f, mid[1], app);
@@ -106,14 +121,6 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     draw_events_row(f, layout[4], app);
     draw_activity_matrix(f, layout[5], app);
     draw_job_pulse(f, layout[6], app);
-}
-
-fn make_block(title: String) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(title)
-        .style(Style::default().bg(color::BG_DARK))
 }
 
 fn make_block_line(title: Line<'static>) -> Block<'static> {
@@ -360,24 +367,28 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         let status_icon = if service.active { "\u{25cf}" } else { "\u{25cb}" };
         let status_color = if service.active { color::GREEN } else { color::RED };
 
+        // Number and unit suffix are formatted into their own fixed-width
+        // sub-fields (rather than right-aligning the combined string) so the
+        // unit letters land in the same column across rows regardless of how
+        // many digits the value has.
         let memory_mb = service.memory_kb / 1024;
         let memory_text = if memory_mb > 0 {
-            format!("{} MB", memory_mb)
+            format!("{:>3} MB", memory_mb)
         } else {
-            "--".to_string()
+            format!("{:>6}", "--")
         };
 
         let uptime_text = if service.uptime_seconds > 0 {
             let secs = service.uptime_seconds;
             if secs >= 3600 {
-                format!("{}h", secs / 3600)
+                format!("{:>5}h", secs / 3600)
             } else if secs >= 60 {
-                format!("{}m", secs / 60)
+                format!("{:>5}m", secs / 60)
             } else {
-                format!("{}s", secs)
+                format!("{:>5}s", secs)
             }
         } else {
-            "--".to_string()
+            format!("{:>6}", "--")
         };
 
         let unit_display = if service.unit.len() > 24 {
@@ -416,12 +427,12 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
         service_lines.push(Line::from(vec![
             Span::styled(format!("{:<24}", unit_display), Style::default().fg(color::CYAN)),
-            Span::styled(format!(" {:<6}", status_icon), Style::default().fg(status_color)),
+            Span::styled(format!("{:<6}", status_icon), Style::default().fg(status_color)),
             Span::styled(format!(" {:<11}", state_display), Style::default().fg(color::TEXT)),
             Span::styled(format!(" {:>3}", flap_text), Style::default().fg(flap_color)),
-            Span::styled(format!(" {:>6} ", memory_text), Style::default().fg(color::YELLOW)),
+            Span::styled(format!(" {} ", memory_text), Style::default().fg(color::YELLOW)),
             Span::styled(format!(" {}", trend_char), Style::default().fg(trend_color)),
-            Span::styled(format!(" {:>6}", uptime_text), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" {}", uptime_text), Style::default().fg(color::TEXT_DIM)),
         ]));
     }
 
@@ -650,7 +661,8 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
 // ── Event Type Breakdown ────────────────────────────────────────────────────
 
 fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Event Types ".to_string());
+    let title = Line::from(Span::styled(" Event Types ", Style::default().fg(color::TEXT_TITLE)));
+    let block = make_block_line(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
