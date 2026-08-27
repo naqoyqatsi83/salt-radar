@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Job Pulse `p50/p95` completion latency stuck at `0.0s/0.0s` for jobs dispatched against targets whose minion list isn't resolved at dispatch time (e.g. some glob/compound matchers, async batches) — `target_count` stayed 0 forever so those jobs never met the `returned >= target_count` finalize condition. Jobs with an unknown target count now finalize on first return instead of never (#25)
+- Check-in Age `p50/p90/p99` on the Minions view could read stuck at `0s` on large fleets — the agent's per-minion grains-cache enrichment loop (`minion_cache_list`) ran under a single `try/except` covering the whole batch, so one bad cache lookup aborted enrichment for every minion after it, leaving them at `last_seen: 0` and silently excluded from the percentile population. Each minion is now looked up independently so one failure no longer drops the rest of the fleet (#26)
+
 ## [0.6.0-rc8] - 2026-08-26
 
 ### Added

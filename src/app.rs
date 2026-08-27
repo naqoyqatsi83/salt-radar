@@ -2770,7 +2770,16 @@ impl App {
         // Eagerly finalize jobs that reached full completion — record completion
         // latency and a non-partial outcome for the rolling job-health KPIs.
         for job in self.jobs.iter_mut() {
-            if !job.finalized && job.target_count > 0 && job.returned >= job.target_count {
+            // target_count == 0 means the `/new` event's minion list was empty or
+            // absent (unresolved glob/compound match, async batch, etc.) — we can
+            // never learn the true total, so finalize on first return instead of
+            // never, or this job would silently never contribute a latency sample.
+            let complete = if job.target_count > 0 {
+                job.returned >= job.target_count
+            } else {
+                job.returned > 0
+            };
+            if !job.finalized && complete {
                 job.finalized = true;
                 self.job_completion_latencies.push_back((now_epoch_f64 - job.created_epoch).max(0.0));
                 if self.job_completion_latencies.len() > JOB_STATS_WINDOW { self.job_completion_latencies.pop_front(); }

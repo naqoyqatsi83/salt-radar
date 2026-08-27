@@ -547,30 +547,35 @@ def cmd_minion_cache_list(opts, req):
     except Exception:
         pass
 
-    # Step 2: enrich with grains data from the cache (if available)
+    # Step 2: enrich with grains data from the cache (if available). Each
+    # minion is looked up independently so one bad cache entry can't abort
+    # enrichment for the rest of a large fleet.
     try:
         salt = _import_salt()
         cache = salt.cache.factory(opts)
-        minion_ids = cache.list("minions")
-        if minion_ids:
-            for mid in minion_ids:
-                entry = {"id": mid}
-                grains = cache.fetch("minions", mid)
-                if grains:
-                    entry["os"] = grains.get("os", "")
-                    entry["osrelease"] = grains.get("osrelease", "")
-                    entry["saltversion"] = grains.get("saltversion", "")
-                    entry["cpuarch"] = grains.get("cpuarch", "")
-                entry["last_seen"] = cache.updated("minions", mid) or 0
-                entry["cache_updated"] = cache.updated("minions", mid) or 0
-                if mid in seen:
-                    # Update existing entry with cache data
-                    for e in minions:
-                        if e["id"] == mid:
-                            e.update(entry)
-                            break
+        minion_ids = cache.list("minions") or []
     except Exception:
-        pass
+        minion_ids = []
+
+    for mid in minion_ids:
+        try:
+            entry = {"id": mid}
+            grains = cache.fetch("minions", mid)
+            if grains:
+                entry["os"] = grains.get("os", "")
+                entry["osrelease"] = grains.get("osrelease", "")
+                entry["saltversion"] = grains.get("saltversion", "")
+                entry["cpuarch"] = grains.get("cpuarch", "")
+            entry["last_seen"] = cache.updated("minions", mid) or 0
+            entry["cache_updated"] = cache.updated("minions", mid) or 0
+            if mid in seen:
+                # Update existing entry with cache data
+                for e in minions:
+                    if e["id"] == mid:
+                        e.update(entry)
+                        break
+        except Exception:
+            continue
 
     result(req["id"], "minion_cache_list", data={"minions": minions})
 
