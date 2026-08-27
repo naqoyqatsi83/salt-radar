@@ -967,20 +967,15 @@ fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], style: Style, mode:
                 for &v in data.iter().take(ncols) {
                     let threshold = ((v.min(100) as u32).saturating_mul(total_pixels) + 99) / 100;
                     let mut bits = 0u8;
-                    // 8 dots, bottom-to-top bit order: 0,1,2,6,3,7,4,5
-                    for dot in 0u8..8 {
-                        let pixel_pos = row_from_bottom.saturating_mul(8) + dot as u32;
+                    // Braille bit->dot layout is (bit0 bit3 / bit1 bit4 / bit2 bit5 / bit6 bit7),
+                    // i.e. row 0 (top) = bits 0,3 through row 3 (bottom) = bits 6,7. Filling bits
+                    // in raw numeric order therefore lights the top-left dot first; walk this
+                    // fill order instead so low values light the bottom row like Bars mode does.
+                    const FILL_ORDER: [u8; 8] = [6, 7, 2, 5, 1, 4, 0, 3];
+                    for (level, &bit_idx) in FILL_ORDER.iter().enumerate() {
+                        let pixel_pos = row_from_bottom.saturating_mul(8) + level as u32;
                         if pixel_pos < threshold {
-                            bits |= match dot {
-                                0 => 0b00000001,
-                                1 => 0b00000010,
-                                2 => 0b00000100,
-                                3 => 0b00001000,
-                                4 => 0b00010000,
-                                5 => 0b00100000,
-                                6 => 0b01000000,
-                                _ => 0b10000000,
-                            };
+                            bits |= 1 << bit_idx;
                         }
                     }
                     let ch = if bits == 0 { ' ' } else { char::from_u32(0x2800 + bits as u32).unwrap_or(' ') };
