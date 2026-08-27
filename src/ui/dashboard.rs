@@ -606,7 +606,10 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
 // ── Event Type Breakdown ────────────────────────────────────────────────────
 
 fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
-    let title = Line::from(Span::styled(" Event Types ", Style::default().fg(color::TEXT_TITLE)));
+    let title = Line::from(vec![
+        Span::styled(" Event Types ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(format!("auth: {:.1}/s", app.current_auth_rate), Style::default().fg(color::TEXT_DIM)),
+    ]);
     let block = make_block_line(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -627,14 +630,11 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
             let bar_max = inner.width.saturating_sub(14);
             let bar_len = ((*count as f64 / max_count as f64) * bar_max as f64).round() as usize;
             let bar = "\u{2588}".repeat(bar_len);
-            let mut spans = vec![
+            let spans = vec![
                 Span::styled(format!(" {:<6}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{:>5} ", count), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(bar, Style::default().fg(*color)),
             ];
-            if *label == "Auth" {
-                spans.push(Span::styled(format!(" ({:.1}/s)", app.current_auth_rate), Style::default().fg(color::TEXT_DIM)));
-            }
             lines.push(Line::from(spans));
         }
     } else {
