@@ -175,17 +175,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let app_uptime = app.session_start.elapsed().as_secs();
     let host_uptime = app.system_info.uptime_secs;
 
-    let mut uptime_parts = vec![format_duration(app_uptime)];
-    if host_uptime > app_uptime {
-        uptime_parts.push(format_uptime(host_uptime - app_uptime));
-    }
-    let uptime_display = if uptime_parts.len() == 2 {
-        format!("{} | host {} ", uptime_parts[0], uptime_parts[1])
-    } else {
-        format!("{} ", uptime_parts[0])
-    };
-
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" salt-radar", Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" v{} ", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM)),
         Span::styled(format!("{}", radar), Style::default().fg(color::CYAN)),
@@ -195,9 +185,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(" host: ", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!("{}  ", hostname), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
         Span::styled("\u{2502}", Style::default().fg(color::BORDER)),
-        Span::styled(" uptime: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{}", uptime_display), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-    ]);
+        Span::styled(" radar up: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{} ", format_duration(app_uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+    ];
+    if host_uptime > 0 {
+        spans.push(Span::styled("| host up: ", Style::default().fg(color::TEXT_LABEL)));
+        spans.push(Span::styled(format!("{} ", format_uptime(host_uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
+    }
+    let line = Line::from(spans);
 
     f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_DARK).fg(color::TEXT)), area);
 }
