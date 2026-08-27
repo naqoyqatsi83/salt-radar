@@ -29,15 +29,17 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(color::BORDER)
     };
 
-    let block = super::titled_block(format!(" Live Jobs ({}) ", app.jobs.len()), border_style, color::BG_DARK);
+    let total = app.filtered_jobs_len();
+    let selected = app.job_selected.min(total.saturating_sub(1));
+    let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
+    let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
+
+    let block = super::list_block(format!(" Live Jobs ({}) ", app.jobs.len()), border_style, color::BG_DARK, has_more_above, has_more_below);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
-    let total = app.filtered_jobs_len();
-    let selected = app.job_selected.min(total.saturating_sub(1));
-    let visible = (inner.height as usize).saturating_sub(2);
 
     // Filter bar
     if app.is_filtering {
@@ -74,9 +76,6 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(color::TEXT_DIM),
             )));
         } else {
-            let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
-            let scroll = scroll.min(total.saturating_sub(visible));
-
             for idx in scroll..(scroll + visible).min(total) {
                 let job = match app.get_filtered_job(idx) {
                     Some(j) => j,
@@ -136,15 +135,17 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("{}", app.jobs_cache.len())
     };
-    let block = super::titled_block(format!(" Job Cache ({}) ", total_hint), border_style, color::BG_DARK);
+    let total = app.filtered_cache_len();
+    let selected = app.cache_selected.min(total.saturating_sub(1));
+    let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
+    let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
+
+    let block = super::list_block(format!(" Job Cache ({}) ", total_hint), border_style, color::BG_DARK, has_more_above, has_more_below);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
-    let total = app.filtered_cache_len();
-    let selected = app.cache_selected.min(total.saturating_sub(1));
-    let visible = (inner.height as usize).saturating_sub(2);
 
     // Loading state
     if app.cache_loading && !app.cache_loaded {
@@ -201,9 +202,12 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(color::TEXT_DIM),
         )));
     } else {
-        // Header
+        // Header — JID/User/Started (fixed-width, no truncation fallback) come
+        // before Target/Fun (already truncate past their width) so a narrow
+        // panel clips the columns that already handle overflow instead of
+        // cutting off Started, which has no fallback of its own (#39).
         lines.push(Line::from(Span::styled(
-            format!("  {:<23} {:<26} {:<20} {:<12} {}", "JID", "Fun", "Target", "User", "Started"),
+            format!("  {:<23} {:<12} {:<19} {:<20} {}", "JID", "User", "Started", "Target", "Fun"),
             Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
         )));
 
@@ -213,9 +217,6 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(color::TEXT_DIM),
             )));
         } else {
-            let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
-            let scroll = scroll.min(total.saturating_sub(visible));
-
             for idx in scroll..(scroll + visible).min(total) {
                 let job = match app.get_filtered_cache_job(idx) {
                     Some(j) => j,
@@ -245,13 +246,13 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:<23}", jid_str), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(" ", Style::default()),
-                    Span::styled(format!("{:<26}", fun_str), Style::default().fg(color::CYAN)),
+                    Span::styled(format!("{:<12}", user_str), Style::default().fg(color::PURPLE)),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(format!("{:<19}", started), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(" ", Style::default()),
                     Span::styled(format!("{:<20}", tgt_str), Style::default().fg(color::YELLOW)),
                     Span::styled(" ", Style::default()),
-                    Span::styled(format!("{:<12}", user_str), Style::default().fg(color::PURPLE)),
-                    Span::styled(" ", Style::default()),
-                    Span::styled(started, Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(fun_str, Style::default().fg(color::CYAN)),
                 ]).style(sel_style));
             }
         }
