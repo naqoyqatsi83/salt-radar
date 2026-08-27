@@ -159,7 +159,7 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
     let title = Line::from(vec![
         Span::styled(" Minion Key Status ", Style::default().fg(color::TEXT_TITLE)),
         Span::styled(
-            format!("churn:{}/min", churn),
+            format!("new pending:{}/min", churn),
             Style::default().fg(if churn > 0 { color::YELLOW } else { color::TEXT_DIM }),
         ),
     ]);

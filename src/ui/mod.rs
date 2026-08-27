@@ -613,6 +613,12 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  Navigate grid (Pulse tab)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
+        Line::from(Span::styled("  Dashboard KPIs", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  new pending", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Minion Key Status: pending keys registered in the last 60s", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),
         Line::from(Span::styled("  Read-only TUI. All data sourced from /proc, systemctl,", Style::default().fg(color::TEXT_DIM))),
         Line::from(Span::styled("  and Salt's own APIs via the bundled Python agent.", Style::default().fg(color::TEXT_DIM))),
