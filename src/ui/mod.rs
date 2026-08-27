@@ -103,26 +103,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // Title bar
-            Constraint::Length(1),  // Tab menu
+            Constraint::Length(3),  // Title/tab frame (bordered)
             Constraint::Min(5),     // Tab content
             Constraint::Length(1),  // Status bar / key hints
         ])
         .split(f.area());
 
-    draw_title_bar(f, main_layout[0], app);
-    draw_tab_menu(f, main_layout[1], app);
+    draw_title_frame(f, main_layout[0], app);
 
     match app.current_tab {
-        Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[2], app),
-        Tab::Minions => minions::draw_minions(f, main_layout[2], app),
-        Tab::Events => events::draw_events(f, main_layout[2], app),
-        Tab::Jobs => jobs::draw_jobs(f, main_layout[2], app),
-        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[2], app),
-        Tab::Pulse => pulse::draw_pulse(f, main_layout[2], app),
+        Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[1], app),
+        Tab::Minions => minions::draw_minions(f, main_layout[1], app),
+        Tab::Events => events::draw_events(f, main_layout[1], app),
+        Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app),
+        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app),
+        Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app),
     }
 
-    draw_key_hints(f, main_layout[3], app);
+    draw_key_hints(f, main_layout[2], app);
 
     // Detail popup overlay
     if app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))) { detail_popup::draw_detail_popup(f, app); }
@@ -135,65 +133,55 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-// ─── Title bar ─────────────────────────────────────────────────────────────
+// ─── Title/tab frame ───────────────────────────────────────────────────────
 
-fn draw_title_bar(f: &mut Frame, area: Rect, app: &App) {
+/// App identity, master info, clock, and alert count live in the bordered
+/// frame's title (left/center/right), so they're visible on every tab
+/// without duplicating them again in a per-tab header. The tab menu and
+/// host/uptime info share the one content row inside the frame.
+fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     let version = env!("CARGO_PKG_VERSION");
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let radar = dashboard::RADAR_FRAMES[app.header_radar_frame as usize];
+    let connected = app.agent.connected;
+    let dot = if connected { "\u{25cf}" } else { "\u{25cb}" };
+    let dot_color = if connected { color::GREEN } else { color::RED };
+    let master_version = app.config_snapshot.as_ref().map(|c| c.salt_version.as_str()).unwrap_or("?");
 
-    let title = Line::from(vec![
+    let left_title = Line::from(vec![
         Span::styled(
-            format!(" \u{25C8} salt-radar v{}", version),
-            Style::default()
-                .fg(color::CYAN)
-                .add_modifier(Modifier::BOLD),
+            format!(" \u{25C8} salt-radar v{} ", version),
+            Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "  Salt Master Monitor",
-            Style::default().fg(Color::Rgb(130, 150, 190)),
-        ),
-        Span::styled(
-            " \u{2502} ",
-            Style::default().fg(Color::Rgb(35, 50, 75)),
-        ),
-        Span::styled(
-            format!("{}", app.config_snapshot.as_ref().map(|c| &c.salt_version).unwrap_or(&"?".to_string())),
-            Style::default().fg(Color::Rgb(90, 150, 210)),
-        ),
-        Span::styled(
-            " \u{2502} ",
-            Style::default().fg(Color::Rgb(35, 50, 75)),
-        ),
-        Span::styled(
-            format!("alerts: {}", app.alert_engine.active_count()),
-            Style::default().fg(if app.alert_engine.active_count() > 0 {
-                color::ORANGE
-            } else {
-                color::GREEN
-            }).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  {} ", now),
-            Style::default().fg(Color::Rgb(85, 95, 120)),
-        ),
+        Span::styled(format!("{}", radar), Style::default().fg(color::CYAN)),
+        Span::styled(format!(" {} ", dot), Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
+        Span::styled("Salt Master Monitor ", Style::default().fg(Color::Rgb(130, 150, 190))),
+        Span::styled("\u{2502} ", Style::default().fg(Color::Rgb(35, 50, 75))),
+        Span::styled(format!("Salt {} ", master_version), Style::default().fg(Color::Rgb(90, 150, 210))),
     ]);
+    let center_title = Line::from(Span::styled(
+        format!(" {} ", now),
+        Style::default().fg(Color::Rgb(85, 95, 120)),
+    ));
+    let right_title = Line::from(Span::styled(
+        format!(" alerts: {} ", app.alert_engine.active_count()),
+        Style::default().fg(if app.alert_engine.active_count() > 0 { color::ORANGE } else { color::GREEN })
+            .add_modifier(Modifier::BOLD),
+    ));
 
-    // No border: this row is only ever 1 line tall, so `Borders::ALL` has no
-    // room to draw a real box — it renders as a lone top edge that doesn't
-    // connect to anything below it. Background color alone (matching how the
-    // tab menu row does it) reads as an intentional strip instead.
-    f.render_widget(
-        Paragraph::new(title).style(Style::default().bg(color::BG_DARK)),
-        area,
-    );
-}
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::BORDER))
+        .style(Style::default().bg(color::BG_DARK))
+        .title_top(left_title.left_aligned())
+        .title_top(center_title.centered())
+        .title_top(right_title.right_aligned());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-// ─── Tab menu ──────────────────────────────────────────────────────────────
-
-fn draw_tab_menu(f: &mut Frame, area: Rect, app: &App) {
+    // Tab menu (left) and host/uptime (right) share the one content row.
     let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Pulse];
     let mut tab_spans: Vec<Span<'static>> = Vec::new();
-
     for (i, tab) in tabs.iter().enumerate() {
         if i > 0 {
             tab_spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
@@ -206,22 +194,43 @@ fn draw_tab_menu(f: &mut Frame, area: Rect, app: &App) {
         if *tab == app.current_tab {
             tab_spans.push(Span::styled(
                 label,
-                Style::default()
-                    .fg(color::TAB_ACTIVE_FG)
-                    .bg(color::TAB_ACTIVE_BG)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(color::TAB_ACTIVE_FG).bg(color::TAB_ACTIVE_BG).add_modifier(Modifier::BOLD),
             ));
         } else {
-            tab_spans.push(Span::styled(
-                label,
-                Style::default().fg(color::TAB_INACTIVE),
-            ));
+            tab_spans.push(Span::styled(label, Style::default().fg(color::TAB_INACTIVE)));
         }
     }
 
-    let tab_line = Paragraph::new(Line::from(tab_spans))
-        .style(Style::default().bg(color::BG_LIGHT));
-    f.render_widget(tab_line, area);
+    let hostname = app.config_snapshot.as_ref().map(|c| c.hostname.as_str()).unwrap_or("?");
+    let app_uptime = app.session_start.elapsed().as_secs();
+    let host_uptime = app.system_info.uptime_secs;
+    let mut info_spans = vec![
+        Span::styled("host: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{} ", hostname), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled("\u{2502} ", Style::default().fg(color::TAB_SEPARATOR)),
+        Span::styled("radar up: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{} ", dashboard::format_duration(app_uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+    ];
+    if host_uptime > 0 {
+        info_spans.push(Span::styled("| host up: ", Style::default().fg(color::TEXT_LABEL)));
+        info_spans.push(Span::styled(format!("{} ", dashboard::format_uptime(host_uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
+    }
+    let info_line = Line::from(info_spans);
+    let info_width = (info_line.width() as u16).min(inner.width);
+
+    let content = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(info_width)])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(tab_spans)).style(Style::default().bg(color::BG_LIGHT)),
+        content[0],
+    );
+    f.render_widget(
+        Paragraph::new(info_line).style(Style::default().bg(color::BG_LIGHT)),
+        content[1],
+    );
 }
 
 // ─── Key hints ─────────────────────────────────────────────────────────────

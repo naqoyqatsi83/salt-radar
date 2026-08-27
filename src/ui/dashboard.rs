@@ -9,7 +9,7 @@ use crate::types::SparklineStyle;
 
 use super::color;
 
-const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
+pub(super) const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
 // Frames: ◔ ◑ ◕ ◐
 
 // Services / Minion Key Status / Event Types horizontal split, out of 5 parts.
@@ -26,14 +26,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Header line at the very top
-    let header_body = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(area);
-    draw_header(f, header_body[0], app);
-
-    let body = header_body[1];
+    let body = area;
 
     // Top section: fixed-height info panels
     // Bottom section: stacked full-width sparklines fill remaining space
@@ -104,7 +97,6 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Length(5),
             Constraint::Length(services_height),
             Constraint::Length(4),
@@ -114,13 +106,12 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(area);
 
-    draw_header(f, layout[0], app);
-    draw_host_row(f, layout[1], app);
-    draw_proc_row(f, layout[2], app);
-    draw_zmq_row(f, layout[3], app);
-    draw_events_row(f, layout[4], app);
-    draw_activity_matrix(f, layout[5], app);
-    draw_job_pulse(f, layout[6], app);
+    draw_host_row(f, layout[0], app);
+    draw_proc_row(f, layout[1], app);
+    draw_zmq_row(f, layout[2], app);
+    draw_events_row(f, layout[3], app);
+    draw_activity_matrix(f, layout[4], app);
+    draw_job_pulse(f, layout[5], app);
 }
 
 fn make_block_line(title: Line<'static>) -> Block<'static> {
@@ -135,7 +126,7 @@ fn count_keys_with_status(keys: &[crate::types::KeyInfo], status: crate::types::
     keys.iter().filter(|k| k.status == status).count()
 }
 
-fn format_duration(secs: u64) -> String {
+pub(super) fn format_duration(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
     let s = secs % 60;
@@ -154,47 +145,6 @@ fn pct_gauge_style(pct: f64) -> Style {
         else if pct > 55.0 { color::YELLOW }
         else { color::GREEN }
     ).bg(color::BG_MID)
-}
-
-// ── Header ───────────────────────────────────────────────────────────────────
-
-fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let connected = app.agent.connected;
-    let dot = if connected { "\u{25cf}" } else { "\u{25cb}" };
-    let dot_color = if connected { color::GREEN } else { color::RED };
-    let radar = RADAR_FRAMES[app.header_radar_frame as usize];
-
-    let version = app.config_snapshot.as_ref()
-        .map(|c| c.salt_version.as_str())
-        .unwrap_or("?");
-
-    let hostname = app.config_snapshot.as_ref()
-        .map(|c| c.hostname.as_str())
-        .unwrap_or("?");
-
-    let app_uptime = app.session_start.elapsed().as_secs();
-    let host_uptime = app.system_info.uptime_secs;
-
-    let mut spans = vec![
-        Span::styled(" salt-radar", Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" v{} ", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM)),
-        Span::styled(format!("{}", radar), Style::default().fg(color::CYAN)),
-        Span::styled(format!(" {} ", dot), Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("Salt {}", version), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
-        Span::styled("  \u{2502}", Style::default().fg(color::BORDER)),
-        Span::styled(" host: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{}  ", hostname), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled("\u{2502}", Style::default().fg(color::BORDER)),
-        Span::styled(" radar up: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} ", format_duration(app_uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-    ];
-    if host_uptime > 0 {
-        spans.push(Span::styled("| host up: ", Style::default().fg(color::TEXT_LABEL)));
-        spans.push(Span::styled(format!("{} ", format_uptime(host_uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
-    }
-    let line = Line::from(spans);
-
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_DARK).fg(color::TEXT)), area);
 }
 
 // ── Minion Key Status ───────────────────────────────────────────────────────
@@ -545,7 +495,7 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(net_gauge, inner_layout[2]);
 }
 
-fn format_uptime(secs: u64) -> String {
+pub(super) fn format_uptime(secs: u64) -> String {
     if secs < 60 { return "0s".to_string(); }
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
