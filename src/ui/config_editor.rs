@@ -1,6 +1,6 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, ConfigEditorState};
@@ -16,11 +16,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
     let area = detail_popup::centered_rect(68, 70, f.area());
     f.render_widget(Clear, area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(" Config Editor ")
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER), color::BG_DARK);
     let inner = block.inner(area);
     f.render_widget(block, area);
 

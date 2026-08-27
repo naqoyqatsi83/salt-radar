@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
@@ -37,11 +37,11 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Events ({}/{}) ", app.events.len(), app.config.event_buffer_size))
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(
+        format!(" Events ({}/{}) ", app.events.len(), app.config.event_buffer_size),
+        Style::default().fg(color::BORDER),
+        color::BG_DARK,
+    );
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -128,11 +128,7 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
 
 /// Right panel: preview of the selected event
 fn draw_event_preview(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(" Preview ")
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(" Preview ", Style::default().fg(color::BORDER), color::BG_DARK);
 
     let inner = block.inner(area);
     f.render_widget(block, area);

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
@@ -21,11 +21,11 @@ pub fn draw_minions(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Minions ({}) ", app.filtered_minions_len()))
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(
+        format!(" Minions ({}) ", app.filtered_minions_len()),
+        Style::default().fg(color::BORDER),
+        color::BG_DARK,
+    );
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -197,11 +197,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(" Fleet Overview ")
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(" Fleet Overview ", Style::default().fg(color::BORDER), color::BG_DARK);
 
     let inner = block.inner(area);
     f.render_widget(block, area);

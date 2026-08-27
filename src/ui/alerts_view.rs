@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
@@ -9,11 +9,11 @@ use crate::app::App;
 use super::color;
 
 pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Alerts ({}) ", app.alert_engine.active_count()))
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(
+        format!(" Alerts ({}) ", app.alert_engine.active_count()),
+        Style::default().fg(color::BORDER),
+        color::BG_DARK,
+    );
 
     let inner = block.inner(area);
     f.render_widget(block, area);

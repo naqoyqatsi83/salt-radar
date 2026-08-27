@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
@@ -29,11 +29,7 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(color::BORDER)
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(format!(" Live Jobs ({}) ", app.jobs.len()))
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(format!(" Live Jobs ({}) ", app.jobs.len()), border_style, color::BG_DARK);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -140,11 +136,7 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("{}", app.jobs_cache.len())
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(format!(" Job Cache ({}) ", total_hint))
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(format!(" Job Cache ({}) ", total_hint), border_style, color::BG_DARK);
 
     let inner = block.inner(area);
     f.render_widget(block, area);

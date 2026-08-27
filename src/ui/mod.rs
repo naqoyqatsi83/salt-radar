@@ -65,6 +65,19 @@ pub mod color {
     }
 }
 
+/// A `Block` with `Borders::ALL` and the title text styled in the app's
+/// title color (`color::TEXT_TITLE`) — the shared construction every panel
+/// title should go through so the color stays consistent regardless of
+/// which view renders it, instead of each call site handing `.title()` a
+/// plain, unstyled string.
+pub fn titled_block(title: impl Into<String>, border_style: Style, bg: Color) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(Line::from(Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))))
+        .style(Style::default().bg(bg))
+}
+
 pub mod key {
     use ratatui::style::{Color, Modifier, Style};
 
