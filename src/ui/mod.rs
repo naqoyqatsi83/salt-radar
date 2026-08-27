@@ -178,12 +178,14 @@ fn draw_title_bar(f: &mut Frame, area: Rect, app: &App) {
         ),
     ]);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .style(Style::default().bg(color::BG_DARK));
-
-    f.render_widget(Paragraph::new(title).block(block), area);
+    // No border: this row is only ever 1 line tall, so `Borders::ALL` has no
+    // room to draw a real box — it renders as a lone top edge that doesn't
+    // connect to anything below it. Background color alone (matching how the
+    // tab menu row does it) reads as an intentional strip instead.
+    f.render_widget(
+        Paragraph::new(title).style(Style::default().bg(color::BG_DARK)),
+        area,
+    );
 }
 
 // ─── Tab menu ──────────────────────────────────────────────────────────────
