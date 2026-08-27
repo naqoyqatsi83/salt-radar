@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Scrollable list panels (Minions, Live Jobs, Job Cache, Events, Alerts) now show a "▲ more above" hint in the title and a "▼ more below" hint on the bottom border when the windowed list has content scrolled out of view in that direction, via a shared `scroll_window()`/`list_block()` helper instead of each view silently clipping with no way to tell there's more to scroll to (#38)
+
 ### Fixed
 - Job Pulse `p50/p95` completion latency stuck at `0.0s/0.0s` for jobs dispatched against targets whose minion list isn't resolved at dispatch time (e.g. some glob/compound matchers, async batches) — `target_count` stayed 0 forever so those jobs never met the `returned >= target_count` finalize condition. Jobs with an unknown target count now finalize on first return instead of never (#25)
 - Check-in Age `p50/p90/p99` on the Minions view could read stuck at `0s` on large fleets — the agent's per-minion grains-cache enrichment loop (`minion_cache_list`) ran under a single `try/except` covering the whole batch, so one bad cache lookup aborted enrichment for every minion after it, leaving them at `last_seen: 0` and silently excluded from the percentile population. Each minion is now looked up independently so one failure no longer drops the rest of the fleet (#26)
@@ -17,7 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Title bar and tab menu merged into a single bordered frame with the app name/version/master version, a centered clock, and the alert count embedded directly in the top border (left/center/right), and the tab list sharing the frame's one content row with host/uptime info. Replaces the previous single-row `Borders::ALL` title bar, which had no room to draw a real box and rendered as a dangling top edge (#32); also removes the duplicate app version, master version, and hostname that the per-tab Dashboard header used to repeat one row below it — that header is gone, and its unique remaining info (radar/host uptime, now both individually labeled instead of one shared ambiguous `uptime:` label with an understated host figure) moved into the frame, visible on every tab instead of only Dashboard (#34)
 - Minions → Fleet Overview: the OS Distribution/Salt Version/Architecture tables padded the name column to a hardcoded 22 chars, so any name longer than that (e.g. a long `osfinger` string) overflowed the field and threw the count/bar/% columns out of alignment for that row. The name column width is now derived from the longest name actually present across the three tables (clamped to a sane min/max), so bars and counts line up regardless of name length (#31)
 - Dashboard Event Types panel: the `Auth` row's bar was sized using the same width budget as every other row, then had a `(X.X/s)` rate suffix appended on top afterward with no reserved space for it — once the auth rate picked up, the row could overflow past the panel's right edge. Moved the rate into the panel's title (`Event Types  auth: X.X/s`), consistent with how Services/Key Status/Events already surface a summary stat in their title instead of a row, removing the overflow risk entirely (#35)
-
 ## [0.6.0-rc8] - 2026-08-26
 
 ### Added

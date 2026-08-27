@@ -37,19 +37,23 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
-    let block = super::titled_block(
+    let total = app.filtered_events_len();
+    let selected = app.event_selected.min(total.saturating_sub(1));
+    let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
+    let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
+
+    let block = super::list_block(
         format!(" Events ({}/{}) ", app.events.len(), app.config.event_buffer_size),
         Style::default().fg(color::BORDER),
         color::BG_DARK,
+        has_more_above,
+        has_more_below,
     );
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
-    let total = app.filtered_events_len();
-    let selected = app.event_selected.min(total.saturating_sub(1));
-    let visible = (inner.height as usize).saturating_sub(2);
 
     // Filter bar
     if app.is_filtering {
@@ -87,9 +91,6 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(color::TEXT_DIM),
             )));
         } else {
-            let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
-            let scroll = scroll.min(total.saturating_sub(visible));
-
             for idx in scroll..(scroll + visible).min(total) {
                 let evt = match app.get_filtered_event(idx) {
                     Some(e) => e,

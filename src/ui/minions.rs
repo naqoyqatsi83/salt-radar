@@ -21,15 +21,6 @@ pub fn draw_minions(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
-    let block = super::titled_block(
-        format!(" Minions ({}) ", app.filtered_minions_len()),
-        Style::default().fg(color::BORDER),
-        color::BG_DARK,
-    );
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
     let mut lines: Vec<Line> = Vec::new();
     let total = app.filtered_minions_len();
     let selected = app.minion_selected.min(total.saturating_sub(1));
@@ -69,14 +60,18 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let overhead = lines.len();
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let mut has_more_above = false;
+    let mut has_more_below = false;
 
     if app.minion_info.is_empty() && app.keys.is_empty() {
         if overhead == 0 {
             lines.push(Line::from(Span::styled("  No minion data available.", Style::default().fg(color::TEXT_DIM))));
         }
     } else {
-        // ── Column widths — total = 8 + sum = inner.width ──────────────
-        let avail = (inner.width as usize).saturating_sub(8);
+        // ── Column widths — total = 8 + sum = inner width ──────────────
+        let avail = inner_w.saturating_sub(8);
         let id_w = if avail > 24 { 18 } else { (avail / 3).max(4) };
         let key_w = if avail > 24 { 8 } else { (avail / 6).max(3) };
         let remaining = avail.saturating_sub(id_w + key_w + 4);
@@ -99,8 +94,11 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         if total == 0 {
             lines.push(Line::from(Span::styled("  (no minions match this filter)", Style::default().fg(color::TEXT_DIM))));
         } else {
-            let available = (inner.height as usize).saturating_sub(overhead).saturating_sub(2); // -header -one row
+            let available = inner_h.saturating_sub(overhead).saturating_sub(2); // -header -one row
             let visible = available.max(1);
+            let (scroll, more_above, more_below) = super::scroll_window(selected, visible, total);
+            has_more_above = more_above;
+            has_more_below = more_below;
 
             // Build a map of key status
             let mut key_map: HashMap<String, crate::types::KeyStatus> = HashMap::new();
@@ -118,9 +116,6 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                 .filter(|m| app.filter_text.is_empty() || crate::app::App::matches_minion(m, &app.filter_text))
                 .filter(|m| m.timed_out)
                 .count();
-
-            let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
-            let scroll = scroll.min(total.saturating_sub(visible));
 
             for idx in scroll..(scroll + visible).min(total) {
                 let minion = app.get_filtered_minion(idx);
@@ -180,6 +175,15 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    let block = super::list_block(
+        format!(" Minions ({}) ", total),
+        Style::default().fg(color::BORDER),
+        color::BG_DARK,
+        has_more_above,
+        has_more_below,
+    );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
     f.render_widget(
         Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
         inner,

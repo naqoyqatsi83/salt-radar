@@ -78,6 +78,41 @@ pub fn titled_block(title: impl Into<String>, border_style: Style, bg: Color) ->
         .style(Style::default().bg(bg))
 }
 
+/// Windowed-list scroll math shared by every scrollable list panel: given
+/// the selected index, the number of visible rows, and the total row
+/// count, returns `(scroll_offset, has_more_above, has_more_below)` so
+/// every view can show a consistent "more above/below" indicator instead
+/// of silently clipping with no way to tell there's more to scroll to.
+pub fn scroll_window(selected: usize, visible: usize, total: usize) -> (usize, bool, bool) {
+    if visible == 0 || total <= visible {
+        return (0, false, false);
+    }
+    let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+    let scroll = scroll.min(total.saturating_sub(visible));
+    (scroll, scroll > 0, scroll + visible < total)
+}
+
+/// Like `titled_block`, but for scrollable list panels: appends a "more
+/// above" hint to the top title and adds a "more below" hint on the
+/// bottom border when the list is windowed in that direction.
+pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool) -> Block<'static> {
+    let mut top_spans = vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))];
+    if has_more_above {
+        top_spans.push(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM)));
+    }
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .style(Style::default().bg(bg))
+        .title_top(Line::from(top_spans));
+    if has_more_below {
+        block = block.title_bottom(
+            Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::TEXT_DIM))).right_aligned(),
+        );
+    }
+    block
+}
+
 pub mod key {
     use ratatui::style::{Color, Modifier, Style};
 
