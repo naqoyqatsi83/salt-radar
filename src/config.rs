@@ -19,6 +19,8 @@ pub struct AppConfig {
     pub pending_key_churn_per_min: u64,
     pub service_flap_threshold_24h: u64,
     pub service_mem_growth_mb_per_hour: f64,
+    pub service_mem_abs_threshold_mb: f64,
+    pub service_mem_pct_threshold: f64,
 }
 
 impl Default for AppConfig {
@@ -41,6 +43,8 @@ impl Default for AppConfig {
             pending_key_churn_per_min: 10,
             service_flap_threshold_24h: 3,
             service_mem_growth_mb_per_hour: 50.0,
+            service_mem_abs_threshold_mb: 2048.0,
+            service_mem_pct_threshold: 8.0,
         }
     }
 }
@@ -84,6 +88,8 @@ struct AlertsConfig {
     pending_key_churn_per_min: Option<u64>,
     service_flap_threshold_24h: Option<u64>,
     service_mem_growth_mb_per_hour: Option<f64>,
+    service_mem_abs_threshold_mb: Option<f64>,
+    service_mem_pct_threshold: Option<f64>,
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
@@ -111,7 +117,9 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          worker_saturation_pct = {}\n\
          pending_key_churn_per_min = {}\n\
          service_flap_threshold_24h = {}\n\
-         service_mem_growth_mb_per_hour = {}\n",
+         service_mem_growth_mb_per_hour = {}\n\
+         service_mem_abs_threshold_mb = {}\n\
+         service_mem_pct_threshold = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -129,6 +137,8 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.pending_key_churn_per_min,
         config.service_flap_threshold_24h,
         config.service_mem_growth_mb_per_hour,
+        config.service_mem_abs_threshold_mb,
+        config.service_mem_pct_threshold,
     );
     std::fs::write(path, toml)
 }
@@ -162,6 +172,8 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.pending_key_churn_per_min { cfg.pending_key_churn_per_min = v; }
                 if let Some(v) = a.service_flap_threshold_24h { cfg.service_flap_threshold_24h = v; }
                 if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
+                if let Some(v) = a.service_mem_abs_threshold_mb { cfg.service_mem_abs_threshold_mb = v; }
+                if let Some(v) = a.service_mem_pct_threshold { cfg.service_mem_pct_threshold = v; }
             }
         }
     }

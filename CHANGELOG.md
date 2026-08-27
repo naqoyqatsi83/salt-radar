@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Scrollable list panels (Minions, Live Jobs, Job Cache, Events, Alerts) now show a "▲ more above" hint in the title and a "▼ more below" hint on the bottom border when the windowed list has content scrolled out of view in that direction, via a shared `scroll_window()`/`list_block()` helper instead of each view silently clipping with no way to tell there's more to scroll to (#38)
+- New "Service memory high" alert rule (Rule 13) flags a unit whose current RSS crosses a configurable absolute (`service_mem_abs_threshold_mb`, default 2048 MB) or percent-of-total-system-memory (`service_mem_pct_threshold`, default 8%) threshold, independent of the existing growth-rate alert — a slow, low-slope leak that's been running for weeks would never trip the rate check alone. Either threshold can be disabled by setting it to 0. Configurable via the `[alerts]` section or the in-app Config Editor (#29)
 
 ### Fixed
 - Job Pulse `p50/p95` completion latency stuck at `0.0s/0.0s` for jobs dispatched against targets whose minion list isn't resolved at dispatch time (e.g. some glob/compound matchers, async batches) — `target_count` stayed 0 forever so those jobs never met the `returned >= target_count` finalize condition. Jobs with an unknown target count now finalize on first return instead of never (#25)

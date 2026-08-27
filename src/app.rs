@@ -1354,6 +1354,8 @@ impl App {
                 ConfigField { label: "pending_key_churn_per_min", label_value: cfg.pending_key_churn_per_min.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "service_flap_threshold_24h", label_value: cfg.service_flap_threshold_24h.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "service_mem_growth_mb_per_hour", label_value: cfg.service_mem_growth_mb_per_hour.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_abs_threshold_mb", label_value: cfg.service_mem_abs_threshold_mb.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_pct_threshold", label_value: cfg.service_mem_pct_threshold.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -1402,6 +1404,8 @@ impl App {
             pending_key_churn_per_min: parse_u64("pending_key_churn_per_min")?,
             service_flap_threshold_24h: parse_u64("service_flap_threshold_24h")?,
             service_mem_growth_mb_per_hour: parse_f64("service_mem_growth_mb_per_hour")?,
+            service_mem_abs_threshold_mb: parse_f64("service_mem_abs_threshold_mb")?,
+            service_mem_pct_threshold: parse_f64("service_mem_pct_threshold")?,
         };
 
         crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
@@ -2765,6 +2769,8 @@ impl App {
             &self.service_trend_snapshots(),
             self.config.service_flap_threshold_24h,
             self.config.service_mem_growth_mb_per_hour,
+            self.config.service_mem_abs_threshold_mb,
+            self.config.service_mem_pct_threshold,
         );
 
         // Eagerly finalize jobs that reached full completion — record completion
