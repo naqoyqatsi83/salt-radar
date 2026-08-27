@@ -131,13 +131,19 @@ pub struct App {
     pub needs_terminal_clear: bool,
     /// Set to true when config editor saves — main loop will restart
     pub needs_restart: bool,
-    /// Measured ZMQ/master response latency in milliseconds (from zmq_ping agent command)
-    pub zmq_latency_ms: f64,
-    /// When the last zmq_ping was sent (for Rust-side round-trip measurement)
-    zmq_ping_sent_at: Option<Instant>,
-    /// Ring buffer of recent latency samples for sparkline (60 samples = 1 per tick)
-    pub zmq_latency_history: [f64; 2000],
-    pub zmq_latency_idx: usize,
+    /// Weighted-mean master command execution time in milliseconds, from Salt's
+    /// own `master_stats` events (`salt/stats/<worker>`) — real master-health
+    /// timing, not a synthetic local ping. Only updates when a worker actually
+    /// fires a stats event (periodic per `master_stats_event_iter`, and only if
+    /// `master_stats: True` is set in the master config, which salt-radar does
+    /// not control). 0.0 until the first event arrives.
+    pub master_exec_ms: f64,
+    /// Whether a `master_stats` event has ever been received — distinguishes
+    /// "no data yet" from a genuine ~0ms reading.
+    pub master_exec_seen: bool,
+    /// Ring buffer of recent samples for the sparkline (one push per received event)
+    pub master_exec_history: [f64; 2000],
+    pub master_exec_idx: usize,
 
     /// Rolling window of individual job-return outcomes (success/fail)
     pub job_returns_window: VecDeque<bool>,
@@ -443,10 +449,10 @@ impl App {
             sparkline_style: SparklineStyle::default(),
             needs_terminal_clear: false,
             needs_restart: false,
-            zmq_latency_ms: 0.0,
-            zmq_ping_sent_at: None,
-            zmq_latency_history: [0.0; 2000],
-            zmq_latency_idx: 0,
+            master_exec_ms: 0.0,
+            master_exec_seen: false,
+            master_exec_history: [0.0; 2000],
+            master_exec_idx: 0,
             job_returns_window: VecDeque::new(),
             job_completion_latencies: VecDeque::new(),
             job_outcome_window: VecDeque::new(),
@@ -591,15 +597,6 @@ impl App {
                                 self.zmq_connections = serde_json::from_value(data["connections"].clone()).unwrap_or_default();
                             }
                         }
-                        "zmq_ping" => {
-                            if let Some(sent) = self.zmq_ping_sent_at {
-                                let elapsed_ms = sent.elapsed().as_secs_f64() * 1000.0;
-                                self.zmq_latency_ms = elapsed_ms;
-                                self.zmq_latency_history[self.zmq_latency_idx] = elapsed_ms;
-                                self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
-                            }
-                            self.zmq_ping_sent_at = None;
-                        }
                         "alive_check" => {
                             if ok {
                                 let up: Vec<String> = data["up"].as_array()
@@ -729,6 +726,32 @@ impl App {
                     self.event_breakdown.record(&tag);
                     if tag.starts_with("salt/auth") {
                         self.auth_events_this_sec += 1;
+                    }
+
+                    // Master's own master_stats instrumentation (requires
+                    // master_stats: True in the master config, which salt-radar
+                    // doesn't set itself) — one event per worker process, each
+                    // carrying that worker's own mean command-execution times
+                    // since its last reset. Collapse to a single weighted-mean
+                    // sample per event for the dashboard's master-exec KPI.
+                    if tag.starts_with("salt/stats/") {
+                        if let Some(stats) = data["stats"].as_object() {
+                            let mut weighted = 0.0;
+                            let mut total_runs: u64 = 0;
+                            for v in stats.values() {
+                                let mean_secs = v["mean"].as_f64().unwrap_or(0.0);
+                                let runs = v["runs"].as_u64().unwrap_or(0);
+                                weighted += mean_secs * runs as f64;
+                                total_runs += runs;
+                            }
+                            if total_runs > 0 {
+                                let avg_ms = weighted / total_runs as f64 * 1000.0;
+                                self.master_exec_ms = avg_ms;
+                                self.master_exec_seen = true;
+                                self.master_exec_history[self.master_exec_idx] = avg_ms;
+                                self.master_exec_idx = (self.master_exec_idx + 1) % 2000;
+                            }
+                        }
                     }
 
                     // ── Normal event processing ─────────────────────────
@@ -2726,10 +2749,6 @@ impl App {
             self.config_tick = 0;
             self.send_agent_cmd("config_snapshot", None);
         }
-
-        // ZMQ latency ping every tick (same cadence as event rate / activity)
-        self.zmq_ping_sent_at = Some(Instant::now());
-        self.send_agent_cmd("zmq_ping", None);
 
         // Alive detection every 5 ticks
         if self.tick_count % 5 == 0 {

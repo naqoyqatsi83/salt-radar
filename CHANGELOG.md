@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Jobs → Job Cache: the fixed-width `JID`/`Fun`/`Target`/`User`/`Started` columns needed ~106 columns before `Started` even started rendering, so it silently clipped off the right edge at common terminal widths — unlike `Fun`/`Target`, which already truncate with `..` past their limit, `Started` had no fallback at all. Reordered to `JID`/`User`/`Started`/`Target`/`Fun` so a narrow panel clips the columns that already handle overflow instead of the one that doesn't (#39)
 - Dashboard's Minion Key Status panel showed a bare `churn:X/min` KPI with no explanation anywhere in the app of what it measures (new pending PKI keys registered in the last 60s). Relabeled to `new pending:X/min` and added a short definition to the in-app Help overlay (`?`/`h`) (#36)
 
+### Changed
+- Dashboard's "ZMQ" latency figure was a synthetic local IPC ping between the Rust TUI and its own Python helper subprocess — it never touched Salt's actual ZeroMQ transport or the master's real health, despite the panel implying otherwise. Replaced with Salt's own `master_stats` instrumentation (`salt/stats/<worker>` events, weighted-mean command execution time across workers); reads "n/a (needs master_stats: True)" when the master isn't configured to emit it, rather than a misleading number. The pub/ret/api connection-count part of the panel, which was already real, is unchanged. Removed the now-unused `zmq_ping` agent command and IPC round-trip machinery (#37)
+
 ## [0.6.0-rc8] - 2026-08-26
 
 ### Added

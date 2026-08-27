@@ -162,7 +162,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Help overlay
     if app.show_help {
-        let help_area = detail_popup::centered_rect(60, 50, f.area());
+        let help_area = detail_popup::centered_rect(60, 65, f.area());
         f.render_widget(Clear, help_area);
         draw_help_overlay(f, help_area);
     }
@@ -617,6 +617,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  new pending", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Minion Key Status: pending keys registered in the last 60s", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  master exec", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  ZMQ panel exec time (needs master_stats: True on the master)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),

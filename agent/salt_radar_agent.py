@@ -580,12 +580,6 @@ def cmd_minion_cache_list(opts, req):
     result(req["id"], "minion_cache_list", data={"minions": minions})
 
 
-def cmd_zmq_ping(opts, req):
-    """Respond immediately. Rust side measures full round-trip from send to
-    response receipt, so no Salt runner call is needed here."""
-    result(req["id"], "zmq_ping", data={"latency_ms": 0.0})
-
-
 def cmd_alive_check(opts, req):
     """Check which minions are connected — uses salt-key + cache presence (passive, no pings)."""
     up = []
@@ -967,7 +961,6 @@ HANDLERS = {
     "version": cmd_version,
     "config_snapshot": cmd_config_snapshot,
     "minion_cache_list": cmd_minion_cache_list,
-    "zmq_ping": cmd_zmq_ping,
     "jid_lookup": cmd_jid_lookup,
     "subscribe_events": cmd_subscribe_events,
     "unsubscribe_events": cmd_unsubscribe_events,
