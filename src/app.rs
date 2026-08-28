@@ -261,14 +261,19 @@ pub enum PingState {
 
 // ─── Config editor ──────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum ConfigFieldKind {
     Section,
     Str,
     U64,
     F64,
+    /// A field with a fixed, small set of valid values — edited via an
+    /// inline picker (arrow keys + Enter) instead of free-text entry.
+    Choice(&'static [&'static str]),
     SaveButton,
 }
+
+pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
 
 #[derive(Clone, Debug)]
 pub struct ConfigField {
@@ -283,6 +288,8 @@ pub struct ConfigEditorState {
     pub selected: usize,
     pub editing: bool,
     pub input: String,
+    /// Cursor position within the option list while editing a `Choice` field
+    pub choice_idx: usize,
     pub save_error: Option<String>,
 }
 
@@ -1420,12 +1427,13 @@ impl App {
                 ConfigField { label: "service_mem_abs_threshold_mb", label_value: cfg.service_mem_abs_threshold_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold", label_value: cfg.service_mem_pct_threshold.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "[dashboard]", label_value: String::new(), kind: ConfigFieldKind::Section },
-                ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Choice(ZMQ_LATENCY_SOURCES) },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
             editing: false,
             input: String::new(),
+            choice_idx: 0,
             save_error: None,
         }));
         self.popup_tab = None; // global — works from any tab
@@ -1440,7 +1448,7 @@ impl App {
         let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         for f in fields {
             match f.kind {
-                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 => {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) => {
                     vals.insert(f.label, f.label_value.as_str());
                 }
                 _ => {}
@@ -1493,6 +1501,31 @@ impl App {
         // --- Editing mode (borrow state) ---
         if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
             if s.editing {
+                // Choice fields are edited via an inline picker (arrow keys +
+                // Enter over the option list) instead of free-text entry.
+                if let Some(ConfigFieldKind::Choice(options)) = s.fields.get(s.selected).map(|f| f.kind) {
+                    match code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            s.choice_idx = s.choice_idx.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if s.choice_idx + 1 < options.len() { s.choice_idx += 1; }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(opt) = options.get(s.choice_idx) {
+                                if let Some(field) = s.fields.get_mut(s.selected) {
+                                    field.label_value = opt.to_string();
+                                }
+                            }
+                            s.editing = false;
+                        }
+                        KeyCode::Esc => {
+                            s.editing = false;
+                        }
+                        _ => {}
+                    }
+                    return false;
+                }
                 match code {
                     KeyCode::Enter => {
                         if let Some(field) = s.fields.get_mut(s.selected) {
@@ -1599,7 +1632,7 @@ impl App {
                     Some(DetailPopup::ConfigEditor(ref s)) => {
                         match s.fields.get(s.selected).map(|f| &f.kind) {
                             Some(ConfigFieldKind::SaveButton) => Some("save"),
-                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) => {
+                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) => {
                                 Some("edit")
                             }
                             _ => None,
@@ -1622,15 +1655,19 @@ impl App {
                         }
                     }
                     Some("edit") => {
-                        let val = match self.detail_popup {
+                        let field_info = match self.detail_popup {
                             Some(DetailPopup::ConfigEditor(ref s)) => {
-                                s.fields.get(s.selected).map(|f| f.label_value.clone())
+                                s.fields.get(s.selected).map(|f| (f.label_value.clone(), f.kind))
                             }
                             _ => None,
                         };
                         if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
-                            if let Some(v) = val {
-                                s.input = v;
+                            if let Some((val, kind)) = field_info {
+                                if let ConfigFieldKind::Choice(options) = kind {
+                                    s.choice_idx = options.iter().position(|o| *o == val).unwrap_or(0);
+                                } else {
+                                    s.input = val;
+                                }
                                 s.editing = true;
                             }
                         }

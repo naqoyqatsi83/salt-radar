@@ -48,6 +48,33 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     )));
                 }
             }
+            ConfigFieldKind::Choice(options) => {
+                let is_sel = field_idx == state.selected;
+                let editing = is_sel && state.editing;
+                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {:<22}", field.label),
+                        sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                    ),
+                    Span::styled(
+                        field.label_value.clone(),
+                        sel_style.fg(if editing { color::YELLOW } else { color::TEXT }),
+                    ),
+                ]));
+                if editing {
+                    for (i, opt) in options.iter().enumerate() {
+                        let opt_sel = i == state.choice_idx;
+                        let opt_style = if opt_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                        let marker = if opt_sel { "\u{25B8} " } else { "  " };
+                        lines.push(Line::from(Span::styled(
+                            format!("      {}{}", marker, opt),
+                            opt_style.fg(if opt_sel { color::YELLOW } else { color::TEXT_DIM }).add_modifier(if opt_sel { Modifier::BOLD } else { Modifier::empty() }),
+                        )));
+                    }
+                }
+            }
             _ => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
