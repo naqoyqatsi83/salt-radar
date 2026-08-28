@@ -510,8 +510,8 @@ pub(super) fn format_uptime(secs: u64) -> String {
 // ── ZMQ / Network & Latency ─────────────────────────────────────────────────
 
 fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
-    let lat = app.master_exec_ms;
-    let lat_color = if !app.master_exec_seen {
+    let lat = app.zmq_latency_ms;
+    let lat_color = if !app.zmq_latency_seen {
         color::TEXT_DIM
     } else if lat < 10.0 {
         color::GREEN
@@ -521,15 +521,11 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         color::ORANGE
     };
 
-    let peak_lat = app.master_exec_history.iter().cloned().fold(0.0_f64, f64::max);
-    let short_label = if app.master_exec_seen { format!("{:.1}ms", lat) } else { "n/a".to_string() };
-    let peak_label = if app.master_exec_seen { format!("{:.1}ms", peak_lat) } else { "n/a".to_string() };
+    let peak_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max);
+    let short_label = if app.zmq_latency_seen { format!("{:.1}ms", lat) } else { "n/a".to_string() };
+    let peak_label = if app.zmq_latency_seen { format!("{:.1}ms", peak_lat) } else { "n/a".to_string() };
 
-    // Build title — include peak if the panel is wide enough. The figure is
-    // Salt's own master_stats mean command-execution time (real master-health
-    // timing), not a synthetic local ping — "n/a" means no salt/stats/* event
-    // has arrived yet, most likely because master_stats: True isn't set in
-    // the master's own config (salt-radar can't enable this itself).
+    // Build title — include peak if the panel is wide enough.
     let title = if area.width >= 40 {
         Line::from(vec![
             Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
@@ -559,8 +555,15 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let ret_established = app.zmq_connections.iter().filter(|c| c.local_port == ret_port && c.state == "ESTABLISHED").count();
     let ret_total = app.zmq_connections.iter().filter(|c| c.local_port == ret_port).count();
 
-    let lat_label = if !app.master_exec_seen {
-        "n/a (needs master_stats: True)".to_string()
+    // Label and "no data" hint depend on which source is configured to feed
+    // this KPI (config.zmq_latency_source) — see App::zmq_latency_ms doc.
+    let (source_label, na_hint) = match app.config.zmq_latency_source.as_str() {
+        "master_stats" => ("master exec", "n/a (needs master_stats: True)"),
+        "job_ping" => ("job ping", "n/a (waiting for round-trip)"),
+        _ => ("agent IPC", "measuring..."),
+    };
+    let lat_label = if !app.zmq_latency_seen {
+        na_hint.to_string()
     } else {
         format!("{:.0} ms", lat)
     };
@@ -571,10 +574,10 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
         .split(inner);
 
-    let max_lat = app.master_exec_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
-    let lat_idx = app.master_exec_idx;
+    let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+    let lat_idx = app.zmq_latency_idx;
     let ordered_lat: Vec<f64> = (0..2000)
-        .map(|i| app.master_exec_history[(lat_idx + i) % 2000])
+        .map(|i| app.zmq_latency_history[(lat_idx + i) % 2000])
         .collect();
     let spark_width = inner_layout[0].width.max(1) as usize;
     let points = spark_width.min(2000);
@@ -600,7 +603,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(format!(":{} api{} ({})  ", api_port, api_estab, api_total), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
     }
     spans.push(Span::styled("\u{2502}  ".to_string(), Style::default().fg(color::BORDER)));
-    spans.push(Span::styled("master exec: ", Style::default().fg(color::TEXT_LABEL)));
+    spans.push(Span::styled(format!("{}: ", source_label), Style::default().fg(color::TEXT_LABEL)));
     spans.push(Span::styled(lat_label, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)));
 
     f.render_widget(

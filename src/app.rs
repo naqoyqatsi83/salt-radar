@@ -131,19 +131,26 @@ pub struct App {
     pub needs_terminal_clear: bool,
     /// Set to true when config editor saves — main loop will restart
     pub needs_restart: bool,
-    /// Weighted-mean master command execution time in milliseconds, from Salt's
-    /// own `master_stats` events (`salt/stats/<worker>`) — real master-health
-    /// timing, not a synthetic local ping. Only updates when a worker actually
-    /// fires a stats event (periodic per `master_stats_event_iter`, and only if
-    /// `master_stats: True` is set in the master config, which salt-radar does
-    /// not control). 0.0 until the first event arrives.
-    pub master_exec_ms: f64,
-    /// Whether a `master_stats` event has ever been received — distinguishes
-    /// "no data yet" from a genuine ~0ms reading.
-    pub master_exec_seen: bool,
-    /// Ring buffer of recent samples for the sparkline (one push per received event)
-    pub master_exec_history: [f64; 2000],
-    pub master_exec_idx: usize,
+    /// Dashboard ZMQ panel's latency figure, in milliseconds. Populated by
+    /// whichever mechanism `config.zmq_latency_source` selects — see the
+    /// three `*_ping`/`*_pending` fields below for the source-specific state.
+    pub zmq_latency_ms: f64,
+    /// Whether a real sample has ever been recorded under the *current*
+    /// source — distinguishes "no data yet" from a genuine ~0ms reading.
+    /// Reset on every config save so a stale figure from a previously
+    /// selected source can't linger mislabeled under a new one.
+    pub zmq_latency_seen: bool,
+    /// Ring buffer of recent samples for the sparkline (cadence depends on
+    /// the active source: ~every tick for agent_ipc, irregular/periodic for
+    /// job_ping and master_stats)
+    pub zmq_latency_history: [f64; 2000],
+    pub zmq_latency_idx: usize,
+    /// agent_ipc source: when the last zmq_ping was sent, for Rust-side
+    /// round-trip measurement
+    zmq_ping_sent_at: Option<Instant>,
+    /// job_ping source: (jid, sent_at) of an in-flight periodic test.ping,
+    /// timed from dispatch to its first real /ret event on the event bus
+    job_ping_pending: Option<(String, Instant)>,
 
     /// Rolling window of individual job-return outcomes (success/fail)
     pub job_returns_window: VecDeque<bool>,
@@ -449,10 +456,12 @@ impl App {
             sparkline_style: SparklineStyle::default(),
             needs_terminal_clear: false,
             needs_restart: false,
-            master_exec_ms: 0.0,
-            master_exec_seen: false,
-            master_exec_history: [0.0; 2000],
-            master_exec_idx: 0,
+            zmq_latency_ms: 0.0,
+            zmq_latency_seen: false,
+            zmq_latency_history: [0.0; 2000],
+            zmq_latency_idx: 0,
+            zmq_ping_sent_at: None,
+            job_ping_pending: None,
             job_returns_window: VecDeque::new(),
             job_completion_latencies: VecDeque::new(),
             job_outcome_window: VecDeque::new(),
@@ -597,6 +606,23 @@ impl App {
                                 self.zmq_connections = serde_json::from_value(data["connections"].clone()).unwrap_or_default();
                             }
                         }
+                        "zmq_ping" => {
+                            if let Some(sent) = self.zmq_ping_sent_at {
+                                let elapsed_ms = sent.elapsed().as_secs_f64() * 1000.0;
+                                self.zmq_latency_ms = elapsed_ms;
+                                self.zmq_latency_seen = true;
+                                self.zmq_latency_history[self.zmq_latency_idx] = elapsed_ms;
+                                self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
+                            }
+                            self.zmq_ping_sent_at = None;
+                        }
+                        "job_ping" => {
+                            if ok {
+                                if let Some(jid) = data["jid"].as_str() {
+                                    self.job_ping_pending = Some((jid.to_string(), Instant::now()));
+                                }
+                            }
+                        }
                         "alive_check" => {
                             if ok {
                                 let up: Vec<String> = data["up"].as_array()
@@ -728,13 +754,13 @@ impl App {
                         self.auth_events_this_sec += 1;
                     }
 
-                    // Master's own master_stats instrumentation (requires
-                    // master_stats: True in the master config, which salt-radar
-                    // doesn't set itself) — one event per worker process, each
-                    // carrying that worker's own mean command-execution times
-                    // since its last reset. Collapse to a single weighted-mean
-                    // sample per event for the dashboard's master-exec KPI.
-                    if tag.starts_with("salt/stats/") {
+                    // ZMQ panel latency, source "master_stats": Salt's own
+                    // instrumentation (requires master_stats: True in the master
+                    // config, which salt-radar doesn't set itself) — one event
+                    // per worker process, each carrying that worker's own mean
+                    // command-execution times since its last reset. Collapse to
+                    // a single weighted-mean sample per event.
+                    if self.config.zmq_latency_source == "master_stats" && tag.starts_with("salt/stats/") {
                         if let Some(stats) = data["stats"].as_object() {
                             let mut weighted = 0.0;
                             let mut total_runs: u64 = 0;
@@ -746,11 +772,25 @@ impl App {
                             }
                             if total_runs > 0 {
                                 let avg_ms = weighted / total_runs as f64 * 1000.0;
-                                self.master_exec_ms = avg_ms;
-                                self.master_exec_seen = true;
-                                self.master_exec_history[self.master_exec_idx] = avg_ms;
-                                self.master_exec_idx = (self.master_exec_idx + 1) % 2000;
+                                self.zmq_latency_ms = avg_ms;
+                                self.zmq_latency_seen = true;
+                                self.zmq_latency_history[self.zmq_latency_idx] = avg_ms;
+                                self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
                             }
+                        }
+                    }
+
+                    // ZMQ panel latency, source "job_ping": time our own
+                    // periodic test.ping from dispatch to its first real
+                    // return over the actual event bus/ZMQ transport.
+                    if let Some((ref pending_jid, sent_at)) = self.job_ping_pending {
+                        if tag.starts_with("salt/job/") && tag.contains(pending_jid.as_str()) && tag.contains("/ret/") {
+                            let elapsed_ms = sent_at.elapsed().as_secs_f64() * 1000.0;
+                            self.zmq_latency_ms = elapsed_ms;
+                            self.zmq_latency_seen = true;
+                            self.zmq_latency_history[self.zmq_latency_idx] = elapsed_ms;
+                            self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
+                            self.job_ping_pending = None;
                         }
                     }
 
@@ -1379,6 +1419,8 @@ impl App {
                 ConfigField { label: "service_mem_growth_mb_per_hour", label_value: cfg.service_mem_growth_mb_per_hour.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_mb", label_value: cfg.service_mem_abs_threshold_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold", label_value: cfg.service_mem_pct_threshold.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "[dashboard]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -1429,11 +1471,21 @@ impl App {
             service_mem_growth_mb_per_hour: parse_f64("service_mem_growth_mb_per_hour")?,
             service_mem_abs_threshold_mb: parse_f64("service_mem_abs_threshold_mb")?,
             service_mem_pct_threshold: parse_f64("service_mem_pct_threshold")?,
+            zmq_latency_source: vals.get("zmq_latency_source").unwrap_or(&"agent_ipc").to_string(),
         };
 
         crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
         self.config = new_config;
+        // A changed zmq_latency_source (or any save) shouldn't leave a stale
+        // figure — or sparkline history in different units — from a
+        // previously active source mislabeled under a new one.
+        self.zmq_latency_ms = 0.0;
+        self.zmq_latency_seen = false;
+        self.zmq_latency_history = [0.0; 2000];
+        self.zmq_latency_idx = 0;
+        self.zmq_ping_sent_at = None;
+        self.job_ping_pending = None;
         Ok(())
     }
 
@@ -2753,6 +2805,34 @@ impl App {
         // Alive detection every 5 ticks
         if self.tick_count % 5 == 0 {
             self.send_agent_cmd("alive_check", None);
+        }
+
+        // ZMQ panel latency: dispatch/measure per the configured source.
+        match self.config.zmq_latency_source.as_str() {
+            "job_ping" => {
+                // Drop a stale pending ping (no return within a reasonable
+                // window) so a lost/dropped job doesn't permanently block
+                // future pings from ever being sent again.
+                if let Some((_, sent_at)) = self.job_ping_pending {
+                    if sent_at.elapsed().as_secs() > 30 {
+                        self.job_ping_pending = None;
+                    }
+                }
+                // Throttled well below tick cadence — this puts real traffic
+                // on the event bus, unlike the other two sources.
+                if self.job_ping_pending.is_none() && self.tick_count % 15 == 0 {
+                    self.send_agent_cmd("job_ping", None);
+                }
+            }
+            "master_stats" => {
+                // Passive: just listening for the master's own salt/stats/*
+                // events (handled in the event branch above), nothing to send.
+            }
+            _ => {
+                // agent_ipc (default)
+                self.zmq_ping_sent_at = Some(Instant::now());
+                self.send_agent_cmd("zmq_ping", None);
+            }
         }
 
         // Update job ages from dispatch time (previously always 0 — also fixes

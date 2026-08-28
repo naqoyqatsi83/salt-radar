@@ -619,8 +619,8 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  Minion Key Status: pending keys registered in the last 60s", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  master exec", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled("  ZMQ panel exec time (needs master_stats: True on the master)", Style::default().fg(color::TEXT)),
+            Span::styled("  ZMQ latency", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  source is configurable: zmq_latency_source in [dashboard]", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),

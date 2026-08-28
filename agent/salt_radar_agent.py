@@ -580,6 +580,32 @@ def cmd_minion_cache_list(opts, req):
     result(req["id"], "minion_cache_list", data={"minions": minions})
 
 
+def cmd_zmq_ping(opts, req):
+    """Respond immediately. Rust side measures full round-trip from send to
+    response receipt, so no Salt runner call is needed here. This is a local
+    agent-liveness check, not a measurement of Salt's own ZMQ transport."""
+    result(req["id"], "zmq_ping", data={})
+
+
+def cmd_job_ping(opts, req):
+    """Fire an async test.ping so the Rust side can time the real /new -> /ret
+    round-trip through Salt's actual publish/return transport. Returns the
+    JID immediately; completion is observed by the caller via the normal
+    event stream, not by waiting on this command."""
+    jid = None
+    try:
+        output = _run_salt_cmd(["salt", "--async", "*", "test.ping"], timeout=10)
+        if output:
+            # e.g. "Executed command with job ID: 20260101120000000000"
+            for token in output.split():
+                if token.isdigit() and len(token) >= 18:
+                    jid = token
+                    break
+    except Exception:
+        pass
+    result(req["id"], "job_ping", data={"jid": jid})
+
+
 def cmd_alive_check(opts, req):
     """Check which minions are connected — uses salt-key + cache presence (passive, no pings)."""
     up = []
@@ -961,6 +987,8 @@ HANDLERS = {
     "version": cmd_version,
     "config_snapshot": cmd_config_snapshot,
     "minion_cache_list": cmd_minion_cache_list,
+    "zmq_ping": cmd_zmq_ping,
+    "job_ping": cmd_job_ping,
     "jid_lookup": cmd_jid_lookup,
     "subscribe_events": cmd_subscribe_events,
     "unsubscribe_events": cmd_unsubscribe_events,
