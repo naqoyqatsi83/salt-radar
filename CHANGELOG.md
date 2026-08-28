@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc9] - 2026-08-28
+
 ### Added
+- Refreshed README screenshots for every tab against the updated UI
 - Config Editor: fields with a fixed, small set of valid values (currently `zmq_latency_source`) now edit via an inline picker — Enter opens a list of the valid options with the current one pre-selected, ↑↓ moves, Enter confirms — instead of free-text entry where a typo silently fell back to default behavior (#37)
 - Scrollable list panels (Minions, Live Jobs, Job Cache, Events, Alerts) now show a "▲ more above" hint in the title and a "▼ more below" hint on the bottom border when the windowed list has content scrolled out of view in that direction, via a shared `scroll_window()`/`list_block()` helper instead of each view silently clipping with no way to tell there's more to scroll to (#38)
 - New "Service memory high" alert rule (Rule 13) flags a unit whose current RSS crosses a configurable absolute (`service_mem_abs_threshold_mb`, default 2048 MB) or percent-of-total-system-memory (`service_mem_pct_threshold`, default 8%) threshold, independent of the existing growth-rate alert — a slow, low-slope leak that's been running for weeks would never trip the rate check alone. Either threshold can be disabled by setting it to 0. Configurable via the `[alerts]` section or the in-app Config Editor (#29)
