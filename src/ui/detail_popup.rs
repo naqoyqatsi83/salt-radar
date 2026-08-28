@@ -408,7 +408,7 @@ fn draw_job_detail(
         .borders(Borders::ALL)
         .border_style(left_border_style)
         .title(format!(" Returns ({}) ", lookup.as_ref().map_or(0, |l| l.returns.len())))
-        .title_style(Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))
+        .title_style(Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))
         .style(Style::default().bg(color::BG_POPUP));
     let left_inner = left_block.inner(horiz[0]);
     f.render_widget(&left_block, horiz[0]);
@@ -510,7 +510,7 @@ fn draw_job_detail(
         .borders(Borders::ALL)
         .border_style(right_border_style)
         .title(right_title)
-        .title_style(Style::default().fg(if panel_focus { color::CYAN } else { color::TEXT_LABEL }).add_modifier(Modifier::BOLD))
+        .title_style(Style::default().fg(if panel_focus { color::CYAN } else { color::TEXT_TITLE }).add_modifier(Modifier::BOLD))
         .style(Style::default().bg(color::BG_POPUP));
     let right_inner = right_block.inner(horiz[1]);
     f.render_widget(&right_block, horiz[1]);

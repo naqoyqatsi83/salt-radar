@@ -45,6 +45,8 @@ impl AlertEngine {
         service_trends: &[ServiceTrendSnapshot],
         service_flap_threshold_24h: u64,
         service_mem_growth_mb_per_hour: f64,
+        service_mem_abs_threshold_mb: f64,
+        service_mem_pct_threshold: f64,
     ) {
         let mut active = Vec::new();
 
@@ -276,6 +278,29 @@ impl AlertEngine {
                         rule: "Service memory growth",
                         severity: AlertSeverity::Warn,
                         description: format!("{} memory growing at {:.1} MB/h", t.unit, rate),
+                        details: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        // Rule 13: Service memory over threshold — flags a unit that's already
+        // sitting on an unreasonable amount of memory, independent of current
+        // growth slope (a slow, low-slope leak running for weeks would never
+        // trip Rule 12's rate check). Either the absolute or percent-of-total
+        // threshold crossing is enough; a threshold of 0 disables that check.
+        if sys.mem_total_kb > 0 {
+            for svc in services {
+                let mem_mb = svc.memory_kb as f64 / 1024.0;
+                let mem_pct = svc.memory_kb as f64 / sys.mem_total_kb as f64 * 100.0;
+                let over_abs = service_mem_abs_threshold_mb > 0.0 && mem_mb > service_mem_abs_threshold_mb;
+                let over_pct = service_mem_pct_threshold > 0.0 && mem_pct > service_mem_pct_threshold;
+                if over_abs || over_pct {
+                    active.push(ActiveAlert {
+                        key: format!("svc-mem-high:{}", svc.unit),
+                        rule: "Service memory high",
+                        severity: AlertSeverity::Crit,
+                        description: format!("{} using {:.0} MB ({:.1}% of system memory)", svc.unit, mem_mb, mem_pct),
                         details: Vec::new(),
                     });
                 }

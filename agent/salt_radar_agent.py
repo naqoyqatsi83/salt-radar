@@ -547,38 +547,64 @@ def cmd_minion_cache_list(opts, req):
     except Exception:
         pass
 
-    # Step 2: enrich with grains data from the cache (if available)
+    # Step 2: enrich with grains data from the cache (if available). Each
+    # minion is looked up independently so one bad cache entry can't abort
+    # enrichment for the rest of a large fleet.
     try:
         salt = _import_salt()
         cache = salt.cache.factory(opts)
-        minion_ids = cache.list("minions")
-        if minion_ids:
-            for mid in minion_ids:
-                entry = {"id": mid}
-                grains = cache.fetch("minions", mid)
-                if grains:
-                    entry["os"] = grains.get("os", "")
-                    entry["osrelease"] = grains.get("osrelease", "")
-                    entry["saltversion"] = grains.get("saltversion", "")
-                    entry["cpuarch"] = grains.get("cpuarch", "")
-                entry["last_seen"] = cache.updated("minions", mid) or 0
-                entry["cache_updated"] = cache.updated("minions", mid) or 0
-                if mid in seen:
-                    # Update existing entry with cache data
-                    for e in minions:
-                        if e["id"] == mid:
-                            e.update(entry)
-                            break
+        minion_ids = cache.list("minions") or []
     except Exception:
-        pass
+        minion_ids = []
+
+    for mid in minion_ids:
+        try:
+            entry = {"id": mid}
+            grains = cache.fetch("minions", mid)
+            if grains:
+                entry["os"] = grains.get("os", "")
+                entry["osrelease"] = grains.get("osrelease", "")
+                entry["saltversion"] = grains.get("saltversion", "")
+                entry["cpuarch"] = grains.get("cpuarch", "")
+            entry["last_seen"] = cache.updated("minions", mid) or 0
+            entry["cache_updated"] = cache.updated("minions", mid) or 0
+            if mid in seen:
+                # Update existing entry with cache data
+                for e in minions:
+                    if e["id"] == mid:
+                        e.update(entry)
+                        break
+        except Exception:
+            continue
 
     result(req["id"], "minion_cache_list", data={"minions": minions})
 
 
 def cmd_zmq_ping(opts, req):
     """Respond immediately. Rust side measures full round-trip from send to
-    response receipt, so no Salt runner call is needed here."""
-    result(req["id"], "zmq_ping", data={"latency_ms": 0.0})
+    response receipt, so no Salt runner call is needed here. This is a local
+    agent-liveness check, not a measurement of Salt's own ZMQ transport."""
+    result(req["id"], "zmq_ping", data={})
+
+
+def cmd_job_ping(opts, req):
+    """Fire an async test.ping so the Rust side can time the real dispatch ->
+    first return round-trip through Salt's actual publish/return transport.
+    Uses LocalClient.cmd_async() directly (same as fleet_scan) rather than
+    shelling out to the salt CLI, so a fresh Python-interpreter/CLI startup
+    isn't added to every sample on top of the real transport latency.
+    Returns the JID immediately; completion is observed by the caller via
+    the normal event stream, not by waiting on this command."""
+    jid = None
+    try:
+        salt = _import_salt()
+        local = salt.client.LocalClient(opts["conf_file"])
+        jid = local.cmd_async("*", "test.ping", [], tgt_type="glob")
+        if isinstance(jid, bytes):
+            jid = jid.decode()
+    except Exception:
+        jid = None
+    result(req["id"], "job_ping", data={"jid": jid})
 
 
 def cmd_alive_check(opts, req):
@@ -963,6 +989,7 @@ HANDLERS = {
     "config_snapshot": cmd_config_snapshot,
     "minion_cache_list": cmd_minion_cache_list,
     "zmq_ping": cmd_zmq_ping,
+    "job_ping": cmd_job_ping,
     "jid_lookup": cmd_jid_lookup,
     "subscribe_events": cmd_subscribe_events,
     "unsubscribe_events": cmd_unsubscribe_events,

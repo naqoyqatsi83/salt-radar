@@ -65,6 +65,54 @@ pub mod color {
     }
 }
 
+/// A `Block` with `Borders::ALL` and the title text styled in the app's
+/// title color (`color::TEXT_TITLE`) — the shared construction every panel
+/// title should go through so the color stays consistent regardless of
+/// which view renders it, instead of each call site handing `.title()` a
+/// plain, unstyled string.
+pub fn titled_block(title: impl Into<String>, border_style: Style, bg: Color) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(Line::from(Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))))
+        .style(Style::default().bg(bg))
+}
+
+/// Windowed-list scroll math shared by every scrollable list panel: given
+/// the selected index, the number of visible rows, and the total row
+/// count, returns `(scroll_offset, has_more_above, has_more_below)` so
+/// every view can show a consistent "more above/below" indicator instead
+/// of silently clipping with no way to tell there's more to scroll to.
+pub fn scroll_window(selected: usize, visible: usize, total: usize) -> (usize, bool, bool) {
+    if visible == 0 || total <= visible {
+        return (0, false, false);
+    }
+    let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+    let scroll = scroll.min(total.saturating_sub(visible));
+    (scroll, scroll > 0, scroll + visible < total)
+}
+
+/// Like `titled_block`, but for scrollable list panels: appends a "more
+/// above" hint to the top title and adds a "more below" hint on the
+/// bottom border when the list is windowed in that direction.
+pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool) -> Block<'static> {
+    let mut top_spans = vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))];
+    if has_more_above {
+        top_spans.push(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM)));
+    }
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .style(Style::default().bg(bg))
+        .title_top(Line::from(top_spans));
+    if has_more_below {
+        block = block.title_bottom(
+            Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::TEXT_DIM))).right_aligned(),
+        );
+    }
+    block
+}
+
 pub mod key {
     use ratatui::style::{Color, Modifier, Style};
 
@@ -90,95 +138,85 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // Title bar
-            Constraint::Length(1),  // Tab menu
+            Constraint::Length(3),  // Title/tab frame (bordered)
             Constraint::Min(5),     // Tab content
             Constraint::Length(1),  // Status bar / key hints
         ])
         .split(f.area());
 
-    draw_title_bar(f, main_layout[0], app);
-    draw_tab_menu(f, main_layout[1], app);
+    draw_title_frame(f, main_layout[0], app);
 
     match app.current_tab {
-        Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[2], app),
-        Tab::Minions => minions::draw_minions(f, main_layout[2], app),
-        Tab::Events => events::draw_events(f, main_layout[2], app),
-        Tab::Jobs => jobs::draw_jobs(f, main_layout[2], app),
-        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[2], app),
-        Tab::Pulse => pulse::draw_pulse(f, main_layout[2], app),
+        Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[1], app),
+        Tab::Minions => minions::draw_minions(f, main_layout[1], app),
+        Tab::Events => events::draw_events(f, main_layout[1], app),
+        Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app),
+        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app),
+        Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app),
     }
 
-    draw_key_hints(f, main_layout[3], app);
+    draw_key_hints(f, main_layout[2], app);
 
     // Detail popup overlay
     if app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))) { detail_popup::draw_detail_popup(f, app); }
 
     // Help overlay
     if app.show_help {
-        let help_area = detail_popup::centered_rect(60, 50, f.area());
+        let help_area = detail_popup::centered_rect(60, 65, f.area());
         f.render_widget(Clear, help_area);
         draw_help_overlay(f, help_area);
     }
 }
 
-// ─── Title bar ─────────────────────────────────────────────────────────────
+// ─── Title/tab frame ───────────────────────────────────────────────────────
 
-fn draw_title_bar(f: &mut Frame, area: Rect, app: &App) {
+/// App identity, master info, clock, and alert count live in the bordered
+/// frame's title (left/center/right), so they're visible on every tab
+/// without duplicating them again in a per-tab header. The tab menu and
+/// host/uptime info share the one content row inside the frame.
+fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     let version = env!("CARGO_PKG_VERSION");
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let radar = dashboard::RADAR_FRAMES[app.header_radar_frame as usize];
+    let connected = app.agent.connected;
+    let dot = if connected { "\u{25cf}" } else { "\u{25cb}" };
+    let dot_color = if connected { color::GREEN } else { color::RED };
+    let master_version = app.config_snapshot.as_ref().map(|c| c.salt_version.as_str()).unwrap_or("?");
 
-    let title = Line::from(vec![
+    let left_title = Line::from(vec![
         Span::styled(
-            format!(" \u{25C8} salt-radar v{}", version),
-            Style::default()
-                .fg(color::CYAN)
-                .add_modifier(Modifier::BOLD),
+            format!(" \u{25C8} salt-radar v{} ", version),
+            Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "  Salt Master Monitor",
-            Style::default().fg(Color::Rgb(130, 150, 190)),
-        ),
-        Span::styled(
-            " \u{2502} ",
-            Style::default().fg(Color::Rgb(35, 50, 75)),
-        ),
-        Span::styled(
-            format!("{}", app.config_snapshot.as_ref().map(|c| &c.salt_version).unwrap_or(&"?".to_string())),
-            Style::default().fg(Color::Rgb(90, 150, 210)),
-        ),
-        Span::styled(
-            " \u{2502} ",
-            Style::default().fg(Color::Rgb(35, 50, 75)),
-        ),
-        Span::styled(
-            format!("alerts: {}", app.alert_engine.active_count()),
-            Style::default().fg(if app.alert_engine.active_count() > 0 {
-                color::ORANGE
-            } else {
-                color::GREEN
-            }).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  {} ", now),
-            Style::default().fg(Color::Rgb(85, 95, 120)),
-        ),
+        Span::styled(format!("{}", radar), Style::default().fg(color::CYAN)),
+        Span::styled(format!(" {} ", dot), Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
+        Span::styled("Salt Master Monitor ", Style::default().fg(Color::Rgb(130, 150, 190))),
+        Span::styled("\u{2502} ", Style::default().fg(Color::Rgb(35, 50, 75))),
+        Span::styled(format!("Salt {} ", master_version), Style::default().fg(Color::Rgb(90, 150, 210))),
     ]);
+    let center_title = Line::from(Span::styled(
+        format!(" {} ", now),
+        Style::default().fg(Color::Rgb(85, 95, 120)),
+    ));
+    let right_title = Line::from(Span::styled(
+        format!(" alerts: {} ", app.alert_engine.active_count()),
+        Style::default().fg(if app.alert_engine.active_count() > 0 { color::ORANGE } else { color::GREEN })
+            .add_modifier(Modifier::BOLD),
+    ));
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
-        .style(Style::default().bg(color::BG_DARK));
+        .style(Style::default().bg(color::BG_DARK))
+        .title_top(left_title.left_aligned())
+        .title_top(center_title.centered())
+        .title_top(right_title.right_aligned());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    f.render_widget(Paragraph::new(title).block(block), area);
-}
-
-// ─── Tab menu ──────────────────────────────────────────────────────────────
-
-fn draw_tab_menu(f: &mut Frame, area: Rect, app: &App) {
+    // Tab menu (left) and host/uptime (right) share the one content row.
     let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Pulse];
     let mut tab_spans: Vec<Span<'static>> = Vec::new();
-
     for (i, tab) in tabs.iter().enumerate() {
         if i > 0 {
             tab_spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
@@ -191,22 +229,43 @@ fn draw_tab_menu(f: &mut Frame, area: Rect, app: &App) {
         if *tab == app.current_tab {
             tab_spans.push(Span::styled(
                 label,
-                Style::default()
-                    .fg(color::TAB_ACTIVE_FG)
-                    .bg(color::TAB_ACTIVE_BG)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(color::TAB_ACTIVE_FG).bg(color::TAB_ACTIVE_BG).add_modifier(Modifier::BOLD),
             ));
         } else {
-            tab_spans.push(Span::styled(
-                label,
-                Style::default().fg(color::TAB_INACTIVE),
-            ));
+            tab_spans.push(Span::styled(label, Style::default().fg(color::TAB_INACTIVE)));
         }
     }
 
-    let tab_line = Paragraph::new(Line::from(tab_spans))
-        .style(Style::default().bg(color::BG_LIGHT));
-    f.render_widget(tab_line, area);
+    let hostname = app.config_snapshot.as_ref().map(|c| c.hostname.as_str()).unwrap_or("?");
+    let app_uptime = app.session_start.elapsed().as_secs();
+    let host_uptime = app.system_info.uptime_secs;
+    let mut info_spans = vec![
+        Span::styled("host: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{} ", hostname), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled("\u{2502} ", Style::default().fg(color::TAB_SEPARATOR)),
+        Span::styled("radar up: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{} ", dashboard::format_duration(app_uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+    ];
+    if host_uptime > 0 {
+        info_spans.push(Span::styled("| host up: ", Style::default().fg(color::TEXT_LABEL)));
+        info_spans.push(Span::styled(format!("{} ", dashboard::format_uptime(host_uptime)), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
+    }
+    let info_line = Line::from(info_spans);
+    let info_width = (info_line.width() as u16).min(inner.width);
+
+    let content = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(info_width)])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(tab_spans)).style(Style::default().bg(color::BG_LIGHT)),
+        content[0],
+    );
+    f.render_widget(
+        Paragraph::new(info_line).style(Style::default().bg(color::BG_LIGHT)),
+        content[1],
+    );
 }
 
 // ─── Key hints ─────────────────────────────────────────────────────────────
@@ -552,6 +611,16 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  \u{2191}\u{2193}\u{2190}\u{2192}", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Navigate grid (Pulse tab)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Dashboard KPIs", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  new pending", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Minion Key Status: pending keys registered in the last 60s", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ZMQ latency", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  source is configurable: zmq_latency_source in [dashboard]", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),

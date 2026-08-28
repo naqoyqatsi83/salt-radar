@@ -1,6 +1,6 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, ConfigEditorState};
@@ -16,15 +16,23 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
     let area = detail_popup::centered_rect(68, 70, f.area());
     f.render_widget(Clear, area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(" Config Editor ")
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER), color::BG_DARK);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
+
+    // Label column width is derived from the longest label actually present
+    // (Section/SaveButton rows don't use this two-column layout) instead of a
+    // hardcoded width that several labels — e.g. service_mem_growth_mb_per_hour
+    // at 31 chars — already ran past, jamming the value against the label
+    // with no separating space.
+    let label_w = state.fields.iter()
+        .filter(|f| !matches!(f.kind, ConfigFieldKind::Section | ConfigFieldKind::SaveButton))
+        .map(|f| f.label.len())
+        .max()
+        .unwrap_or(22)
+        + 2;
 
     for (field_idx, field) in state.fields.iter().enumerate() {
         match field.kind {
@@ -52,6 +60,33 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     )));
                 }
             }
+            ConfigFieldKind::Choice(options) => {
+                let is_sel = field_idx == state.selected;
+                let editing = is_sel && state.editing;
+                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {:<label_w$}", field.label, label_w = label_w),
+                        sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                    ),
+                    Span::styled(
+                        field.label_value.clone(),
+                        sel_style.fg(if editing { color::YELLOW } else { color::TEXT }),
+                    ),
+                ]));
+                if editing {
+                    for (i, opt) in options.iter().enumerate() {
+                        let opt_sel = i == state.choice_idx;
+                        let opt_style = if opt_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                        let marker = if opt_sel { "\u{25B8} " } else { "  " };
+                        lines.push(Line::from(Span::styled(
+                            format!("      {}{}", marker, opt),
+                            opt_style.fg(if opt_sel { color::YELLOW } else { color::TEXT_DIM }).add_modifier(if opt_sel { Modifier::BOLD } else { Modifier::empty() }),
+                        )));
+                    }
+                }
+            }
             _ => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
@@ -66,7 +101,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
 
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("  {:<22}", field.label),
+                        format!("  {:<label_w$}", field.label, label_w = label_w),
                         sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
                     ),
                     Span::styled(

@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use std::collections::HashSet;
@@ -23,11 +23,11 @@ pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Minion Pulse ({}) ", app.pulse_minions_count()))
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(
+        format!(" Minion Pulse ({}) ", app.pulse_minions_count()),
+        Style::default().fg(color::BORDER),
+        color::BG_DARK,
+    );
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -125,11 +125,7 @@ fn dot_style(minion: &MinionInfo, selected: bool, app: &App) -> Style {
 
 /// Info panel: selected minion details
 fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(" Details ")
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(" Details ", Style::default().fg(color::BORDER), color::BG_DARK);
 
     let inner = block.inner(area);
     f.render_widget(block, area);

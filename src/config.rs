@@ -19,6 +19,16 @@ pub struct AppConfig {
     pub pending_key_churn_per_min: u64,
     pub service_flap_threshold_24h: u64,
     pub service_mem_growth_mb_per_hour: f64,
+    pub service_mem_abs_threshold_mb: f64,
+    pub service_mem_pct_threshold: f64,
+    /// Which mechanism computes the Dashboard ZMQ panel's latency figure:
+    /// "agent_ipc" (local Rust<->Python subprocess round-trip — a liveness
+    /// check, not real Salt transport), "job_ping" (periodic async test.ping,
+    /// timed from dispatch to first real return over the actual event bus),
+    /// or "master_stats" (Salt's own master_stats instrumentation, requires
+    /// master_stats: True in the master's own config). Unrecognized values
+    /// fall back to "agent_ipc" behavior.
+    pub zmq_latency_source: String,
 }
 
 impl Default for AppConfig {
@@ -41,6 +51,9 @@ impl Default for AppConfig {
             pending_key_churn_per_min: 10,
             service_flap_threshold_24h: 3,
             service_mem_growth_mb_per_hour: 50.0,
+            service_mem_abs_threshold_mb: 2048.0,
+            service_mem_pct_threshold: 8.0,
+            zmq_latency_source: "agent_ipc".into(),
         }
     }
 }
@@ -51,6 +64,7 @@ struct TomlConfig {
     refresh: Option<RefreshConfig>,
     events: Option<EventsConfig>,
     alerts: Option<AlertsConfig>,
+    dashboard: Option<DashboardConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -84,6 +98,13 @@ struct AlertsConfig {
     pending_key_churn_per_min: Option<u64>,
     service_flap_threshold_24h: Option<u64>,
     service_mem_growth_mb_per_hour: Option<f64>,
+    service_mem_abs_threshold_mb: Option<f64>,
+    service_mem_pct_threshold: Option<f64>,
+}
+
+#[derive(serde::Deserialize)]
+struct DashboardConfig {
+    zmq_latency_source: Option<String>,
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
@@ -111,7 +132,12 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          worker_saturation_pct = {}\n\
          pending_key_churn_per_min = {}\n\
          service_flap_threshold_24h = {}\n\
-         service_mem_growth_mb_per_hour = {}\n",
+         service_mem_growth_mb_per_hour = {}\n\
+         service_mem_abs_threshold_mb = {}\n\
+         service_mem_pct_threshold = {}\n\
+         \n\
+         [dashboard]\n\
+         zmq_latency_source = {:?}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -129,6 +155,9 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.pending_key_churn_per_min,
         config.service_flap_threshold_24h,
         config.service_mem_growth_mb_per_hour,
+        config.service_mem_abs_threshold_mb,
+        config.service_mem_pct_threshold,
+        config.zmq_latency_source,
     );
     std::fs::write(path, toml)
 }
@@ -162,6 +191,11 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.pending_key_churn_per_min { cfg.pending_key_churn_per_min = v; }
                 if let Some(v) = a.service_flap_threshold_24h { cfg.service_flap_threshold_24h = v; }
                 if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
+                if let Some(v) = a.service_mem_abs_threshold_mb { cfg.service_mem_abs_threshold_mb = v; }
+                if let Some(v) = a.service_mem_pct_threshold { cfg.service_mem_pct_threshold = v; }
+            }
+            if let Some(d) = toml_cfg.dashboard {
+                if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
             }
         }
     }

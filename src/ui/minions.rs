@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
@@ -21,15 +21,6 @@ pub fn draw_minions(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(format!(" Minions ({}) ", app.filtered_minions_len()))
-        .style(Style::default().bg(color::BG_DARK));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
     let mut lines: Vec<Line> = Vec::new();
     let total = app.filtered_minions_len();
     let selected = app.minion_selected.min(total.saturating_sub(1));
@@ -69,14 +60,18 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let overhead = lines.len();
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let mut has_more_above = false;
+    let mut has_more_below = false;
 
     if app.minion_info.is_empty() && app.keys.is_empty() {
         if overhead == 0 {
             lines.push(Line::from(Span::styled("  No minion data available.", Style::default().fg(color::TEXT_DIM))));
         }
     } else {
-        // ── Column widths — total = 8 + sum = inner.width ──────────────
-        let avail = (inner.width as usize).saturating_sub(8);
+        // ── Column widths — total = 8 + sum = inner width ──────────────
+        let avail = inner_w.saturating_sub(8);
         let id_w = if avail > 24 { 18 } else { (avail / 3).max(4) };
         let key_w = if avail > 24 { 8 } else { (avail / 6).max(3) };
         let remaining = avail.saturating_sub(id_w + key_w + 4);
@@ -99,8 +94,11 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         if total == 0 {
             lines.push(Line::from(Span::styled("  (no minions match this filter)", Style::default().fg(color::TEXT_DIM))));
         } else {
-            let available = (inner.height as usize).saturating_sub(overhead).saturating_sub(2); // -header -one row
+            let available = inner_h.saturating_sub(overhead).saturating_sub(2); // -header -one row
             let visible = available.max(1);
+            let (scroll, more_above, more_below) = super::scroll_window(selected, visible, total);
+            has_more_above = more_above;
+            has_more_below = more_below;
 
             // Build a map of key status
             let mut key_map: HashMap<String, crate::types::KeyStatus> = HashMap::new();
@@ -118,9 +116,6 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                 .filter(|m| app.filter_text.is_empty() || crate::app::App::matches_minion(m, &app.filter_text))
                 .filter(|m| m.timed_out)
                 .count();
-
-            let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
-            let scroll = scroll.min(total.saturating_sub(visible));
 
             for idx in scroll..(scroll + visible).min(total) {
                 let minion = app.get_filtered_minion(idx);
@@ -180,6 +175,15 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    let block = super::list_block(
+        format!(" Minions ({}) ", total),
+        Style::default().fg(color::BORDER),
+        color::BG_DARK,
+        has_more_above,
+        has_more_below,
+    );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
     f.render_widget(
         Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
         inner,
@@ -197,11 +201,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(" Fleet Overview ")
-        .style(Style::default().bg(color::BG_DARK));
+    let block = super::titled_block(" Fleet Overview ", Style::default().fg(color::BORDER), color::BG_DARK);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -227,11 +227,6 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(""));
 
     if let Some(ref fs) = app.fleet_data {
-        // bar_width reserves space for: "  name<22> <count> <bar> <pct>%"
-        // = 2 prefix + 22 name + 5 count (sp+4) + 5 pct (sp+3+%) = 34
-        let fixed = 35;
-        let bar_width = (inner.width as usize).saturating_sub(fixed);
-
         let timed_out_count = fs.minions.iter().filter(|m| m.timed_out).count();
 
         if app.fleet_scanning {
@@ -264,9 +259,6 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
         if !fs.minions.is_empty() {
             let total_minions = fs.minions.len();
 
-            // ── OS Distribution ───────────────────────────────────────────
-            lines.push(Line::from(Span::styled("  OS Distribution:", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))));
-
             let mut os_counts: HashMap<&str, usize> = HashMap::new();
             for m in &fs.minions {
                 let key = if m.osfinger.is_empty() {
@@ -278,14 +270,56 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
             }
             let mut os_sorted: Vec<(&str, usize)> = os_counts.into_iter().collect();
             os_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-            let os_max = os_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
 
+            let mut ver_counts: HashMap<&str, usize> = HashMap::new();
+            for m in &fs.minions {
+                let key = if m.saltversion.is_empty() { "?" } else { m.saltversion.as_str() };
+                *ver_counts.entry(key).or_insert(0) += 1;
+            }
+            let mut ver_sorted: Vec<(&str, usize)> = ver_counts.into_iter().collect();
+            ver_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+
+            let mut arch_counts: HashMap<&str, usize> = HashMap::new();
+            for m in &fs.minions {
+                let key = if m.cpuarch.is_empty() { "?" } else { m.cpuarch.as_str() };
+                *arch_counts.entry(key).or_insert(0) += 1;
+            }
+            let mut arch_sorted: Vec<(&str, usize)> = arch_counts.into_iter().collect();
+            arch_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+
+            // Name column width is derived from the longest name actually present
+            // across all three tables (shared so their bars/counts/% still line up
+            // with each other), instead of a hardcoded width that long osfinger
+            // strings run past — clamped so one pathological name can't crush the
+            // bar column on a narrow panel.
+            const MIN_NAME_W: usize = 22;
+            const MAX_NAME_W: usize = 40;
+            let longest_name = os_sorted.iter().map(|(s, _)| s.chars().count())
+                .chain(ver_sorted.iter().map(|(s, _)| s.chars().count()))
+                .chain(arch_sorted.iter().map(|(s, _)| s.chars().count()))
+                .max().unwrap_or(0);
+            let name_w = longest_name.clamp(MIN_NAME_W, MAX_NAME_W);
+            // Reserves: 2 prefix + name_w + 5 count (sp+4) + 5 pct (sp+3+%) + 1 margin
+            let bar_width = (inner.width as usize).saturating_sub(name_w + 13);
+
+            let fit_name = |s: &str| -> String {
+                if s.chars().count() > name_w {
+                    let truncated: String = s.chars().take(name_w.saturating_sub(2)).collect();
+                    format!("{}..", truncated)
+                } else {
+                    s.to_string()
+                }
+            };
+
+            // ── OS Distribution ───────────────────────────────────────────
+            lines.push(Line::from(Span::styled("  OS Distribution:", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))));
+            let os_max = os_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
             for (os, count) in &os_sorted {
                 let bar_len = if bar_width > 0 { (*count * bar_width) / os_max } else { 0 };
                 let bar: String = (0..bar_len).map(|_| '\u{2588}').collect();
                 let pct = *count as f64 / total_minions as f64 * 100.0;
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<22}", os), Style::default().fg(color::TEXT)),
+                    Span::styled(format!("  {:<name_w$}", fit_name(os), name_w = name_w), Style::default().fg(color::TEXT)),
                     Span::styled(format!(" {:>4}", count), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(format!(" {}", bar), Style::default().fg(color::CYAN)),
                     Span::styled(format!(" {:.0}%", pct), Style::default().fg(color::TEXT_DIM)),
@@ -295,22 +329,13 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
             // ── Salt Version ──────────────────────────────────────────────
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("  Salt Version:", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))));
-
-            let mut ver_counts: HashMap<&str, usize> = HashMap::new();
-            for m in &fs.minions {
-                let key = if m.saltversion.is_empty() { "?" } else { m.saltversion.as_str() };
-                *ver_counts.entry(key).or_insert(0) += 1;
-            }
-            let mut ver_sorted: Vec<(&str, usize)> = ver_counts.into_iter().collect();
-            ver_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             let ver_max = ver_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
-
             for (ver, count) in &ver_sorted {
                 let bar_len = if bar_width > 0 { (*count * bar_width) / ver_max } else { 0 };
                 let bar: String = (0..bar_len).map(|_| '\u{2588}').collect();
                 let pct = *count as f64 / total_minions as f64 * 100.0;
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<22}", ver), Style::default().fg(color::TEXT)),
+                    Span::styled(format!("  {:<name_w$}", fit_name(ver), name_w = name_w), Style::default().fg(color::TEXT)),
                     Span::styled(format!(" {:>4}", count), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(format!(" {}", bar), Style::default().fg(color::YELLOW)),
                     Span::styled(format!(" {:.0}%", pct), Style::default().fg(color::TEXT_DIM)),
@@ -320,22 +345,13 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
             // ── Architecture ──────────────────────────────────────────────
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("  Architecture:", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD))));
-
-            let mut arch_counts: HashMap<&str, usize> = HashMap::new();
-            for m in &fs.minions {
-                let key = if m.cpuarch.is_empty() { "?" } else { m.cpuarch.as_str() };
-                *arch_counts.entry(key).or_insert(0) += 1;
-            }
-            let mut arch_sorted: Vec<(&str, usize)> = arch_counts.into_iter().collect();
-            arch_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             let arch_max = arch_sorted.first().map(|(_, c)| *c).unwrap_or(1).max(1);
-
             for (arch, count) in &arch_sorted {
                 let bar_len = if bar_width > 0 { (*count * bar_width) / arch_max } else { 0 };
                 let bar: String = (0..bar_len).map(|_| '\u{2588}').collect();
                 let pct = *count as f64 / total_minions as f64 * 100.0;
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<22}", arch), Style::default().fg(color::TEXT)),
+                    Span::styled(format!("  {:<name_w$}", fit_name(arch), name_w = name_w), Style::default().fg(color::TEXT)),
                     Span::styled(format!(" {:>4}", count), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(format!(" {}", bar), Style::default().fg(color::PURPLE)),
                     Span::styled(format!(" {:.0}%", pct), Style::default().fg(color::TEXT_DIM)),

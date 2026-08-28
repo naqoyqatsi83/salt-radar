@@ -9,8 +9,15 @@ use crate::types::SparklineStyle;
 
 use super::color;
 
-const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
+pub(super) const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '\u{25d0}'];
 // Frames: ◔ ◑ ◕ ◐
+
+// Services / Minion Key Status / Event Types horizontal split, out of 5 parts.
+// Key Status only ever shows 4 fixed-format count rows + a churn line, so it
+// needs far less width than Services (gauge + per-role mem + service list) or
+// Event Types; used both for the actual row layout and for estimating the
+// Services column's wrapped height below, which must stay in sync with it.
+const MID_ROW_RATIO: [u32; 3] = [2, 1, 2];
 
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // Small terminal fallback: vertical stacked layout
@@ -19,14 +26,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Header line at the very top
-    let header_body = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(area);
-    draw_header(f, header_body[0], app);
-
-    let body = header_body[1];
+    let body = area;
 
     // Top section: fixed-height info panels
     // Bottom section: stacked full-width sparklines fill remaining space
@@ -36,7 +36,11 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // draw_proc_row actually renders with, rather than assuming a fixed 1 line.
     let services_col_width = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+        .constraints([
+            Constraint::Ratio(MID_ROW_RATIO[0], 5),
+            Constraint::Ratio(MID_ROW_RATIO[1], 5),
+            Constraint::Ratio(MID_ROW_RATIO[2], 5),
+        ])
         .split(Rect::new(0, 0, body.width, 1))[0]
         .width
         .saturating_sub(2); // block borders
@@ -56,10 +60,14 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     draw_host_row(f, sections[0], app);
 
-    // Services + Minion key status + Event breakdown: 33/33/33 horizontal split
+    // Services + Minion key status + Event breakdown horizontal split
     let mid = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+        .constraints([
+            Constraint::Ratio(MID_ROW_RATIO[0], 5),
+            Constraint::Ratio(MID_ROW_RATIO[1], 5),
+            Constraint::Ratio(MID_ROW_RATIO[2], 5),
+        ])
         .split(sections[1]);
     draw_proc_row(f, mid[0], app);
     draw_key_status(f, mid[1], app);
@@ -89,7 +97,6 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Length(5),
             Constraint::Length(services_height),
             Constraint::Length(4),
@@ -99,21 +106,12 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(area);
 
-    draw_header(f, layout[0], app);
-    draw_host_row(f, layout[1], app);
-    draw_proc_row(f, layout[2], app);
-    draw_zmq_row(f, layout[3], app);
-    draw_events_row(f, layout[4], app);
-    draw_activity_matrix(f, layout[5], app);
-    draw_job_pulse(f, layout[6], app);
-}
-
-fn make_block(title: String) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(title)
-        .style(Style::default().bg(color::BG_DARK))
+    draw_host_row(f, layout[0], app);
+    draw_proc_row(f, layout[1], app);
+    draw_zmq_row(f, layout[2], app);
+    draw_events_row(f, layout[3], app);
+    draw_activity_matrix(f, layout[4], app);
+    draw_job_pulse(f, layout[5], app);
 }
 
 fn make_block_line(title: Line<'static>) -> Block<'static> {
@@ -128,7 +126,7 @@ fn count_keys_with_status(keys: &[crate::types::KeyInfo], status: crate::types::
     keys.iter().filter(|k| k.status == status).count()
 }
 
-fn format_duration(secs: u64) -> String {
+pub(super) fn format_duration(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
     let s = secs % 60;
@@ -149,52 +147,6 @@ fn pct_gauge_style(pct: f64) -> Style {
     ).bg(color::BG_MID)
 }
 
-// ── Header ───────────────────────────────────────────────────────────────────
-
-fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let connected = app.agent.connected;
-    let dot = if connected { "\u{25cf}" } else { "\u{25cb}" };
-    let dot_color = if connected { color::GREEN } else { color::RED };
-    let radar = RADAR_FRAMES[app.header_radar_frame as usize];
-
-    let version = app.config_snapshot.as_ref()
-        .map(|c| c.salt_version.as_str())
-        .unwrap_or("?");
-
-    let hostname = app.config_snapshot.as_ref()
-        .map(|c| c.hostname.as_str())
-        .unwrap_or("?");
-
-    let app_uptime = app.session_start.elapsed().as_secs();
-    let host_uptime = app.system_info.uptime_secs;
-
-    let mut uptime_parts = vec![format_duration(app_uptime)];
-    if host_uptime > app_uptime {
-        uptime_parts.push(format_uptime(host_uptime - app_uptime));
-    }
-    let uptime_display = if uptime_parts.len() == 2 {
-        format!("{} | host {} ", uptime_parts[0], uptime_parts[1])
-    } else {
-        format!("{} ", uptime_parts[0])
-    };
-
-    let line = Line::from(vec![
-        Span::styled(" salt-radar", Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" v{} ", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM)),
-        Span::styled(format!("{}", radar), Style::default().fg(color::CYAN)),
-        Span::styled(format!(" {} ", dot), Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("Salt {}", version), Style::default().fg(color::TEXT).add_modifier(Modifier::BOLD)),
-        Span::styled("  \u{2502}", Style::default().fg(color::BORDER)),
-        Span::styled(" host: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{}  ", hostname), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled("\u{2502}", Style::default().fg(color::BORDER)),
-        Span::styled(" uptime: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{}", uptime_display), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-    ]);
-
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(color::BG_DARK).fg(color::TEXT)), area);
-}
-
 // ── Minion Key Status ───────────────────────────────────────────────────────
 
 fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
@@ -207,7 +159,7 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
     let title = Line::from(vec![
         Span::styled(" Minion Key Status ", Style::default().fg(color::TEXT_TITLE)),
         Span::styled(
-            format!("churn:{}/min", churn),
+            format!("new pending:{}/min", churn),
             Style::default().fg(if churn > 0 { color::YELLOW } else { color::TEXT_DIM }),
         ),
     ]);
@@ -360,24 +312,28 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         let status_icon = if service.active { "\u{25cf}" } else { "\u{25cb}" };
         let status_color = if service.active { color::GREEN } else { color::RED };
 
+        // Number and unit suffix are formatted into their own fixed-width
+        // sub-fields (rather than right-aligning the combined string) so the
+        // unit letters land in the same column across rows regardless of how
+        // many digits the value has.
         let memory_mb = service.memory_kb / 1024;
         let memory_text = if memory_mb > 0 {
-            format!("{} MB", memory_mb)
+            format!("{:>3} MB", memory_mb)
         } else {
-            "--".to_string()
+            format!("{:>6}", "--")
         };
 
         let uptime_text = if service.uptime_seconds > 0 {
             let secs = service.uptime_seconds;
             if secs >= 3600 {
-                format!("{}h", secs / 3600)
+                format!("{:>5}h", secs / 3600)
             } else if secs >= 60 {
-                format!("{}m", secs / 60)
+                format!("{:>5}m", secs / 60)
             } else {
-                format!("{}s", secs)
+                format!("{:>5}s", secs)
             }
         } else {
-            "--".to_string()
+            format!("{:>6}", "--")
         };
 
         let unit_display = if service.unit.len() > 24 {
@@ -416,12 +372,12 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
         service_lines.push(Line::from(vec![
             Span::styled(format!("{:<24}", unit_display), Style::default().fg(color::CYAN)),
-            Span::styled(format!(" {:<6}", status_icon), Style::default().fg(status_color)),
+            Span::styled(format!("{:<6}", status_icon), Style::default().fg(status_color)),
             Span::styled(format!(" {:<11}", state_display), Style::default().fg(color::TEXT)),
             Span::styled(format!(" {:>3}", flap_text), Style::default().fg(flap_color)),
-            Span::styled(format!(" {:>6} ", memory_text), Style::default().fg(color::YELLOW)),
+            Span::styled(format!(" {} ", memory_text), Style::default().fg(color::YELLOW)),
             Span::styled(format!(" {}", trend_char), Style::default().fg(trend_color)),
-            Span::styled(format!(" {:>6}", uptime_text), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" {}", uptime_text), Style::default().fg(color::TEXT_DIM)),
         ]));
     }
 
@@ -539,7 +495,7 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(net_gauge, inner_layout[2]);
 }
 
-fn format_uptime(secs: u64) -> String {
+pub(super) fn format_uptime(secs: u64) -> String {
     if secs < 60 { return "0s".to_string(); }
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
@@ -555,7 +511,7 @@ fn format_uptime(secs: u64) -> String {
 
 fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let lat = app.zmq_latency_ms;
-    let lat_color = if lat <= 0.0 {
+    let lat_color = if !app.zmq_latency_seen {
         color::TEXT_DIM
     } else if lat < 10.0 {
         color::GREEN
@@ -566,21 +522,23 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let peak_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max);
+    let short_label = if app.zmq_latency_seen { format!("{:.1}ms", lat) } else { "n/a".to_string() };
+    let peak_label = if app.zmq_latency_seen { format!("{:.1}ms", peak_lat) } else { "n/a".to_string() };
 
-    // Build title — include peak if the panel is wide enough
+    // Build title — include peak if the panel is wide enough.
     let title = if area.width >= 40 {
         Line::from(vec![
             Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
             Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
-            Span::styled(format!("{:.1}ms ", lat.max(0.0)), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} ", short_label), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
             Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.1}ms", peak_lat), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(peak_label, Style::default().fg(color::TEXT_DIM)),
         ])
     } else {
         Line::from(vec![
             Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
             Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
-            Span::styled(format!("{:.1}ms", lat.max(0.0)), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
+            Span::styled(short_label, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
         ])
     };
 
@@ -597,8 +555,15 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let ret_established = app.zmq_connections.iter().filter(|c| c.local_port == ret_port && c.state == "ESTABLISHED").count();
     let ret_total = app.zmq_connections.iter().filter(|c| c.local_port == ret_port).count();
 
-    let lat_label = if lat <= 0.0 {
-        "measuring...".to_string()
+    // Label and "no data" hint depend on which source is configured to feed
+    // this KPI (config.zmq_latency_source) — see App::zmq_latency_ms doc.
+    let (source_label, na_hint) = match app.config.zmq_latency_source.as_str() {
+        "master_stats" => ("master exec", "n/a (needs master_stats: True)"),
+        "job_ping" => ("job ping", "n/a (waiting for round-trip)"),
+        _ => ("agent IPC", "measuring..."),
+    };
+    let lat_label = if !app.zmq_latency_seen {
+        na_hint.to_string()
     } else {
         format!("{:.0} ms", lat)
     };
@@ -638,7 +603,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(format!(":{} api{} ({})  ", api_port, api_estab, api_total), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
     }
     spans.push(Span::styled("\u{2502}  ".to_string(), Style::default().fg(color::BORDER)));
-    spans.push(Span::styled("\u{25b6} ".to_string(), Style::default().fg(color::TEXT_LABEL)));
+    spans.push(Span::styled(format!("{}: ", source_label), Style::default().fg(color::TEXT_LABEL)));
     spans.push(Span::styled(lat_label, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)));
 
     f.render_widget(
@@ -650,7 +615,11 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
 // ── Event Type Breakdown ────────────────────────────────────────────────────
 
 fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
-    let block = make_block(" Event Types ".to_string());
+    let title = Line::from(vec![
+        Span::styled(" Event Types ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(format!("auth: {:.1}/s", app.current_auth_rate), Style::default().fg(color::TEXT_DIM)),
+    ]);
+    let block = make_block_line(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -670,14 +639,11 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
             let bar_max = inner.width.saturating_sub(14);
             let bar_len = ((*count as f64 / max_count as f64) * bar_max as f64).round() as usize;
             let bar = "\u{2588}".repeat(bar_len);
-            let mut spans = vec![
+            let spans = vec![
                 Span::styled(format!(" {:<6}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{:>5} ", count), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(bar, Style::default().fg(*color)),
             ];
-            if *label == "Auth" {
-                spans.push(Span::styled(format!(" ({:.1}/s)", app.current_auth_rate), Style::default().fg(color::TEXT_DIM)));
-            }
             lines.push(Line::from(spans));
         }
     } else {
@@ -955,20 +921,15 @@ fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], style: Style, mode:
                 for &v in data.iter().take(ncols) {
                     let threshold = ((v.min(100) as u32).saturating_mul(total_pixels) + 99) / 100;
                     let mut bits = 0u8;
-                    // 8 dots, bottom-to-top bit order: 0,1,2,6,3,7,4,5
-                    for dot in 0u8..8 {
-                        let pixel_pos = row_from_bottom.saturating_mul(8) + dot as u32;
+                    // Braille bit->dot layout is (bit0 bit3 / bit1 bit4 / bit2 bit5 / bit6 bit7),
+                    // i.e. row 0 (top) = bits 0,3 through row 3 (bottom) = bits 6,7. Filling bits
+                    // in raw numeric order therefore lights the top-left dot first; walk this
+                    // fill order instead so low values light the bottom row like Bars mode does.
+                    const FILL_ORDER: [u8; 8] = [6, 7, 2, 5, 1, 4, 0, 3];
+                    for (level, &bit_idx) in FILL_ORDER.iter().enumerate() {
+                        let pixel_pos = row_from_bottom.saturating_mul(8) + level as u32;
                         if pixel_pos < threshold {
-                            bits |= match dot {
-                                0 => 0b00000001,
-                                1 => 0b00000010,
-                                2 => 0b00000100,
-                                3 => 0b00001000,
-                                4 => 0b00010000,
-                                5 => 0b00100000,
-                                6 => 0b01000000,
-                                _ => 0b10000000,
-                            };
+                            bits |= 1 << bit_idx;
                         }
                     }
                     let ch = if bits == 0 { ' ' } else { char::from_u32(0x2800 + bits as u32).unwrap_or(' ') };

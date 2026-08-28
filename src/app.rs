@@ -131,13 +131,26 @@ pub struct App {
     pub needs_terminal_clear: bool,
     /// Set to true when config editor saves — main loop will restart
     pub needs_restart: bool,
-    /// Measured ZMQ/master response latency in milliseconds (from zmq_ping agent command)
+    /// Dashboard ZMQ panel's latency figure, in milliseconds. Populated by
+    /// whichever mechanism `config.zmq_latency_source` selects — see the
+    /// three `*_ping`/`*_pending` fields below for the source-specific state.
     pub zmq_latency_ms: f64,
-    /// When the last zmq_ping was sent (for Rust-side round-trip measurement)
-    zmq_ping_sent_at: Option<Instant>,
-    /// Ring buffer of recent latency samples for sparkline (60 samples = 1 per tick)
+    /// Whether a real sample has ever been recorded under the *current*
+    /// source — distinguishes "no data yet" from a genuine ~0ms reading.
+    /// Reset on every config save so a stale figure from a previously
+    /// selected source can't linger mislabeled under a new one.
+    pub zmq_latency_seen: bool,
+    /// Ring buffer of recent samples for the sparkline (cadence depends on
+    /// the active source: ~every tick for agent_ipc, irregular/periodic for
+    /// job_ping and master_stats)
     pub zmq_latency_history: [f64; 2000],
     pub zmq_latency_idx: usize,
+    /// agent_ipc source: when the last zmq_ping was sent, for Rust-side
+    /// round-trip measurement
+    zmq_ping_sent_at: Option<Instant>,
+    /// job_ping source: (jid, sent_at) of an in-flight periodic test.ping,
+    /// timed from dispatch to its first real /ret event on the event bus
+    job_ping_pending: Option<(String, Instant)>,
 
     /// Rolling window of individual job-return outcomes (success/fail)
     pub job_returns_window: VecDeque<bool>,
@@ -248,14 +261,19 @@ pub enum PingState {
 
 // ─── Config editor ──────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum ConfigFieldKind {
     Section,
     Str,
     U64,
     F64,
+    /// A field with a fixed, small set of valid values — edited via an
+    /// inline picker (arrow keys + Enter) instead of free-text entry.
+    Choice(&'static [&'static str]),
     SaveButton,
 }
+
+pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
 
 #[derive(Clone, Debug)]
 pub struct ConfigField {
@@ -270,6 +288,8 @@ pub struct ConfigEditorState {
     pub selected: usize,
     pub editing: bool,
     pub input: String,
+    /// Cursor position within the option list while editing a `Choice` field
+    pub choice_idx: usize,
     pub save_error: Option<String>,
 }
 
@@ -444,9 +464,11 @@ impl App {
             needs_terminal_clear: false,
             needs_restart: false,
             zmq_latency_ms: 0.0,
-            zmq_ping_sent_at: None,
+            zmq_latency_seen: false,
             zmq_latency_history: [0.0; 2000],
             zmq_latency_idx: 0,
+            zmq_ping_sent_at: None,
+            job_ping_pending: None,
             job_returns_window: VecDeque::new(),
             job_completion_latencies: VecDeque::new(),
             job_outcome_window: VecDeque::new(),
@@ -595,10 +617,27 @@ impl App {
                             if let Some(sent) = self.zmq_ping_sent_at {
                                 let elapsed_ms = sent.elapsed().as_secs_f64() * 1000.0;
                                 self.zmq_latency_ms = elapsed_ms;
+                                self.zmq_latency_seen = true;
                                 self.zmq_latency_history[self.zmq_latency_idx] = elapsed_ms;
                                 self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
                             }
                             self.zmq_ping_sent_at = None;
+                        }
+                        "job_ping" => {
+                            // Fill in the real jid on the pending entry created
+                            // at dispatch time — keep that earlier Instant so
+                            // the round-trip clock still starts from before
+                            // the agent actually published the job, not from
+                            // when this response happens to arrive.
+                            let jid = if ok { data["jid"].as_str().map(String::from) } else { None };
+                            match (jid, self.job_ping_pending.take()) {
+                                (Some(jid), Some((_, sent_at))) => {
+                                    self.job_ping_pending = Some((jid, sent_at));
+                                }
+                                _ => {
+                                    self.job_ping_pending = None;
+                                }
+                            }
                         }
                         "alive_check" => {
                             if ok {
@@ -729,6 +768,46 @@ impl App {
                     self.event_breakdown.record(&tag);
                     if tag.starts_with("salt/auth") {
                         self.auth_events_this_sec += 1;
+                    }
+
+                    // ZMQ panel latency, source "master_stats": Salt's own
+                    // instrumentation (requires master_stats: True in the master
+                    // config, which salt-radar doesn't set itself) — one event
+                    // per worker process, each carrying that worker's own mean
+                    // command-execution times since its last reset. Collapse to
+                    // a single weighted-mean sample per event.
+                    if self.config.zmq_latency_source == "master_stats" && tag.starts_with("salt/stats/") {
+                        if let Some(stats) = data["stats"].as_object() {
+                            let mut weighted = 0.0;
+                            let mut total_runs: u64 = 0;
+                            for v in stats.values() {
+                                let mean_secs = v["mean"].as_f64().unwrap_or(0.0);
+                                let runs = v["runs"].as_u64().unwrap_or(0);
+                                weighted += mean_secs * runs as f64;
+                                total_runs += runs;
+                            }
+                            if total_runs > 0 {
+                                let avg_ms = weighted / total_runs as f64 * 1000.0;
+                                self.zmq_latency_ms = avg_ms;
+                                self.zmq_latency_seen = true;
+                                self.zmq_latency_history[self.zmq_latency_idx] = avg_ms;
+                                self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
+                            }
+                        }
+                    }
+
+                    // ZMQ panel latency, source "job_ping": time our own
+                    // periodic test.ping from dispatch to its first real
+                    // return over the actual event bus/ZMQ transport.
+                    if let Some((ref pending_jid, sent_at)) = self.job_ping_pending {
+                        if !pending_jid.is_empty() && tag.starts_with("salt/job/") && tag.contains(pending_jid.as_str()) && tag.contains("/ret/") {
+                            let elapsed_ms = sent_at.elapsed().as_secs_f64() * 1000.0;
+                            self.zmq_latency_ms = elapsed_ms;
+                            self.zmq_latency_seen = true;
+                            self.zmq_latency_history[self.zmq_latency_idx] = elapsed_ms;
+                            self.zmq_latency_idx = (self.zmq_latency_idx + 1) % 2000;
+                            self.job_ping_pending = None;
+                        }
                     }
 
                     // ── Normal event processing ─────────────────────────
@@ -1354,11 +1433,16 @@ impl App {
                 ConfigField { label: "pending_key_churn_per_min", label_value: cfg.pending_key_churn_per_min.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "service_flap_threshold_24h", label_value: cfg.service_flap_threshold_24h.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "service_mem_growth_mb_per_hour", label_value: cfg.service_mem_growth_mb_per_hour.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_abs_threshold_mb", label_value: cfg.service_mem_abs_threshold_mb.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_pct_threshold", label_value: cfg.service_mem_pct_threshold.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "[dashboard]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Choice(ZMQ_LATENCY_SOURCES) },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
             editing: false,
             input: String::new(),
+            choice_idx: 0,
             save_error: None,
         }));
         self.popup_tab = None; // global — works from any tab
@@ -1373,7 +1457,7 @@ impl App {
         let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         for f in fields {
             match f.kind {
-                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 => {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) => {
                     vals.insert(f.label, f.label_value.as_str());
                 }
                 _ => {}
@@ -1402,11 +1486,23 @@ impl App {
             pending_key_churn_per_min: parse_u64("pending_key_churn_per_min")?,
             service_flap_threshold_24h: parse_u64("service_flap_threshold_24h")?,
             service_mem_growth_mb_per_hour: parse_f64("service_mem_growth_mb_per_hour")?,
+            service_mem_abs_threshold_mb: parse_f64("service_mem_abs_threshold_mb")?,
+            service_mem_pct_threshold: parse_f64("service_mem_pct_threshold")?,
+            zmq_latency_source: vals.get("zmq_latency_source").unwrap_or(&"agent_ipc").to_string(),
         };
 
         crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
         self.config = new_config;
+        // A changed zmq_latency_source (or any save) shouldn't leave a stale
+        // figure — or sparkline history in different units — from a
+        // previously active source mislabeled under a new one.
+        self.zmq_latency_ms = 0.0;
+        self.zmq_latency_seen = false;
+        self.zmq_latency_history = [0.0; 2000];
+        self.zmq_latency_idx = 0;
+        self.zmq_ping_sent_at = None;
+        self.job_ping_pending = None;
         Ok(())
     }
 
@@ -1414,6 +1510,31 @@ impl App {
         // --- Editing mode (borrow state) ---
         if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
             if s.editing {
+                // Choice fields are edited via an inline picker (arrow keys +
+                // Enter over the option list) instead of free-text entry.
+                if let Some(ConfigFieldKind::Choice(options)) = s.fields.get(s.selected).map(|f| f.kind) {
+                    match code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            s.choice_idx = s.choice_idx.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if s.choice_idx + 1 < options.len() { s.choice_idx += 1; }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(opt) = options.get(s.choice_idx) {
+                                if let Some(field) = s.fields.get_mut(s.selected) {
+                                    field.label_value = opt.to_string();
+                                }
+                            }
+                            s.editing = false;
+                        }
+                        KeyCode::Esc => {
+                            s.editing = false;
+                        }
+                        _ => {}
+                    }
+                    return false;
+                }
                 match code {
                     KeyCode::Enter => {
                         if let Some(field) = s.fields.get_mut(s.selected) {
@@ -1520,7 +1641,7 @@ impl App {
                     Some(DetailPopup::ConfigEditor(ref s)) => {
                         match s.fields.get(s.selected).map(|f| &f.kind) {
                             Some(ConfigFieldKind::SaveButton) => Some("save"),
-                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) => {
+                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) => {
                                 Some("edit")
                             }
                             _ => None,
@@ -1543,15 +1664,19 @@ impl App {
                         }
                     }
                     Some("edit") => {
-                        let val = match self.detail_popup {
+                        let field_info = match self.detail_popup {
                             Some(DetailPopup::ConfigEditor(ref s)) => {
-                                s.fields.get(s.selected).map(|f| f.label_value.clone())
+                                s.fields.get(s.selected).map(|f| (f.label_value.clone(), f.kind))
                             }
                             _ => None,
                         };
                         if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
-                            if let Some(v) = val {
-                                s.input = v;
+                            if let Some((val, kind)) = field_info {
+                                if let ConfigFieldKind::Choice(options) = kind {
+                                    s.choice_idx = options.iter().position(|o| *o == val).unwrap_or(0);
+                                } else {
+                                    s.input = val;
+                                }
                                 s.editing = true;
                             }
                         }
@@ -2723,13 +2848,44 @@ impl App {
             self.send_agent_cmd("config_snapshot", None);
         }
 
-        // ZMQ latency ping every tick (same cadence as event rate / activity)
-        self.zmq_ping_sent_at = Some(Instant::now());
-        self.send_agent_cmd("zmq_ping", None);
-
         // Alive detection every 5 ticks
         if self.tick_count % 5 == 0 {
             self.send_agent_cmd("alive_check", None);
+        }
+
+        // ZMQ panel latency: dispatch/measure per the configured source.
+        match self.config.zmq_latency_source.as_str() {
+            "job_ping" => {
+                // Drop a stale pending ping (no return within a reasonable
+                // window) so a lost/dropped job doesn't permanently block
+                // future pings from ever being sent again.
+                if let Some((_, sent_at)) = self.job_ping_pending {
+                    if sent_at.elapsed().as_secs() > 30 {
+                        self.job_ping_pending = None;
+                    }
+                }
+                // Throttled well below tick cadence — this puts real traffic
+                // on the event bus, unlike the other two sources. The clock
+                // starts *before* dispatch (empty jid = "in flight, unknown
+                // yet"), not when the agent's response with the real jid
+                // arrives — dispatch already happens inside that same agent
+                // round-trip, so starting the clock afterward could catch the
+                // job already returned in a fast/local fleet, always reading
+                // a flat ~0ms instead of the real round-trip time.
+                if self.job_ping_pending.is_none() && self.tick_count % 15 == 0 {
+                    self.job_ping_pending = Some((String::new(), Instant::now()));
+                    self.send_agent_cmd("job_ping", None);
+                }
+            }
+            "master_stats" => {
+                // Passive: just listening for the master's own salt/stats/*
+                // events (handled in the event branch above), nothing to send.
+            }
+            _ => {
+                // agent_ipc (default)
+                self.zmq_ping_sent_at = Some(Instant::now());
+                self.send_agent_cmd("zmq_ping", None);
+            }
         }
 
         // Update job ages from dispatch time (previously always 0 — also fixes
@@ -2765,12 +2921,23 @@ impl App {
             &self.service_trend_snapshots(),
             self.config.service_flap_threshold_24h,
             self.config.service_mem_growth_mb_per_hour,
+            self.config.service_mem_abs_threshold_mb,
+            self.config.service_mem_pct_threshold,
         );
 
         // Eagerly finalize jobs that reached full completion — record completion
         // latency and a non-partial outcome for the rolling job-health KPIs.
         for job in self.jobs.iter_mut() {
-            if !job.finalized && job.target_count > 0 && job.returned >= job.target_count {
+            // target_count == 0 means the `/new` event's minion list was empty or
+            // absent (unresolved glob/compound match, async batch, etc.) — we can
+            // never learn the true total, so finalize on first return instead of
+            // never, or this job would silently never contribute a latency sample.
+            let complete = if job.target_count > 0 {
+                job.returned >= job.target_count
+            } else {
+                job.returned > 0
+            };
+            if !job.finalized && complete {
                 job.finalized = true;
                 self.job_completion_latencies.push_back((now_epoch_f64 - job.created_epoch).max(0.0));
                 if self.job_completion_latencies.len() > JOB_STATS_WINDOW { self.job_completion_latencies.pop_front(); }
