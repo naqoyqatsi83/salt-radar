@@ -51,7 +51,7 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Alerts** — staleness, key, service, and disk threshold monitoring
+**Alerts** — 13 rules covering minion staleness, keys, service health, memory, disk, jobs, and auth
 <img src="docs/screenshots/alerts.png" alt="Alerts tab">
 
 </td>
@@ -70,12 +70,12 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 Live overview of your Salt Master with real-time sparkline panels:
 
 - **Host Resources** — CPU load, memory usage, disk usage (cache + PKI)
-- **Services** — All `salt-*.service` units auto-discovered via systemctl, with active state, memory, and uptime
-- **Minion Key Status** — Accepted / Denied / Unaccepted / Rejected key counts
-- **ZMQ Latency** — Round-trip latency sparkline with established connection counts per port
+- **Services** — All `salt-*.service` units auto-discovered via systemctl, with active state, memory, uptime, a rolling 24h restart/flap count (`Flp`), and a memory-growth trend arrow (`T`)
+- **Minion Key Status** — Accepted / Denied / Unaccepted / Rejected key counts, plus new-pending-keys-per-minute
+- **ZMQ** — established connection counts per port (pub/ret/api), plus a latency sparkline whose source is configurable (`zmq_latency_source`): a local agent liveness ping (default), a real `test.ping` round-trip over the event bus, or Salt's own `master_stats` instrumentation
 - **Event Rate** — Events/sec sparkline with peak and total counters
 - **Minion Activity** — Job return rate sparkline with last-active minion tracking
-- **Job Pulse** — Active jobs with progress bars
+- **Job Pulse** — Active jobs with progress bars, rolling success rate, stuck-job count, and p50/p95 completion latency
 
 ### Minions
 - Scrollable minion list with dynamic column widths (ID, OS, Salt Version, Arch)
@@ -100,16 +100,38 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Copy return output to clipboard (y = Salt outputter format, Y = raw JSON)
 - Job detail popup shows correct OK/FAIL status derived from return values
 
+### Pulse
+- Per-minion return activity at a glance: every minion as a colored dot in a wrapped grid, flashing on return, color-tiered by recency (bright green → green → orange → grey → red for timed out)
+- Scales from a handful of minions to 4,000+ without layout changes
+- Detail panel on the side: key status, connection status, OS, Salt version, last return time
+
 ### Alerts
-- Minion staleness detection
-- Pending key warnings
-- Service health monitoring
-- Disk usage thresholds
-- Configurable thresholds via `salt-radar.toml`
+13 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
+
+- **Stale minion** — not seen within `stale_minion_secs`
+- **Pending key** — pending longer than `pending_key_secs`
+- **Service down** — a discovered `salt-*.service` unit is inactive
+- **Disk usage high** — cache or PKI disk over `disk_usage_pct`
+- **Legacy protocol** — minions still using Salt's legacy transport
+- **Salt warning** — `salt/warning/*` events on the bus
+- **Auth failure** — failed authentication on the ZMQ bus
+- **Stuck job** — dispatched but not fully returned within `job_straggler_secs`
+- **Reauth storm** — auth rate and worker-pool saturation elevated together (`auth_storm_rate_per_sec`, `worker_saturation_pct`)
+- **Pending key churn** — new pending keys arriving faster than `pending_key_churn_per_min`
+- **Service flapping** — a unit restarted more than `service_flap_threshold_24h` times in 24h
+- **Service memory growth** — sustained upward memory slope past `service_mem_growth_mb_per_hour`, independent of flapping
+- **Service memory high** — a unit's current RSS crosses an absolute (`service_mem_abs_threshold_mb`) or percent-of-total-memory (`service_mem_pct_threshold`) threshold, independent of growth rate
+
+All thresholds are configurable via `salt-radar.toml` or the in-app Config Editor (`F3`).
 
 ### Admin Mode
 - Toggle with `a` (danger-zone confirmation dialog required)
 - **Fleet scan** (`s`): runs `grains.items` on all minions via Salt LocalClient, populates OS/Salt Version/Arch data
+
+### Config Editor
+- `F3` opens an in-app editor for every setting in `salt-radar.toml`, grouped by section
+- Free-text fields edit inline; fields with a fixed set of valid values (e.g. `zmq_latency_source`) open an inline picker — arrow keys to move, `Enter` to confirm
+- `Save & Restart` writes the TOML file and applies the new config immediately, no process restart needed
 
 ### Clipboard
 
@@ -152,28 +174,22 @@ Copy the example config and adjust as needed:
 cp salt-radar.toml.example salt-radar.toml
 ```
 
-All settings are optional. The config file is looked up in the current directory or `~/.config/salt-radar/salt-radar.toml`.
+All settings are optional and can also be edited live from inside the app (`F3`). The config file is looked up in the current directory or `~/.config/salt-radar/salt-radar.toml`. See [`salt-radar.toml.example`](salt-radar.toml.example) for the complete, commented list of every setting (connection paths, refresh intervals, event buffer sizes, all 8 alert thresholds, and the Dashboard's `zmq_latency_source` choice) — a representative slice:
 
 ```toml
 [salt]
-# Path to Salt master configuration file
 # master_config = "/etc/salt/master"
-
-# Python binary that has the `salt` package installed
-# python_bin = "/opt/saltstack/salt/bin/python3"
 
 [refresh]
 dashboard_secs = 2
-minions_secs = 5
-config_secs = 60
-
-[events]
-buffer_size = 5000
 
 [alerts]
 stale_minion_secs = 3600
-pending_key_secs = 3600
 disk_usage_pct = 85.0
+service_mem_abs_threshold_mb = 2048.0
+
+[dashboard]
+zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 ```
 
 ## Keyboard Shortcuts
@@ -182,7 +198,7 @@ disk_usage_pct = 85.0
 |-----|--------|
 | `q` | Quit |
 | `Tab` | Switch tab |
-| `1`–`5` | Jump to tab |
+| `1`–`5` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts; `Tab` reaches Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Enter` | Open detail popup |
@@ -191,6 +207,8 @@ disk_usage_pct = 85.0
 | `a` | Toggle admin mode |
 | `c` | Toggle high-contrast selection |
 | `?` / `h` | Help overlay |
+| `F2` | Toggle mouse mode |
+| `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval (Dashboard) |
 | `m` | Toggle sparkline style (Dashboard) |
 
@@ -201,11 +219,21 @@ disk_usage_pct = 85.0
 | Events | `n` | Launch event sniffer |
 | Minions | `r` | Minion event/return history popup |
 | Minions | `s` | Fleet scan (admin mode only) |
+| Minions | `x` | Hide/show non-responsive minions |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
 | Jobs (Cache) | `,`/`.` | Previous/next page |
 | Jobs (Cache) | `r` | Refresh job cache |
 | Jobs (Cache) | `←`/`→` | Switch focus between Live Jobs and Cache panels |
+| Pulse | `↑`/`↓`/`←`/`→` | Navigate the minion grid |
+
+### Config Editor
+
+| Key | Action |
+|-----|--------|
+| `↑`/`↓` | Move between fields |
+| `Enter` | Edit field / open picker (fixed-option fields) / confirm picker selection |
+| `Esc` | Cancel edit or close the picker without changing the value |
 
 ### Popups
 
@@ -225,16 +253,16 @@ disk_usage_pct = 85.0
 ## How It Works
 
 ```
-┌──────────────────────────────────────────┐
-│          salt-radar (Rust TUI)           │
-├──────┬─────────┬────────┬───────┬────────┤
-│ Dash │ Minions │ Events │  Jobs │ Alerts │
-├──────┴────┬────┴────────┴───────┴────────┤
-│   Python Agent (ZMQ, client, fleet scan) │
-├───────────┴──────────────────────────────┤
-│  Rust: /proc, systemctl, ZMQ, clipboard  │
-│  Salt Master: ZMQ bus, PKI, job cache    │
-└──────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                   salt-radar (Rust TUI)                   │
+├─────────┬─────────┬─────────┬─────────┬─────────┬─────────┤
+│   Dash  │ Minions │  Events │   Jobs  │  Alerts │  Pulse  │
+├───────────────────────────────────────────────────────────┤
+│          Python Agent (ZMQ, client, fleet scan)           │
+├───────────────────────────────────────────────────────────┤
+│          Rust: /proc, systemctl, ZMQ, clipboard           │
+│           Salt Master: ZMQ bus, PKI, job cache            │
+└───────────────────────────────────────────────────────────┘
 ```
 
 The Rust TUI spawns a Python agent subprocess and communicates via NDJSON over a file-based command queue. The agent subscribes to the Salt event bus (ZMQ) and dispatches commands to Salt's client/runners. Meanwhile, the Rust side collects OS-level data directly from `/proc` and `systemctl` for the dashboard panels.
@@ -285,7 +313,7 @@ src/
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading
 ├── agent.rs             # Python agent subprocess management
-├── alerts/              # Alert engine (staleness, keys, services, disk)
+├── alerts/              # Alert engine (13 rules: staleness, keys, services, memory, disk, jobs, auth)
 ├── collectors/          # OS-level data collection
 │   ├── keys.rs          # PKI key file parsing
 │   ├── processes.rs     # /proc scanning for salt processes
@@ -293,13 +321,16 @@ src/
 │   ├── connections.rs   # /proc/net/tcp for ZMQ connections
 │   └── system.rs        # System load, memory, disk usage
 └── ui/                  # Terminal UI
-    ├── mod.rs           # Master draw, theme, key hints, help
+    ├── mod.rs           # Master draw, theme, title/tab frame, key hints, help
     ├── dashboard.rs     # Dashboard tab
     ├── minions.rs       # Minions tab
     ├── events.rs        # Events tab
     ├── jobs.rs          # Jobs tab
     ├── alerts_view.rs   # Alerts tab
-    └── detail_popup.rs  # All popup windows (minion, event, job, sniffer, etc.)
+    ├── pulse.rs         # Pulse tab
+    ├── minion_events.rs # Per-minion event/return history popup
+    ├── config_editor.rs # In-app config editor (F3)
+    └── detail_popup.rs  # All other popup windows (minion, event, job, sniffer, etc.)
 agent/
 └── salt_radar_agent.py  # Python agent: Salt client, event subscriber, fleet scan
 ```

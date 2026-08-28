@@ -26,7 +26,10 @@
 
 [events]
 # Maximum number of events to keep in the ring buffer
-# buffer_size = 5000
+# buffer_size = 10000
+
+# Maximum number of events to keep in the Event Sniffer's own buffer
+# sniffer_buffer_size = 1000
 
 [alerts]
 # Seconds after which a minion is considered "stale" (not seen)
@@ -41,6 +44,16 @@
 # Disk usage percentage threshold for alert
 # disk_usage_pct = 85.0
 
+# Auth events/sec threshold for the "Reauth storm" alert (fires only when
+# combined with worker_saturation_pct also being exceeded)
+# auth_storm_rate_per_sec = 5.0
+
+# Worker pool CPU busy percentage threshold for the "Reauth storm" alert
+# worker_saturation_pct = 85.0
+
+# New pending keys per minute that triggers a "Pending key churn" alert
+# pending_key_churn_per_min = 10
+
 # Restart/flap count over a rolling 24h window that triggers a "Service
 # flapping" alert for a salt-* systemd unit
 # service_flap_threshold_24h = 3
@@ -48,3 +61,23 @@
 # Sustained memory growth rate (MB/hour, linear-regression slope over sampled
 # history) that triggers a "Service memory growth" alert for a salt-* unit
 # service_mem_growth_mb_per_hour = 50.0
+
+# Absolute per-service RSS threshold (MB) for the "Service memory high" alert
+# — fires independent of growth rate, catching an already-large, slow leak.
+# Set to 0 to disable this check.
+# service_mem_abs_threshold_mb = 2048.0
+
+# Per-service RSS as a percentage of total system memory for the "Service
+# memory high" alert. Either this or service_mem_abs_threshold_mb crossing
+# is enough to fire. Set to 0 to disable this check.
+# service_mem_pct_threshold = 8.0
+
+[dashboard]
+# Source for the Dashboard ZMQ panel's latency figure:
+#   "agent_ipc"    - local Rust<->Python agent round-trip (a liveness check,
+#                    not a measurement of Salt's own transport)
+#   "job_ping"     - periodically dispatches a real test.ping and times
+#                    dispatch -> first return over the actual event bus
+#   "master_stats" - reads Salt's own master_stats events (requires
+#                    master_stats: True in the Salt master's own config)
+# zmq_latency_source = "agent_ipc"
