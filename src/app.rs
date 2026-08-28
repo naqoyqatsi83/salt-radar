@@ -624,9 +624,18 @@ impl App {
                             self.zmq_ping_sent_at = None;
                         }
                         "job_ping" => {
-                            if ok {
-                                if let Some(jid) = data["jid"].as_str() {
-                                    self.job_ping_pending = Some((jid.to_string(), Instant::now()));
+                            // Fill in the real jid on the pending entry created
+                            // at dispatch time — keep that earlier Instant so
+                            // the round-trip clock still starts from before
+                            // the agent actually published the job, not from
+                            // when this response happens to arrive.
+                            let jid = if ok { data["jid"].as_str().map(String::from) } else { None };
+                            match (jid, self.job_ping_pending.take()) {
+                                (Some(jid), Some((_, sent_at))) => {
+                                    self.job_ping_pending = Some((jid, sent_at));
+                                }
+                                _ => {
+                                    self.job_ping_pending = None;
                                 }
                             }
                         }
@@ -791,7 +800,7 @@ impl App {
                     // periodic test.ping from dispatch to its first real
                     // return over the actual event bus/ZMQ transport.
                     if let Some((ref pending_jid, sent_at)) = self.job_ping_pending {
-                        if tag.starts_with("salt/job/") && tag.contains(pending_jid.as_str()) && tag.contains("/ret/") {
+                        if !pending_jid.is_empty() && tag.starts_with("salt/job/") && tag.contains(pending_jid.as_str()) && tag.contains("/ret/") {
                             let elapsed_ms = sent_at.elapsed().as_secs_f64() * 1000.0;
                             self.zmq_latency_ms = elapsed_ms;
                             self.zmq_latency_seen = true;
@@ -2856,8 +2865,15 @@ impl App {
                     }
                 }
                 // Throttled well below tick cadence — this puts real traffic
-                // on the event bus, unlike the other two sources.
+                // on the event bus, unlike the other two sources. The clock
+                // starts *before* dispatch (empty jid = "in flight, unknown
+                // yet"), not when the agent's response with the real jid
+                // arrives — dispatch already happens inside that same agent
+                // round-trip, so starting the clock afterward could catch the
+                // job already returned in a fast/local fleet, always reading
+                // a flat ~0ms instead of the real round-trip time.
                 if self.job_ping_pending.is_none() && self.tick_count % 15 == 0 {
+                    self.job_ping_pending = Some((String::new(), Instant::now()));
                     self.send_agent_cmd("job_ping", None);
                 }
             }

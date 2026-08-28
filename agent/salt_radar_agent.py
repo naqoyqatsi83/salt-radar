@@ -588,21 +588,22 @@ def cmd_zmq_ping(opts, req):
 
 
 def cmd_job_ping(opts, req):
-    """Fire an async test.ping so the Rust side can time the real /new -> /ret
-    round-trip through Salt's actual publish/return transport. Returns the
-    JID immediately; completion is observed by the caller via the normal
-    event stream, not by waiting on this command."""
+    """Fire an async test.ping so the Rust side can time the real dispatch ->
+    first return round-trip through Salt's actual publish/return transport.
+    Uses LocalClient.cmd_async() directly (same as fleet_scan) rather than
+    shelling out to the salt CLI, so a fresh Python-interpreter/CLI startup
+    isn't added to every sample on top of the real transport latency.
+    Returns the JID immediately; completion is observed by the caller via
+    the normal event stream, not by waiting on this command."""
     jid = None
     try:
-        output = _run_salt_cmd(["salt", "--async", "*", "test.ping"], timeout=10)
-        if output:
-            # e.g. "Executed command with job ID: 20260101120000000000"
-            for token in output.split():
-                if token.isdigit() and len(token) >= 18:
-                    jid = token
-                    break
+        salt = _import_salt()
+        local = salt.client.LocalClient(opts["conf_file"])
+        jid = local.cmd_async("*", "test.ping", [], tgt_type="glob")
+        if isinstance(jid, bytes):
+            jid = jid.decode()
     except Exception:
-        pass
+        jid = None
     result(req["id"], "job_ping", data={"jid": jid})
 
 
