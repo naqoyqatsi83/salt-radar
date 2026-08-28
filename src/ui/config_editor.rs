@@ -22,6 +22,18 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
 
     let mut lines: Vec<Line> = Vec::new();
 
+    // Label column width is derived from the longest label actually present
+    // (Section/SaveButton rows don't use this two-column layout) instead of a
+    // hardcoded width that several labels — e.g. service_mem_growth_mb_per_hour
+    // at 31 chars — already ran past, jamming the value against the label
+    // with no separating space.
+    let label_w = state.fields.iter()
+        .filter(|f| !matches!(f.kind, ConfigFieldKind::Section | ConfigFieldKind::SaveButton))
+        .map(|f| f.label.len())
+        .max()
+        .unwrap_or(22)
+        + 2;
+
     for (field_idx, field) in state.fields.iter().enumerate() {
         match field.kind {
             ConfigFieldKind::Section => {
@@ -55,7 +67,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
 
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("  {:<22}", field.label),
+                        format!("  {:<label_w$}", field.label, label_w = label_w),
                         sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
                     ),
                     Span::styled(
@@ -89,7 +101,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
 
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("  {:<22}", field.label),
+                        format!("  {:<label_w$}", field.label, label_w = label_w),
                         sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
                     ),
                     Span::styled(
