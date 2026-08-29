@@ -21,6 +21,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
     f.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
+    let mut sel_line: usize = 0;
 
     // Label column width is derived from the longest label actually present
     // (Section/SaveButton rows don't use this two-column layout) instead of a
@@ -47,6 +48,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 let is_sel = field_idx == state.selected;
                 let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
                 lines.push(Line::from(""));
+                if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(
                     Span::styled(
                         format!("  \u{25B8} Save & Restart"),
@@ -65,6 +67,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 let editing = is_sel && state.editing;
                 let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
 
+                if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {:<label_w$}", field.label, label_w = label_w),
@@ -99,6 +102,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     field.label_value.clone()
                 };
 
+                if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {:<label_w$}", field.label, label_w = label_w),
@@ -126,8 +130,11 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         )));
     }
 
+    let visible = inner.height as usize;
+    let (scroll, _, _) = super::scroll_window(sel_line, visible, lines.len());
+
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)).scroll((scroll as u16, 0)),
         inner,
     );
 }

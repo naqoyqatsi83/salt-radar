@@ -75,10 +75,12 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **ZMQ** — established connection counts per port (pub/ret/api), plus a latency sparkline whose source is configurable (`zmq_latency_source`): a local agent liveness ping (default), a real `test.ping` round-trip over the event bus, or Salt's own `master_stats` instrumentation
 - **Event Rate** — Events/sec sparkline with peak and total counters
 - **Minion Activity** — Job return rate sparkline with last-active minion tracking
+- **CPU / Memory** — optional utilization-history sparklines (off by default), toggle alongside the other three sparkline panels via `show_*_graph`; stacking order of all five panels is configurable via `graph_order` — in the Config Editor (`F3`) or `salt-radar.toml`
 - **Job Pulse** — Active jobs with progress bars, rolling success rate, stuck-job count, and p50/p95 completion latency
 
 ### Minions
 - Scrollable minion list with dynamic column widths (ID, OS, Salt Version, Arch)
+- Freshly-active marker (`●`) next to minions that checked in recently, threshold adapts to the fleet's own median check-in age
 - Fleet overview panel: OS Distribution, Salt Version, and Architecture distribution bars
 - Detail popup with key info and connection status
 - Filter by ID, OS, or version (`/` key)
@@ -101,7 +103,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Job detail popup shows correct OK/FAIL status derived from return values
 
 ### Pulse
-- Per-minion return activity at a glance: every minion as a colored dot in a wrapped grid, flashing on return, color-tiered by recency (bright green → green → orange → grey → red for timed out)
+- Per-minion return activity at a glance: every minion as a dot in a wrapped grid, color- *and* shape-tiered by recency (`●` bright green flash → `•` green → `·` orange → `·` grey → `·` red for timed out) so adjacent tiers stay distinguishable even at a glance
 - Scales from a handful of minions to 4,000+ without layout changes
 - Detail panel on the side: key status, connection status, OS, Salt version, last return time
 
@@ -120,7 +122,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Pending key churn** — new pending keys arriving faster than `pending_key_churn_per_min`
 - **Service flapping** — a unit restarted more than `service_flap_threshold_24h` times in 24h
 - **Service memory growth** — sustained upward memory slope past `service_mem_growth_mb_per_hour`, independent of flapping
-- **Service memory high** — a unit's current RSS crosses an absolute (`service_mem_abs_threshold_mb`) or percent-of-total-memory (`service_mem_pct_threshold`) threshold, independent of growth rate
+- **Service memory high** — a unit's current RSS crosses an absolute (`service_mem_abs_threshold_mb`) or percent-of-total-memory (`service_mem_pct_threshold`) threshold, independent of growth rate; salt-master/minion/api/syndic can each override these globals (e.g. `service_mem_abs_threshold_master_mb`)
 
 All thresholds are configurable via `salt-radar.toml` or the in-app Config Editor (`F3`).
 
@@ -174,7 +176,7 @@ Copy the example config and adjust as needed:
 cp salt-radar.toml.example salt-radar.toml
 ```
 
-All settings are optional and can also be edited live from inside the app (`F3`). The config file is looked up in the current directory or `~/.config/salt-radar/salt-radar.toml`. See [`salt-radar.toml.example`](salt-radar.toml.example) for the complete, commented list of every setting (connection paths, refresh intervals, event buffer sizes, all 8 alert thresholds, and the Dashboard's `zmq_latency_source` choice) — a representative slice:
+All settings are optional and can also be edited live from inside the app (`F3`). The config file is looked up in the current directory or `~/.config/salt-radar/salt-radar.toml`. See [`salt-radar.toml.example`](salt-radar.toml.example) for the complete, commented list of every setting (connection paths, refresh intervals, event buffer sizes, all alert thresholds including per-unit memory overrides, and the Dashboard's `zmq_latency_source`/`show_*_graph`/`graph_order` settings) — a representative slice:
 
 ```toml
 [salt]

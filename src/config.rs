@@ -21,6 +21,18 @@ pub struct AppConfig {
     pub service_mem_growth_mb_per_hour: f64,
     pub service_mem_abs_threshold_mb: f64,
     pub service_mem_pct_threshold: f64,
+    /// Per-unit overrides for the standard bundled Salt services — each 0.0
+    /// means "no override, fall back to the global service_mem_*_threshold*
+    /// above" (the global fields already use 0.0 to mean "check disabled",
+    /// so these reuse that same sentinel to mean "not set").
+    pub service_mem_abs_threshold_master_mb: f64,
+    pub service_mem_pct_threshold_master: f64,
+    pub service_mem_abs_threshold_minion_mb: f64,
+    pub service_mem_pct_threshold_minion: f64,
+    pub service_mem_abs_threshold_api_mb: f64,
+    pub service_mem_pct_threshold_api: f64,
+    pub service_mem_abs_threshold_syndic_mb: f64,
+    pub service_mem_pct_threshold_syndic: f64,
     /// Which mechanism computes the Dashboard ZMQ panel's latency figure:
     /// "agent_ipc" (local Rust<->Python subprocess round-trip — a liveness
     /// check, not real Salt transport), "job_ping" (periodic async test.ping,
@@ -29,6 +41,21 @@ pub struct AppConfig {
     /// master_stats: True in the master's own config). Unrecognized values
     /// fall back to "agent_ipc" behavior.
     pub zmq_latency_source: String,
+    /// Which of the Dashboard's bottom sparkline panels are shown. ZMQ /
+    /// Events / Activity default on (today's fixed set); CPU / Memory
+    /// default off since enabling them changes the existing layout's panel
+    /// count — opt-in rather than a default appearance change.
+    pub show_zmq_graph: bool,
+    pub show_events_graph: bool,
+    pub show_activity_graph: bool,
+    pub show_cpu_graph: bool,
+    pub show_mem_graph: bool,
+    /// Stacking order of the Dashboard's sparkline panels, as a comma-
+    /// separated list of panel keys ("cpu", "mem", "zmq", "events",
+    /// "activity"). Unrecognized/duplicate tokens are ignored; any panel
+    /// missing from the list is appended after the ones named, so a partial
+    /// or malformed value degrades gracefully instead of losing a panel.
+    pub graph_order: String,
 }
 
 impl Default for AppConfig {
@@ -53,7 +80,21 @@ impl Default for AppConfig {
             service_mem_growth_mb_per_hour: 50.0,
             service_mem_abs_threshold_mb: 2048.0,
             service_mem_pct_threshold: 8.0,
+            service_mem_abs_threshold_master_mb: 0.0,
+            service_mem_pct_threshold_master: 0.0,
+            service_mem_abs_threshold_minion_mb: 0.0,
+            service_mem_pct_threshold_minion: 0.0,
+            service_mem_abs_threshold_api_mb: 0.0,
+            service_mem_pct_threshold_api: 0.0,
+            service_mem_abs_threshold_syndic_mb: 0.0,
+            service_mem_pct_threshold_syndic: 0.0,
             zmq_latency_source: "agent_ipc".into(),
+            show_zmq_graph: true,
+            show_events_graph: true,
+            show_activity_graph: true,
+            show_cpu_graph: false,
+            show_mem_graph: false,
+            graph_order: "cpu,mem,zmq,events,activity".into(),
         }
     }
 }
@@ -100,11 +141,25 @@ struct AlertsConfig {
     service_mem_growth_mb_per_hour: Option<f64>,
     service_mem_abs_threshold_mb: Option<f64>,
     service_mem_pct_threshold: Option<f64>,
+    service_mem_abs_threshold_master_mb: Option<f64>,
+    service_mem_pct_threshold_master: Option<f64>,
+    service_mem_abs_threshold_minion_mb: Option<f64>,
+    service_mem_pct_threshold_minion: Option<f64>,
+    service_mem_abs_threshold_api_mb: Option<f64>,
+    service_mem_pct_threshold_api: Option<f64>,
+    service_mem_abs_threshold_syndic_mb: Option<f64>,
+    service_mem_pct_threshold_syndic: Option<f64>,
 }
 
 #[derive(serde::Deserialize)]
 struct DashboardConfig {
     zmq_latency_source: Option<String>,
+    show_zmq_graph: Option<bool>,
+    show_events_graph: Option<bool>,
+    show_activity_graph: Option<bool>,
+    show_cpu_graph: Option<bool>,
+    show_mem_graph: Option<bool>,
+    graph_order: Option<String>,
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
@@ -135,9 +190,23 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          service_mem_growth_mb_per_hour = {}\n\
          service_mem_abs_threshold_mb = {}\n\
          service_mem_pct_threshold = {}\n\
+         service_mem_abs_threshold_master_mb = {}\n\
+         service_mem_pct_threshold_master = {}\n\
+         service_mem_abs_threshold_minion_mb = {}\n\
+         service_mem_pct_threshold_minion = {}\n\
+         service_mem_abs_threshold_api_mb = {}\n\
+         service_mem_pct_threshold_api = {}\n\
+         service_mem_abs_threshold_syndic_mb = {}\n\
+         service_mem_pct_threshold_syndic = {}\n\
          \n\
          [dashboard]\n\
-         zmq_latency_source = {:?}\n",
+         zmq_latency_source = {:?}\n\
+         show_zmq_graph = {}\n\
+         show_events_graph = {}\n\
+         show_activity_graph = {}\n\
+         show_cpu_graph = {}\n\
+         show_mem_graph = {}\n\
+         graph_order = {:?}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -157,7 +226,21 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.service_mem_growth_mb_per_hour,
         config.service_mem_abs_threshold_mb,
         config.service_mem_pct_threshold,
+        config.service_mem_abs_threshold_master_mb,
+        config.service_mem_pct_threshold_master,
+        config.service_mem_abs_threshold_minion_mb,
+        config.service_mem_pct_threshold_minion,
+        config.service_mem_abs_threshold_api_mb,
+        config.service_mem_pct_threshold_api,
+        config.service_mem_abs_threshold_syndic_mb,
+        config.service_mem_pct_threshold_syndic,
         config.zmq_latency_source,
+        config.show_zmq_graph,
+        config.show_events_graph,
+        config.show_activity_graph,
+        config.show_cpu_graph,
+        config.show_mem_graph,
+        config.graph_order,
     );
     std::fs::write(path, toml)
 }
@@ -193,9 +276,23 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
                 if let Some(v) = a.service_mem_abs_threshold_mb { cfg.service_mem_abs_threshold_mb = v; }
                 if let Some(v) = a.service_mem_pct_threshold { cfg.service_mem_pct_threshold = v; }
+                if let Some(v) = a.service_mem_abs_threshold_master_mb { cfg.service_mem_abs_threshold_master_mb = v; }
+                if let Some(v) = a.service_mem_pct_threshold_master { cfg.service_mem_pct_threshold_master = v; }
+                if let Some(v) = a.service_mem_abs_threshold_minion_mb { cfg.service_mem_abs_threshold_minion_mb = v; }
+                if let Some(v) = a.service_mem_pct_threshold_minion { cfg.service_mem_pct_threshold_minion = v; }
+                if let Some(v) = a.service_mem_abs_threshold_api_mb { cfg.service_mem_abs_threshold_api_mb = v; }
+                if let Some(v) = a.service_mem_pct_threshold_api { cfg.service_mem_pct_threshold_api = v; }
+                if let Some(v) = a.service_mem_abs_threshold_syndic_mb { cfg.service_mem_abs_threshold_syndic_mb = v; }
+                if let Some(v) = a.service_mem_pct_threshold_syndic { cfg.service_mem_pct_threshold_syndic = v; }
             }
             if let Some(d) = toml_cfg.dashboard {
                 if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
+                if let Some(v) = d.show_zmq_graph { cfg.show_zmq_graph = v; }
+                if let Some(v) = d.show_events_graph { cfg.show_events_graph = v; }
+                if let Some(v) = d.show_activity_graph { cfg.show_activity_graph = v; }
+                if let Some(v) = d.show_cpu_graph { cfg.show_cpu_graph = v; }
+                if let Some(v) = d.show_mem_graph { cfg.show_mem_graph = v; }
+                if let Some(v) = d.graph_order { cfg.graph_order = v; }
             }
         }
     }

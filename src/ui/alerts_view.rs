@@ -8,6 +8,9 @@ use crate::app::App;
 
 use super::color;
 
+const SEV_W: usize = 9;
+const RULE_W: usize = 22;
+
 pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
     let total = app.filtered_alerts_len();
     let selected = app.alert_selected.min(total.saturating_sub(1));
@@ -52,12 +55,11 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD),
         )));
     } else {
-        // Header (always shown when alerts exist)
+        // Header spacers are derived from the same SEV_W/RULE_W field widths
+        // the data row uses below, so they can't drift out of sync.
         lines.push(Line::from(vec![
-            Span::styled("  Severity", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled("   ", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled("Rule", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled("               ", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("  {:<SEV_W$}", "Severity"), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<RULE_W$}", "Rule"), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
             Span::styled("Description", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         ]));
 
@@ -91,9 +93,14 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
                 } else {
                     format!(" [{}]", alert.details.len())
                 };
+                let rule_str = if alert.rule.len() > RULE_W {
+                    format!("{}..", &alert.rule[..RULE_W - 2])
+                } else {
+                    alert.rule.to_string()
+                };
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<8}", alert.severity.label()), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("{:<16}", alert.rule), Style::default().fg(color::CYAN)),
+                    Span::styled(format!("  {:<SEV_W$}", alert.severity.label()), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{:<RULE_W$}", rule_str), Style::default().fg(color::CYAN)),
                     Span::styled(alert.description.clone(), Style::default().fg(color::TEXT)),
                     Span::styled(detail_count, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
                 ]).style(sel_style));

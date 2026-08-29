@@ -19,6 +19,98 @@ pub(super) const RADAR_FRAMES: &[char] = &['\u{25d4}', '\u{25d1}', '\u{25d5}', '
 // Services column's wrapped height below, which must stay in sync with it.
 const MID_ROW_RATIO: [u32; 3] = [2, 1, 2];
 
+/// The Dashboard's bottom sparkline panels, each independently toggleable
+/// via config.show_*_graph and orderable via config.graph_order (Config
+/// Editor's [dashboard] section). `ALL`'s order is the fallback default and
+/// also what any panel key missing from graph_order gets appended in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SparkPanel {
+    Cpu,
+    Mem,
+    Zmq,
+    Events,
+    Activity,
+}
+
+impl SparkPanel {
+    const ALL: [SparkPanel; 5] = [SparkPanel::Cpu, SparkPanel::Mem, SparkPanel::Zmq, SparkPanel::Events, SparkPanel::Activity];
+
+    fn key(self) -> &'static str {
+        match self {
+            SparkPanel::Cpu => "cpu",
+            SparkPanel::Mem => "mem",
+            SparkPanel::Zmq => "zmq",
+            SparkPanel::Events => "events",
+            SparkPanel::Activity => "activity",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<SparkPanel> {
+        match key.trim().to_ascii_lowercase().as_str() {
+            "cpu" => Some(SparkPanel::Cpu),
+            "mem" | "memory" => Some(SparkPanel::Mem),
+            "zmq" => Some(SparkPanel::Zmq),
+            "events" => Some(SparkPanel::Events),
+            "activity" => Some(SparkPanel::Activity),
+            _ => None,
+        }
+    }
+
+    fn enabled(self, app: &App) -> bool {
+        match self {
+            SparkPanel::Zmq => app.config.show_zmq_graph,
+            SparkPanel::Events => app.config.show_events_graph,
+            SparkPanel::Activity => app.config.show_activity_graph,
+            SparkPanel::Cpu => app.config.show_cpu_graph,
+            SparkPanel::Mem => app.config.show_mem_graph,
+        }
+    }
+
+    fn draw(self, f: &mut Frame, area: Rect, app: &App) {
+        match self {
+            SparkPanel::Zmq => draw_zmq_row(f, area, app),
+            SparkPanel::Events => draw_events_row(f, area, app),
+            SparkPanel::Activity => draw_activity_matrix(f, area, app),
+            SparkPanel::Cpu => draw_cpu_row(f, area, app),
+            SparkPanel::Mem => draw_mem_row(f, area, app),
+        }
+    }
+}
+
+/// Parses config.graph_order (comma-separated panel keys) into the full
+/// panel list in that order — unrecognized/duplicate tokens are dropped,
+/// and any panel missing from the string is appended afterward in `ALL`'s
+/// default order, so a partial or malformed value never loses a panel.
+fn ordered_panels(order: &str) -> Vec<SparkPanel> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result: Vec<SparkPanel> = order
+        .split(',')
+        .filter_map(SparkPanel::from_key)
+        .filter(|p| seen.insert(p.key()))
+        .collect();
+    for p in SparkPanel::ALL {
+        if seen.insert(p.key()) {
+            result.push(p);
+        }
+    }
+    result
+}
+
+fn enabled_spark_panels(app: &App) -> Vec<SparkPanel> {
+    ordered_panels(&app.config.graph_order).into_iter().filter(|p| p.enabled(app)).collect()
+}
+
+fn draw_no_graphs_hint(f: &mut Frame, area: Rect) {
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  No graphs enabled — toggle show_*_graph in Config Editor (F3)",
+            Style::default().fg(color::TEXT_DIM),
+        )))
+        .style(Style::default().bg(color::BG_DARK)),
+        area,
+    );
+}
+
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // Small terminal fallback: vertical stacked layout
     if area.height < 26 {
@@ -54,7 +146,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(5),  // Host Resources
             Constraint::Length(mid_h), // Services + Key Status (exact-fit)
             Constraint::Length(4),  // Job Pulse (KPI line + up to 3 jobs)
-            Constraint::Min(6),     // Sparklines (at least 6 lines = 3×2 for 3 panels)
+            Constraint::Min(6),     // Sparklines (at least 6 lines = 2 per panel × 3 default-enabled panels)
         ])
         .split(body);
 
@@ -75,43 +167,42 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     draw_job_pulse(f, sections[2], app);
 
-    // Bottom: 3 stacked full-width sparklines for time-axis correlation
-    let sparklines = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-        ])
-        .split(sections[3]);
-
-    draw_zmq_row(f, sparklines[0], app);
-    draw_events_row(f, sparklines[1], app);
-    draw_activity_matrix(f, sparklines[2], app);
+    // Bottom: stacked full-width sparklines, one per enabled panel, for
+    // time-axis correlation.
+    let panels = enabled_spark_panels(app);
+    if panels.is_empty() {
+        draw_no_graphs_hint(f, sections[3]);
+    } else {
+        let n = panels.len() as u32;
+        let constraints: Vec<Constraint> = panels.iter().map(|_| Constraint::Ratio(1, n)).collect();
+        let sparklines = Layout::default().direction(Direction::Vertical).constraints(constraints).split(sections[3]);
+        for (panel, area) in panels.into_iter().zip(sparklines.iter()) {
+            panel.draw(f, *area, app);
+        }
+    }
 }
 
 /// Fallback for small terminals: vertical stacked layout (same as original)
 fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     let proc_rows = proc_rows_for(&group_processes(&app.processes), area.width.saturating_sub(2));
     let services_height = 4 + proc_rows + app.services.len() as u16;
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Length(services_height),
-            Constraint::Length(4),
-            Constraint::Length(4),
-            Constraint::Length(3),
-            Constraint::Length(4),
-        ])
-        .split(area);
+    let panels = enabled_spark_panels(app);
+
+    let mut constraints = vec![
+        Constraint::Length(5),
+        Constraint::Length(services_height),
+    ];
+    constraints.extend(panels.iter().map(|_| Constraint::Length(4)));
+    constraints.push(Constraint::Length(4)); // Job Pulse
+
+    let layout = Layout::default().direction(Direction::Vertical).constraints(constraints).split(area);
 
     draw_host_row(f, layout[0], app);
     draw_proc_row(f, layout[1], app);
-    draw_zmq_row(f, layout[2], app);
-    draw_events_row(f, layout[3], app);
-    draw_activity_matrix(f, layout[4], app);
-    draw_job_pulse(f, layout[5], app);
+    for (i, panel) in panels.into_iter().enumerate() {
+        panel.draw(f, layout[2 + i], app);
+    }
+    draw_job_pulse(f, layout[layout.len() - 1], app);
 }
 
 fn make_block_line(title: Line<'static>) -> Block<'static> {
@@ -139,12 +230,14 @@ pub(super) fn format_duration(secs: u64) -> String {
     }
 }
 
+fn pct_color(pct: f64) -> Color {
+    if pct > 80.0 { color::ORANGE }
+    else if pct > 55.0 { color::YELLOW }
+    else { color::GREEN }
+}
+
 fn pct_gauge_style(pct: f64) -> Style {
-    Style::default().fg(
-        if pct > 80.0 { color::ORANGE }
-        else if pct > 55.0 { color::YELLOW }
-        else { color::GREEN }
-    ).bg(color::BG_MID)
+    Style::default().fg(pct_color(pct)).bg(color::BG_MID)
 }
 
 // ── Minion Key Status ───────────────────────────────────────────────────────
@@ -303,7 +396,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("Status", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled(" State      ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled(" Flp", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(" Memory ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(" Memory   ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled(" T", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         Span::styled(" Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
     ]));
@@ -312,15 +405,14 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         let status_icon = if service.active { "\u{25cf}" } else { "\u{25cb}" };
         let status_color = if service.active { color::GREEN } else { color::RED };
 
-        // Number and unit suffix are formatted into their own fixed-width
-        // sub-fields (rather than right-aligning the combined string) so the
-        // unit letters land in the same column across rows regardless of how
-        // many digits the value has.
+        // Combined string is right-aligned as a whole (rather than padding
+        // just the number to a 3-digit budget) so multi-GB services don't
+        // overflow the column — up to 5 digits (99999 MB) fits.
         let memory_mb = service.memory_kb / 1024;
         let memory_text = if memory_mb > 0 {
-            format!("{:>3} MB", memory_mb)
+            format!("{} MB", memory_mb)
         } else {
-            format!("{:>6}", "--")
+            "--".to_string()
         };
 
         let uptime_text = if service.uptime_seconds > 0 {
@@ -375,7 +467,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("{:<6}", status_icon), Style::default().fg(status_color)),
             Span::styled(format!(" {:<11}", state_display), Style::default().fg(color::TEXT)),
             Span::styled(format!(" {:>3}", flap_text), Style::default().fg(flap_color)),
-            Span::styled(format!(" {} ", memory_text), Style::default().fg(color::YELLOW)),
+            Span::styled(format!(" {:>8} ", memory_text), Style::default().fg(color::YELLOW)),
             Span::styled(format!(" {}", trend_char), Style::default().fg(trend_color)),
             Span::styled(format!(" {}", uptime_text), Style::default().fg(color::TEXT_DIM)),
         ]));
@@ -594,8 +686,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled("  ".to_string(), Style::default().fg(color::TEXT_LABEL)),
         Span::styled(format!(":{} pub{} ({})  ", pub_port, pub_established, pub_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled(":".to_string(), Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} ret{} ({})  ", ret_port, ret_established, ret_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(":{} ret{} ({})  ", ret_port, ret_established, ret_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
     ];
     if api_port > 0 {
         let api_estab = app.zmq_connections.iter().filter(|c| c.local_port == api_port && c.state == "ESTABLISHED").count();
@@ -815,6 +906,125 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+// ── CPU / Memory history ────────────────────────────────────────────────────
+// Optional Dashboard sparkline panels (config.show_cpu_graph / show_mem_graph)
+// giving CPU load and Memory utilization the same rolling-history treatment
+// draw_zmq_row/draw_events_row already give latency/event-rate — unlike those,
+// the values are already percentages, so the sparkline is rendered on a fixed
+// 0-100 scale instead of auto-scaling to the window's own peak (auto-scaling
+// a percentage would visually exaggerate a fleet that never gets very busy).
+
+fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
+    let cpu_count = app.config_snapshot.as_ref().map(|c| c.cpu_count).unwrap_or(1).max(1) as f64;
+    let current_pct = (app.system_info.load_1 / cpu_count * 100.0).clamp(0.0, 100.0);
+    let peak_pct = app.cpu_history.iter().cloned().fold(0.0_f64, f64::max);
+
+    let title = if area.width >= 40 {
+        Line::from(vec![
+            Span::styled(" CPU ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::TEXT_DIM)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" CPU ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(format!("{:.0}%", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+        ])
+    };
+
+    let block = make_block_line(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
+        .split(inner);
+
+    let idx = app.cpu_history_idx;
+    let ordered: Vec<f64> = (0..2000).map(|i| app.cpu_history[(idx + i) % 2000]).collect();
+    let spark_width = inner_layout[0].width.max(1) as usize;
+    let points = spark_width.min(2000);
+    let start = ordered.len().saturating_sub(points);
+    let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
+
+    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::GREEN), app.sparkline_style);
+
+    let n = points.min(app.cpu_mem_samples as usize);
+    let avg_pct = if n > 0 { ordered[ordered.len() - n..].iter().sum::<f64>() / n as f64 } else { 0.0 };
+
+    let stats_line = Line::from(vec![
+        Span::styled("  Load: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{:.1}/{:.1}/{:.1}  ", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15), Style::default().fg(color::TEXT)),
+        Span::styled("avg: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{:.0}%  ", avg_pct), Style::default().fg(color::TEXT_DIM)),
+        Span::styled("peak: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::TEXT_DIM)),
+    ]);
+    f.render_widget(
+        Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
+        inner_layout[1],
+    );
+}
+
+fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
+    let mem_total_kb = app.system_info.mem_total_kb.max(1);
+    let mem_avail_kb = app.system_info.mem_avail_kb;
+    let current_pct = ((mem_total_kb.saturating_sub(mem_avail_kb)) as f64 / mem_total_kb as f64 * 100.0).clamp(0.0, 100.0);
+    let peak_pct = app.mem_history.iter().cloned().fold(0.0_f64, f64::max);
+
+    let title = if area.width >= 40 {
+        Line::from(vec![
+            Span::styled(" Memory ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::TEXT_DIM)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" Memory ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(format!("{:.0}%", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+        ])
+    };
+
+    let block = make_block_line(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
+        .split(inner);
+
+    let idx = app.mem_history_idx;
+    let ordered: Vec<f64> = (0..2000).map(|i| app.mem_history[(idx + i) % 2000]).collect();
+    let spark_width = inner_layout[0].width.max(1) as usize;
+    let points = spark_width.min(2000);
+    let start = ordered.len().saturating_sub(points);
+    let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
+
+    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
+
+    let n = points.min(app.cpu_mem_samples as usize);
+    let avg_pct = if n > 0 { ordered[ordered.len() - n..].iter().sum::<f64>() / n as f64 } else { 0.0 };
+    let mem_used_mb = mem_total_kb.saturating_sub(mem_avail_kb) / 1024;
+    let mem_total_mb = mem_total_kb / 1024;
+
+    let stats_line = Line::from(vec![
+        Span::styled("  Used: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{} MB / {} MB  ", mem_used_mb, mem_total_mb), Style::default().fg(color::TEXT)),
+        Span::styled("avg: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{:.0}%  ", avg_pct), Style::default().fg(color::TEXT_DIM)),
+        Span::styled("peak: ", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::TEXT_DIM)),
+    ]);
+    f.render_widget(
+        Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
+        inner_layout[1],
+    );
+}
+
 // ── Job Pulse ────────────────────────────────────────────────────────────────
 
 fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
@@ -901,9 +1111,18 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
 fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], style: Style, mode: SparklineStyle) {
     match mode {
         SparklineStyle::Bars => {
+            // Every caller already normalizes its data into a fixed 0-100
+            // domain (either a raw percentage, or scaled against the panel's
+            // own rolling peak) — same assumption Dots mode below already
+            // makes via `v.min(100)`. Without an explicit `.max(100)` here,
+            // ratatui's Sparkline auto-scales bars to the *visible window's*
+            // own max, so e.g. a CPU panel sitting at a real 3% (with no
+            // higher value currently on screen) would render as a full-height
+            // bar instead of a mostly-empty one.
             let sp = Sparkline::default()
                 .block(Block::default())
                 .style(style)
+                .max(100)
                 .data(data);
             f.render_widget(sp, area);
         }

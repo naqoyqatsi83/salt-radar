@@ -72,6 +72,19 @@
 # is enough to fire. Set to 0 to disable this check.
 # service_mem_pct_threshold = 8.0
 
+# Per-unit overrides for the standard bundled Salt services, since e.g.
+# salt-master legitimately runs with a much larger working set than
+# salt-minion/salt-api/salt-syndic. Each 0.0 means "no override, fall back
+# to service_mem_abs_threshold_mb / service_mem_pct_threshold above".
+# service_mem_abs_threshold_master_mb = 0.0
+# service_mem_pct_threshold_master = 0.0
+# service_mem_abs_threshold_minion_mb = 0.0
+# service_mem_pct_threshold_minion = 0.0
+# service_mem_abs_threshold_api_mb = 0.0
+# service_mem_pct_threshold_api = 0.0
+# service_mem_abs_threshold_syndic_mb = 0.0
+# service_mem_pct_threshold_syndic = 0.0
+
 [dashboard]
 # Source for the Dashboard ZMQ panel's latency figure:
 #   "agent_ipc"    - local Rust<->Python agent round-trip (a liveness check,
@@ -81,3 +94,17 @@
 #   "master_stats" - reads Salt's own master_stats events (requires
 #                    master_stats: True in the Salt master's own config)
 # zmq_latency_source = "agent_ipc"
+
+# Which of the Dashboard's bottom sparkline panels are shown. ZMQ / Events /
+# Activity default on (today's fixed set); CPU / Memory default off since
+# enabling them changes the existing layout's panel count.
+# show_zmq_graph = true
+# show_events_graph = true
+# show_activity_graph = true
+# show_cpu_graph = false
+# show_mem_graph = false
+
+# Stacking order of the sparkline panels above, as a comma-separated list of
+# keys: cpu, mem, zmq, events, activity. Unrecognized/duplicate keys are
+# ignored; any panel missing from the list is appended after the ones named.
+# graph_order = "cpu,mem,zmq,events,activity"
