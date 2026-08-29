@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Sparkline panels (CPU/Memory/ZMQ/Events/Minion activity) now default to Dots instead of Bars on first run (#49)
 
+### Added
+- Dashboard Event Types panel: `minion/refresh/*` events (grains/pillar/modules/beacon-list refresh traffic) now break out into their own `Refresh` category instead of falling into `Other`
+
 ### Fixed
 - Pulse view's Legend panel reserved 8 rows (2 for its border + 6 content rows) for only 5 entries, leaving a blank line at the bottom. Trimmed to 7
 - Dashboard Services panel: the `Status` dot was left-aligned in its column, so it sat directly against the `Unit` column with no visible gap for long unit names. Right-aligned so it lines up under the last `s` of the `Status` header instead

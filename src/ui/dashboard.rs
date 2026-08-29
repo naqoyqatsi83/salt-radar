@@ -720,6 +720,7 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
         ("Job",   bd.job_return, color::CYAN),
         ("Start", bd.start, color::GREEN),
         ("Beacon", bd.beacon, color::PURPLE),
+        ("Refresh", bd.refresh, color::ORANGE),
         ("Other", bd.other, color::TEXT_DIM),
     ];
     let max_count = cats.iter().map(|(_, c, _)| *c).max().unwrap_or(1).max(1);
@@ -731,7 +732,7 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
             let bar_len = ((*count as f64 / max_count as f64) * bar_max as f64).round() as usize;
             let bar = "\u{2588}".repeat(bar_len);
             let spans = vec![
-                Span::styled(format!(" {:<6}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {:<7}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{:>5} ", count), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(bar, Style::default().fg(*color)),
             ];

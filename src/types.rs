@@ -233,6 +233,7 @@ pub struct EventBreakdown {
     pub job_return: u64,
     pub start: u64,
     pub beacon: u64,
+    pub refresh: u64,
     pub other: u64,
     pub total: u64,
 }
@@ -248,6 +249,12 @@ impl EventBreakdown {
             self.start += 1;
         } else if tag.starts_with("salt/beacon") {
             self.beacon += 1;
+        } else if tag.contains("minion/refresh") {
+            // Minion-management traffic (grains/pillar/modules/beacon-list
+            // refresh) — distinct from a minion actually starting/connecting.
+            // Scoped to minion/refresh/* specifically for now, not every
+            // tag containing "/refresh" anywhere.
+            self.refresh += 1;
         } else {
             self.other += 1;
         }
