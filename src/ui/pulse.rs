@@ -37,6 +37,7 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
 
     let inner = block.inner(area);
     f.render_widget(block, area);
+    app.pulse_grid_area = inner;
 
     let minions = gather_minions(app);
     if minions.is_empty() {

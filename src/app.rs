@@ -98,6 +98,12 @@ pub struct App {
     pub minion_selected: usize,
     pub pulse_selected: usize,
     pub pulse_grid_cols: usize,
+    /// The dot grid's actual rendered inner area, set by draw_dot_panel
+    /// each frame — mouse-click hit testing reads this directly instead of
+    /// re-deriving the panel's screen geometry by hand, so the two can't
+    /// silently drift apart the way they did when the Legend panel was
+    /// added below the grid without the click handler being updated.
+    pub pulse_grid_area: Rect,
 
     // Agent NDJSON reader thread
     pub agent_rx: Arc<Mutex<VecDeque<AgentMessage>>>,
@@ -470,6 +476,7 @@ impl App {
             minion_selected: 0,
             pulse_selected: 0,
             pulse_grid_cols: 0,
+            pulse_grid_area: Rect::default(),
 
             agent_rx,
             agent_backlog_dropped,
@@ -4294,24 +4301,19 @@ impl App {
                 }
             }
             Tab::Pulse => {
-                let w = frame_size.width as usize;
-                let h = frame_size.height as usize;
-
-                // Pulse dot panel: left 65% of content area (y=2), with block border
-                let panel_w = w * 65 / 100;
-                let panel_h = h.saturating_sub(3); // content area height
-                let inner_x = 1;
-                let inner_y = 3; // content y=2 + border=1
-                let inner_w = panel_w.saturating_sub(2);
-
+                // Hit-test against the dot grid's actual rendered area
+                // (recorded by draw_dot_panel each frame) rather than
+                // re-deriving its screen geometry here, so this can't
+                // silently drift out of sync with the real layout again.
+                let area = self.pulse_grid_area;
                 let cx = col as usize;
                 let cy = row as usize;
 
-                if cy >= inner_y && cy < inner_y + panel_h.saturating_sub(2)
-                    && cx >= inner_x && cx < inner_x + inner_w
+                if cy >= area.y as usize && cy < (area.y + area.height) as usize
+                    && cx >= area.x as usize && cx < (area.x + area.width) as usize
                 {
-                    let grid_col = cx - inner_x;
-                    let grid_row = cy - inner_y;
+                    let grid_col = cx - area.x as usize;
+                    let grid_row = cy - area.y as usize;
                     let cols = self.pulse_grid_cols.max(1);
                     let idx = grid_row * cols + grid_col;
                     let count = self.pulse_minions_count();
