@@ -464,7 +464,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
         service_lines.push(Line::from(vec![
             Span::styled(format!("{:<24}", unit_display), Style::default().fg(color::CYAN)),
-            Span::styled(format!("{:<6}", status_icon), Style::default().fg(status_color)),
+            Span::styled(format!("{:>6}", status_icon), Style::default().fg(status_color)),
             Span::styled(format!(" {:<11}", state_display), Style::default().fg(color::TEXT)),
             Span::styled(format!(" {:>3}", flap_text), Style::default().fg(flap_color)),
             Span::styled(format!(" {:>8} ", memory_text), Style::default().fg(color::YELLOW)),
