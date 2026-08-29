@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard Event Types panel: `minion/refresh/*` events (grains/pillar/modules/beacon-list refresh traffic) now break out into their own `Refresh` category instead of falling into `Other`
 
 ### Fixed
+- Dashboard ZMQ latency (`agent_ipc` and `job_ping` sources) tracked `tick_interval_ms` almost exactly instead of real round-trip time — changing the refresh interval changed the reported latency in lockstep with no change on the master itself. The `zmq_ping`/`job_ping` reply was arriving within milliseconds but sitting unread in the agent message queue until the main loop's `event::poll(timeout)` happened to expire at the next tick, and since latency was measured from send to *drain* rather than send to actual receive, that idle wait was counted as latency. The main loop now polls at a short cadence whenever a ping is outstanding, so the reply is drained within ~100ms of arriving regardless of `tick_interval_ms`
 - Pulse view's Legend panel reserved 8 rows (2 for its border + 6 content rows) for only 5 entries, leaving a blank line at the bottom. Trimmed to 7
 - Dashboard Services panel: the `Status` dot was left-aligned in its column, so it sat directly against the `Unit` column with no visible gap for long unit names. Right-aligned so it lines up under the last `s` of the `Status` header instead
 

@@ -1044,6 +1044,14 @@ impl App {
             || self.fleet_scanning
             || self.cache_loading
             || matches!(self.detail_popup, Some(DetailPopup::EventSniffer(ref s)) if !s.paused)
+            // A zmq_ping/job_ping round-trip is outstanding — without this,
+            // the reply sits unread in agent_rx until the main loop's
+            // event::poll(timeout) happens to expire at the next full tick,
+            // and since latency is measured from send to drain, that idle
+            // wait gets counted as "latency" — the whole figure would then
+            // just track tick_interval_ms instead of real round-trip time.
+            || self.zmq_ping_sent_at.is_some()
+            || self.job_ping_pending.is_some()
             // A backlog in agent_rx means the event-bus arrival rate is
             // outrunning MAX_PER_DRAIN at the normal tick cadence — poll
             // faster until drain_agent_messages() catches back up, instead
