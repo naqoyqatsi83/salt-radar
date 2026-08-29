@@ -184,7 +184,6 @@ pub struct App {
     copy_path: String,
     clip_log_path: String,
     clip_debug_path: String,
-    memdiag_path: String,
 
     // ── Activity matrix (job return events per sec) ──────────────────────────
     /// Count of salt/job/*/ret/* events per second for last 60s (ring buffer)
@@ -373,7 +372,6 @@ impl App {
         let copy_path = format!("/tmp/.salt-radar-copy-{}.txt", pid);
         let clip_log_path = format!("/tmp/.salt-radar-clip-{}.log", pid);
         let clip_debug_path = format!("/tmp/.salt-radar-clip-debug-{}.log", pid);
-        let memdiag_path = format!("/tmp/.salt-radar-memdiag-{}.log", pid);
 
         // Spawn agent
         let rx = agent_rx.clone();
@@ -533,7 +531,6 @@ impl App {
             copy_path,
             clip_log_path,
             clip_debug_path,
-            memdiag_path,
         }
     }
 
@@ -2722,64 +2719,13 @@ impl App {
         let _ = std::fs::remove_file(&self.copy_path);
         let _ = std::fs::remove_file(&self.clip_log_path);
         let _ = std::fs::remove_file(&self.clip_debug_path);
-        // memdiag_path is intentionally left behind — it's a growth log
-        // whose whole point is to survive to be inspected after the fact.
+
+        // Persist the current dashboard graph layout (F4-F8 toggles) so it
+        // survives a restart instead of reverting to whatever was last
+        // saved through the Config Editor.
+        let _ = crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &self.config);
     }
 
-    /// Appends one line to memdiag_path with the process's current RSS and
-    /// the length (and, where it can drift from length, capacity) of every
-    /// collection whose lifetime spans the whole session. Read this back
-    /// with `tail -f` while reproducing a growth report: if RSS climbs
-    /// while every collection here stays flat, the cause isn't a Rust-level
-    /// leak in any of these — it's either something outside this list or
-    /// allocator/glibc fragmentation not reflected in live object counts.
-    fn log_memory_diagnostics(&self) {
-        let rss_kb = std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("VmRSS:"))
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .and_then(|v| v.parse::<u64>().ok())
-            })
-            .unwrap_or(0);
-
-        let agent_rx_len = self.agent_rx.lock().map(|q| q.len()).unwrap_or(0);
-        let service_trend_samples: usize = self.service_trends.values()
-            .map(|t| t.mem_samples.len() + t.restart_events.len())
-            .sum();
-
-        let sniffer_buf_len = match &self.detail_popup {
-            Some(DetailPopup::EventSniffer(s)) => s.buffer.len(),
-            _ => 0,
-        };
-
-        let line = format!(
-            "{} rss_kb={} agent_rx={} agent_rx_dropped={} events={}/{} jobs={}/{} jobs_cache={} minion_info={}/{} keys={} processes={} alerts={} job_lat={} job_ret_win={} job_out_win={} service_trends={}({}) prev_proc_cpu={} sniffer_buf={}\n",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-            rss_kb,
-            agent_rx_len,
-            self.agent_backlog_dropped.load(std::sync::atomic::Ordering::Relaxed),
-            self.events.len(), self.events.capacity(),
-            self.jobs.len(), self.jobs.capacity(),
-            self.jobs_cache.len(),
-            self.minion_info.len(), self.minion_info.capacity(),
-            self.keys.len(),
-            self.processes.len(),
-            self.alert_engine.alerts.len(),
-            self.job_completion_latencies.len(),
-            self.job_returns_window.len(),
-            self.job_outcome_window.len(),
-            self.service_trends.len(), service_trend_samples,
-            self.prev_proc_cpu.len(),
-            sniffer_buf_len,
-        );
-
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&self.memdiag_path) {
-            use std::io::Write;
-            let _ = f.write_all(line.as_bytes());
-        }
-    }
     fn process_fleet_returns(&mut self) {
         let jid = match &self.fleet_scan_jid {
             Some(j) => j.clone(),
@@ -2850,15 +2796,6 @@ impl App {
     pub fn update(&mut self) {
         // Drain agent messages (must happen every tick)
         self.drain_agent_messages();
-
-        // Periodic memory diagnostics — logs process RSS alongside the size
-        // of every collection that's a plausible unbounded-growth suspect,
-        // so a real leak (some Vec/HashMap actually growing) can be told
-        // apart from allocator fragmentation (RSS climbs while every
-        // collection below stays flat/bounded).
-        if self.tick_count % 30 == 0 {
-            self.log_memory_diagnostics();
-        }
 
         // Process fleet scan returns from events buffer
         self.process_fleet_returns();
@@ -4177,6 +4114,21 @@ impl App {
                 self.needs_mouse_toggle = true;
             }
             KeyCode::F(3) => self.open_config_editor(),
+            KeyCode::F(4) if self.current_tab == Tab::Dashboard => {
+                self.config.show_cpu_graph = !self.config.show_cpu_graph;
+            }
+            KeyCode::F(5) if self.current_tab == Tab::Dashboard => {
+                self.config.show_mem_graph = !self.config.show_mem_graph;
+            }
+            KeyCode::F(6) if self.current_tab == Tab::Dashboard => {
+                self.config.show_zmq_graph = !self.config.show_zmq_graph;
+            }
+            KeyCode::F(7) if self.current_tab == Tab::Dashboard => {
+                self.config.show_events_graph = !self.config.show_events_graph;
+            }
+            KeyCode::F(8) if self.current_tab == Tab::Dashboard => {
+                self.config.show_activity_graph = !self.config.show_activity_graph;
+            }
             _ => {}
         }
         false

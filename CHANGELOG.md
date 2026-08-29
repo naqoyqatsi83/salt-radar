@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc12] - 2026-08-29
+
+### Added
+- Dashboard: `F4`-`F8` toggle the CPU/Memory/ZMQ/Events/Minion-activity graphs on and off directly (`F4`=CPU, `F5`=Memory, `F6`=ZMQ, `F7`=Events, `F8`=Minion activity), without going through the Config Editor — `1`-`5` were already taken for tab switching. The Config Editor's `show_*_graph` entries are unchanged; the layout is now also saved to `salt-radar.toml` automatically on quit, not just via an explicit Config Editor save (#50)
+
+### Changed
+- Sparkline panels (CPU/Memory/ZMQ/Events/Minion activity) now default to Dots instead of Bars on first run (#49)
+
+### Removed
+- Dropped the memory diagnostics log added while tracking down #48 (RSS + per-collection size logging to `/tmp/.salt-radar-memdiag-<pid>.log`) now that the growth is understood and bounded — the `agent_rx` cap/backlog-drop indicator from rc11 stays
+
 ## [0.6.0-rc11] - 2026-08-29
 
 ### Fixed

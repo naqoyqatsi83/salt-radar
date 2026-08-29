@@ -20,7 +20,7 @@ pub enum SparklineStyle {
 }
 
 impl Default for SparklineStyle {
-    fn default() -> Self { Self::Bars }
+    fn default() -> Self { Self::Dots }
 }
 
 impl Tab {

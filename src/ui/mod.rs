@@ -367,6 +367,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 key::render("1-5", "Tabs"),
                 key::render("+/-", "Interval"),
                 key::render("m", if app.sparkline_style == SparklineStyle::Dots { "Bars" } else { "Dots" }),
+                key::render("F4-F8", "Toggle graphs"),
             ];
             keys.push(key::render("a", "Admin"));
             keys
@@ -588,6 +589,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  m", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Toggle sparkline style (Bars/Dots, Dashboard)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  F4-F8", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Toggle CPU/Mem/ZMQ/Events/Minions graphs (Dashboard, saved on quit)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  ?/h", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
