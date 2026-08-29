@@ -571,7 +571,6 @@ impl App {
                                 if minion.key_status.is_none() {
                                     minion.key_status = Some(KeyStatus::Accepted);
                                 }
-                                minion.connected = true;
                                 // Preserve enriched fields from event processing
                                 if let Some(&i) = minion_index.get(&minion.id) {
                                     let existing = &self.minion_info[i];
@@ -584,6 +583,14 @@ impl App {
                                     if existing.cache_updated_epoch > minion.cache_updated_epoch { minion.cache_updated_epoch = existing.cache_updated_epoch; }
                                     // Fleet scan timed_out status is not known to the cache — preserve it
                                     if existing.timed_out { minion.timed_out = true; }
+                                    // Being present in the master's minion cache means it was
+                                    // synced at some point — it says nothing about whether the
+                                    // minion is reachable *now*. Only alive_check (the real
+                                    // liveness probe) should set this; otherwise it fights with
+                                    // alive_check's result every cache refresh, flapping the
+                                    // Pulse Details panel between Connected/Unknown regardless
+                                    // of actual minion state.
+                                    minion.connected = existing.connected;
                                 }
                             }
                             // Sort: timed-out last, then by ID
