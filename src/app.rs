@@ -4180,15 +4180,17 @@ impl App {
             return false;
         }
 
-        // Content area click (rows 2 to h-2; h-1 = key hints)
+        // Content area click (rows 3 to h-2; h-1 = key hints).
+        // Layout (src/ui/mod.rs): title/tab frame is Length(3) (rows 0-2),
+        // content area starts at row 3, status bar is the last row (h-1).
         let r = row as usize;
-        if r < 2 || r >= h.saturating_sub(1) {
+        if r < 3 || r >= h.saturating_sub(1) {
             return false;
         }
 
-        // Content area height = h-3 (title + tab + key hints)
-        // Inner panel height = (h-3) - 2 (block top/bottom borders) = h-5
-        let inner_h = h.saturating_sub(5);
+        // Content area height = h-4 (title/tab frame + status bar).
+        // Inner panel height = (h-4) - 2 (block top/bottom borders) = h-6.
+        let inner_h = h.saturating_sub(6);
 
         match self.current_tab {
             Tab::Minions => {
@@ -4203,8 +4205,8 @@ impl App {
                 let selected = self.minion_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                // Data starts at: inner.y(3) + overhead + header(1)
-                let data_start = 3 + overhead + 1;
+                // Data starts at: inner.y(4) + overhead + header(1)
+                let data_start = 4 + overhead + 1;
                 if r >= data_start {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
@@ -4227,8 +4229,8 @@ impl App {
                 let selected = self.event_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                // Data starts at: inner.y(3) + filter(1) + header(1) = 5
-                let data_start = 3 + 2;
+                // Data starts at: inner.y(4) + filter(1) + header(1) = 6
+                let data_start = 4 + 2;
                 if r >= data_start {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
@@ -4246,7 +4248,7 @@ impl App {
                 let selected = self.alert_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                let data_start = 3 + 2;
+                let data_start = 4 + 2;
                 if r >= data_start {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
@@ -4274,7 +4276,7 @@ impl App {
                     let selected = self.cache_selected.min(total.saturating_sub(1));
                     let scroll = scroll_offset(selected, visible, total);
 
-                    let data_start = 3 + 2; // inner.y(3) + filter(1) + header(1)
+                    let data_start = 4 + 2; // inner.y(4) + filter(1) + header(1)
                     if r >= data_start {
                         let visual_idx = r - data_start;
                         if visual_idx < visible {
@@ -4290,7 +4292,7 @@ impl App {
                     let selected = self.job_selected.min(total.saturating_sub(1));
                     let scroll = scroll_offset(selected, visible, total);
 
-                    let data_start = 3 + 2;
+                    let data_start = 4 + 2;
                     if r >= data_start {
                         let visual_idx = r - data_start;
                         if visual_idx < visible {

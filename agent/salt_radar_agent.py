@@ -620,11 +620,13 @@ def cmd_alive_check(opts, req):
             return
         key_data = json_mod.loads(output)
         all_minions = key_data.get("minions", [])
-        # A minion is "up" if it has a cache file (means it has checked in)
+        # A minion is "up" if it has a cache entry (means it has checked in).
+        # Layout is a directory per minion holding data.p, not a flat
+        # "<mid>.p" file — e.g. /var/cache/salt/master/minions/<mid>/data.p.
         cachedir = opts.get("cachedir", "/var/cache/salt/master")
         minion_cache_dir = os.path.join(cachedir, "minions")
         for mid in all_minions:
-            cache_file = os.path.join(minion_cache_dir, "{}.p".format(mid))
+            cache_file = os.path.join(minion_cache_dir, mid, "data.p")
             if os.path.exists(cache_file):
                 up.append(mid)
             else:
