@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Sparkline panels (CPU/Memory/ZMQ/Events/Minion activity) now default to Dots instead of Bars on first run (#49)
 
+### Fixed
+- Pulse view's Legend panel reserved 8 rows (2 for its border + 6 content rows) for only 5 entries, leaving a blank line at the bottom. Trimmed to 7
+
 ### Removed
 - Dropped the memory diagnostics log added while tracking down #48 (RSS + per-collection size logging to `/tmp/.salt-radar-memdiag-<pid>.log`) now that the growth is understood and bounded — the `agent_rx` cap/backlog-drop indicator from rc11 stays
 

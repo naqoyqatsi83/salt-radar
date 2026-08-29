@@ -20,7 +20,7 @@ pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(8)])
+        .constraints([Constraint::Min(0), Constraint::Length(7)])
         .split(cols[0]);
 
     draw_dot_panel(f, left[0], app);
