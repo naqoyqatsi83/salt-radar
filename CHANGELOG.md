@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc11] - 2026-08-29
+
+### Fixed
+- The Rust TUI process's memory grew without bound over long sessions on large fleets (observed: ~80MB at start, 300MB+ after 90 minutes), while the sibling Python agent stayed flat. The inbound `agent_rx` queue fed by the agent's NDJSON reader thread had no size cap, while the consumer (`drain_agent_messages`) throttled itself to 200 messages per call and, while idle, only ran once per `tick_interval_ms` (2s default) — a ceiling of roughly 100 msgs/sec sustained. A broadcast job against a large fleet (a scheduled highstate, `mine.update`, `test.ping`) fires thousands of events in a burst, easily exceeding that ceiling, and the excess just queued in memory forever. The queue is now capped (dropping oldest in favor of freshest once full, with a `backlog dropped: N` indicator in the title bar if it's ever hit), and the main loop now polls at the fast cadence whenever the queue is non-empty so bursts drain in ~100ms slices instead of waiting a full tick (#48)
+
 ## [0.6.0-rc10] - 2026-08-29
 
 ### Added

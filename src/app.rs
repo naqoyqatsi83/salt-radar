@@ -101,6 +101,11 @@ pub struct App {
 
     // Agent NDJSON reader thread
     pub agent_rx: Arc<Mutex<VecDeque<AgentMessage>>>,
+    /// Count of inbound messages the reader thread dropped because
+    /// `agent_rx` hit its cap (see agent::MAX_QUEUE_LEN) — surfaced in the
+    /// title frame so a sustained event-bus burst outrunning the drain rate
+    /// is visible instead of silently growing memory.
+    pub agent_backlog_dropped: Arc<std::sync::atomic::AtomicU64>,
     agent_req_id: u64,
     config_tick: u64,
     /// Pending jid_lookup (request_id, jid) waiting for async result
@@ -359,6 +364,7 @@ impl App {
         let config_secs = config.config_secs;
         let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let agent_backlog_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let pid = std::process::id();
 
         // PID-based temp paths to avoid conflicts between multiple users or instances
@@ -369,12 +375,13 @@ impl App {
 
         // Spawn agent
         let rx = agent_rx.clone();
+        let dropped = agent_backlog_dropped.clone();
         let agent_path = config.agent_path.clone();
         let python_bin = config.python_bin.clone();
         let master_config = config.master_config.clone();
         let cmd_path_agent = cmd_path.clone();
         std::thread::spawn(move || {
-            crate::agent::agent_main(rx, &agent_path, &python_bin, &master_config, &cmd_path_agent);
+            crate::agent::agent_main(rx, dropped, &agent_path, &python_bin, &master_config, &cmd_path_agent);
         });
 
         Self {
@@ -465,6 +472,7 @@ impl App {
             pulse_grid_cols: 0,
 
             agent_rx,
+            agent_backlog_dropped,
             agent_req_id: 0,
             config_tick: config_secs,
             pending_jid_lookup: None,
@@ -1036,6 +1044,11 @@ impl App {
             || self.fleet_scanning
             || self.cache_loading
             || matches!(self.detail_popup, Some(DetailPopup::EventSniffer(ref s)) if !s.paused)
+            // A backlog in agent_rx means the event-bus arrival rate is
+            // outrunning MAX_PER_DRAIN at the normal tick cadence — poll
+            // faster until drain_agent_messages() catches back up, instead
+            // of leaving the excess queued for a full tick_interval_ms.
+            || !self.agent_rx.lock().unwrap().is_empty()
     }
 
     /// Clamp all cursor selections to valid bounds

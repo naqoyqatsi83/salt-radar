@@ -1,13 +1,21 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::app::AgentMessage;
 
+/// Hard cap on the inbound queue so a sustained event-bus burst (e.g. a
+/// broadcast job against a large fleet) can't grow it — and the process's
+/// memory — without bound. Once full, oldest messages are dropped in favor
+/// of the freshest ones; `dropped` tracks how many so the UI can surface it.
+const MAX_QUEUE_LEN: usize = 20_000;
+
 pub fn agent_main(
     tx: Arc<Mutex<VecDeque<AgentMessage>>>,
+    dropped: Arc<AtomicU64>,
     agent_path: &str,
     python_bin: &str,
     master_config: &str,
@@ -37,6 +45,7 @@ pub fn agent_main(
     let stdout = child.stdout.take().unwrap();
     let reader = BufReader::new(stdout);
     let tx_clone = tx.clone();
+    let dropped_clone = dropped.clone();
 
     // Reader thread: reads NDJSON lines from agent stdout
     thread::spawn(move || {
@@ -73,6 +82,10 @@ pub fn agent_main(
             };
 
             let mut q = tx_clone.lock().unwrap();
+            if q.len() >= MAX_QUEUE_LEN {
+                q.pop_front();
+                dropped_clone.fetch_add(1, Ordering::Relaxed);
+            }
             q.push_back(msg);
         }
     });

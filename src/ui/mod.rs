@@ -198,11 +198,20 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         format!(" {} ", now),
         Style::default().fg(Color::Rgb(85, 95, 120)),
     ));
-    let right_title = Line::from(Span::styled(
+    let dropped = app.agent_backlog_dropped.load(std::sync::atomic::Ordering::Relaxed);
+    let mut right_spans = Vec::new();
+    if dropped > 0 {
+        right_spans.push(Span::styled(
+            format!(" backlog dropped: {} ", dropped),
+            Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
+        ));
+    }
+    right_spans.push(Span::styled(
         format!(" alerts: {} ", app.alert_engine.active_count()),
         Style::default().fg(if app.alert_engine.active_count() > 0 { color::ORANGE } else { color::GREEN })
             .add_modifier(Modifier::BOLD),
     ));
+    let right_title = Line::from(right_spans);
 
     let block = Block::default()
         .borders(Borders::ALL)
