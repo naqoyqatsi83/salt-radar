@@ -18,7 +18,13 @@ pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App) {
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
         .split(area);
 
-    draw_dot_panel(f, cols[0], app);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(8)])
+        .split(cols[0]);
+
+    draw_dot_panel(f, left[0], app);
+    draw_legend_panel(f, left[1]);
     draw_info_panel(f, cols[1], app);
 }
 
@@ -118,13 +124,12 @@ fn tier_color(tier: PulseTier) -> (Color, Modifier) {
     }
 }
 
-/// Shape shrinks with recency — ● Flash → • Recent → · Aging/Stale/TimedOut —
-/// so the gradient reads by size as well as color instead of a binary split.
+/// Shape shrinks with recency — • Flash → · Recent/Aging/Stale/TimedOut —
+/// color is what actually carries the tier; shape only sets Flash apart.
 fn tier_glyph(tier: PulseTier) -> char {
     match tier {
-        PulseTier::Flash => '\u{25CF}',  // ● black circle
-        PulseTier::Recent => '\u{2022}', // • bullet
-        _ => '\u{00B7}',                 // · middle dot
+        PulseTier::Flash => '\u{2022}', // • bullet
+        _ => '\u{00B7}',                // · middle dot
     }
 }
 
@@ -141,6 +146,40 @@ fn tier_style(tier: PulseTier, selected: bool) -> Style {
         style = style.add_modifier(Modifier::REVERSED);
     }
     style
+}
+
+/// Legend panel: explains what each dot in the grid above means
+fn draw_legend_panel(f: &mut Frame, area: Rect) {
+    let block = super::titled_block(" Legend ", Style::default().fg(color::BORDER), color::BG_DARK);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let entries: [(PulseTier, &str); 5] = [
+        (PulseTier::Flash, "return < 5s ago"),
+        (PulseTier::Recent, "return < 5min ago"),
+        (PulseTier::Aging, "return < 10min ago"),
+        (PulseTier::Stale, "return >= 10min ago, or never"),
+        (PulseTier::TimedOut, "minion timed out"),
+    ];
+
+    let lines: Vec<Line> = entries
+        .iter()
+        .map(|(tier, desc)| {
+            let (fg, modif) = tier_color(*tier);
+            Line::from(vec![
+                Span::styled(
+                    format!("  {} ", tier_glyph(*tier)),
+                    Style::default().fg(fg).add_modifier(modif),
+                ),
+                Span::styled(*desc, Style::default().fg(color::TEXT_DIM)),
+            ])
+        })
+        .collect();
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        inner,
+    );
 }
 
 /// Info panel: selected minion details
