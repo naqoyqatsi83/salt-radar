@@ -839,9 +839,10 @@ def _event_loop(opts):
     """Run in a background thread: listen on event bus, forward events to stdout."""
     import salt.utils.event
     try:
-        sock_dir = opts.get("sock_dir", "")
-        if not sock_dir:
-            sock_dir = os.path.join(opts.get("cachedir", "/var/cache/salt/master"), "master")
+        # opts comes from salt.config.master_config(), which always
+        # resolves sock_dir from Salt's own defaults (typically
+        # /var/run/salt/master, not under cachedir) — no need to guess it.
+        sock_dir = opts["sock_dir"]
         me = salt.utils.event.MasterEvent(sock_dir, opts, listen=True)
         for evt in me.iter_events(tag="", full=True):
             if _event_stop.is_set():
