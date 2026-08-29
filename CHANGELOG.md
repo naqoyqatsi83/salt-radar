@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0-rc12] - 2026-08-29
 
 ### Added
+- Help overlay: new "Pulse Status" section explaining what `Connected`/`Unknown`/`Timed out` mean in the Pulse Details panel and where each comes from (#52)
 - Dashboard: `F4`-`F8` toggle the CPU/Memory/ZMQ/Events/Minion-activity graphs on and off directly (`F4`=CPU, `F5`=Memory, `F6`=ZMQ, `F7`=Events, `F8`=Minion activity), without going through the Config Editor — `1`-`5` were already taken for tab switching. The Config Editor's `show_*_graph` entries are unchanged; the layout is now also saved to `salt-radar.toml` automatically on quit, not just via an explicit Config Editor save (#50)
 
 ### Changed

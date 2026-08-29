@@ -637,6 +637,20 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  source is configurable: zmq_latency_source in [dashboard]", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
+        Line::from(Span::styled("  Pulse Status (Details panel)", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  Connected", Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("  most recent liveness probe (~every 5 ticks) found this minion has a cache entry", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Unknown", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  no successful probe result yet (e.g. just discovered) \u{2014} not an error", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Timed out", Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
+            Span::styled("  flagged unresponsive by fleet-scan/staleness tracking", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),
         Line::from(Span::styled("  Read-only TUI. All data sourced from /proc, systemctl,", Style::default().fg(color::TEXT_DIM))),
         Line::from(Span::styled("  and Salt's own APIs via the bundled Python agent.", Style::default().fg(color::TEXT_DIM))),
