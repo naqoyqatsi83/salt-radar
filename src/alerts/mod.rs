@@ -5,6 +5,20 @@ use crate::types::{
     ServiceTrendSnapshot, SystemInfo,
 };
 
+/// Rule 13 per-unit overrides for the standard bundled Salt services — 0.0
+/// in either half means "no override, fall back to the global
+/// service_mem_abs_threshold_mb / service_mem_pct_threshold".
+pub struct ServiceMemThresholds {
+    pub master_abs_mb: f64,
+    pub master_pct: f64,
+    pub minion_abs_mb: f64,
+    pub minion_pct: f64,
+    pub api_abs_mb: f64,
+    pub api_pct: f64,
+    pub syndic_abs_mb: f64,
+    pub syndic_pct: f64,
+}
+
 /// Lightweight representation of an active alert condition.
 struct ActiveAlert {
     key: String,
@@ -47,6 +61,7 @@ impl AlertEngine {
         service_mem_growth_mb_per_hour: f64,
         service_mem_abs_threshold_mb: f64,
         service_mem_pct_threshold: f64,
+        service_mem_overrides: &ServiceMemThresholds,
     ) {
         let mut active = Vec::new();
 
@@ -290,11 +305,21 @@ impl AlertEngine {
         // trip Rule 12's rate check). Either the absolute or percent-of-total
         // threshold crossing is enough; a threshold of 0 disables that check.
         if sys.mem_total_kb > 0 {
+            let resolve = |over: f64, default: f64| if over > 0.0 { over } else { default };
             for svc in services {
                 let mem_mb = svc.memory_kb as f64 / 1024.0;
                 let mem_pct = svc.memory_kb as f64 / sys.mem_total_kb as f64 * 100.0;
-                let over_abs = service_mem_abs_threshold_mb > 0.0 && mem_mb > service_mem_abs_threshold_mb;
-                let over_pct = service_mem_pct_threshold > 0.0 && mem_pct > service_mem_pct_threshold;
+                let (override_abs, override_pct) = match svc.unit.as_str() {
+                    "salt-master.service" => (service_mem_overrides.master_abs_mb, service_mem_overrides.master_pct),
+                    "salt-minion.service" => (service_mem_overrides.minion_abs_mb, service_mem_overrides.minion_pct),
+                    "salt-api.service" => (service_mem_overrides.api_abs_mb, service_mem_overrides.api_pct),
+                    "salt-syndic.service" => (service_mem_overrides.syndic_abs_mb, service_mem_overrides.syndic_pct),
+                    _ => (0.0, 0.0),
+                };
+                let abs_threshold = resolve(override_abs, service_mem_abs_threshold_mb);
+                let pct_threshold = resolve(override_pct, service_mem_pct_threshold);
+                let over_abs = abs_threshold > 0.0 && mem_mb > abs_threshold;
+                let over_pct = pct_threshold > 0.0 && mem_pct > pct_threshold;
                 if over_abs || over_pct {
                     active.push(ActiveAlert {
                         key: format!("svc-mem-high:{}", svc.unit),

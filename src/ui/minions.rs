@@ -154,8 +154,14 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                     let os_display = if minion.timed_out { "\u{2014}" } else { &os_str };
                     let ver_display = if minion.timed_out { "\u{2014}" } else { &ver_str };
 
+                    // "Freshly active" marker in the existing 2-space ID gutter
+                    // (1 char marker + 1 space, same total width as before).
+                    let fresh = !minion.timed_out && app.is_minion_fresh(minion.last_seen_epoch);
+                    let fresh_marker = if fresh { "\u{25cf}" } else { " " };
+
                     let line = Line::from(vec![
-                        Span::styled(format!("  {:<id_w$}", id_str, id_w = id_w), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
+                        Span::styled(fresh_marker, Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!(" {:<id_w$}", id_str, id_w = id_w), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
                         Span::styled(format!("  {:<key_w$}", ks_label, key_w = key_w), Style::default().fg(label_color)),
                         Span::styled(format!("  {:<os_w$}", os_display, os_w = os_w), Style::default().fg(os_color)),
                         Span::styled(format!("{}", ver_display), Style::default().fg(color::TEXT_DIM)),

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-use crate::alerts::AlertEngine;
+use crate::alerts::{AlertEngine, ServiceMemThresholds};
 use crate::collectors;
 use crate::config::{load_config, AppConfig};
 use crate::types::*;
@@ -184,6 +184,21 @@ pub struct App {
     /// Count of salt/job/*/ret/* events per second for last 60s (ring buffer)
     pub activity_matrix: [u64; 2000],
     pub activity_matrix_idx: usize,
+
+    /// Ring buffers of CPU/Memory utilization percent, sampled once per
+    /// second alongside the other *_history buffers above — feeds the
+    /// Dashboard's optional CPU/Memory sparkline panels (config.show_cpu_graph
+    /// / show_mem_graph).
+    pub cpu_history: [f64; 2000],
+    pub cpu_history_idx: usize,
+    pub mem_history: [f64; 2000],
+    pub mem_history_idx: usize,
+    /// How many real cpu_history/mem_history samples have been recorded so
+    /// far (saturating past 2000) — lets the CPU/Memory panels' "avg" stat
+    /// average only over genuinely-recorded samples instead of being diluted
+    /// by the ring buffer's zero-initialized, not-yet-written slots during
+    /// the first few minutes after launch.
+    pub cpu_mem_samples: u64,
     pub current_sec_returns: u64,
     pub last_activity_minion: String,
     pub last_activity_fun: String,
@@ -274,6 +289,11 @@ pub enum ConfigFieldKind {
 }
 
 pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
+pub const ON_OFF: &[&str] = &["on", "off"];
+
+fn on_off(b: bool) -> String {
+    if b { "on" } else { "off" }.to_string()
+}
 
 #[derive(Clone, Debug)]
 pub struct ConfigField {
@@ -481,6 +501,11 @@ impl App {
 
             activity_matrix: [0; 2000],
             activity_matrix_idx: 0,
+            cpu_history: [0.0; 2000],
+            cpu_history_idx: 0,
+            mem_history: [0.0; 2000],
+            mem_history_idx: 0,
+            cpu_mem_samples: 0,
             current_sec_returns: 0,
             last_activity_minion: String::new(),
             last_activity_fun: String::new(),
@@ -1256,6 +1281,29 @@ impl App {
         Some((pick(0.50), pick(0.90), pick(0.99)))
     }
 
+    /// Whether a minion checked in recently enough to be considered
+    /// "freshly active" right now. The threshold is the fleet's own median
+    /// check-in age (checkin_age_percentiles' p50) rather than a fixed
+    /// number, so it stays meaningful whether minions ping every few
+    /// seconds or every few minutes — floored at 5s so a tightly-clustered
+    /// fleet (everyone returning within the same tick) doesn't collapse the
+    /// threshold to 0, and capped at 60s so a fleet that goes fully idle
+    /// doesn't drag p50 up with it and leave the marker showing "fresh"
+    /// forever (observed live: a one-off fleet-wide ping with no follow-up
+    /// traffic made p50 climb in lockstep with every minion's own age,
+    /// since there was nothing fresher left to pull the median down).
+    pub fn is_minion_fresh(&self, last_seen_epoch: u64) -> bool {
+        if last_seen_epoch == 0 {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let threshold = self.checkin_age_percentiles().map(|(p50, _, _)| p50.clamp(5, 60)).unwrap_or(30);
+        now.saturating_sub(last_seen_epoch) <= threshold
+    }
+
     /// Restart/flap count for a unit over the last 24h.
     pub fn service_restart_count_24h(&self, unit: &str) -> usize {
         self.service_trends.get(unit).map_or(0, |t| t.restart_events.len())
@@ -1435,8 +1483,22 @@ impl App {
                 ConfigField { label: "service_mem_growth_mb_per_hour", label_value: cfg.service_mem_growth_mb_per_hour.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_mb", label_value: cfg.service_mem_abs_threshold_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold", label_value: cfg.service_mem_pct_threshold.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_abs_threshold_master_mb", label_value: cfg.service_mem_abs_threshold_master_mb.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_pct_threshold_master", label_value: cfg.service_mem_pct_threshold_master.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_abs_threshold_minion_mb", label_value: cfg.service_mem_abs_threshold_minion_mb.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_pct_threshold_minion", label_value: cfg.service_mem_pct_threshold_minion.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_abs_threshold_api_mb", label_value: cfg.service_mem_abs_threshold_api_mb.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_pct_threshold_api", label_value: cfg.service_mem_pct_threshold_api.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_abs_threshold_syndic_mb", label_value: cfg.service_mem_abs_threshold_syndic_mb.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "service_mem_pct_threshold_syndic", label_value: cfg.service_mem_pct_threshold_syndic.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "[dashboard]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Choice(ZMQ_LATENCY_SOURCES) },
+                ConfigField { label: "show_zmq_graph", label_value: on_off(cfg.show_zmq_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_events_graph", label_value: on_off(cfg.show_events_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_activity_graph", label_value: on_off(cfg.show_activity_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_cpu_graph", label_value: on_off(cfg.show_cpu_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_mem_graph", label_value: on_off(cfg.show_mem_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -1467,6 +1529,7 @@ impl App {
         let parse_u64 = |key| vals.get(key).and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
         let parse_usize = |key| vals.get(key).and_then(|v| v.parse::<usize>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
         let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
+        let parse_bool = |key| vals.get(key) == Some(&"on");
 
         let new_config = AppConfig {
             agent_path: vals.get("agent_path").unwrap_or(&"").to_string(),
@@ -1488,7 +1551,21 @@ impl App {
             service_mem_growth_mb_per_hour: parse_f64("service_mem_growth_mb_per_hour")?,
             service_mem_abs_threshold_mb: parse_f64("service_mem_abs_threshold_mb")?,
             service_mem_pct_threshold: parse_f64("service_mem_pct_threshold")?,
+            service_mem_abs_threshold_master_mb: parse_f64("service_mem_abs_threshold_master_mb")?,
+            service_mem_pct_threshold_master: parse_f64("service_mem_pct_threshold_master")?,
+            service_mem_abs_threshold_minion_mb: parse_f64("service_mem_abs_threshold_minion_mb")?,
+            service_mem_pct_threshold_minion: parse_f64("service_mem_pct_threshold_minion")?,
+            service_mem_abs_threshold_api_mb: parse_f64("service_mem_abs_threshold_api_mb")?,
+            service_mem_pct_threshold_api: parse_f64("service_mem_pct_threshold_api")?,
+            service_mem_abs_threshold_syndic_mb: parse_f64("service_mem_abs_threshold_syndic_mb")?,
+            service_mem_pct_threshold_syndic: parse_f64("service_mem_pct_threshold_syndic")?,
             zmq_latency_source: vals.get("zmq_latency_source").unwrap_or(&"agent_ipc").to_string(),
+            show_zmq_graph: parse_bool("show_zmq_graph"),
+            show_events_graph: parse_bool("show_events_graph"),
+            show_activity_graph: parse_bool("show_activity_graph"),
+            show_cpu_graph: parse_bool("show_cpu_graph"),
+            show_mem_graph: parse_bool("show_mem_graph"),
+            graph_order: vals.get("graph_order").unwrap_or(&"cpu,mem,zmq,events,activity").to_string(),
         };
 
         crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
@@ -1686,6 +1763,9 @@ impl App {
             }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                 self.detail_popup = None;
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                self.high_contrast = !self.high_contrast;
             }
             _ => {}
         }
@@ -2810,6 +2890,27 @@ impl App {
             self.activity_matrix_idx = (self.activity_matrix_idx + 1) % 2000;
             self.current_sec_returns = 0;
 
+            // CPU/Memory utilization: same per-second sampling cadence as the
+            // rate-based histories above, so all Dashboard sparklines share a
+            // consistent time axis. Gated on real system_info having arrived
+            // at least once — before that, mem_total_kb is 0 and treating it
+            // as "no memory at all" would compute a false 100%-full reading
+            // that then lingers in the ring buffer (unlike the live gauge,
+            // which just self-corrects on the next real sample).
+            if self.system_info.mem_total_kb > 0 {
+                let cpu_count = self.config_snapshot.as_ref().map(|c| c.cpu_count).unwrap_or(1).max(1) as f64;
+                let cpu_pct = (self.system_info.load_1 / cpu_count * 100.0).clamp(0.0, 100.0);
+                self.cpu_history[self.cpu_history_idx] = cpu_pct;
+                self.cpu_history_idx = (self.cpu_history_idx + 1) % 2000;
+
+                let mem_total_kb = self.system_info.mem_total_kb;
+                let mem_pct = ((mem_total_kb.saturating_sub(self.system_info.mem_avail_kb)) as f64 / mem_total_kb as f64 * 100.0).clamp(0.0, 100.0);
+                self.mem_history[self.mem_history_idx] = mem_pct;
+                self.mem_history_idx = (self.mem_history_idx + 1) % 2000;
+
+                self.cpu_mem_samples = self.cpu_mem_samples.saturating_add(1);
+            }
+
             // Header radar animation cycle
             self.header_radar_frame = (self.header_radar_frame + 1) % 4;
         }
@@ -2923,6 +3024,16 @@ impl App {
             self.config.service_mem_growth_mb_per_hour,
             self.config.service_mem_abs_threshold_mb,
             self.config.service_mem_pct_threshold,
+            &ServiceMemThresholds {
+                master_abs_mb: self.config.service_mem_abs_threshold_master_mb,
+                master_pct: self.config.service_mem_pct_threshold_master,
+                minion_abs_mb: self.config.service_mem_abs_threshold_minion_mb,
+                minion_pct: self.config.service_mem_pct_threshold_minion,
+                api_abs_mb: self.config.service_mem_abs_threshold_api_mb,
+                api_pct: self.config.service_mem_pct_threshold_api,
+                syndic_abs_mb: self.config.service_mem_abs_threshold_syndic_mb,
+                syndic_pct: self.config.service_mem_pct_threshold_syndic,
+            },
         );
 
         // Eagerly finalize jobs that reached full completion — record completion

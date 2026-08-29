@@ -60,8 +60,9 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
             break;
         }
 
-        let style = dot_style(minion, idx == app.pulse_selected, app);
-        let ch = if idx == app.pulse_selected { '\u{25C9}' } else { '\u{00B7}' };
+        let tier = pulse_tier(minion, app);
+        let style = tier_style(tier, idx == app.pulse_selected);
+        let ch = if idx == app.pulse_selected { '\u{25C9}' } else { tier_glyph(tier) };
         buf[row][col] = (ch, style);
     }
 
@@ -82,34 +83,53 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// Determine dot color and style based on return recency.
-///
-/// Tiers (from newest to oldest):
-///   - timed_out          → RED
-///   - return < 5s ago    → BRIGHT GREEN + BOLD (flash)
-///   - return < 5min ago  → GREEN
-///   - return < 10min ago → ORANGE
-///   - return >= 10min ago→ TEXT_DIM (grey)
-///   - no return ever     → TEXT_DIM
-fn dot_style(minion: &MinionInfo, selected: bool, app: &App) -> Style {
-    let elapsed = app.last_zmq_return.get(&minion.id).map(|t| t.elapsed());
+/// Recency tier for a minion's last ZMQ return, from newest to oldest.
+/// The single source of truth for both the dot's color (`tier_style`) and
+/// its shape (`tier_glyph`) — color/boldness alone on a single terminal
+/// cell reads as too subtle to reliably tell tiers apart at a glance.
+#[derive(Clone, Copy)]
+enum PulseTier {
+    TimedOut,
+    Flash,  // return < 5s ago
+    Recent, // return < 5min ago
+    Aging,  // return < 10min ago
+    Stale,  // return >= 10min ago, or never
+}
 
-    let (fg, modif) = if minion.timed_out {
-        (color::RED, Modifier::empty())
-    } else if let Some(dur) = elapsed {
-        let secs = dur.as_secs_f64();
-        if secs < 5.0 {
-            (Color::Rgb(120, 255, 120), Modifier::BOLD)
-        } else if secs < 300.0 {
-            (color::GREEN, Modifier::empty())
-        } else if secs < 600.0 {
-            (Color::Rgb(255, 165, 0), Modifier::empty())
-        } else {
-            (color::TEXT_DIM, Modifier::empty())
-        }
-    } else {
-        (color::TEXT_DIM, Modifier::empty())
-    };
+fn pulse_tier(minion: &MinionInfo, app: &App) -> PulseTier {
+    if minion.timed_out {
+        return PulseTier::TimedOut;
+    }
+    match app.last_zmq_return.get(&minion.id).map(|t| t.elapsed().as_secs_f64()) {
+        Some(secs) if secs < 5.0 => PulseTier::Flash,
+        Some(secs) if secs < 300.0 => PulseTier::Recent,
+        Some(secs) if secs < 600.0 => PulseTier::Aging,
+        _ => PulseTier::Stale,
+    }
+}
+
+fn tier_color(tier: PulseTier) -> (Color, Modifier) {
+    match tier {
+        PulseTier::TimedOut => (color::RED, Modifier::empty()),
+        PulseTier::Flash => (Color::Rgb(120, 255, 120), Modifier::BOLD),
+        PulseTier::Recent => (color::GREEN, Modifier::empty()),
+        PulseTier::Aging => (Color::Rgb(255, 165, 0), Modifier::empty()),
+        PulseTier::Stale => (color::TEXT_DIM, Modifier::empty()),
+    }
+}
+
+/// Shape shrinks with recency — ● Flash → • Recent → · Aging/Stale/TimedOut —
+/// so the gradient reads by size as well as color instead of a binary split.
+fn tier_glyph(tier: PulseTier) -> char {
+    match tier {
+        PulseTier::Flash => '\u{25CF}',  // ● black circle
+        PulseTier::Recent => '\u{2022}', // • bullet
+        _ => '\u{00B7}',                 // · middle dot
+    }
+}
+
+fn tier_style(tier: PulseTier, selected: bool) -> Style {
+    let (fg, modif) = tier_color(tier);
 
     let bg = if selected {
         color::TAB_ACTIVE_BG
