@@ -17,7 +17,12 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
 
-    let hints: &[(&str, String)] = &[("/", "filter".to_string()), ("Enter", "detail".to_string())];
+    let hints: &[(&str, String)] = &[
+        ("/", "filter".to_string()),
+        ("Enter", "detail".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
+    ];
     let block = super::list_block_hinted(
         format!(" Alerts ({}) ", app.alert_engine.active_count()),
         Style::default().fg(color::BORDER),

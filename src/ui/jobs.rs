@@ -34,7 +34,12 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App) {
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
 
-    let mut hints: Vec<(&str, String)> = vec![("/", "filter".to_string()), ("Enter", "detail".to_string())];
+    let mut hints: Vec<(&str, String)> = vec![
+        ("/", "filter".to_string()),
+        ("Enter", "detail".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
+    ];
     if focused {
         hints.push(("\u{2192}", "cache".to_string()));
     }
@@ -143,6 +148,8 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
     let mut hints: Vec<(&str, String)> = vec![
         ("/", "filter".to_string()),
         ("Enter", "detail".to_string()),
+        ("PgUp/PgDn", "scroll".to_string()),
+        ("Home/End", "top/bottom".to_string()),
         ("[ ]", "limit".to_string()),
         (", .", "page".to_string()),
         ("r", "refresh".to_string()),

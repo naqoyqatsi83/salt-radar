@@ -103,7 +103,7 @@ fn enabled_spark_panels(app: &App) -> Vec<SparkPanel> {
 fn draw_no_graphs_hint(f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  No graphs enabled — toggle show_*_graph in Config Editor (F3)",
+            "  No graphs enabled — toggle show_*_graph in Config Editor ('F3')",
             Style::default().fg(color::TEXT_DIM),
         )))
         .style(Style::default().bg(color::BG_DARK)),

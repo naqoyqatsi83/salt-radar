@@ -672,9 +672,17 @@ def cmd_minion_grains(opts, req):
             if isinstance(grains_data, dict):
                 for key in sorted(grains_data.keys()):
                     val = grains_data[key]
-                    val_str = str(val) if not isinstance(val, str) else val
-                    if len(val_str) > 500:
-                        val_str = val_str[:500] + "..."
+                    if isinstance(val, str):
+                        val_str = val
+                    elif isinstance(val, (list, dict)):
+                        # Pretty-print nested structures (interfaces, disks,
+                        # pythonpath, etc.) instead of a single-line repr —
+                        # the TUI renders each line indented under the key.
+                        val_str = json_mod.dumps(val, indent=2, sort_keys=True)
+                    else:
+                        val_str = str(val)
+                    if len(val_str) > 2000:
+                        val_str = val_str[:2000] + "\n..."
                     pairs.append({"key": key, "value": val_str})
     except Exception:
         pairs = []
@@ -796,21 +804,29 @@ _event_stop = threading.Event()
 
 
 def _parse_stamp(stamp):
-    """Convert Salt's _stamp (ISO-8601 string or datetime) to a Unix timestamp float."""
+    """Convert Salt's _stamp (ISO-8601 string or datetime) to a Unix timestamp float.
+
+    Salt's _stamp is always UTC but carries no tzinfo — Python's naive
+    .timestamp() silently assumes the *local* timezone instead, which
+    shifted every event's timestamp by the local UTC offset (matches
+    _jid_to_epoch's own tzinfo=utc handling below).
+    """
     if stamp is None:
         return time.time()
     try:
-        from datetime import datetime
+        from datetime import datetime, timezone
         if isinstance(stamp, (int, float)):
             return float(stamp)
         if isinstance(stamp, datetime):
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
             return stamp.timestamp()
         if isinstance(stamp, str):
             s = stamp.strip()
             for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
                         "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
                 try:
-                    return datetime.strptime(s[:26], fmt).timestamp()
+                    return datetime.strptime(s[:26], fmt).replace(tzinfo=timezone.utc).timestamp()
                 except ValueError:
                     continue
     except (ValueError, OSError):

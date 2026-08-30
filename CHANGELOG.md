@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc14] - 2026-08-30
+
+### Fixed
+- Popup shortcut display was inconsistent across the app: Minion Detail, Event Detail, Job Detail, Alert Detail, Event Sniffer, and Minion Events each used a different hand-written bracket-text footer, Admin Confirm used the old yellow-key bottom bar, and Config Editor showed no shortcuts at all. Every popup now uses the same btop-style `┤key:label├` border hints as the rest of the app.
+- Admin mode couldn't be toggled from inside the Minion Detail popup despite its own hint advertising `a` for it — the global admin-toggle handler is unreachable while any popup is open, and the popup had no handler of its own. Confirming/cancelling now returns to the same Minion Detail popup instead of dropping back to the Minions list.
+- Grains with nested values (interfaces, disks, `pythonpath`, etc.) were flattened into a single-line Python `repr()` truncated at 500 chars. The agent now pretty-prints them as indented JSON (cap raised to 2000 chars), and the TUI renders each line indented under its key with lightweight type coloring instead of one unreadable line.
+- Grains scroll: `End`/`PageDown` were unbounded (`End` set the raw counter to `usize::MAX/2`), and the render-time clamp treated every grain as exactly one line, so scrolling to the end pinned the *last* grain to the *top* of the frame with blank space below it, and `PageUp` needed dozens of presses before any visible movement. Fixed with a height-aware max-scroll computed from actual rendered line counts, plus a live `▲ more above`/`▼ more below` border indicator replacing the old in-content "N items (X%)" line.
+- Event Detail required pressing `Enter` before arrow keys/`PgUp`/`PgDn` would scroll at all — that gate only makes sense for Job Detail's list-vs-content disambiguation and served no purpose here, so it's gone; scrolling now works immediately. Also fixed the identical "scrolls past the end, then PageUp does nothing for a while" bug grains had, via the same viewport-aware max written back from render each frame.
+- Job Detail's return-content preview had the same unbounded-scroll bug — `content_scroll_max` was written but never actually used to clamp anything, and `End` was still `usize::MAX/2` — so `End` could scroll content off the bottom of the panel. Fixed the same way, with the same `▲`/`▼` more-content indicators.
+- `y`/`Y` in Event Detail did the exact same thing (copy tag+timestamp+pretty-JSON either way) despite the hint claiming `Y` copies JSON only — restored the intended distinction (`y` = readable copy, `Y` = raw JSON), matching the convention Job Detail already uses.
+- `Last Seen` in Minion Detail could appear frozen at a fixed offset (e.g. "2h ago") regardless of actual recent activity, whenever the master's local timezone isn't UTC. The agent's event-timestamp parser (`_parse_stamp`) treated Salt's UTC `_stamp` field as local time when converting to a Unix timestamp, silently shifting every event's stored time by the local UTC offset. Fixed to explicitly tag the parsed time as UTC — matching the neighboring `_jid_to_epoch`, which already did this correctly — which also fixes the same bug in job-cache start-time fallback parsing.
+- Minion Detail popup closed on `Enter` in addition to `Esc`/`q`, unlike every other popup and undocumented anywhere — removed.
+
+### Changed
+- Documented every `PgUp`/`PgDn`/`Home`/`End` binding that was already functional but not shown anywhere: Minions, Events, Alerts, Jobs (Live + Cache), Config Editor, Minion Detail grains, Event Sniffer, Minion Events popup, Job Detail (all panels/modes), and Pulse (verified via code that they're wired through the shared list-navigation path before adding the hint).
+- Consistency pass across popup/panel hints: merged `Esc`/`q` where both did the same thing but only one was shown (Job Detail, Config Editor); fixed `j/k`/"arrows" labels to the `↑↓` glyph used everywhere else (Job Detail).
+- Pulse tab's Minion Pulse panel now shows its own navigation hints (`↑↓:row`, `←→:col`, `PgUp/PgDn:jump 10`, `Home/End:first/last`) in its border, matching every other panel.
+- Admin-mode key was shown as `A` in a few spots (grains popup hint and body text, fleet-scan prompts) despite only lowercase `a` being used everywhere else — normalized, and every inline key mention in body text is now wrapped in quotes (e.g. `press 's'`) for readability.
+
 ## [0.6.0-rc13] - 2026-08-30
 
 ### Changed

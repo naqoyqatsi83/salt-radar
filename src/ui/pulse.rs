@@ -29,10 +29,17 @@ pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = super::titled_block(
+    let hints: [(&str, String); 4] = [
+        ("\u{2191}\u{2193}", "row".to_string()),
+        ("\u{2190}\u{2192}", "col".to_string()),
+        ("PgUp/PgDn", "jump 10".to_string()),
+        ("Home/End", "first/last".to_string()),
+    ];
+    let block = super::titled_block_hinted(
         format!(" Minion Pulse ({}) ", app.pulse_minions_count()),
         Style::default().fg(color::BORDER),
         color::BG_DARK,
+        &hints,
     );
 
     let inner = block.inner(area);

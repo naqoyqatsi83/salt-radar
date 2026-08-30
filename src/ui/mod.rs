@@ -376,42 +376,10 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    if app.detail_popup.is_some() {
-        if app.admin_mode_pending {
-            let mut spans = key::render("Enter", "OK");
-            spans.extend(key::render("Esc/q/a", "Cancel"));
-            let paragraph = Paragraph::new(Line::from(spans))
-                .style(Style::default().bg(color::BG_LIGHT));
-            f.render_widget(paragraph, area);
-            return;
-        }
-        if let Some(DetailPopup::EventSniffer(ref state)) = app.detail_popup {
-            let mut spans = key::render("Esc/q", "Close");
-            spans.extend(key::render("\u{2191}\u{2193}", "Scroll"));
-            spans.extend(key::render("Enter", "Detail"));
-            if state.paused {
-                spans.extend(key::render("p", "Resume"));
-            } else {
-                spans.extend(key::render("p", "Pause"));
-            }
-            spans.extend(key::render("c", "Contrast"));
-            spans.extend(key::render("y", "Copy"));
-            let paragraph = Paragraph::new(Line::from(spans))
-                .style(Style::default().bg(color::BG_LIGHT));
-            f.render_widget(paragraph, area);
-            return;
-        }
-        let is_event = matches!(app.detail_popup, Some(DetailPopup::SaltEvent(..)));
-        let is_alert = matches!(app.detail_popup, Some(DetailPopup::Alert(_)));
-        let mut spans = key::render("Esc", "Close");
-        if is_event || is_alert {
-            spans.extend(key::render("y", "Copy"));
-        }
-        let paragraph = Paragraph::new(Line::from(spans))
-            .style(Style::default().bg(color::BG_LIGHT));
-        f.render_widget(paragraph, area);
-        return;
-    }
+    // Popup shortcuts now live embedded in the popup's own border (same
+    // btop style as every panel) instead of duplicated here, so an open
+    // popup no longer blocks this bar — the persistent status stays visible
+    // underneath it, consistent with every other view.
 
     // Shortcut hints now live embedded in each panel's own border (btop
     // style) and the title frame's global hint row — this bar is left for

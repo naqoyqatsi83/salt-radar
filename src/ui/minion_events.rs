@@ -56,10 +56,24 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
     let area = detail_popup::centered_rect(85, 80, area);
     f.render_widget(Clear, area);
 
+    let hints: Vec<(&str, String)> = if app.minion_events_is_filtering {
+        vec![("Esc", "cancel".to_string()), ("Enter", "apply".to_string())]
+    } else {
+        vec![
+            ("Esc/q", "close".to_string()),
+            ("\u{2191}\u{2193}", "navigate".to_string()),
+            ("PgUp/PgDn", "page".to_string()),
+            ("Home/End", "top/bottom".to_string()),
+            ("Enter", "detail".to_string()),
+            ("/", "filter".to_string()),
+            ("y", "copy".to_string()),
+        ]
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER_HI))
-        .style(Style::default().bg(color::BG_POPUP));
+        .style(Style::default().bg(color::BG_POPUP))
+        .title_bottom(super::border_hints(&hints).left_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -211,30 +225,29 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         0
     };
 
-    // Footer
-    let footer = if app.minion_events_is_filtering {
-        Line::from(Span::styled(
-            format!("  /{}_ [Esc=cancel Enter=apply]", app.minion_events_filter),
+    // Status: only the live filter buffer needs a row — shortcuts are in the border.
+    let status = if app.minion_events_is_filtering {
+        Some(Line::from(Span::styled(
+            format!("  /{}_", app.minion_events_filter),
             Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
-        ))
+        )))
     } else {
-        Line::from(Span::styled(
-            "  [ Esc/q close | \u{2191}\u{2193} navigate | Enter=detail | /=filter | y=copy ]",
-            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-        ))
+        None
     };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1), Constraint::Length(if status.is_some() { 1 } else { 0 })])
         .split(inner);
 
     f.render_widget(
         Paragraph::new(lines).scroll((scroll as u16, 0)).style(Style::default().bg(color::BG_POPUP)),
         chunks[0],
     );
-    f.render_widget(
-        Paragraph::new(footer).style(Style::default().bg(color::BG_POPUP)),
-        chunks[1],
-    );
+    if let Some(status_line) = status {
+        f.render_widget(
+            Paragraph::new(status_line).style(Style::default().bg(color::BG_POPUP)),
+            chunks[1],
+        );
+    }
 }

@@ -3,7 +3,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, ConfigEditorState};
+use crate::app::App;
 use super::color;
 use super::detail_popup;
 
@@ -20,8 +20,16 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         .unwrap_or_else(|_| app.config_path.clone())
         .display()
         .to_string();
+    let hints: [(&str, String); 5] = [
+        ("Esc/q", "close".to_string()),
+        ("\u{2191}\u{2193}", "move".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
+        ("Enter", "edit".to_string()),
+    ];
     let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER), color::BG_DARK)
-        .title_bottom(super::border_info(format!("saved to: {}", config_path)).left_aligned());
+        .title_bottom(super::border_hints(&hints).left_aligned())
+        .title_bottom(super::border_info(format!("saved to: {}", config_path)).right_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -62,7 +70,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 ).style(sel_style));
                 if is_sel {
                     lines.push(Line::from(Span::styled(
-                        "    Enter to save and restart",
+                        "    'Enter' to save and restart",
                         Style::default().fg(color::TEXT_DIM),
                     )));
                 }
@@ -121,12 +129,6 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             }
         }
     }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Esc to close  \u{b7} \u{2191}\u{2193} to move  \u{b7} Enter to edit  \u{b7} Save & Restart to apply",
-        Style::default().fg(color::TEXT_DIM),
-    )));
 
     if let Some(ref err) = state.save_error {
         lines.push(Line::from(Span::styled(

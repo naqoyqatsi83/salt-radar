@@ -163,7 +163,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                 } else if to_count > 0 && !app.hide_timed_out {
                     // Collapsible section header row
                     let prefix = if app.timed_out_collapsed { "\u{25B6}" } else { "\u{25BC}" };
-                    let hint = if app.timed_out_collapsed { "  z/Enter to expand" } else { "" };
+                    let hint = if app.timed_out_collapsed { "  'z'/'Enter' to expand" } else { "" };
                     let line = Line::from(vec![
                         Span::styled(format!("  {} Timed out ({}){}", prefix, to_count, hint),
                             Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
@@ -174,7 +174,13 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let mut hints: Vec<(&str, String)> = vec![("/", "filter".to_string()), ("Enter", "detail".to_string()), ("r", "events".to_string())];
+    let mut hints: Vec<(&str, String)> = vec![
+        ("/", "filter".to_string()),
+        ("Enter", "detail".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
+        ("r", "events".to_string()),
+    ];
     if app.fleet_data.is_some() {
         hints.push(("x", if app.hide_timed_out { "show timed-out".to_string() } else { "hide timed-out".to_string() }));
         if !app.hide_timed_out {
@@ -375,7 +381,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(color::YELLOW),
             )));
             lines.push(Line::from(Span::styled(
-                "    Enable admin mode and press S for full fleet scan",
+                "    Enable admin mode and press 's' for full fleet scan",
                 Style::default().fg(color::TEXT_DIM),
             )));
         }
@@ -384,7 +390,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
     } else {
         lines.push(Line::from(Span::styled("  No fleet data.", Style::default().fg(color::TEXT_DIM))));
         lines.push(Line::from(Span::styled("  Activate admin mode and", Style::default().fg(color::TEXT_DIM))));
-        lines.push(Line::from(Span::styled("  press S to scan the fleet.", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("  press 's' to scan the fleet.", Style::default().fg(color::TEXT_DIM))));
     }
 
     f.render_widget(

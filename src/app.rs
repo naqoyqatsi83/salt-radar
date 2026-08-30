@@ -5,8 +5,7 @@ use std::os::unix::fs::MetadataExt;
 use std::process::Stdio;
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::text::Span;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -15,7 +14,6 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::alerts::{AlertEngine, ServiceMemThresholds};
-use crate::collectors;
 use crate::config::{load_config, AppConfig};
 use crate::types::*;
 
@@ -243,6 +241,19 @@ pub struct App {
     pub return_to_sniffer: Option<SnifferState>,
     /// When viewing event detail from MinionEvents, pressing q returns to the list
     pub return_to_minion_events: Option<(String, usize)>,
+    /// When admin mode is enabled/cancelled from within the Minion Detail
+    /// popup (its own hint advertises `A` for this), the popup should come
+    /// back afterward instead of dropping to the Minions list.
+    pub return_to_minion_detail: Option<String>,
+    /// Viewport-aware last valid scroll position for the Event Detail
+    /// popup, recomputed and written back every render (see
+    /// `ui::detail_popup::draw_event_detail`) — the key handler clamps
+    /// Down/PageDown/End against this real bound instead of guessing,
+    /// which is what keeps PageUp responsive right after End.
+    pub event_detail_scroll_max: usize,
+    /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
+    /// content preview (right panel).
+    pub job_detail_scroll_max: usize,
     /// Filter state for MinionEvents popup
     pub minion_events_filter: String,
     pub minion_events_is_filtering: bool,
@@ -358,8 +369,8 @@ impl MinionActivityItem {
 #[derive(Clone, Debug)]
 pub enum DetailPopup {
     Minion(String, PingState, Option<Vec<(String, String)>>, usize),
-    SaltEvent(SaltEvent, usize, bool),
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_max: usize, content_scroll_mode: bool },
+    SaltEvent(SaltEvent, usize),
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
     EventSniffer(crate::types::SnifferState),
@@ -438,6 +449,9 @@ impl App {
             sniffer_dirty: false,
             return_to_sniffer: None,
             return_to_minion_events: None,
+            return_to_minion_detail: None,
+            event_detail_scroll_max: 0,
+            job_detail_scroll_max: 0,
             minion_events_filter: String::new(),
             minion_events_is_filtering: false,
             hide_timed_out: false,
@@ -1818,7 +1832,7 @@ impl App {
                 self.return_to_minion_events = None;
                 self.return_to_sniffer = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
-                    self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
+                    self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
                     self.popup_tab = Some(self.current_tab);
                 }
             }
@@ -1845,7 +1859,6 @@ impl App {
                             return_is_filtering: false,
                             panel_focus: false,
                             content_scroll: 0,
-                            content_scroll_max: 0,
                             content_scroll_mode: false,
                         });
                         self.popup_tab = Some(self.current_tab);
@@ -1876,7 +1889,6 @@ impl App {
                             return_is_filtering: false,
                             panel_focus: false,
                             content_scroll: 0,
-                            content_scroll_max: 0,
                             content_scroll_mode: false,
                         });
                         self.popup_tab = Some(self.current_tab);
@@ -2901,7 +2913,7 @@ impl App {
         }
 
         // Refresh collectors at interval, not every tick
-        if let Some(ref cfg) = self.config_snapshot {
+        if self.config_snapshot.is_some() {
             let interval = self.config.dashboard_secs.max(1);
             if self.tick_count % interval == 0 {
                 self.send_agent_cmd("minion_cache_list", None);
@@ -2963,11 +2975,6 @@ impl App {
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
         self.events_since_last_tick.clear();
 
-
-        // Update host uptime from collector
-        if let Some(ref cfg) = self.config_snapshot {
-            // Handled by agent cmd in interval block
-        }
 
         // Compute network transfer rates from cumulative byte counters
         if let Some(prev_time) = self.prev_network_time {
@@ -3286,7 +3293,6 @@ impl App {
                     ref mut return_is_filtering,
                     ref mut panel_focus,
                     ref mut content_scroll,
-                    ref mut content_scroll_max,
                     ref mut content_scroll_mode,
                     ref lookup,
                     ref jid,
@@ -3331,6 +3337,12 @@ impl App {
                     }
                     // Right panel (content preview) focused
                     if *panel_focus {
+                        // self.job_detail_scroll_max is the true viewport-aware
+                        // last-scroll-position for the return preview, recomputed
+                        // and written back every render (see draw_job_detail) —
+                        // clamping against it (instead of growing unbounded) is
+                        // what keeps End from scrolling past the last line and
+                        // PageUp responsive right afterward.
                         if *content_scroll_mode {
                             match code {
                                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -3340,16 +3352,16 @@ impl App {
                                     *content_scroll = content_scroll.saturating_sub(1);
                                 }
                                 KeyCode::Down | KeyCode::Char('j') => {
-                                    *content_scroll += 1;
+                                    *content_scroll = (*content_scroll + 1).min(self.job_detail_scroll_max);
                                 }
                                 KeyCode::PageUp => {
                                     *content_scroll = content_scroll.saturating_sub(10);
                                 }
                                 KeyCode::PageDown => {
-                                    *content_scroll += 10;
+                                    *content_scroll = (*content_scroll + 10).min(self.job_detail_scroll_max);
                                 }
                                 KeyCode::Home => { *content_scroll = 0; }
-                                KeyCode::End => { *content_scroll = usize::MAX / 2; }
+                                KeyCode::End => { *content_scroll = self.job_detail_scroll_max; }
                                 _ => {}
                             }
                             return false;
@@ -3361,16 +3373,9 @@ impl App {
                             KeyCode::Enter => {
                                 *content_scroll_mode = true;
                                 *content_scroll = 0;
-                                if let Some(ref l) = lookup {
-                                    let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
-                                    if sel < l.returns.len() {
-                                        let display_str = &l.returns[sel].formatted_text;
-                                        *content_scroll_max = if display_str.is_empty() { 0 } else { display_str.lines().count() };
-                                    }
-                                }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                *content_scroll += 1;
+                                *content_scroll = (*content_scroll + 1).min(self.job_detail_scroll_max);
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
                                 *content_scroll = content_scroll.saturating_sub(1);
@@ -3379,10 +3384,10 @@ impl App {
                                 *content_scroll = content_scroll.saturating_sub(10);
                             }
                             KeyCode::PageDown => {
-                                *content_scroll += 10;
+                                *content_scroll = (*content_scroll + 10).min(self.job_detail_scroll_max);
                             }
                             KeyCode::Home => { *content_scroll = 0; }
-                            KeyCode::End => { *content_scroll = usize::MAX / 2; }
+                            KeyCode::End => { *content_scroll = self.job_detail_scroll_max; }
                             KeyCode::Char('y') => {
                                 if let Some(ref l) = lookup {
                                     let idx = selected_return.unwrap_or(0);
@@ -3430,13 +3435,6 @@ impl App {
                                 *panel_focus = true;
                                 *content_scroll = 0;
                                 *content_scroll_mode = false;
-                                if let Some(ref l) = lookup {
-                                    let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
-                                    if sel < l.returns.len() {
-                                        let display_str = &l.returns[sel].formatted_text;
-                                        *content_scroll_max = if display_str.is_empty() { 0 } else { display_str.lines().count() };
-                                    }
-                                }
                             }
                         }
                         KeyCode::Char('/') => {
@@ -3558,11 +3556,13 @@ impl App {
                         KeyCode::Enter => {
                             self.admin_mode = true;
                             self.admin_mode_pending = false;
-                            self.detail_popup = None;
+                            self.detail_popup = self.return_to_minion_detail.take()
+                                .map(|mid| DetailPopup::Minion(mid, PingState::Idle, None, 0));
                         }
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('a') | KeyCode::Char('A') => {
                             self.admin_mode_pending = false;
-                            self.detail_popup = None;
+                            self.detail_popup = self.return_to_minion_detail.take()
+                                .map(|mid| DetailPopup::Minion(mid, PingState::Idle, None, 0));
                         }
                         _ => {}
                     }
@@ -3595,7 +3595,7 @@ impl App {
                             let rev_idx = state.buffer.len().saturating_sub(1).saturating_sub(state.selected);
                             if let Some(evt) = state.buffer.get(rev_idx) {
                                 self.return_to_sniffer = Some(state.clone());
-                                self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
+                                self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
                                 self.popup_tab = Some(self.current_tab);
                             }
                         }
@@ -3649,30 +3649,15 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::SaltEvent(ref evt, ref mut scroll_offset, ref mut scroll_mode) => {
-                    if *scroll_mode {
-                        match code {
-                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                                *scroll_mode = false;
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                *scroll_offset = scroll_offset.saturating_sub(1);
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                *scroll_offset += 1;
-                            }
-                            KeyCode::PageUp => {
-                                *scroll_offset = scroll_offset.saturating_sub(10);
-                            }
-                            KeyCode::PageDown => {
-                                *scroll_offset += 10;
-                            }
-                            KeyCode::Home => { *scroll_offset = 0; }
-                            KeyCode::End => { *scroll_offset = usize::MAX / 2; }
-                            _ => {}
-                        }
-                        return false;
-                    }
+                DetailPopup::SaltEvent(ref evt, ref mut scroll_offset) => {
+                    // self.event_detail_scroll_max is the true viewport-aware
+                    // last-scroll-position, recomputed and written back every
+                    // render (see draw_event_detail) — clamping against it here
+                    // (rather than against the popup's raw line count, or not at
+                    // all) is what keeps Down/PageDown/End from running
+                    // scroll_offset past where content actually ends, which
+                    // previously made PageUp appear to do nothing for several
+                    // presses after End.
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             if let Some(sniffer) = self.return_to_sniffer.take() {
@@ -3687,11 +3672,21 @@ impl App {
                                 self.detail_popup = None;
                             }
                         }
-                        KeyCode::Enter => {
-                            *scroll_mode = true;
-                            *scroll_offset = 0;
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            *scroll_offset = scroll_offset.saturating_sub(1);
                         }
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            *scroll_offset = (*scroll_offset + 1).min(self.event_detail_scroll_max);
+                        }
+                        KeyCode::PageUp => {
+                            *scroll_offset = scroll_offset.saturating_sub(10);
+                        }
+                        KeyCode::PageDown => {
+                            *scroll_offset = (*scroll_offset + 10).min(self.event_detail_scroll_max);
+                        }
+                        KeyCode::Home => { *scroll_offset = 0; }
+                        KeyCode::End => { *scroll_offset = self.event_detail_scroll_max; }
+                        KeyCode::Char('y') => {
                             let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
                                 .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
                                 .unwrap_or_else(|| evt.ts.to_string());
@@ -3701,6 +3696,9 @@ impl App {
                                 ts,
                                 serde_json::to_string_pretty(&evt.data).unwrap_or_default()
                             ));
+                        }
+                        KeyCode::Char('Y') => {
+                            clipboard_text = Some(serde_json::to_string_pretty(&evt.data).unwrap_or_default());
                         }
                         _ => {}
                     }
@@ -3737,7 +3735,7 @@ impl App {
                 }
                 DetailPopup::Minion(ref mid, _, ref mut grains, ref mut grains_scroll) => {
                     match code {
-                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             self.detail_popup = None;
                         }
                         KeyCode::Char('g') | KeyCode::Char('G') if self.admin_mode => {
@@ -3745,20 +3743,33 @@ impl App {
                             *grains = Some(Vec::new());
                             *grains_scroll = 0;
                         }
+                        KeyCode::Char('a') | KeyCode::Char('A') if self.admin_mode => {
+                            self.admin_mode = false;
+                        }
+                        KeyCode::Char('a') | KeyCode::Char('A') if !self.admin_mode && !self.is_filtering => {
+                            self.return_to_minion_detail = Some(mid.clone());
+                            self.admin_mode_pending = true;
+                            self.detail_popup = Some(DetailPopup::AdminConfirm);
+                            self.popup_tab = Some(self.current_tab);
+                        }
                         KeyCode::Up | KeyCode::Char('k') => {
                             *grains_scroll = grains_scroll.saturating_sub(1);
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
-                            *grains_scroll += 1;
+                            let max = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            *grains_scroll = (*grains_scroll + 1).min(max);
                         }
                         KeyCode::PageUp => {
                             *grains_scroll = grains_scroll.saturating_sub(10);
                         }
                         KeyCode::PageDown => {
-                            *grains_scroll += 10;
+                            let max = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            *grains_scroll = (*grains_scroll + 10).min(max);
                         }
                         KeyCode::Home => { *grains_scroll = 0; }
-                        KeyCode::End => { *grains_scroll = usize::MAX / 2; }
+                        KeyCode::End => {
+                            *grains_scroll = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                        }
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             clipboard_text = Some(mid.clone());
                         }
@@ -3844,7 +3855,6 @@ impl App {
                                             return_is_filtering: false,
                                             panel_focus: false,
                                             content_scroll: 0,
-                                            content_scroll_max: 0,
                                             content_scroll_mode: false,
                                         });
                                         self.popup_tab = Some(self.current_tab);
@@ -3878,7 +3888,7 @@ impl App {
                             _ => None,
                         };
                         if let Some(evt) = evt_enter {
-                            self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0, false));
+                            self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0));
                         }
                     }
                 }
@@ -4433,7 +4443,7 @@ impl App {
                     match item {
                         MinionActivityItem::Event(_, evt) => {
                             self.return_to_minion_events = Some((mid, item_idx));
-                            self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
+                            self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
                         }
                         MinionActivityItem::CacheJob(job) => {
                             self.return_to_minion_events = Some((mid, item_idx));
@@ -4453,7 +4463,6 @@ impl App {
                                 return_is_filtering: false,
                                 panel_focus: false,
                                 content_scroll: 0,
-                                content_scroll_max: 0,
                                 content_scroll_mode: false,
                             });
                             self.popup_tab = Some(self.current_tab);

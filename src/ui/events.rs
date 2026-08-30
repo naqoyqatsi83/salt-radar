@@ -45,6 +45,8 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
     let hints: &[(&str, String)] = &[
         ("/", "filter".to_string()),
         ("Enter", "detail".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
         ("n", "sniffer".to_string()),
     ];
     let block = super::list_block_hinted(
@@ -204,7 +206,7 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App) {
     }
     if data_lines.len() > max_body {
         lines.push(Line::from(Span::styled(
-            "  ... (press Enter to view full)",
+            "  ... (press 'Enter' to view full)",
             Style::default().fg(color::YELLOW),
         )));
     }

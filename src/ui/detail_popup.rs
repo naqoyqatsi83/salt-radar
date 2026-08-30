@@ -9,7 +9,7 @@ use crate::types::{KeyStatus, SnifferState};
 
 use super::color;
 
-pub fn draw_detail_popup(f: &mut Frame, app: &App) {
+pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
     let Some(ref detail) = app.detail_popup else { return };
 
     match detail {
@@ -20,16 +20,20 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
                 draw_minion_detail(f, area, minion, ping_state, grains, *grains_scroll, app);
             }
         }
-        DetailPopup::SaltEvent(evt, scroll_offset, scroll_mode) => {
+        DetailPopup::SaltEvent(evt, scroll_offset) => {
             let area = centered_rect(75, 70, f.area());
             f.render_widget(Clear, area);
             let highlight = app.return_to_minion_events.as_ref().map(|(id, _)| id.as_str());
-            draw_event_detail(f, area, evt, *scroll_offset, *scroll_mode, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()), highlight);
+            let clipboard_at = app.clipboard_at;
+            let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
+            draw_event_detail(f, area, evt, *scroll_offset, &mut app.event_detail_scroll_max, clipboard_at, clipboard_msg, highlight);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, job_fun, job_tgt, job_start_epoch, minion_scroll, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
             f.render_widget(Clear, area);
-            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, *minion_scroll, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+            let clipboard_at = app.clipboard_at;
+            let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
+            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, *minion_scroll, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, clipboard_at, clipboard_msg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -102,46 +106,42 @@ fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> 
     ])
 }
 
-fn dismiss_line(clipboard_at: Option<std::time::Instant>, scroll_mode: bool, clipboard_warning: Option<&str>) -> Line<'static> {
-    let show_copied = clipboard_at
-        .map(|t| t.elapsed().as_secs_f64() < 3.0)
-        .unwrap_or(false);
-    if show_copied {
-        return Line::from(Span::styled(
-            "  \u{2713} Copied                                ",
-            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
-        ));
-    }
-    if let Some(warn) = clipboard_warning {
-        return Line::from(Span::styled(
-            format!("  \u{26a0} {}", warn),
-            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
-        ));
-    }
-    if scroll_mode {
-        Line::from(Span::styled(
-            "  [ q exit scroll | \u{2191}\u{2193} \u{21C4} page scroll output ]",
-            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-        ))
-    } else {
-        Line::from(Span::styled(
-            "  [ q/Esc close | \u{2191}\u{2193} navigate | Enter=scroll | y=copy Y=json ]",
-            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-        ))
-    }
+fn event_detail_hints() -> Vec<(&'static str, String)> {
+    vec![
+        ("q/Esc", "close".to_string()),
+        ("\u{2191}\u{2193}", "scroll".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
+        ("y", "copy".to_string()),
+        ("Y", "json".to_string()),
+    ]
 }
 
-fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], footer: Option<Line<'static>>, scroll: u16) {
+/// Shared popup chrome: shortcut hints go in the block's own border
+/// (btop-style, same `border_hints` every other panel uses) instead of a
+/// content-row footer; `status` is reserved for genuinely transient content
+/// a border hint can't show (a live-typed buffer, a "Copied" confirmation,
+/// a clipboard warning) and only consumes a row when actually present.
+fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&str, String)], status: Option<Line<'static>>, more: (bool, bool), scroll: u16) {
     // Clear the area first — prevents underlying content from bleeding through
     f.render_widget(Clear, area);
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER_HI))
         .style(Style::default().bg(color::BG_POPUP));
+    if more.0 {
+        block = block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM))).right_aligned());
+    }
+    if !hints.is_empty() {
+        block = block.title_bottom(super::border_hints(hints).left_aligned());
+    }
+    if more.1 {
+        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::TEXT_DIM))).right_aligned());
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if let Some(footer_line) = footer {
+    if let Some(status_line) = status {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -151,7 +151,7 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], footer: Opti
             chunks[0],
         );
         f.render_widget(
-            Paragraph::new(footer_line).style(Style::default().bg(color::BG_POPUP)),
+            Paragraph::new(status_line).style(Style::default().bg(color::BG_POPUP)),
             chunks[1],
         );
     } else {
@@ -160,6 +160,59 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], footer: Opti
             inner,
         );
     }
+}
+
+/// "✓ Copied" / clipboard-warning transient status shared by every popup
+/// footer — `None` when neither applies, so callers can tell there's
+/// nothing to show in the status row.
+fn clipboard_status(clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) -> Option<Line<'static>> {
+    let show_copied = clipboard_at
+        .map(|t| t.elapsed().as_secs_f64() < 3.0)
+        .unwrap_or(false);
+    if show_copied {
+        return Some(Line::from(Span::styled(
+            "  \u{2713} Copied                                ",
+            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+        )));
+    }
+    if let Some(warn) = clipboard_warning {
+        return Some(Line::from(Span::styled(
+            format!("  \u{26a0} {}", warn),
+            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
+        )));
+    }
+    None
+}
+
+/// Lightweight, allocation-cheap coloring for a single line of a grain
+/// value — the agent pretty-prints nested lists/dicts as JSON, so a plain
+/// per-token parse isn't needed, just enough of a heuristic (quoted
+/// strings, booleans/null, numbers, bare structural punctuation) to make
+/// a wall of grains scannable at a glance.
+fn grain_value_style(line: &str) -> Style {
+    let trimmed = line.trim().trim_end_matches(',');
+    if trimmed == "true" {
+        Style::default().fg(color::GREEN)
+    } else if trimmed == "false" {
+        Style::default().fg(color::RED)
+    } else if trimmed == "null" {
+        Style::default().fg(color::TEXT_DIM)
+    } else if matches!(trimmed, "[" | "]" | "{" | "}" | "[]" | "{}") {
+        Style::default().fg(color::TEXT_DIM)
+    } else if trimmed.starts_with('"') {
+        Style::default().fg(color::TEXT)
+    } else if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
+        Style::default().fg(color::YELLOW)
+    } else {
+        Style::default().fg(color::TEXT)
+    }
+}
+
+/// Rendered line count for one grain: 1 for a scalar (`key: value` on one
+/// line), or 1 + the value's own line count for a pretty-printed nested
+/// list/dict (a `key:` line followed by each indented value line).
+fn grain_height(val: &str) -> usize {
+    if val.contains('\n') { 1 + val.lines().count() } else { 1 }
 }
 
 fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo, ping_state: &PingState, grains: &Option<Vec<(String, String)>>, grains_scroll: usize, app: &App) {
@@ -184,7 +237,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     // Connection status — depends on PingState
     let (connected_text, connected_color) = match *ping_state {
         PingState::Idle => (
-            "Admin mode required (press A)".to_string(),
+            "Admin mode required (press 'a')".to_string(),
             color::TEXT_DIM,
         ),
         PingState::Pinging(started) => {
@@ -226,16 +279,18 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
         Style::default().fg(Color::Rgb(35, 50, 80)),
     )));
 
+    let mut more_above = false;
+    let mut more_below = false;
     match grains {
         None => {
             if app.admin_mode {
                 lines.push(Line::from(Span::styled(
-                    "  Press g to retrieve full grains from this minion",
+                    "  Press 'g' to retrieve full grains from this minion",
                     Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
                 )));
             } else {
                 lines.push(Line::from(Span::styled(
-                    "  Admin mode required to fetch grains (press A)",
+                    "  Admin mode required to fetch grains (press 'a')",
                     Style::default().fg(color::TEXT_DIM),
                 )));
             }
@@ -247,39 +302,77 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
                     Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
                 )));
             } else {
-                // Compute available height for grains
+                // Compute available height for grains. Scroll is by grain
+                // (key), not by rendered line, since a nested value (a list
+                // or dict, pretty-printed by the agent) can span many lines.
+                // max_scroll is found by walking backward from the last
+                // grain accumulating line-heights, so scrolling to the end
+                // lands the last rendered line at the bottom of the frame
+                // instead of pinning the last grain to the top with blank
+                // space below it (and further scrolling has nowhere to go).
                 let used = lines.len();
-                let avail = (area.height as usize).saturating_sub(used).saturating_sub(4); // borders(2) + footer(1) + spacing
-                let scroll = grains_scroll.min(pairs.len().saturating_sub(avail));
-                let end = (scroll + avail).min(pairs.len());
-                for (key, val) in pairs.iter().skip(scroll).take(end.saturating_sub(scroll)) {
-                    let display = format!("  {}: {}", key, val);
-                    lines.push(Line::from(Span::styled(display, Style::default().fg(color::TEXT))));
+                let avail = (area.height as usize).saturating_sub(used).saturating_sub(2); // borders(2)
+                let mut max_scroll = 0usize;
+                let mut budget = avail;
+                for (i, (_, val)) in pairs.iter().enumerate().rev() {
+                    let h = grain_height(val);
+                    if h > budget {
+                        max_scroll = i + 1;
+                        break;
+                    }
+                    budget -= h;
                 }
-                if pairs.len() > avail {
-                    let pct = if pairs.len() > 0 { (scroll * 100) / pairs.len() } else { 0 };
-                    lines.push(Line::from(Span::styled(
-                        format!("  \u{25B2}\u{25BC} scroll: {} items ({}%)", pairs.len(), pct),
-                        Style::default().fg(color::TEXT_DIM),
-                    )));
+                let scroll = grains_scroll.min(max_scroll);
+
+                let mut rendered = 0usize;
+                let mut shown = 0usize;
+                for (key, val) in pairs.iter().skip(scroll) {
+                    if rendered >= avail { break; }
+                    let mut val_lines = val.lines();
+                    let first = val_lines.next().unwrap_or("");
+                    if val.contains('\n') {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {}:", key),
+                            Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
+                        )));
+                        rendered += 1;
+                        for l in std::iter::once(first).chain(val_lines) {
+                            if rendered >= avail { break; }
+                            lines.push(Line::from(Span::styled(format!("    {}", l), grain_value_style(l))));
+                            rendered += 1;
+                        }
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("  {}: ", key), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+                            Span::styled(first.to_string(), grain_value_style(first)),
+                        ]));
+                        rendered += 1;
+                    }
+                    shown += 1;
                 }
+                more_above = scroll > 0;
+                more_below = scroll + shown < pairs.len();
             }
         }
     }
 
-    let help_parts = if app.admin_mode {
-        " Esc/q close | y copy | g fetch grains | \u{2191}\u{2193} scroll grains "
+    let hints: Vec<(&str, String)> = if app.admin_mode {
+        vec![
+            ("Esc/q", "close".to_string()),
+            ("y", "copy".to_string()),
+            ("g", "fetch grains".to_string()),
+            ("\u{2191}\u{2193}", "scroll grains".to_string()),
+            ("PgUp/PgDn", "page".to_string()),
+            ("Home/End", "top/bottom".to_string()),
+            ("a", "admin off".to_string()),
+        ]
     } else {
-        " Esc/q close | y copy | A admin mode for grains "
+        vec![("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("a", "admin mode for grains".to_string())]
     };
-    let footer = Line::from(Span::styled(
-        format!("  [{}]", help_parts),
-        Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-    ));
-    render_popup(f, area, &lines, Some(footer), 0);
+    render_popup(f, area, &lines, &hints, None, (more_above, more_below), 0);
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_mode: bool, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
     let mut lines = header_lines(" Event Detail ");
     lines.push(row("Tag", evt.tag.clone(), color::CYAN));
     lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
@@ -289,14 +382,15 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
     let data_lines: Vec<&str> = json_str.lines().collect();
     let total_data = data_lines.len();
 
-    // Clamp scroll_offset so the last line can appear at viewport bottom
-    let viewport_h = (area.height as usize).saturating_sub(6); // borders(2) + footer(1) + header(3)
+    // Clamp scroll_offset so the last line can appear at viewport bottom, and
+    // write the true bound back so the key handler can clamp Down/PageDown/End
+    // against it directly next time instead of guessing at a raw line count.
+    let viewport_h = (area.height as usize).saturating_sub(5); // borders(2) + header(3)
     let max_scroll = total_data.saturating_sub(viewport_h);
-    let effective_scroll = if scroll_mode {
-        scroll_offset.min(max_scroll)
-    } else {
-        0
-    };
+    *scroll_max = max_scroll;
+    let effective_scroll = scroll_offset.min(max_scroll);
+    let more_above = effective_scroll > 0;
+    let more_below = effective_scroll + viewport_h < total_data;
 
     for line in data_lines.iter().skip(effective_scroll) {
         if let Some(h) = highlight {
@@ -321,8 +415,9 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
         lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
     }
 
-    let footer = dismiss_line(clipboard_at, scroll_mode, clipboard_warning);
-    render_popup(f, area, &lines, Some(footer), 0);
+    let hints = event_detail_hints();
+    let status = clipboard_status(clipboard_at, clipboard_warning);
+    render_popup(f, area, &lines, &hints, status, (more_above, more_below), 0);
 }
 
 fn draw_job_detail(
@@ -340,15 +435,19 @@ fn draw_job_detail(
     panel_focus: bool,
     content_scroll: usize,
     content_scroll_mode: bool,
+    content_scroll_max: &mut usize,
     clipboard_at: Option<std::time::Instant>,
     clipboard_warning: Option<&str>,
 ) {
     // ── Outer frame ──
     f.render_widget(Clear, area);
+    let hints = job_detail_hints(return_is_filtering, panel_focus, content_scroll_mode);
+    let status = clipboard_status(clipboard_at, clipboard_warning);
     let outer_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER_HI))
-        .style(Style::default().bg(color::BG_POPUP));
+        .style(Style::default().bg(color::BG_POPUP))
+        .title_bottom(super::border_hints(&hints).left_aligned());
     let outer_inner = outer_block.inner(area);
     f.render_widget(outer_block, area);
 
@@ -377,11 +476,11 @@ fn draw_job_detail(
     ]));
     let header_h = (header_lines.len() + 1) as u16; // +1 for spacing after header
 
-    // ── Layout: header / body / footer ──
+    // ── Layout: header / body / status (only when there's something transient to show) ──
     let vert = Layout::vertical([
         Constraint::Length(header_h),
         Constraint::Min(1),
-        Constraint::Length(1),
+        Constraint::Length(if status.is_some() { 1 } else { 0 }),
     ])
     .split(outer_inner);
 
@@ -506,14 +605,6 @@ fn draw_job_detail(
             format!(" Return from {} ", l.returns[sel].minion_id)
         } else { " Preview ".to_string() }
     } else { " Preview ".to_string() };
-    let right_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(right_border_style)
-        .title(right_title)
-        .title_style(Style::default().fg(if panel_focus { color::CYAN } else { color::TEXT_TITLE }).add_modifier(Modifier::BOLD))
-        .style(Style::default().bg(color::BG_POPUP));
-    let right_inner = right_block.inner(horiz[1]);
-    f.render_widget(&right_block, horiz[1]);
 
     let mut right_lines: Vec<Line<'static>> = Vec::new();
     if let Some(ref l) = lookup {
@@ -541,67 +632,86 @@ fn draw_job_detail(
             Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
         )));
     }
-    // Right panel scroll
-    let right_scroll = if content_scroll_mode {
-        content_scroll as u16
-    } else if content_scroll > 0 {
-        content_scroll as u16
-    } else { 0 };
+
+    // Viewport-aware max scroll — a `Borders::ALL` block always insets 1 on
+    // each side, so this matches what `right_block.inner()` will produce
+    // without needing the block built first just to ask it. Written back so
+    // the key handler clamps Down/PageDown/End against the real bound
+    // instead of scrolling past the last line.
+    let right_viewport_h = (horiz[1].height as usize).saturating_sub(2);
+    let max_scroll = right_lines.len().saturating_sub(right_viewport_h);
+    *content_scroll_max = max_scroll;
+    let effective_scroll = content_scroll.min(max_scroll);
+    let more_above = effective_scroll > 0;
+    let more_below = effective_scroll + right_viewport_h < right_lines.len();
+
+    let mut right_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(right_border_style)
+        .title(right_title)
+        .title_style(Style::default().fg(if panel_focus { color::CYAN } else { color::TEXT_TITLE }).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(color::BG_POPUP));
+    if more_above {
+        right_block = right_block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM))).right_aligned());
+    }
+    if more_below {
+        right_block = right_block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::TEXT_DIM))).right_aligned());
+    }
+    let right_inner = right_block.inner(horiz[1]);
+    f.render_widget(&right_block, horiz[1]);
+
     f.render_widget(
         Paragraph::new(right_lines)
-            .scroll((right_scroll, 0))
+            .scroll((effective_scroll as u16, 0))
             .style(Style::default().bg(color::BG_POPUP)),
         right_inner,
     );
 
-    // ── Footer ──
-    let footer = dismiss_line_job_detail(clipboard_at, return_is_filtering, panel_focus, content_scroll_mode, clipboard_warning);
-    f.render_widget(
-        Paragraph::new(footer).style(Style::default().bg(color::BG_POPUP)),
-        vert[2],
-    );
+    // ── Status (transient only — shortcuts are in the outer border) ──
+    if let Some(status_line) = status {
+        f.render_widget(
+            Paragraph::new(status_line).style(Style::default().bg(color::BG_POPUP)),
+            vert[2],
+        );
+    }
 }
 
-fn dismiss_line_job_detail(clipboard_at: Option<std::time::Instant>, filter_active: bool, right_focus: bool, scroll_mode: bool, clipboard_warning: Option<&str>) -> Line<'static> {
-    let show_copied = clipboard_at
-        .map(|t| t.elapsed().as_secs_f64() < 3.0)
-        .unwrap_or(false);
-    if show_copied {
-        return Line::from(Span::styled(
-            "  \u{2713} Copied                                ",
-            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
-        ));
-    }
-    // Show clipboard warnings in the popup footer where the user is looking
-    if let Some(warn) = clipboard_warning {
-        return Line::from(Span::styled(
-            format!("  \u{26a0} {}", warn),
-            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
-        ));
-    }
+fn job_detail_hints(filter_active: bool, right_focus: bool, scroll_mode: bool) -> Vec<(&'static str, String)> {
     if filter_active {
-        return Line::from(Span::styled(
-            "  [ Esc cancel filter | Enter confirm | type to filter ]",
-            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-        ));
+        return vec![("Esc", "cancel filter".to_string()), ("Enter", "confirm".to_string())];
     }
     if right_focus {
         if scroll_mode {
-            Line::from(Span::styled(
-                "  [ Esc back to list | q exit scroll | arrows/PgUp/PgDn/Home/End scroll | y=copy Y=json ]",
-                Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-            ))
+            vec![
+                ("Esc/q", "exit scroll".to_string()),
+                ("\u{2191}\u{2193}", "scroll".to_string()),
+                ("PgUp/PgDn", "page".to_string()),
+                ("Home/End", "top/bottom".to_string()),
+                ("y", "copy".to_string()),
+                ("Y", "json".to_string()),
+            ]
         } else {
-            Line::from(Span::styled(
-                "  [ Esc back to list | Enter=scroll | arrows scroll | y=copy Y=json ]",
-                Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-            ))
+            vec![
+                ("Esc/q", "back to list".to_string()),
+                ("Enter", "scroll".to_string()),
+                ("\u{2191}\u{2193}", "scroll".to_string()),
+                ("PgUp/PgDn", "page".to_string()),
+                ("Home/End", "top/bottom".to_string()),
+                ("y", "copy".to_string()),
+                ("Y", "json".to_string()),
+            ]
         }
     } else {
-        Line::from(Span::styled(
-            "  [ q/Esc close | j/k navigate | Enter=view | /=filter | y=copy Y=json ]",
-            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-        ))
+        vec![
+            ("q/Esc", "close".to_string()),
+            ("\u{2191}\u{2193}", "navigate".to_string()),
+            ("PgUp/PgDn", "page".to_string()),
+            ("Home/End", "top/bottom".to_string()),
+            ("Enter", "view".to_string()),
+            ("/", "filter".to_string()),
+            ("y", "copy".to_string()),
+            ("Y", "json".to_string()),
+        ]
     }
 }
 
@@ -631,26 +741,9 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
     }
 
     lines.push(Line::from(""));
-    let show_copied = clipboard_at
-        .map(|t| t.elapsed().as_secs_f64() < 3.0)
-        .unwrap_or(false);
-    let footer = if show_copied {
-        Line::from(Span::styled(
-            "  \u{2713} Copied                                ",
-            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
-        ))
-    } else if let Some(warn) = clipboard_warning {
-        Line::from(Span::styled(
-            format!("  \u{26a0} {}", warn),
-            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
-        ))
-    } else {
-        Line::from(Span::styled(
-            "  [ Esc/q close | y=copy ]",
-            Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-        ))
-    };
-    render_popup(f, area, &lines, Some(footer), 0);
+    let hints: [(&str, String); 2] = [("Esc/q", "close".to_string()), ("y", "copy".to_string())];
+    let status = clipboard_status(clipboard_at, clipboard_warning);
+    render_popup(f, area, &lines, &hints, status, (false, false), 0);
 }
 
 fn draw_admin_confirm(f: &mut Frame, area: Rect) {
@@ -696,7 +789,8 @@ fn draw_admin_confirm(f: &mut Frame, area: Rect) {
         Span::styled(" ] ", Style::default().fg(color::TEXT_DIM)),
         Span::styled("Esc/q/a", Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
     ]));
-    render_popup(f, area, &lines, None, 0);
+    let hints: [(&str, String); 2] = [("Enter", "OK".to_string()), ("Esc/q/a", "cancel".to_string())];
+    render_popup(f, area, &lines, &hints, None, (false, false), 0);
 }
 
 fn draw_event_sniffer(
@@ -853,14 +947,16 @@ fn draw_event_sniffer(
             0
         };
 
-        let footer = sniffer_footer(clipboard_at, state, clipboard_warning);
-        render_popup(f, area, &lines, Some(footer), scroll);
+        let hints = sniffer_hints(state);
+        let status = sniffer_status(clipboard_at, state, clipboard_warning);
+        render_popup(f, area, &lines, &hints, status, (false, false), scroll);
         return;
     }
 
     lines.push(Line::from(""));
-    let footer = sniffer_footer(clipboard_at, state, clipboard_warning);
-    render_popup(f, area, &lines, Some(footer), 0);
+    let hints = sniffer_hints(state);
+    let status = sniffer_status(clipboard_at, state, clipboard_warning);
+    render_popup(f, area, &lines, &hints, status, (false, false), 0);
 }
 
 /// Split a line of text into styled spans, highlighting all occurrences of any keyword.
@@ -921,11 +1017,13 @@ fn sniffer_format_ts(ts: f64) -> String {
         .unwrap_or_else(|| "--:--:--".to_string())
 }
 
-fn sniffer_footer(
+/// Live-typed highlight-keyword buffer, or the shared copy/warning status —
+/// the only things a static border hint can't show.
+fn sniffer_status(
     clipboard_at: Option<std::time::Instant>,
     state: &SnifferState,
     clipboard_warning: Option<&str>,
-) -> Line<'static> {
+) -> Option<Line<'static>> {
     if let Some(ref buf) = state.highlight_input {
         let cursor = if buf.len() % 2 == 0 { '|' } else { ' ' };
         let display = if buf.is_empty() {
@@ -933,35 +1031,25 @@ fn sniffer_footer(
         } else {
             format!("  Highlight keywords: {} {}", buf, cursor)
         };
-        return Line::from(Span::styled(
+        return Some(Line::from(Span::styled(
             display,
             Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
-        ));
+        )));
     }
-    let show_copied = clipboard_at
-        .map(|t| t.elapsed().as_secs_f64() < 3.0)
-        .unwrap_or(false);
-    if show_copied {
-        return Line::from(Span::styled(
-            "  \u{2713} Copied                                ",
-            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
-        ));
-    }
-    if let Some(warn) = clipboard_warning {
-        return Line::from(Span::styled(
-            format!("  \u{26a0} {}", warn),
-            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
-        ));
-    }
-    let hint = if state.paused {
-        "  [ q/Esc close | \u{2191}\u{2193} | Enter=detail | h=highlight | p=resume | y=copy ]"
-    } else {
-        "  [ q/Esc close | \u{2191}\u{2193} | Enter=detail | h=highlight | p=pause | y=copy ]"
-    };
-    Line::from(Span::styled(
-        hint,
-        Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
-    ))
+    clipboard_status(clipboard_at, clipboard_warning)
+}
+
+fn sniffer_hints(state: &SnifferState) -> Vec<(&'static str, String)> {
+    vec![
+        ("q/Esc", "close".to_string()),
+        ("\u{2191}\u{2193}", "navigate".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
+        ("Enter", "detail".to_string()),
+        ("h", "highlight".to_string()),
+        ("p", if state.paused { "resume".to_string() } else { "pause".to_string() }),
+        ("y", "copy".to_string()),
+    ]
 }
 
 fn format_epoch(secs: u64) -> String {
