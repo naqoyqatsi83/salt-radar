@@ -75,7 +75,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **ZMQ** — established connection counts per port (pub/ret/api), plus a latency sparkline whose source is configurable (`zmq_latency_source`): a local agent liveness ping (default), a real `test.ping` round-trip over the event bus, or Salt's own `master_stats` instrumentation
 - **Event Rate** — Events/sec sparkline with peak and total counters
 - **Minion Activity** — Job return rate sparkline with last-active minion tracking
-- **CPU / Memory** — optional utilization-history sparklines (off by default), toggle alongside the other three sparkline panels via `show_*_graph`; stacking order of all five panels is configurable via `graph_order` — in the Config Editor (`F3`) or `salt-radar.toml`
+- **CPU / Memory** — optional utilization-history sparklines (off by default), toggle alongside the other three sparkline panels via `show_*_graph`; stacking order of all five panels is configurable via `graph_order` — in the Config Editor (`F3`, edited as a reorderable list: `↑↓` to select, `+`/`-` to move) or by hand in `salt-radar.toml`
 - **Job Pulse** — Active jobs with progress bars, rolling success rate, stuck-job count, and p50/p95 completion latency
 
 ### Minions
@@ -134,6 +134,7 @@ All thresholds are configurable via `salt-radar.toml` or the in-app Config Edito
 ### Config Editor
 - `F3` opens an in-app editor for every setting in `salt-radar.toml`, grouped by section
 - Free-text fields edit inline; fields with a fixed set of valid values (e.g. `zmq_latency_source`) open an inline picker — arrow keys to move, `Enter` to confirm
+- `graph_order` opens as a reorderable list instead of free text — `↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts — since hand-typing a comma-separated list makes it easy to typo or drop a panel
 - `Save & Restart` writes the TOML file and applies the new config immediately, no process restart needed
 
 ### Clipboard

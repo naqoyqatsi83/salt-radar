@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0-rc14] - 2026-08-30
 
+### Changed
+- Config Editor's `graph_order` field is no longer hand-typed free text — editing it now expands into a reorderable vertical list (`↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts), removing the chance of a typo or dropped panel name that free-text editing allowed.
+
 ### Fixed
 - Refresh interval (`+`/`-`) only worked from the Dashboard tab, even though its hint is shown globally in the title frame and the help overlay never said it was Dashboard-only either — now works from any tab.
 - Mouse mode (`F2`) couldn't be toggled while any popup was open — added to the same "works even with a popup open" key set as contrast/tab-switching/`F3`.

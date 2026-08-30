@@ -310,6 +310,12 @@ pub enum ConfigFieldKind {
     /// A field with a fixed, small set of valid values — edited via an
     /// inline picker (arrow keys + Enter) instead of free-text entry.
     Choice(&'static [&'static str]),
+    /// A comma-separated ordered list (currently just `graph_order`) —
+    /// edited by moving a cursor between items (arrow keys) and moving the
+    /// selected item up/down in the order (`+`/`-`), instead of hand-typing
+    /// the raw comma-separated string where a typo or dropped token is easy
+    /// to make and hard to notice.
+    Order,
     SaveButton,
 }
 
@@ -1552,7 +1558,7 @@ impl App {
                 ConfigField { label: "show_activity_graph", label_value: on_off(cfg.show_activity_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_cpu_graph", label_value: on_off(cfg.show_cpu_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_mem_graph", label_value: on_off(cfg.show_mem_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
-                ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Order },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -1666,6 +1672,54 @@ impl App {
                     }
                     return false;
                 }
+                // Order fields (currently just graph_order): arrows move a
+                // cursor between items, +/- move the item under the cursor
+                // up/down in the order — no free-text entry, so a typo or
+                // dropped token isn't possible.
+                if matches!(s.fields.get(s.selected).map(|f| f.kind), Some(ConfigFieldKind::Order)) {
+                    match code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            s.choice_idx = s.choice_idx.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let len = s.fields.get(s.selected).map_or(0, |f| f.label_value.split(',').count());
+                            if s.choice_idx + 1 < len { s.choice_idx += 1; }
+                        }
+                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                            if let Some(field) = s.fields.get_mut(s.selected) {
+                                let mut items: Vec<&str> = field.label_value.split(',').collect();
+                                if s.choice_idx > 0 && s.choice_idx < items.len() {
+                                    items.swap(s.choice_idx, s.choice_idx - 1);
+                                    field.label_value = items.join(",");
+                                    s.choice_idx -= 1;
+                                }
+                            }
+                        }
+                        KeyCode::Char('-') | KeyCode::Char('_') => {
+                            if let Some(field) = s.fields.get_mut(s.selected) {
+                                let mut items: Vec<&str> = field.label_value.split(',').collect();
+                                if s.choice_idx + 1 < items.len() {
+                                    items.swap(s.choice_idx, s.choice_idx + 1);
+                                    field.label_value = items.join(",");
+                                    s.choice_idx += 1;
+                                }
+                            }
+                        }
+                        KeyCode::Enter => {
+                            s.editing = false;
+                            s.input.clear();
+                        }
+                        KeyCode::Esc => {
+                            if let Some(field) = s.fields.get_mut(s.selected) {
+                                field.label_value = s.input.clone();
+                            }
+                            s.editing = false;
+                            s.input.clear();
+                        }
+                        _ => {}
+                    }
+                    return false;
+                }
                 match code {
                     KeyCode::Enter => {
                         if let Some(field) = s.fields.get_mut(s.selected) {
@@ -1772,7 +1826,7 @@ impl App {
                     Some(DetailPopup::ConfigEditor(ref s)) => {
                         match s.fields.get(s.selected).map(|f| &f.kind) {
                             Some(ConfigFieldKind::SaveButton) => Some("save"),
-                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) => {
+                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) | Some(ConfigFieldKind::Order) => {
                                 Some("edit")
                             }
                             _ => None,
@@ -1805,6 +1859,12 @@ impl App {
                             if let Some((val, kind)) = field_info {
                                 if let ConfigFieldKind::Choice(options) = kind {
                                     s.choice_idx = options.iter().position(|o| *o == val).unwrap_or(0);
+                                } else if let ConfigFieldKind::Order = kind {
+                                    // s.input snapshots the pre-edit order so Esc can restore it —
+                                    // +/- mutate field.label_value live so the list re-renders in
+                                    // its new order immediately, not just on confirm.
+                                    s.input = val;
+                                    s.choice_idx = 0;
                                 } else {
                                     s.input = val;
                                 }

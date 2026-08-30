@@ -103,6 +103,38 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     }
                 }
             }
+            ConfigFieldKind::Order => {
+                let is_sel = field_idx == state.selected;
+                let editing = is_sel && state.editing;
+                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+
+                if is_sel { sel_line = lines.len(); }
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {:<label_w$}", field.label, label_w = label_w),
+                        sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                    ),
+                    Span::styled(
+                        field.label_value.clone(),
+                        sel_style.fg(if editing { color::YELLOW } else { color::TEXT }),
+                    ),
+                ]));
+                if editing {
+                    for (i, item) in field.label_value.split(',').enumerate() {
+                        let item_sel = i == state.choice_idx;
+                        let item_style = if item_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                        let marker = if item_sel { "\u{25B8} " } else { "  " };
+                        lines.push(Line::from(Span::styled(
+                            format!("      {}{}", marker, item),
+                            item_style.fg(if item_sel { color::YELLOW } else { color::TEXT_DIM }).add_modifier(if item_sel { Modifier::BOLD } else { Modifier::empty() }),
+                        )));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        "      \u{2191}\u{2193} select \u{00b7} +/- move \u{00b7} 'Enter' confirm \u{00b7} 'Esc' cancel",
+                        Style::default().fg(color::TEXT_DIM),
+                    )));
+                }
+            }
             _ => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
