@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `graph_order`'s new reorderable-list editor didn't actually save: `Save & Restart` silently discarded the edited order and fell back to the hardcoded default, because the field-extraction step that builds the saved config only recognized the old free-text/choice field kinds — the new list-editor kind wasn't in that list.
+- Config Editor's border hints stayed static ("Esc/q:close ↑↓:move ...") while reordering `graph_order`, never mentioning `+`/`-`. They now switch to the reorder-mode key set (`Esc:cancel`, `↑↓:select`, `+/-:move item`, `Enter:confirm`) while that list is open, same as Job Detail's hints already change with its focus/scroll state — replacing a separate inline text line under the list that duplicated the same information.
 
 ### Fixed
 - Refresh interval (`+`/`-`) only worked from the Dashboard tab, even though its hint is shown globally in the title frame and the help overlay never said it was Dashboard-only either — now works from any tab.

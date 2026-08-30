@@ -20,13 +20,24 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         .unwrap_or_else(|_| app.config_path.clone())
         .display()
         .to_string();
-    let hints: [(&str, String); 5] = [
-        ("Esc/q", "close".to_string()),
-        ("\u{2191}\u{2193}", "move".to_string()),
-        ("PgUp/PgDn", "page".to_string()),
-        ("Home/End", "top/bottom".to_string()),
-        ("Enter", "edit".to_string()),
-    ];
+    let editing_order = state.editing
+        && matches!(state.fields.get(state.selected).map(|f| f.kind), Some(ConfigFieldKind::Order));
+    let hints: Vec<(&str, String)> = if editing_order {
+        vec![
+            ("Esc", "cancel".to_string()),
+            ("\u{2191}\u{2193}", "select".to_string()),
+            ("+/-", "move item".to_string()),
+            ("Enter", "confirm".to_string()),
+        ]
+    } else {
+        vec![
+            ("Esc/q", "close".to_string()),
+            ("\u{2191}\u{2193}", "move".to_string()),
+            ("PgUp/PgDn", "page".to_string()),
+            ("Home/End", "top/bottom".to_string()),
+            ("Enter", "edit".to_string()),
+        ]
+    };
     let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER), color::BG_DARK)
         .title_bottom(super::border_hints(&hints).left_aligned())
         .title_bottom(super::border_info(format!("saved to: {}", config_path)).right_aligned());
@@ -129,10 +140,6 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                             item_style.fg(if item_sel { color::YELLOW } else { color::TEXT_DIM }).add_modifier(if item_sel { Modifier::BOLD } else { Modifier::empty() }),
                         )));
                     }
-                    lines.push(Line::from(Span::styled(
-                        "      \u{2191}\u{2193} select \u{00b7} +/- move \u{00b7} 'Enter' confirm \u{00b7} 'Esc' cancel",
-                        Style::default().fg(color::TEXT_DIM),
-                    )));
                 }
             }
             _ => {
