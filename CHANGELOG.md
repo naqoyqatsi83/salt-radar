@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config Editor's `graph_order` field is no longer hand-typed free text — editing it now expands into a reorderable vertical list (`↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts), removing the chance of a typo or dropped panel name that free-text editing allowed.
 
 ### Fixed
+- `graph_order`'s new reorderable-list editor didn't actually save: `Save & Restart` silently discarded the edited order and fell back to the hardcoded default, because the field-extraction step that builds the saved config only recognized the old free-text/choice field kinds — the new list-editor kind wasn't in that list.
+
+### Fixed
 - Refresh interval (`+`/`-`) only worked from the Dashboard tab, even though its hint is shown globally in the title frame and the help overlay never said it was Dashboard-only either — now works from any tab.
 - Mouse mode (`F2`) couldn't be toggled while any popup was open — added to the same "works even with a popup open" key set as contrast/tab-switching/`F3`.
 - Minion Events popup (and Minion/Event/Alert Detail, Event Sniffer): section-divider rules under the title/column headers were a fixed-length string that only ever matched one particular popup width, so they looked arbitrarily short or misaligned on anything else — now sized from the popup's actual rendered width.
