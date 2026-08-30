@@ -80,7 +80,8 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-fn header_lines(title: &str) -> Vec<Line<'static>> {
+fn header_lines(title: &str, area_width: u16) -> Vec<Line<'static>> {
+    let rule = "\u{2500}".repeat((area_width as usize).saturating_sub(2));
     vec![
         Line::from(Span::styled(
             format!("  {}", title),
@@ -89,7 +90,7 @@ fn header_lines(title: &str) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+            format!("  {}", rule),
             Style::default().fg(Color::Rgb(35, 50, 80)),
         )),
         Line::from(""),
@@ -216,7 +217,7 @@ fn grain_height(val: &str) -> usize {
 }
 
 fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo, ping_state: &PingState, grains: &Option<Vec<(String, String)>>, grains_scroll: usize, app: &App) {
-    let mut lines = header_lines(" Minion Detail ");
+    let mut lines = header_lines(" Minion Detail ", area.width);
     lines.push(row("ID", minion.id.clone(), color::CYAN));
 
     let key_status_text = match minion.key_status {
@@ -275,7 +276,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     // ── Grains section ────────────────────────────────────────────────────
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  \u{2500}\u{2500}\u{2500}\u{2500} Full Grains \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        format!("  \u{2500}\u{2500}\u{2500}\u{2500} Full Grains {}", "\u{2500}".repeat((area.width as usize).saturating_sub(21))),
         Style::default().fg(Color::Rgb(35, 50, 80)),
     )));
 
@@ -373,7 +374,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
 }
 
 fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
-    let mut lines = header_lines(" Event Detail ");
+    let mut lines = header_lines(" Event Detail ", area.width);
     lines.push(row("Tag", evt.tag.clone(), color::CYAN));
     lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
     lines.push(Line::from(""));
@@ -721,7 +722,7 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
         crate::types::AlertSeverity::Warn => color::YELLOW,
         crate::types::AlertSeverity::Crit => color::RED,
     };
-    let mut lines = header_lines(" Alert Detail ");
+    let mut lines = header_lines(" Alert Detail ", area.width);
     lines.push(row("Severity", alert.severity.label().to_string(), sev_color));
     lines.push(row("Rule", alert.rule.to_string(), color::CYAN));
     lines.push(row("Description", alert.description.clone(), color::TEXT_HI));
@@ -808,7 +809,7 @@ fn draw_event_sniffer(
         format!(" Event Sniffer: {} ", ids_str)
     };
 
-    let mut lines = header_lines(&title);
+    let mut lines = header_lines(&title, area.width);
 
     // Status bar
     let (status_label, status_color) = if state.paused {
@@ -848,7 +849,7 @@ fn draw_event_sniffer(
             Span::styled(format!("{:<tyw$}", "Type", tyw = type_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         ]));
         lines.push(Line::from(Span::styled(
-            "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+            format!("  {}", "\u{2500}".repeat((area.width as usize).saturating_sub(2))),
             Style::default().fg(Color::Rgb(35, 50, 80)),
         )));
 

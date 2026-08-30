@@ -118,7 +118,7 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
                 };
 
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {}  {}", local_t, utc_t), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(format!("  {}  {}", local_t, utc_t), Style::default().fg(color::TEXT_TITLE)),
                     Span::styled(format!("  {:<45}", tag), Style::default().fg(color::CYAN)),
                 ]).style(sel_style));
             }

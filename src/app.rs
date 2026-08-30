@@ -3134,7 +3134,7 @@ impl App {
                 if since.elapsed().as_secs() >= 120 {
                     self.cache_loading = false;
                     self.cache_loading_at = None;
-                    self.cache_load_error = Some("Request timed out after 120s. Press r to retry.".to_string());
+                    self.cache_load_error = Some("Request timed out after 120s. Press 'r' to retry.".to_string());
                 }
             }
         }
@@ -3180,7 +3180,7 @@ impl App {
         // Help overlay handles its own dismiss
         if self.show_help {
             match code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') => {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') | KeyCode::F(1) => {
                     self.show_help = false;
                 }
                 _ => {}
@@ -3262,6 +3262,15 @@ impl App {
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
                     KeyCode::Char('6') => { self.current_tab = Tab::Pulse; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
+                    KeyCode::F(2) => {
+                        self.mouse_enabled = !self.mouse_enabled;
+                        self.needs_mouse_toggle = true;
+                        return false;
+                    }
+                    KeyCode::Char('?') | KeyCode::F(1) => {
+                        self.show_help = true;
+                        return false;
+                    }
                     _ => {}
                 }
             }
@@ -3977,14 +3986,10 @@ impl App {
         match code {
             KeyCode::Char('q') | KeyCode::Char('Q') => return true,
             KeyCode::Char('=') | KeyCode::Char('+') => {
-                if self.current_tab == Tab::Dashboard {
-                    self.tick_interval_ms = (self.tick_interval_ms + 500).min(30_000);
-                }
+                self.tick_interval_ms = (self.tick_interval_ms + 500).min(30_000);
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
-                if self.current_tab == Tab::Dashboard {
-                    self.tick_interval_ms = self.tick_interval_ms.saturating_sub(500).max(500);
-                }
+                self.tick_interval_ms = self.tick_interval_ms.saturating_sub(500).max(500);
             }
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 if self.admin_mode {
@@ -4072,7 +4077,7 @@ impl App {
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
             }
-            KeyCode::Char('?') => {
+            KeyCode::Char('?') | KeyCode::F(1) => {
                 self.show_help = true;
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {

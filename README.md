@@ -209,10 +209,10 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 | `/` | Filter (current tab) |
 | `a` | Toggle admin mode |
 | `c` | Toggle high-contrast selection |
-| `?` | Help overlay |
+| `?` / `F1` | Help overlay |
 | `F2` | Toggle mouse mode |
 | `F3` | Open Config Editor |
-| `+`/`-` | Adjust refresh interval (Dashboard) |
+| `+`/`-` | Adjust refresh interval |
 | `m` | Toggle sparkline style (Dashboard) |
 | `F4`–`F8` | Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard) |
 

@@ -112,22 +112,26 @@ pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_
     block
 }
 
-/// btop-style border hint: `┤KEY:label├` with the key that switches the
+/// btop-style border hint: `┤ KEY:label ├` with the key that switches the
 /// behavior picked out in red, built directly into the border it affects
-/// instead of listed in a separate legend.
+/// instead of listed in a separate legend. One space pads both sides of
+/// every bracketed segment in this border-decoration family — border_hints,
+/// border_info, value_hint — consistently; none of them run text up against
+/// the ┤/├ glyphs.
 pub fn border_hints(hints: &[(&str, String)]) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (key, label) in hints {
         spans.push(Span::styled("\u{2524}", Style::default().fg(color::BORDER)));
-        spans.push(Span::styled(key.to_string(), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(format!(" {}", key), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)));
         spans.push(Span::styled(format!(":{} ", label), Style::default().fg(color::TEXT_TITLE)));
         spans.push(Span::styled("\u{251C}", Style::default().fg(color::BORDER)));
     }
     Line::from(spans)
 }
 
-/// Plain `┤text├` border segment for read-only info (no key to highlight) —
-/// same bracket style as `border_hints`, just without the red key portion.
+/// Plain `┤ text ├` border segment for read-only info (no key to
+/// highlight) — same bracket/spacing style as `border_hints`, just without
+/// the red key portion.
 pub fn border_info(text: impl Into<String>) -> Line<'static> {
     Line::from(vec![
         Span::styled("\u{2524}", Style::default().fg(color::BORDER)),
@@ -136,13 +140,14 @@ pub fn border_info(text: impl Into<String>) -> Line<'static> {
     ])
 }
 
-/// btop-style adjustable-value hint: `┤-VALUE+├` with the `-`/`+` keys that
-/// step the value picked out in red, the live value shown plain between them
-/// (e.g. how btop shows its own update-interval in the box border).
+/// btop-style adjustable-value hint: `┤ -VALUE+ ├` with the `-`/`+` keys
+/// that step the value picked out in red, the live value shown plain
+/// between them (e.g. how btop shows its own update-interval in the box
+/// border).
 pub fn value_hint(dec_key: &str, value: impl Into<String>, inc_key: &str) -> Vec<Span<'static>> {
     vec![
         Span::styled("\u{2524}", Style::default().fg(color::BORDER)),
-        Span::styled(dec_key.to_string(), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {}", dec_key), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
         Span::styled(value.into(), Style::default().fg(color::TEXT_TITLE)),
         Span::styled(inc_key.to_string(), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
         Span::styled(" \u{251C}", Style::default().fg(color::BORDER)),
@@ -245,7 +250,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     ]);
     let center_title = Line::from(Span::styled(
         format!(" {} ", now),
-        Style::default().fg(Color::Rgb(85, 95, 120)),
+        Style::default().fg(color::TEXT_TITLE),
     ));
     let dropped = app.agent_backlog_dropped.load(std::sync::atomic::Ordering::Relaxed);
     let mut right_spans = value_hint("-", format!("{}ms", app.tick_interval_ms), "+");
@@ -270,7 +275,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     let admin_hint = if app.admin_mode { "admin off".to_string() } else { "admin on".to_string() };
     let contrast_hint = if app.high_contrast { "contrast off".to_string() } else { "contrast on".to_string() };
     let global_hints = border_hints(&[
-        ("?", "help".to_string()),
+        ("?/F1", "help".to_string()),
         ("F2", mouse_hint),
         ("F3", "config".to_string()),
         ("c", contrast_hint),
@@ -532,7 +537,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  +/-", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled("  Adjust refresh interval (Dashboard)", Style::default().fg(color::TEXT)),
+            Span::styled("  Adjust refresh interval", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  m", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
@@ -543,7 +548,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  Toggle CPU/Mem/ZMQ/Events/Minions graphs (Dashboard, saved on quit)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  ?", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  ?/F1", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Toggle this help", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![

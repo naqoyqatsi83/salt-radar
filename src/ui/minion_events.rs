@@ -73,7 +73,8 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER_HI))
         .style(Style::default().bg(color::BG_POPUP))
-        .title_bottom(super::border_hints(&hints).left_aligned());
+        .title_bottom(super::border_hints(&hints).left_aligned())
+        .title_bottom(super::border_info("dim = older than 5m").right_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -82,20 +83,34 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
     let sel = selected.min(total.saturating_sub(1));
 
     let mut lines: Vec<Line> = Vec::new();
+    // Full-width rule matching the popup's actual rendered width, instead of
+    // a fixed-length string that only ever matched one particular size.
+    let rule = format!("  {}", "\u{2500}".repeat((inner.width as usize).saturating_sub(2)));
 
-    // Title bar with minion summary
+    // Title bar with minion summary — os/version only if grains have
+    // actually been retrieved for this minion, instead of showing blank
+    // runs like "[connected,    v]" for whatever fields aren't known yet.
     let mut title = format!("  \u{25C8} {}", minion_id);
     if let Some(minion) = app.minion_info.iter().find(|m| m.id == *minion_id) {
-        title.push_str(&format!("  [{}, {} {}  v{}]",
-            if minion.connected { "connected" } else { "disconnected" },
-            minion.os, minion.osrelease, minion.salt_version));
+        let mut parts = vec![if minion.connected { "connected" } else { "disconnected" }.to_string()];
+        if !minion.os.is_empty() {
+            parts.push(if !minion.osrelease.is_empty() {
+                format!("{} {}", minion.os, minion.osrelease)
+            } else {
+                minion.os.clone()
+            });
+        }
+        if !minion.salt_version.is_empty() {
+            parts.push(format!("v{}", minion.salt_version));
+        }
+        title.push_str(&format!("  [{}]", parts.join(", ")));
     }
     lines.push(Line::from(Span::styled(
         title,
         Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
-        "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        rule.clone(),
         Style::default().fg(Color::Rgb(35, 50, 80)),
     )));
 
@@ -119,7 +134,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
                 Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
         ]));
         lines.push(Line::from(Span::styled(
-            "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+            rule.clone(),
             Style::default().fg(Color::Rgb(35, 50, 80)),
         )));
 
