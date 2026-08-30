@@ -176,7 +176,7 @@ Copy the example config and adjust as needed:
 cp salt-radar.toml.example salt-radar.toml
 ```
 
-All settings are optional and can also be edited live from inside the app (`F3`). The config file is looked up in the current directory or `~/.config/salt-radar/salt-radar.toml`. See [`salt-radar.toml.example`](salt-radar.toml.example) for the complete, commented list of every setting (connection paths, refresh intervals, event buffer sizes, all alert thresholds including per-unit memory overrides, and the Dashboard's `zmq_latency_source`/`show_*_graph`/`graph_order` settings) — a representative slice:
+All settings are optional and can also be edited live from inside the app (`F3`), which writes the file back on save. salt-radar looks for `salt-radar.toml` as a relative path in whatever directory you launch it from — there is no `~/.config` fallback, so run it from the directory containing your config (or symlink one in). See [`salt-radar.toml.example`](salt-radar.toml.example) for the complete, commented list of every setting (connection paths, refresh intervals, event buffer sizes, all alert thresholds including per-unit memory overrides, and the Dashboard's `zmq_latency_source`/`show_*_graph`/`graph_order` settings) — a representative slice:
 
 ```toml
 [salt]
@@ -213,6 +213,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval (Dashboard) |
 | `m` | Toggle sparkline style (Dashboard) |
+| `F4`–`F8` | Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard) |
 
 ### Per-tab
 
@@ -222,6 +223,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 | Minions | `r` | Minion event/return history popup |
 | Minions | `s` | Fleet scan (admin mode only) |
 | Minions | `x` | Hide/show non-responsive minions |
+| Minions | `z` | Collapse/expand timed-out minions into one row (when not hidden) |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
 | Jobs (Cache) | `,`/`.` | Previous/next page |
@@ -251,6 +253,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 | `Home`/`End` | Jump to start/end of output (scroll mode) |
 | `h` | Edit highlight keywords (sniffer) |
 | `p` | Pause/resume (sniffer) |
+| `g` | Fetch grains for this minion (minion detail, admin mode only) |
 
 ## How It Works
 

@@ -1,7 +1,8 @@
 # salt-radar.toml — configuration file for salt-radar
 #
-# Place this file in the same directory as the salt-radar binary,
-# or at ~/.config/salt-radar/salt-radar.toml.
+# Place this file in the directory you launch salt-radar from — it is
+# looked up as a relative path ("salt-radar.toml"), not next to the
+# binary, and there is no ~/.config fallback.
 # All settings are optional; defaults are shown below.
 
 [salt]
