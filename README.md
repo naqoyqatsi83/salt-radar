@@ -89,6 +89,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Live event stream from the Salt event bus (via ZMQ)
 - Full date/time in local and UTC columns
 - Filter by tag, function, minion ID, or any JSON field
+- Event detail popup: copy to clipboard (`y` = tag/timestamp + pretty-printed data, `Y` = raw JSON data only)
 - Advanced **Event Sniffer** — filter events by minion ID substring (`n` key):
   - Pause/resume live capture (`p`)
   - Navigate events with full pretty-printed JSON body

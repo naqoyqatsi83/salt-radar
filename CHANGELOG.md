@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consistency pass across popup/panel hints: merged `Esc`/`q` where both did the same thing but only one was shown (Job Detail, Config Editor); fixed `j/k`/"arrows" labels to the `↑↓` glyph used everywhere else (Job Detail).
 - Pulse tab's Minion Pulse panel now shows its own navigation hints (`↑↓:row`, `←→:col`, `PgUp/PgDn:jump 10`, `Home/End:first/last`) in its border, matching every other panel.
 - Admin-mode key was shown as `A` in a few spots (grains popup hint and body text, fleet-scan prompts) despite only lowercase `a` being used everywhere else — normalized, and every inline key mention in body text is now wrapped in quotes (e.g. `press 's'`) for readability.
+- Help overlay: new "Minion Detail" section explaining how `Last Seen` is calculated. README: documented Event Detail's `y`/`Y` copy distinction (previously only Job Detail's was documented).
 
 ## [0.6.0-rc13] - 2026-08-30
 
