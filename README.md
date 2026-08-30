@@ -176,7 +176,7 @@ Copy the example config and adjust as needed:
 cp salt-radar.toml.example salt-radar.toml
 ```
 
-All settings are optional and can also be edited live from inside the app (`F3`), which writes the file back on save. salt-radar looks for `salt-radar.toml` as a relative path in whatever directory you launch it from — there is no `~/.config` fallback, so run it from the directory containing your config (or symlink one in). See [`salt-radar.toml.example`](salt-radar.toml.example) for the complete, commented list of every setting (connection paths, refresh intervals, event buffer sizes, all alert thresholds including per-unit memory overrides, and the Dashboard's `zmq_latency_source`/`show_*_graph`/`graph_order` settings) — a representative slice:
+All settings are optional and can also be edited live from inside the app (`F3`), which writes the file back on save — the Config Editor's own bottom border shows exactly which file it's writing to. salt-radar looks for `./salt-radar.toml` in the current directory first (so a per-directory config still works, e.g. if you copied the example there); if that's not present, it falls back to `$XDG_CONFIG_HOME/salt-radar/salt-radar.toml` (usually `~/.config/salt-radar/salt-radar.toml`), creating the directory on first save. See [`salt-radar.toml.example`](salt-radar.toml.example) for the complete, commented list of every setting (connection paths, refresh intervals, event buffer sizes, all alert thresholds including per-unit memory overrides, and the Dashboard's `zmq_latency_source`/`show_*_graph`/`graph_order` settings) — a representative slice:
 
 ```toml
 [salt]
@@ -200,7 +200,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 |-----|--------|
 | `q` | Quit |
 | `Tab` | Switch tab |
-| `1`–`5` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts; `Tab` reaches Pulse) |
+| `1`–`6` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Enter` | Open detail popup |
@@ -208,12 +208,14 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 | `/` | Filter (current tab) |
 | `a` | Toggle admin mode |
 | `c` | Toggle high-contrast selection |
-| `?` / `h` | Help overlay |
+| `?` | Help overlay |
 | `F2` | Toggle mouse mode |
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval (Dashboard) |
 | `m` | Toggle sparkline style (Dashboard) |
 | `F4`–`F8` | Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard) |
+
+Most of these are also shown live, btop-style, in the border of the panel they affect (e.g. the title frame's bottom border shows `-2000ms+` for the current refresh interval) — the table above is the full reference.
 
 ### Per-tab
 

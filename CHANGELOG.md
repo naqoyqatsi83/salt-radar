@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc13] - 2026-08-30
+
+### Changed
+- Shortcut hints moved out of the bottom key-hint bar and into the border of the panel each one affects (btop-style: `┤key:label├` embedded in the panel's own frame), so hints stay next to the behavior they switch instead of a separate legend — the title frame carries the global keys (`?`/`F2`/`F3`/`a`/`q`), each Dashboard sparkline panel carries its own `F4`-`F8` hide toggle plus a shared `m` bars/dots toggle, and Minions/Events/Jobs/Alerts carry their own filter/detail/action keys. The bottom bar is now status-only (interval, agent connectivity, admin/contrast state, selection position). Dropped the redundant `h`/`H` help aliases — `?` only, matching btop's own help key
+- Refresh interval hint now matches btop's own adjustable-value style — `┤-2000ms+├` with the live interval value shown between the `-`/`+` keys — and moved to the title frame's top line, left of the `alerts:` count, instead of a static `+/-:interval` label at the bottom. The bottom status bar's redundant `ref: X.Xs` text is gone, and the `alerts:`/`backlog dropped:` indicators are now bracket-wrapped (`┤...├`) to match the rest of the border-hint style instead of floating unbracketed on the border
+- Pulse tab now has a direct jump key, `6` (was reachable only via `Tab`/mouse) — the tab bar numbers it like the other five tabs instead of showing a plain `◉` marker
+- High-contrast toggle (`c`) is back as a title-frame hint (`┤c:contrast on/off├`) — it was dropped entirely when the bottom key-hint bar was trimmed down to status-only
+- Config Editor (`F3`) now shows `┤saved to: <resolved path>├` on its bottom border, so it's visible which file settings actually get written to
+- Config file lookup now falls back to `$XDG_CONFIG_HOME/salt-radar/salt-radar.toml` (usually `~/.config/salt-radar/salt-radar.toml`), creating the directory on first save, when `./salt-radar.toml` isn't present in the launch directory. Previously it only ever looked at `./salt-radar.toml` relative to whatever directory the binary happened to be launched from, which silently dropped a fresh config into e.g. `~/Downloads/salt-radar.toml` if that's where you ran it from. A `./salt-radar.toml` still takes priority when present, so an existing per-directory config keeps working unchanged
+
 ## [0.6.0-rc12] - 2026-08-29
 
 ### Added

@@ -16,7 +16,12 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
     let area = detail_popup::centered_rect(68, 70, f.area());
     f.render_widget(Clear, area);
 
-    let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER), color::BG_DARK);
+    let config_path = std::fs::canonicalize(&app.config_path)
+        .unwrap_or_else(|_| app.config_path.clone())
+        .display()
+        .to_string();
+    let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER), color::BG_DARK)
+        .title_bottom(super::border_info(format!("saved to: {}", config_path)).left_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 

@@ -34,7 +34,11 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App) {
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
 
-    let block = super::list_block(format!(" Live Jobs ({}) ", app.jobs.len()), border_style, color::BG_DARK, has_more_above, has_more_below);
+    let mut hints: Vec<(&str, String)> = vec![("/", "filter".to_string()), ("Enter", "detail".to_string())];
+    if focused {
+        hints.push(("\u{2192}", "cache".to_string()));
+    }
+    let block = super::list_block_hinted(format!(" Live Jobs ({}) ", app.jobs.len()), border_style, color::BG_DARK, has_more_above, has_more_below, &hints);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -52,10 +56,6 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(format!(" /{}/ ", app.filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled("   / to filter", Style::default().fg(color::TEXT_DIM)),
         ]));
     }
 
@@ -140,7 +140,17 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
 
-    let block = super::list_block(format!(" Job Cache ({}) ", total_hint), border_style, color::BG_DARK, has_more_above, has_more_below);
+    let mut hints: Vec<(&str, String)> = vec![
+        ("/", "filter".to_string()),
+        ("Enter", "detail".to_string()),
+        ("[ ]", "limit".to_string()),
+        (", .", "page".to_string()),
+        ("r", "refresh".to_string()),
+    ];
+    if focused {
+        hints.push(("\u{2190}", "live".to_string()));
+    }
+    let block = super::list_block_hinted(format!(" Job Cache ({}) ", total_hint), border_style, color::BG_DARK, has_more_above, has_more_below, &hints);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -184,15 +194,6 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(format!(" /{}/ ", app.cache_server_filter), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items (of {} total)", total, app.cache_total_count), Style::default().fg(color::TEXT_DIM)),
-        ]));
-    } else {
-        let total_hint = if app.cache_loaded {
-            format!("   / filter  > pg dn  < pg up  ]/+ 500  [/- 500")
-        } else {
-            "   / to filter".to_string()
-        };
-        lines.push(Line::from(vec![
-            Span::styled(total_hint, Style::default().fg(color::TEXT_DIM)),
         ]));
     }
 

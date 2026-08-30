@@ -37,15 +37,8 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!(" /{}/ ", app.filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
-    } else {
-        lines.push(Line::from(Span::styled("   // filter  r events", Style::default().fg(color::TEXT_DIM))));
-    }
-
-    // ── Hide/collapse hints ──────────────────────────────────────────────
-    if app.hide_timed_out {
-        lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]  x to toggle", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
-    } else if app.fleet_data.is_some() {
-        lines.push(Line::from(Span::styled("  x Hide  z Toggle  r Events", Style::default().fg(color::TEXT_DIM))));
+    } else if app.hide_timed_out {
+        lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
     }
 
     // ── Admin status line ─────────────────────────────────────────────────
@@ -55,7 +48,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         } else if app.fleet_data.is_some() {
             lines.push(Line::from(Span::styled("  [Admin] Scan complete", Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD))));
         } else {
-            lines.push(Line::from(Span::styled("  [Admin] Press S to scan fleet", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled("  [Admin] Ready to scan fleet", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
         }
     }
 
@@ -181,12 +174,23 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let block = super::list_block(
+    let mut hints: Vec<(&str, String)> = vec![("/", "filter".to_string()), ("Enter", "detail".to_string()), ("r", "events".to_string())];
+    if app.fleet_data.is_some() {
+        hints.push(("x", if app.hide_timed_out { "show timed-out".to_string() } else { "hide timed-out".to_string() }));
+        if !app.hide_timed_out {
+            hints.push(("z", "collapse timed-out".to_string()));
+        }
+    }
+    if app.admin_mode {
+        hints.push(("s", "scan fleet".to_string()));
+    }
+    let block = super::list_block_hinted(
         format!(" Minions ({}) ", total),
         Style::default().fg(color::BORDER),
         color::BG_DARK,
         has_more_above,
         has_more_below,
+        &hints,
     );
     let inner = block.inner(area);
     f.render_widget(block, area);

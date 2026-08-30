@@ -35,6 +35,9 @@ pub struct ServiceTrend {
 pub struct App {
     // Config
     pub config: AppConfig,
+    /// Where `config` was loaded from and gets saved back to — see
+    /// `config::resolve_config_path`.
+    pub config_path: std::path::PathBuf,
 
     // Tabs
     pub current_tab: Tab,
@@ -366,7 +369,8 @@ pub enum DetailPopup {
 
 impl App {
     pub fn new() -> Self {
-        let config = load_config(&std::path::Path::new("salt-radar.toml"));
+        let config_path = crate::config::resolve_config_path();
+        let config = load_config(&config_path);
         let config_secs = config.config_secs;
         let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -392,6 +396,7 @@ impl App {
 
         Self {
             config,
+            config_path,
             current_tab: Tab::Dashboard,
             session_start: Instant::now(),
             tick_count: 0,
@@ -1603,7 +1608,7 @@ impl App {
             graph_order: vals.get("graph_order").unwrap_or(&"cpu,mem,zmq,events,activity").to_string(),
         };
 
-        crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
+        crate::config::write_config(&self.config_path, &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
         self.config = new_config;
         // A changed zmq_latency_source (or any save) shouldn't leave a stale
@@ -2745,7 +2750,7 @@ impl App {
         // Persist the current dashboard graph layout (F4-F8 toggles) so it
         // survives a restart instead of reverting to whatever was last
         // saved through the Config Editor.
-        let _ = crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &self.config);
+        let _ = crate::config::write_config(&self.config_path, &self.config);
     }
 
     fn process_fleet_returns(&mut self) {
@@ -3248,6 +3253,7 @@ impl App {
                     KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
                     KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
+                    KeyCode::Char('6') => { self.current_tab = Tab::Pulse; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
                     _ => {}
                 }
@@ -4056,7 +4062,7 @@ impl App {
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
             }
-            KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => {
+            KeyCode::Char('?') => {
                 self.show_help = true;
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -4112,6 +4118,7 @@ impl App {
             KeyCode::Char('3') => self.current_tab = Tab::Events,
             KeyCode::Char('4') => self.current_tab = Tab::Jobs,
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
+            KeyCode::Char('6') => self.current_tab = Tab::Pulse,
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
                     self.pulse_up();

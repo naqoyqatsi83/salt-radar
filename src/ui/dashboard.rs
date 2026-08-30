@@ -213,6 +213,30 @@ fn make_block_line(title: Line<'static>) -> Block<'static> {
         .style(Style::default().bg(color::BG_DARK))
 }
 
+fn make_block_line_hinted(title: Line<'static>, hints: &[(&str, String)]) -> Block<'static> {
+    let block = make_block_line(title);
+    if hints.is_empty() { block } else { block.title_bottom(super::border_hints(hints).left_aligned()) }
+}
+
+/// Each sparkline panel's own hide toggle (its existing F-key), plus the
+/// cross-panel bars/dots style toggle embedded once, on whichever panel
+/// happens to be first among the currently-enabled ones.
+fn spark_panel_hints(panel: SparkPanel, app: &App) -> Vec<(&'static str, String)> {
+    let fkey = match panel {
+        SparkPanel::Cpu => "F4",
+        SparkPanel::Mem => "F5",
+        SparkPanel::Zmq => "F6",
+        SparkPanel::Events => "F7",
+        SparkPanel::Activity => "F8",
+    };
+    let mut hints = vec![(fkey, "hide".to_string())];
+    if enabled_spark_panels(app).first() == Some(&panel) {
+        let style_label = if app.sparkline_style == SparklineStyle::Dots { "bars" } else { "dots" };
+        hints.push(("m", style_label.to_string()));
+    }
+    hints
+}
+
 fn count_keys_with_status(keys: &[crate::types::KeyInfo], status: crate::types::KeyStatus) -> usize {
     keys.iter().filter(|k| k.status == status).count()
 }
@@ -634,7 +658,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
         ])
     };
 
-    let block = make_block_line(title);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Zmq, app));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -774,7 +798,7 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         ])
     };
 
-    let block = make_block_line(title);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Events, app));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -852,7 +876,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         ])
     };
 
-    let block = make_block_line(title);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Activity, app));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -934,7 +958,7 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
         ])
     };
 
-    let block = make_block_line(title);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Cpu, app));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -989,7 +1013,7 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
         ])
     };
 
-    let block = make_block_line(title);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Mem, app));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
