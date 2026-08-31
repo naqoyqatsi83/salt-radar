@@ -1,8 +1,10 @@
 # salt-radar.toml — configuration file for salt-radar
 #
-# Place this file in the directory you launch salt-radar from — it is
-# looked up as a relative path ("salt-radar.toml"), not next to the
-# binary, and there is no ~/.config fallback.
+# salt-radar looks for ./salt-radar.toml in the directory you launch it
+# from first; if that's not present, it falls back to
+# $XDG_CONFIG_HOME/salt-radar/salt-radar.toml (usually
+# ~/.config/salt-radar/salt-radar.toml), creating the directory on first
+# save from the in-app Config Editor (F3).
 # All settings are optional; defaults are shown below.
 
 [salt]
