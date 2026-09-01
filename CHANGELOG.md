@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-09-01
 
 This release folds in `v0.6.0-rc1` through `v0.6.0-rc16`. Where a later RC
 changed or fixed something an earlier RC in this same range introduced, only
@@ -42,6 +42,7 @@ this release is the "Config file lookup" entry under Changed below.
 - Config file lookup: `./salt-radar.toml` in the launch directory wins if present; otherwise it falls back to `$XDG_CONFIG_HOME/salt-radar/salt-radar.toml` (usually `~/.config/salt-radar/salt-radar.toml`), creating the directory on first save. An existing per-directory config keeps working unchanged.
 - Sparkline panels default to Dots instead of Bars on first run. CPU/Memory sparklines in Bars mode render on a fixed 0-100 scale instead of auto-scaling to the visible window's own max, which previously exaggerated small values to a full-height bar.
 - Service memory reporting reads the systemd unit's cgroup `MemoryCurrent` (covers the whole process tree, shared pages counted once) instead of just the main process's own RSS, falling back to RSS when cgroup accounting is unavailable.
+- Job Cache's live "N jobs read" loading line: only the count itself is now accent-colored, matching the title text color used elsewhere; the label and elapsed time around it render in a single dim color instead of mixing grey/yellow/grey.
 - System data collection (keys, processes, services, system info) moved from Rust-side `/proc` polling to the Python agent for reliability.
 - Column widths across Dashboard (Services, Key Status, Event Types), Minions (Fleet Overview, list), Jobs (Live/Cache), Alerts, and Config Editor are now derived from the actual content present instead of hardcoded guesses, so long unit/rule/label names no longer overflow their column or misalign the ones after it.
 - Admin-mode key is consistently shown/typed as lowercase `a` everywhere (was `A` in a few spots), and every inline key mention in body text is wrapped in quotes (e.g. `press 's'`) for readability.
@@ -77,6 +78,7 @@ this release is the "Config file lookup" entry under Changed below.
 - Event Detail's `y`/`Y` copy distinction (readable vs. raw JSON) restored, matching the convention Job Detail already used.
 - Minion Events popup: dim-row note ("dim = older than 5m") no longer clips off the right edge, its title bar no longer shows blank-looking fields for minions with no grains yet, and section-divider rules are sized to the popup's actual rendered width instead of one fixed length.
 - Agent's `/proc/<pid>/stat` parser now locates the `comm` field by its closing paren instead of a fixed whitespace-split index, which previously misaligned RSS/utime/stime (and inflated the Dashboard's memory figures) for any process whose `comm` contains a space.
+- The agent's stdin dispatch loop only backgrounded the `jid_lookup`/`jobs_list` commands onto their own thread — every other command (`list_processes`, `get_zmq_connections`, `minion_cache_list`, etc., all sent on every tick) ran inline, blocking the loop from even reading the next stdin line until that command finished. On a busy master, a job-detail lookup could sit unread behind a backlog of those for tens of seconds despite finishing in a few seconds once actually dispatched. Every agent command now runs on its own thread, with the NDJSON stdout writer locked so concurrent writers can't interleave into an unparseable line.
 
 ### Removed
 - Debug/diagnostic logging left over from development: the unbounded `/tmp/salt-radar-agent-ndjson.log`, and the temporary `/tmp/.salt-radar-memdiag-<pid>.log` RSS/collection-size log used to track down the memory-growth fix above — both removed once no longer needed, the underlying fixes stayed.
