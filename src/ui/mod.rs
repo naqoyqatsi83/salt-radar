@@ -70,10 +70,11 @@ pub mod color {
 /// which view renders it, instead of each call site handing `.title()` a
 /// plain, unstyled string.
 pub fn titled_block(title: impl Into<String>, border_style: Style, bg: Color) -> Block<'static> {
+    let border_color = border_style.fg.unwrap_or(color::BORDER);
     Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title(Line::from(bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))])))
+        .title(Line::from(bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))], border_color)))
         .style(Style::default().bg(bg))
 }
 
@@ -95,9 +96,10 @@ pub fn scroll_window(selected: usize, visible: usize, total: usize) -> (usize, b
 /// above" hint to the top title and adds a "more below" hint on the
 /// bottom border when the list is windowed in that direction.
 pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool) -> Block<'static> {
-    let mut top_spans = bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))]);
+    let border_color = border_style.fg.unwrap_or(color::BORDER);
+    let mut top_spans = bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))], border_color);
     if has_more_above {
-        top_spans.push(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM)));
+        top_spans.push(Span::styled(" \u{25B2} more above ", Style::default().fg(border_color)));
     }
     let mut block = Block::default()
         .borders(Borders::ALL)
@@ -106,7 +108,7 @@ pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_
         .title_top(Line::from(top_spans));
     if has_more_below {
         block = block.title_bottom(
-            Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::TEXT_DIM))).right_aligned(),
+            Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(border_color))).right_aligned(),
         );
     }
     block
@@ -118,13 +120,13 @@ pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_
 /// every bracketed segment in this border-decoration family — border_hints,
 /// border_info, value_hint — consistently; none of them run text up against
 /// the ┤/├ glyphs.
-pub fn border_hints(hints: &[(&str, String)]) -> Line<'static> {
+pub fn border_hints(hints: &[(&str, String)], border_color: Color) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (key, label) in hints {
-        spans.push(Span::styled("\u{2524}", Style::default().fg(color::BORDER)));
+        spans.push(Span::styled("\u{2524}", Style::default().fg(border_color)));
         spans.push(Span::styled(format!(" {}", key), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)));
         spans.push(Span::styled(format!(":{} ", label), Style::default().fg(color::TEXT_TITLE)));
-        spans.push(Span::styled("\u{251C}", Style::default().fg(color::BORDER)));
+        spans.push(Span::styled("\u{251C}", Style::default().fg(border_color)));
     }
     Line::from(spans)
 }
@@ -132,8 +134,8 @@ pub fn border_hints(hints: &[(&str, String)]) -> Line<'static> {
 /// Plain `┤ text ├` border segment for read-only info (no key to
 /// highlight) — same bracket/spacing style as `border_hints`, just without
 /// the red key portion.
-pub fn border_info(text: impl Into<String>) -> Line<'static> {
-    Line::from(bracket_title(vec![Span::styled(text.into(), Style::default().fg(color::TEXT_TITLE))]))
+pub fn border_info(text: impl Into<String>, border_color: Color) -> Line<'static> {
+    Line::from(bracket_title(vec![Span::styled(text.into(), Style::default().fg(color::TEXT_TITLE))], border_color))
 }
 
 /// Wraps a panel's title content — its label plus any dynamic stats bundled
@@ -141,7 +143,11 @@ pub fn border_info(text: impl Into<String>) -> Line<'static> {
 /// piece of info a frame's top border carries should go through this, so it
 /// reads the same as the `┤ key:hint ├` segments already used in the bottom
 /// border (border_hints) instead of running as bare text against the border.
-pub fn bracket_title(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+/// `border_color` should match whatever color the panel's own border is
+/// currently drawn in (`color::BORDER` or, while focused/interactive,
+/// `color::BORDER_HI`) so the bracket doesn't read as a dimmer color than
+/// the border it's embedded in.
+pub fn bracket_title(mut spans: Vec<Span<'static>>, border_color: Color) -> Vec<Span<'static>> {
     // Callers built their content for the old bare-text title (with its own
     // leading/trailing padding); strip that so the bracket's own one-space
     // padding doesn't end up doubled.
@@ -152,9 +158,9 @@ pub fn bracket_title(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
         last.content = std::borrow::Cow::Owned(last.content.trim_end().to_string());
     }
     let mut wrapped = Vec::with_capacity(spans.len() + 2);
-    wrapped.push(Span::styled("\u{2524} ", Style::default().fg(color::BORDER)));
+    wrapped.push(Span::styled("\u{2524} ", Style::default().fg(border_color)));
     wrapped.append(&mut spans);
-    wrapped.push(Span::styled(" \u{251C}", Style::default().fg(color::BORDER)));
+    wrapped.push(Span::styled(" \u{251C}", Style::default().fg(border_color)));
     wrapped
 }
 
@@ -162,27 +168,29 @@ pub fn bracket_title(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
 /// that step the value picked out in red, the live value shown plain
 /// between them (e.g. how btop shows its own update-interval in the box
 /// border).
-pub fn value_hint(dec_key: &str, value: impl Into<String>, inc_key: &str) -> Vec<Span<'static>> {
+pub fn value_hint(dec_key: &str, value: impl Into<String>, inc_key: &str, border_color: Color) -> Vec<Span<'static>> {
     vec![
-        Span::styled("\u{2524}", Style::default().fg(color::BORDER)),
+        Span::styled("\u{2524}", Style::default().fg(border_color)),
         Span::styled(format!(" {}", dec_key), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
         Span::styled(value.into(), Style::default().fg(color::TEXT_TITLE)),
         Span::styled(inc_key.to_string(), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
-        Span::styled(" \u{251C}", Style::default().fg(color::BORDER)),
+        Span::styled(" \u{251C}", Style::default().fg(border_color)),
     ]
 }
 
 /// Like `titled_block`, with btop-style hints embedded in the bottom border.
 pub fn titled_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, hints: &[(&str, String)]) -> Block<'static> {
+    let border_color = border_style.fg.unwrap_or(color::BORDER);
     let block = titled_block(title, border_style, bg);
-    if hints.is_empty() { block } else { block.title_bottom(border_hints(hints).left_aligned()) }
+    if hints.is_empty() { block } else { block.title_bottom(border_hints(hints, border_color).left_aligned()) }
 }
 
 /// Like `list_block`, with btop-style hints embedded in the bottom border
 /// (left-aligned, alongside the right-aligned "more below" indicator).
 pub fn list_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool, hints: &[(&str, String)]) -> Block<'static> {
+    let border_color = border_style.fg.unwrap_or(color::BORDER);
     let block = list_block(title, border_style, bg, has_more_above, has_more_below);
-    if hints.is_empty() { block } else { block.title_bottom(border_hints(hints).left_aligned()) }
+    if hints.is_empty() { block } else { block.title_bottom(border_hints(hints, border_color).left_aligned()) }
 }
 
 pub mod key {
@@ -218,19 +226,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_title_frame(f, main_layout[0], app);
 
+    // A popup (including the globally-triggered Config Editor) steals focus
+    // from whatever tab is behind it, so that tab's normally-always-bright
+    // navigable panel should dim back to the same color as its non-navigable
+    // neighbors instead of still reading as the focused element. `popup_tab`
+    // is only ever set when a popup opens and is never cleared when one
+    // closes (closing just sets `detail_popup` back to `None`), so it must
+    // be gated on `detail_popup.is_some()` too — otherwise a tab that ever
+    // had a popup opened on it reads as permanently unfocused afterward.
+    let popup_active = app.detail_popup.is_some()
+        && (app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))));
+    let tab_focused = !popup_active && !app.show_help;
+
     match app.current_tab {
         Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[1], app),
-        Tab::Minions => minions::draw_minions(f, main_layout[1], app),
-        Tab::Events => events::draw_events(f, main_layout[1], app),
-        Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app),
-        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app),
-        Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app),
+        Tab::Minions => minions::draw_minions(f, main_layout[1], app, tab_focused),
+        Tab::Events => events::draw_events(f, main_layout[1], app, tab_focused),
+        Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app, tab_focused),
+        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused),
+        Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
     }
 
     draw_key_hints(f, main_layout[2], app);
 
     // Detail popup overlay
-    if app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))) { detail_popup::draw_detail_popup(f, app); }
+    if popup_active { detail_popup::draw_detail_popup(f, app); }
 
     // Help overlay
     if app.show_help {
@@ -271,7 +291,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(color::TEXT_TITLE),
     ));
     let dropped = app.agent_backlog_dropped.load(std::sync::atomic::Ordering::Relaxed);
-    let mut right_spans = value_hint("-", format!("{}ms", app.tick_interval_ms), "+");
+    let mut right_spans = value_hint("-", format!("{}ms", app.tick_interval_ms), "+", color::BORDER);
     if dropped > 0 {
         right_spans.push(Span::styled("\u{2524}", Style::default().fg(color::BORDER)));
         right_spans.push(Span::styled(
@@ -299,7 +319,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         ("c", contrast_hint),
         ("a", admin_hint),
         ("q", "quit".to_string()),
-    ]);
+    ], color::BORDER);
 
     let block = Block::default()
         .borders(Borders::ALL)

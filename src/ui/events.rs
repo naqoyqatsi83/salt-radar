@@ -26,17 +26,17 @@ fn format_time_utc(ts: f64) -> String {
         .unwrap_or_else(|| "\u{2014}".to_string())
 }
 
-pub fn draw_events(f: &mut Frame, area: Rect, app: &App) {
+pub fn draw_events(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    draw_event_list(f, cols[0], app);
+    draw_event_list(f, cols[0], app, focused);
     draw_event_preview(f, cols[1], app);
 }
 
-fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
+fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let total = app.filtered_events_len();
     let selected = app.event_selected.min(total.saturating_sub(1));
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
@@ -51,7 +51,7 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App) {
     ];
     let block = super::list_block_hinted(
         format!(" Events ({}/{}) ", app.events.len(), app.config.event_buffer_size),
-        Style::default().fg(color::BORDER),
+        Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
         color::BG_DARK,
         has_more_above,
         has_more_below,

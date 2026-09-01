@@ -12,7 +12,7 @@ use crate::types::{KeyStatus, MinionInfo};
 use super::color;
 use ratatui::style::Color;
 
-pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App) {
+pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
@@ -23,12 +23,12 @@ pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App) {
         .constraints([Constraint::Min(0), Constraint::Length(7)])
         .split(cols[0]);
 
-    draw_dot_panel(f, left[0], app);
+    draw_dot_panel(f, left[0], app, focused);
     draw_legend_panel(f, left[1]);
     draw_info_panel(f, cols[1], app);
 }
 
-fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
+fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let hints: [(&str, String); 4] = [
         ("\u{2191}\u{2193}", "row".to_string()),
         ("\u{2190}\u{2192}", "col".to_string()),
@@ -37,7 +37,7 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
     ];
     let block = super::titled_block_hinted(
         format!(" Minion Pulse ({}) ", app.pulse_minions_count()),
-        Style::default().fg(color::BORDER),
+        Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
         color::BG_DARK,
         &hints,
     );

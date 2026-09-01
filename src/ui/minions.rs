@@ -10,17 +10,17 @@ use crate::app::App;
 
 use super::color;
 
-pub fn draw_minions(f: &mut Frame, area: Rect, app: &App) {
+pub fn draw_minions(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
 
-    draw_minion_list(f, cols[0], app);
+    draw_minion_list(f, cols[0], app, focused);
     draw_fleet_overview(f, cols[1], app);
 }
 
-fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
+fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let mut lines: Vec<Line> = Vec::new();
     let total = app.filtered_minions_len();
     let selected = app.minion_selected.min(total.saturating_sub(1));
@@ -192,7 +192,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
     }
     let block = super::list_block_hinted(
         format!(" Minions ({}) ", total),
-        Style::default().fg(color::BORDER),
+        Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
         color::BG_DARK,
         has_more_above,
         has_more_below,

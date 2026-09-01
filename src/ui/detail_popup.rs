@@ -123,7 +123,12 @@ fn event_detail_hints() -> Vec<(&'static str, String)> {
 /// content-row footer; `status` is reserved for genuinely transient content
 /// a border hint can't show (a live-typed buffer, a "Copied" confirmation,
 /// a clipboard warning) and only consumes a row when actually present.
-fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&str, String)], status: Option<Line<'static>>, more: (bool, bool), scroll: u16) {
+/// `pinned_header` is how many lines at the start of `lines` stay fixed at
+/// the top of the body — e.g. Event Sniffer's title/status/column-header
+/// rows — instead of scrolling away with the rest; `0` means the whole
+/// body scrolls together as before. `scroll` applies only to the
+/// non-pinned remainder.
+fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&str, String)], status: Option<Line<'static>>, more: (bool, bool), scroll: u16, pinned_header: usize) {
     // Clear the area first — prevents underlying content from bleeding through
     f.render_widget(Clear, area);
     let mut block = Block::default()
@@ -131,34 +136,49 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
         .border_style(Style::default().fg(color::BORDER_HI))
         .style(Style::default().bg(color::BG_POPUP));
     if more.0 {
-        block = block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM))).right_aligned());
+        block = block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::BORDER_HI))).right_aligned());
     }
     if !hints.is_empty() {
-        block = block.title_bottom(super::border_hints(hints).left_aligned());
+        block = block.title_bottom(super::border_hints(hints, color::BORDER_HI).left_aligned());
     }
     if more.1 {
-        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::TEXT_DIM))).right_aligned());
+        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::BORDER_HI))).right_aligned());
     }
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if let Some(status_line) = status {
+    let body_area = if let Some(status_line) = status {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
         f.render_widget(
-            Paragraph::new(lines.to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::BG_POPUP)),
-            chunks[0],
-        );
-        f.render_widget(
             Paragraph::new(status_line).style(Style::default().bg(color::BG_POPUP)),
             chunks[1],
         );
+        chunks[0]
     } else {
+        inner
+    };
+
+    let pinned_header = pinned_header.min(lines.len());
+    if pinned_header == 0 {
         f.render_widget(
             Paragraph::new(lines.to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::BG_POPUP)),
-            inner,
+            body_area,
+        );
+    } else {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(pinned_header as u16), Constraint::Min(0)])
+            .split(body_area);
+        f.render_widget(
+            Paragraph::new(lines[..pinned_header].to_vec()).style(Style::default().bg(color::BG_POPUP)),
+            split[0],
+        );
+        f.render_widget(
+            Paragraph::new(lines[pinned_header..].to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::BG_POPUP)),
+            split[1],
         );
     }
 }
@@ -275,10 +295,11 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
 
     // ── Grains section ────────────────────────────────────────────────────
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        format!("  \u{2500}\u{2500}\u{2500}\u{2500} Full Grains {}", "\u{2500}".repeat((area.width as usize).saturating_sub(21))),
-        Style::default().fg(Color::Rgb(35, 50, 80)),
-    )));
+    lines.push(Line::from(vec![
+        Span::styled("  \u{2500}\u{2500}\u{2500}\u{2500} ", Style::default().fg(Color::Rgb(35, 50, 80))),
+        Span::styled("Full Grains", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {}", "\u{2500}".repeat((area.width as usize).saturating_sub(21))), Style::default().fg(Color::Rgb(35, 50, 80))),
+    ]));
 
     let mut more_above = false;
     let mut more_below = false;
@@ -370,7 +391,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     } else {
         vec![("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("a", "admin mode for grains".to_string())]
     };
-    render_popup(f, area, &lines, &hints, None, (more_above, more_below), 0);
+    render_popup(f, area, &lines, &hints, None, (more_above, more_below), 0, 0);
 }
 
 fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
@@ -418,7 +439,7 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
 
     let hints = event_detail_hints();
     let status = clipboard_status(clipboard_at, clipboard_warning);
-    render_popup(f, area, &lines, &hints, status, (more_above, more_below), 0);
+    render_popup(f, area, &lines, &hints, status, (more_above, more_below), 0, 0);
 }
 
 fn draw_job_detail(
@@ -448,7 +469,7 @@ fn draw_job_detail(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER_HI))
         .style(Style::default().bg(color::BG_POPUP))
-        .title_bottom(super::border_hints(&hints).left_aligned());
+        .title_bottom(super::border_hints(&hints, color::BORDER_HI).left_aligned());
     let outer_inner = outer_block.inner(area);
     f.render_widget(outer_block, area);
 
@@ -499,18 +520,14 @@ fn draw_job_detail(
     .split(vert[1]);
 
     // ── Build LEFT panel: compact return list ──
-    let left_border_style = if !panel_focus {
-        Style::default().fg(color::BORDER_HI)
-    } else {
-        Style::default().fg(color::BORDER)
-    };
+    let left_border_color = if !panel_focus { color::BORDER_HI } else { color::BORDER };
     let left_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(left_border_style)
+        .border_style(Style::default().fg(left_border_color))
         .title(Line::from(super::bracket_title(vec![Span::styled(
             format!("Returns ({})", lookup.as_ref().map_or(0, |l| l.returns.len())),
             Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD),
-        )])))
+        )], left_border_color)))
         .style(Style::default().bg(color::BG_POPUP));
     let left_inner = left_block.inner(horiz[0]);
     f.render_widget(&left_block, horiz[0]);
@@ -597,11 +614,8 @@ fn draw_job_detail(
     }
 
     // ── Build RIGHT panel: return content preview ──
-    let right_border_style = if panel_focus {
-        Style::default().fg(color::BORDER_HI)
-    } else {
-        Style::default().fg(color::BORDER)
-    };
+    let right_border_color = if panel_focus { color::BORDER_HI } else { color::BORDER };
+    let right_border_style = Style::default().fg(right_border_color);
     let right_title_text = if let Some(ref l) = lookup {
         let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
         if sel < l.returns.len() {
@@ -654,13 +668,13 @@ fn draw_job_detail(
         .title(Line::from(super::bracket_title(vec![Span::styled(
             right_title_text,
             Style::default().fg(if panel_focus { color::CYAN } else { color::TEXT_TITLE }).add_modifier(Modifier::BOLD),
-        )])))
+        )], right_border_color)))
         .style(Style::default().bg(color::BG_POPUP));
     if more_above {
-        right_block = right_block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM))).right_aligned());
+        right_block = right_block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(right_border_color))).right_aligned());
     }
     if more_below {
-        right_block = right_block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::TEXT_DIM))).right_aligned());
+        right_block = right_block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(right_border_color))).right_aligned());
     }
     let right_inner = right_block.inner(horiz[1]);
     f.render_widget(&right_block, horiz[1]);
@@ -748,7 +762,7 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
     lines.push(Line::from(""));
     let hints: [(&str, String); 2] = [("Esc/q", "close".to_string()), ("y", "copy".to_string())];
     let status = clipboard_status(clipboard_at, clipboard_warning);
-    render_popup(f, area, &lines, &hints, status, (false, false), 0);
+    render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
 
 fn draw_admin_confirm(f: &mut Frame, area: Rect) {
@@ -795,7 +809,7 @@ fn draw_admin_confirm(f: &mut Frame, area: Rect) {
         Span::styled("Esc/q/a", Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
     ]));
     let hints: [(&str, String); 2] = [("Enter", "OK".to_string()), ("Esc/q/a", "cancel".to_string())];
-    render_popup(f, area, &lines, &hints, None, (false, false), 0);
+    render_popup(f, area, &lines, &hints, None, (false, false), 0, 0);
 }
 
 fn draw_event_sniffer(
@@ -862,9 +876,13 @@ fn draw_event_sniffer(
         let mut event_line_starts: Vec<usize> = Vec::with_capacity(total);
         // Popup inner width = area width minus left+right borders
         let inner_w = (area.width as usize).saturating_sub(2);
+        // Title/status/column-header rows built so far stay pinned at the
+        // top of the body — see render_popup's `pinned_header` — so only
+        // the event rows below scroll.
+        let pinned_header = lines.len();
 
         for display_idx in 0..total {
-            let buf_idx = total - 1 - display_idx;
+            let buf_idx = display_idx;
             let evt = match state.buffer.get(buf_idx) {
                 Some(e) => e,
                 None => break,
@@ -942,26 +960,31 @@ fn draw_event_sniffer(
             }
         }
 
-        // Auto-scroll: keep selected event header visible (at ~1/3 from top)
-        let content_height = (area.height as usize).saturating_sub(3); // borders(2) + footer(1)
+        // Auto-scroll: keep selected event header visible (at ~1/3 from top
+        // of the scrollable region), within just the event rows — the
+        // pinned header above doesn't count against the viewport budget.
+        let event_only_len = lines.len().saturating_sub(pinned_header);
+        let scrollable_height = (area.height as usize).saturating_sub(3).saturating_sub(pinned_header); // borders(2) + footer(1) + pinned header
         let scroll = if sel < event_line_starts.len() {
-            let sel_line = event_line_starts[sel];
-            let max_scroll = lines.len().saturating_sub(content_height);
-            sel_line.saturating_sub(content_height / 3).min(max_scroll) as u16
+            let sel_line = event_line_starts[sel].saturating_sub(pinned_header);
+            let max_scroll = event_only_len.saturating_sub(scrollable_height);
+            sel_line.saturating_sub(scrollable_height / 3).min(max_scroll) as u16
         } else {
             0
         };
+        let more_above = scroll > 0;
+        let more_below = (scroll as usize) + scrollable_height < event_only_len;
 
         let hints = sniffer_hints(state);
         let status = sniffer_status(clipboard_at, state, clipboard_warning);
-        render_popup(f, area, &lines, &hints, status, (false, false), scroll);
+        render_popup(f, area, &lines, &hints, status, (more_above, more_below), scroll, pinned_header);
         return;
     }
 
     lines.push(Line::from(""));
     let hints = sniffer_hints(state);
     let status = sniffer_status(clipboard_at, state, clipboard_warning);
-    render_popup(f, area, &lines, &hints, status, (false, false), 0);
+    render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
 
 /// Split a line of text into styled spans, highlighting all occurrences of any keyword.

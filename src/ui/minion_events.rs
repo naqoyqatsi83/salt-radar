@@ -73,8 +73,8 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER_HI))
         .style(Style::default().bg(color::BG_POPUP))
-        .title_bottom(super::border_hints(&hints).left_aligned())
-        .title_bottom(super::border_info("dim = older than 5m").right_aligned());
+        .title_bottom(super::border_hints(&hints, color::BORDER_HI).left_aligned())
+        .title_bottom(super::border_info("dim = older than 5m", color::BORDER_HI).right_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 

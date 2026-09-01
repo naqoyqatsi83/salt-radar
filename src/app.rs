@@ -94,6 +94,13 @@ pub struct App {
 
     // Cursor positions
     pub event_selected: usize,
+    /// Events are displayed oldest-at-top/newest-at-bottom, tail-style. While
+    /// following, the selection stays pinned to the newest event as new ones
+    /// arrive (like `tail -f`); the moment the user moves selection off the
+    /// last row, following turns off so a busy master doesn't yank the
+    /// selection out from under them, and turns back on once they navigate
+    /// back down to the tail (or press End).
+    pub events_following: bool,
     pub job_selected: usize,
     pub alert_selected: usize,
     pub minion_selected: usize,
@@ -283,6 +290,10 @@ pub struct App {
     pub cache_max_results: usize,
     pub cache_offset: usize,
     pub cache_loading_at: Option<Instant>,
+    /// Live count of jobs read so far during a `jobs_list` fetch, from the
+    /// agent's incremental progress messages — `None` until the first one
+    /// arrives (or if the agent fell back to the non-incremental path).
+    pub cache_load_progress: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -290,6 +301,10 @@ pub enum AgentMessage {
     Result { id: u64, cmd: String, ok: bool, data: serde_json::Value },
     Event { tag: String, data: serde_json::Value, ts: f64 },
     Error { id: Option<u64>, message: String },
+    /// Incremental progress for a long-running command (currently just
+    /// `jobs_list`'s live job-cache walk) — arrives zero or more times
+    /// before the final `Result`.
+    Progress { cmd: String, loaded: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -485,6 +500,7 @@ impl App {
             cache_max_results: 500,
             cache_offset: 0,
             cache_loading_at: None,
+            cache_load_progress: None,
 
             admin_mode: false,
             admin_mode_pending: false,
@@ -496,6 +512,7 @@ impl App {
             is_filtering: false,
 
             event_selected: 0,
+            events_following: true,
             job_selected: 0,
             alert_selected: 0,
             minion_selected: 0,
@@ -778,6 +795,7 @@ impl App {
                         }
                         "jobs_list" => {
                             self.cache_loading_at = None;
+                            self.cache_load_progress = None;
                             if ok {
                                 self.jobs_cache = parse_cache_jobs(&data);
                                 self.cache_total_count = data["total_count"].as_u64().unwrap_or(0) as usize;
@@ -975,12 +993,24 @@ impl App {
                     }
                     let evt = SaltEvent { tag, data, ts };
                     self.events_since_last_tick.push(evt.clone());
-                    if self.events.len() >= self.config.event_buffer_size {
+                    let events_evicted = self.events.len() >= self.config.event_buffer_size;
+                    if events_evicted {
                         self.events.pop_front();
                     }
                     self.events.push_back(evt);
                     self.events_total += 1;
                     self.last_event_time = Some(Instant::now());
+                    // Only the unfiltered case can be adjusted precisely here
+                    // (a filtered view's index space depends on which events
+                    // match, not on `self.events` directly) — a filtered,
+                    // non-following selection may occasionally drift by one
+                    // on eviction, which the render-time `.min(total - 1)`
+                    // clamp keeps harmless.
+                    if self.filter_text.is_empty() {
+                        Self::advance_tail_selection(&mut self.event_selected, self.events_following, events_evicted, self.events.len());
+                    } else if self.events_following {
+                        self.event_selected = self.filtered_events_len().saturating_sub(1);
+                    }
 
                     // Track live jobs from events
                     if let Some(evt) = self.events.back() {
@@ -992,11 +1022,12 @@ impl App {
                         if !state.paused {
                             if let Some(evt) = self.events.back() {
                                 if Self::matches_sniffer_event(evt, &state.minion_ids) {
-                                    if state.buffer.len() >= state.max_size {
+                                    let sniffer_evicted = state.buffer.len() >= state.max_size;
+                                    if sniffer_evicted {
                                         state.buffer.pop_front();
                                     }
                                     state.buffer.push_back(evt.clone());
-                                    state.selected = 0;
+                                    Self::advance_tail_selection(&mut state.selected, state.following, sniffer_evicted, state.buffer.len());
                                     self.sniffer_dirty = true;
                                 }
                             }
@@ -1006,6 +1037,11 @@ impl App {
                 AgentMessage::Error { message, .. } => {
                     self.agent.last_error = Some(message);
                     self.agent.connected = false;
+                }
+                AgentMessage::Progress { cmd, loaded } => {
+                    if cmd == "jobs_list" {
+                        self.cache_load_progress = Some(loaded);
+                    }
                 }
             }
             if processed >= MAX_PER_DRAIN { break; }
@@ -1114,6 +1150,16 @@ impl App {
             .min(self.pulse_minions_count().saturating_sub(1));
     }
 
+    /// While live-typing an Events filter, keep the selection pinned to the
+    /// newest match (as long as it was already following) so the narrowing
+    /// result set stays tail-anchored instead of settling on whatever
+    /// index the previous filter text happened to leave selected.
+    fn follow_events_tail_if_filtering(&mut self) {
+        if self.current_tab == Tab::Events && self.events_following {
+            self.event_selected = self.filtered_events_len().saturating_sub(1);
+        }
+    }
+
     fn matches_filter(text: &str, pat: &str) -> bool {
         if pat.is_empty() { return true; }
         text.to_lowercase().contains(&pat.to_lowercase())
@@ -1138,6 +1184,22 @@ impl App {
             }
         }
         false
+    }
+
+    /// Keeps a tail-following selection index correct as one item is
+    /// appended to a capped, oldest-at-front buffer (Events, Sniffer) that
+    /// may have just evicted its oldest entry to stay under its cap. While
+    /// `following`, the selection stays pinned to the newest item (tail
+    /// mode, like `tail -f`); otherwise, an eviction shifts every
+    /// surviving index down by one, so `selected` is adjusted to keep
+    /// pointing at the same logical item (clamped to 0 if that item was
+    /// itself the one just evicted).
+    fn advance_tail_selection(selected: &mut usize, following: bool, evicted: bool, new_len: usize) {
+        if following {
+            *selected = new_len.saturating_sub(1);
+        } else if evicted {
+            *selected = selected.saturating_sub(1);
+        }
     }
 
     fn matches_sniffer_event(evt: &SaltEvent, minion_ids: &[String]) -> bool {
@@ -1207,17 +1269,19 @@ impl App {
         }
         let pat = &self.filter_text;
         let known = self.accepted_ids();
-        self.events.iter().rev().filter(|e| Self::matches_event(e, pat, &known)).count()
+        self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).count()
     }
 
+    /// Index 0 is the oldest buffered event — events display oldest-at-top,
+    /// newest-at-bottom (tail-style, see `events_following`), matching
+    /// `self.events`'s own front-to-back order (oldest pushed first).
     pub fn get_filtered_event(&self, index: usize) -> Option<&SaltEvent> {
         if self.filter_text.is_empty() {
-            let rev_idx = self.events.len().saturating_sub(1).saturating_sub(index);
-            return self.events.get(rev_idx);
+            return self.events.get(index);
         }
         let pat = &self.filter_text;
         let known = self.accepted_ids();
-        self.events.iter().rev().filter(|e| Self::matches_event(e, pat, &known)).nth(index)
+        self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).nth(index)
     }
 
     /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
@@ -3233,6 +3297,7 @@ impl App {
         self.cache_loading_at = Some(Instant::now());
         self.cache_loaded = false;
         self.cache_load_error = None;
+        self.cache_load_progress = None;
         self.send_agent_cmd("jobs_list", Some(extra));
     }
 
@@ -3275,6 +3340,7 @@ impl App {
                                 max_size: sniffer_max,
                                 paused: false,
                                 selected: 0,
+                                following: true,
                                 highlight_keywords: ids,
                                 highlight_input: None,
                             }
@@ -3661,8 +3727,7 @@ impl App {
                     }
                     match code {
                         KeyCode::Enter => {
-                            let rev_idx = state.buffer.len().saturating_sub(1).saturating_sub(state.selected);
-                            if let Some(evt) = state.buffer.get(rev_idx) {
+                            if let Some(evt) = state.buffer.get(state.selected) {
                                 self.return_to_sniffer = Some(state.clone());
                                 self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
                                 self.popup_tab = Some(self.current_tab);
@@ -3673,23 +3738,29 @@ impl App {
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             state.selected = state.selected.saturating_sub(1);
+                            state.following = state.selected + 1 >= state.buffer.len();
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
                             let max = state.buffer.len().saturating_sub(1);
                             state.selected = state.selected.saturating_add(1).min(max);
+                            state.following = state.selected + 1 >= state.buffer.len();
                         }
                         KeyCode::PageUp => {
                             state.selected = state.selected.saturating_sub(10);
+                            state.following = state.selected + 1 >= state.buffer.len();
                         }
                         KeyCode::PageDown => {
                             let max = state.buffer.len().saturating_sub(1);
                             state.selected = state.selected.saturating_add(10).min(max);
+                            state.following = state.selected + 1 >= state.buffer.len();
                         }
                         KeyCode::Home => {
                             state.selected = 0;
+                            state.following = state.buffer.len() <= 1;
                         }
                         KeyCode::End => {
                             state.selected = state.buffer.len().saturating_sub(1);
+                            state.following = true;
                         }
                         KeyCode::Char('p') | KeyCode::Char('P') => {
                             state.paused = !state.paused;
@@ -3988,22 +4059,30 @@ impl App {
                     self.is_filtering = false;
                     self.filter_text.clear();
                     self.clamp_selection();
+                    self.follow_events_tail_if_filtering();
                 }
                 KeyCode::Enter => {
                     self.is_filtering = false;
-                    self.event_selected = 0;
                     self.job_selected = 0;
                     self.alert_selected = 0;
                     self.minion_selected = 0;
+                    if self.current_tab == Tab::Events {
+                        self.event_selected = self.filtered_events_len().saturating_sub(1);
+                        self.events_following = true;
+                    } else {
+                        self.event_selected = 0;
+                    }
                     self.clamp_selection();
                 }
                 KeyCode::Backspace => {
                     self.filter_text.pop();
                     self.clamp_selection();
+                    self.follow_events_tail_if_filtering();
                 }
                 KeyCode::Char(c) => {
                     self.filter_text.push(c);
                     self.clamp_selection();
+                    self.follow_events_tail_if_filtering();
                 }
                 _ => {}
             }
@@ -4317,6 +4396,7 @@ impl App {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
                         self.event_selected = (scroll + visual_idx).min(total - 1);
+                        self.events_following = self.event_selected + 1 >= total;
                         self.clamp_selection();
                     }
                 }
@@ -4580,7 +4660,10 @@ impl App {
     fn move_up(&mut self) {
         match self.current_tab {
             Tab::Minions => self.minion_selected = self.minion_selected.saturating_sub(1),
-            Tab::Events => self.event_selected = self.event_selected.saturating_sub(1),
+            Tab::Events => {
+                self.event_selected = self.event_selected.saturating_sub(1);
+                self.events_following = self.event_selected + 1 >= self.filtered_events_len();
+            }
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected = self.cache_selected.saturating_sub(1);
@@ -4600,7 +4683,10 @@ impl App {
     fn move_down(&mut self) {
         match self.current_tab {
             Tab::Minions => self.minion_selected += 1,
-            Tab::Events => self.event_selected += 1,
+            Tab::Events => {
+                self.event_selected += 1;
+                self.events_following = self.event_selected + 1 >= self.filtered_events_len();
+            }
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected += 1;
@@ -4620,7 +4706,10 @@ impl App {
     fn move_to_first(&mut self) {
         match self.current_tab {
             Tab::Minions => self.minion_selected = 0,
-            Tab::Events => self.event_selected = 0,
+            Tab::Events => {
+                self.event_selected = 0;
+                self.events_following = self.filtered_events_len() <= 1;
+            }
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected = 0;
@@ -4637,7 +4726,10 @@ impl App {
     fn move_to_last(&mut self) {
         match self.current_tab {
             Tab::Minions => self.minion_selected = self.filtered_minions_len().saturating_sub(1),
-            Tab::Events => self.event_selected = self.filtered_events_len().saturating_sub(1),
+            Tab::Events => {
+                self.event_selected = self.filtered_events_len().saturating_sub(1);
+                self.events_following = true;
+            }
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected = self.filtered_cache_len().saturating_sub(1);
@@ -4932,6 +5024,9 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     result
 }
 
+/// Sorted oldest-first (ascending `start_epoch`) so the Job Cache panel
+/// displays newest-at-bottom, matching Live Jobs' convention — regardless
+/// of whatever order the agent's `jobs.list_jobs` call happened to return.
 fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
     let mut result = Vec::new();
     if let Some(arr) = data["jobs"].as_array() {
@@ -4950,6 +5045,7 @@ fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
             });
         }
     }
+    result.sort_by(|a, b| a.start_epoch.total_cmp(&b.start_epoch));
     result
 }
 

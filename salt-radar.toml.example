@@ -98,14 +98,13 @@
 #                    master_stats: True in the Salt master's own config)
 # zmq_latency_source = "agent_ipc"
 
-# Which of the Dashboard's bottom sparkline panels are shown. ZMQ / Events /
-# Activity default on (today's fixed set); CPU / Memory default off since
-# enabling them changes the existing layout's panel count.
+# Which of the Dashboard's bottom sparkline panels are shown — all five
+# default on.
 # show_zmq_graph = true
 # show_events_graph = true
 # show_activity_graph = true
-# show_cpu_graph = false
-# show_mem_graph = false
+# show_cpu_graph = true
+# show_mem_graph = true
 
 # Stacking order of the sparkline panels above, as a comma-separated list of
 # keys: cpu, mem, zmq, events, activity. Unrecognized/duplicate keys are

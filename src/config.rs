@@ -115,8 +115,8 @@ impl Default for AppConfig {
             show_zmq_graph: true,
             show_events_graph: true,
             show_activity_graph: true,
-            show_cpu_graph: false,
-            show_mem_graph: false,
+            show_cpu_graph: true,
+            show_mem_graph: true,
             graph_order: "cpu,mem,zmq,events,activity".into(),
         }
     }

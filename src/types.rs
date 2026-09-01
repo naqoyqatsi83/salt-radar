@@ -279,6 +279,11 @@ pub struct SnifferState {
     pub max_size: usize,
     pub paused: bool,
     pub selected: usize,
+    /// Events display oldest-at-top, newest-at-bottom. While following,
+    /// `selected` stays pinned to the newest captured event as new ones
+    /// arrive (tail -f style); moving selection away from the last row
+    /// turns this off so live traffic doesn't yank the selection around.
+    pub following: bool,
     pub highlight_keywords: Vec<String>,
     /// When Some, the user is editing highlight keywords within the popup
     pub highlight_input: Option<String>,

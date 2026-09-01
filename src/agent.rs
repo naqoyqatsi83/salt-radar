@@ -78,6 +78,10 @@ pub fn agent_main(
                     id: parsed.get("id").and_then(|v| v.as_u64()),
                     message: parsed["message"].as_str().unwrap_or("unknown error").to_string(),
                 },
+                Some("progress") => AgentMessage::Progress {
+                    cmd: parsed["cmd"].as_str().unwrap_or("").to_string(),
+                    loaded: parsed["data"]["loaded"].as_u64().unwrap_or(0) as usize,
+                },
                 _ => continue,
             };
 

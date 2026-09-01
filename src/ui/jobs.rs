@@ -8,7 +8,7 @@ use crate::app::App;
 
 use super::color;
 
-pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App) {
+pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -17,12 +17,12 @@ pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(area);
 
-    draw_live_jobs_panel(f, layout[0], app);
-    draw_cache_panel(f, layout[1], app);
+    draw_live_jobs_panel(f, layout[0], app, tab_focused);
+    draw_cache_panel(f, layout[1], app, tab_focused);
 }
 
-fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App) {
-    let focused = !app.cache_focus;
+fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
+    let focused = tab_focused && !app.cache_focus;
     let border_style = if focused {
         Style::default().fg(color::BORDER_HI)
     } else {
@@ -122,8 +122,8 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
-    let focused = app.cache_focus;
+fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
+    let focused = tab_focused && app.cache_focus;
     let border_style = if focused {
         Style::default().fg(color::BORDER_HI)
     } else {
@@ -137,6 +137,11 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
             0
         };
         format!("{} found (pg {}, limit {})", app.cache_total_count, page, app.cache_max_results)
+    } else if app.cache_loading {
+        match app.cache_load_progress {
+            Some(loaded) => format!("loading... {}", loaded),
+            None => "loading...".to_string(),
+        }
     } else {
         format!("{}", app.jobs_cache.len())
     };
@@ -164,12 +169,23 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Loading state
+    // Loading state — a live "N jobs read" count from the agent's
+    // incremental progress messages, where available (the fast local_cache
+    // walk reports it; the salt-run fallback for other job-cache backends
+    // doesn't, so this just falls back to a plain "Loading..." line).
     if app.cache_loading && !app.cache_loaded {
-        lines.push(Line::from(Span::styled(
-            "  Loading job cache...",
-            Style::default().fg(color::TEXT_DIM),
-        )));
+        let elapsed = app.cache_loading_at.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
+        let mut spans = vec![Span::styled("  Loading job cache", Style::default().fg(color::TEXT_DIM))];
+        if let Some(loaded) = app.cache_load_progress {
+            spans.push(Span::styled(
+                format!("... {} jobs read", loaded),
+                Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled("...", Style::default().fg(color::TEXT_DIM)));
+        }
+        spans.push(Span::styled(format!(" ({:.0}s)", elapsed), Style::default().fg(color::TEXT_DIM)));
+        lines.push(Line::from(spans));
         f.render_widget(
             Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
             inner,

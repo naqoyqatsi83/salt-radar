@@ -146,7 +146,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(5),  // Host Resources
             Constraint::Length(mid_h), // Services + Key Status (exact-fit)
             Constraint::Length(4),  // Job Pulse (KPI line + up to 3 jobs)
-            Constraint::Min(6),     // Sparklines (at least 6 lines = 2 per panel × 3 default-enabled panels)
+            Constraint::Min(10),    // Sparklines (at least 10 lines = 2 per panel × 5 default-enabled panels)
         ])
         .split(body);
 
@@ -209,13 +209,13 @@ fn make_block_line(title: Line<'static>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
-        .title(Line::from(super::bracket_title(title.spans)))
+        .title(Line::from(super::bracket_title(title.spans, color::BORDER)))
         .style(Style::default().bg(color::BG_DARK))
 }
 
 fn make_block_line_hinted(title: Line<'static>, hints: &[(&str, String)]) -> Block<'static> {
     let block = make_block_line(title);
-    if hints.is_empty() { block } else { block.title_bottom(super::border_hints(hints).left_aligned()) }
+    if hints.is_empty() { block } else { block.title_bottom(super::border_hints(hints, color::BORDER).left_aligned()) }
 }
 
 /// Each sparkline panel's own hide toggle (its existing F-key), plus the

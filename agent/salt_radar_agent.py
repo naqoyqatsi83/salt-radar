@@ -924,11 +924,51 @@ def cmd_fleet_scan(opts, req):
     })
 
 
-def cmd_jobs_list(opts, req):
-    """Fetch recent jobs from the master job cache via salt-run subprocess.
+def _fast_local_job_walk(opts, on_progress):
+    """Read the local_cache job directory ourselves, one job at a time, via
+    Salt's own (private) local_cache returner helpers — rather than the
+    atomic `salt-run jobs.list_jobs` call, which only returns once it has
+    already read the entire cache with no visibility into how far along it
+    is. `on_progress(count)` is invoked periodically as jobs are read, so a
+    slow cache (tens of thousands of jobs) can show live progress instead
+    of an opaque multi-second freeze.
 
-    Uses subprocess (same as cmd_jid_lookup) to avoid RunnerClient threading
-    issues inside the agent.
+    Only correct for the `local_cache` job-cache backend — callers must
+    check `master_job_cache`/`ext_job_cache` first and fall back to the
+    slower salt-run-based path for any other backend (redis, mysql, etcd).
+    Reaches into `local_cache`'s private `_walk_through`/`_job_dir`, so any
+    failure (e.g. a future Salt version renaming them) raises and the
+    caller falls back to the safe path rather than surfacing a broken cache
+    view.
+    """
+    import salt.returners.local_cache as local_cache_mod
+    import salt.utils.jid as jid_mod
+
+    # These modules normally get `__opts__` injected by Salt's loader when
+    # loaded as a returner plugin; called directly like this, it has to be
+    # set by hand before `_job_dir()`/`_walk_through()` (which read it) work.
+    local_cache_mod.__opts__ = opts
+
+    jobs = {}
+    count = 0
+    for jid, job, _t_path, _final in local_cache_mod._walk_through(local_cache_mod._job_dir()):
+        jobs[jid] = jid_mod.format_jid_instance(jid, job)
+        count += 1
+        if count % 250 == 0:
+            on_progress(count)
+    on_progress(count)
+    return jobs
+
+
+def cmd_jobs_list(opts, req):
+    """Fetch recent jobs from the master job cache.
+
+    Uses a direct, incremental read of the job cache directory (reporting
+    progress as it goes — see `_fast_local_job_walk`) when the configured
+    job-cache backend is Salt's default `local_cache`; falls back to the
+    same atomic `salt-run jobs.list_jobs` subprocess call (as cmd_jid_lookup
+    uses, to avoid RunnerClient threading issues inside the agent) for any
+    other backend, or if the fast path fails for any reason.
 
     Optional request fields:
       - filter_text (str): search across jid/fun/tgt/user on the full cache
@@ -937,16 +977,29 @@ def cmd_jobs_list(opts, req):
     """
     import json as json_mod
 
-    output = _run_salt_cmd(["salt-run", "jobs.list_jobs", "--out=json"], timeout=90)
-    if not output:
-        result(req["id"], "jobs_list", ok=False, data={"error": "salt-run jobs.list_jobs failed"})
-        return
+    def on_progress(count):
+        ndjson({"type": "progress", "id": req["id"], "cmd": "jobs_list", "data": {"loaded": count}})
 
-    try:
-        result_data = json_mod.loads(output)
-    except Exception as exc:
-        result(req["id"], "jobs_list", ok=False, data={"error": "failed to parse output: {}".format(str(exc))})
-        return
+    result_data = None
+    returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
+    if returner == "local_cache":
+        try:
+            result_data = _fast_local_job_walk(opts, on_progress)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            result_data = None
+
+    if result_data is None:
+        output = _run_salt_cmd(["salt-run", "jobs.list_jobs", "--out=json"], timeout=90)
+        if not output:
+            result(req["id"], "jobs_list", ok=False, data={"error": "salt-run jobs.list_jobs failed"})
+            return
+
+        try:
+            result_data = json_mod.loads(output)
+        except Exception as exc:
+            result(req["id"], "jobs_list", ok=False, data={"error": "failed to parse output: {}".format(str(exc))})
+            return
 
     filter_text = req.get("filter_text", "")
     max_results = req.get("max_results", 500)
@@ -958,7 +1011,7 @@ def cmd_jobs_list(opts, req):
             continue
         fun = info.get("Function", info.get("fun", ""))
         tgt = info.get("Target", info.get("tgt", ""))
-        tgt_type = info.get("tgt_type", info.get("tgt_type", "glob"))
+        tgt_type = info.get("Target-type", info.get("tgt_type", "glob"))
         user = info.get("User", info.get("user", ""))
         # Use JID-derived epoch as primary — the JID always encodes the master
         # wall-clock time (YYYYMMDDHHMMSSuuuuuu) and is reliable even when the

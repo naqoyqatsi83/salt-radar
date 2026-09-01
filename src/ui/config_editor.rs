@@ -38,9 +38,9 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             ("Enter", "edit".to_string()),
         ]
     };
-    let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER), color::BG_DARK)
-        .title_bottom(super::border_hints(&hints).left_aligned())
-        .title_bottom(super::border_info(format!("saved to: {}", config_path)).right_aligned());
+    let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER_HI), color::BG_DARK)
+        .title_bottom(super::border_hints(&hints, color::BORDER_HI).left_aligned())
+        .title_bottom(super::border_info(format!("saved to: {}", config_path), color::BORDER_HI).right_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
