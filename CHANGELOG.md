@@ -7,9 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-08-31
-
-This release folds in `v0.6.0-rc1` through `v0.6.0-rc14`. Where a later RC
+This release folds in `v0.6.0-rc1` through `v0.6.0-rc15`. Where a later RC
 changed or fixed something an earlier RC in this same range introduced, only
 the final end-state behavior is described below — the intermediate iterations
 aren't (see the individual RC tags for that history). One such case: rc13
@@ -44,6 +42,8 @@ this release is the "Config file lookup" entry under Changed below.
 - System data collection (keys, processes, services, system info) moved from Rust-side `/proc` polling to the Python agent for reliability.
 - Column widths across Dashboard (Services, Key Status, Event Types), Minions (Fleet Overview, list), Jobs (Live/Cache), Alerts, and Config Editor are now derived from the actual content present instead of hardcoded guesses, so long unit/rule/label names no longer overflow their column or misalign the ones after it.
 - Admin-mode key is consistently shown/typed as lowercase `a` everywhere (was `A` in a few spots), and every inline key mention in body text is wrapped in quotes (e.g. `press 's'`) for readability.
+- Fold the CPU/Memory/ZMQ/Events/Minions dashboard sparkline panels' below-graph summary line (avg, load, peak, connection counts, last-activity) into the panel's frame title, reclaiming that row for the sparkline itself instead of duplicating stats already shown up top.
+- Wrap every panel's top-border title (name plus any bundled stats/counts) in a single `┤ ... ├` bracket across the whole app, matching the bracket style already used for bottom-border key hints, instead of running the title as bare text against the border.
 
 ### Fixed
 - Rust TUI process memory grew unbounded on long sessions against a large fleet (observed ~80MB at start, 300MB+ after 90 minutes) — the inbound agent-message queue had no size cap, and the consumer throttled to the tick interval even during event bursts. The queue is now capped (oldest entries dropped in favor of freshest once full, with a `backlog dropped: N` indicator if ever hit), and the main loop polls at a fast cadence whenever the queue is non-empty so bursts drain in ~100ms slices instead of queuing indefinitely.

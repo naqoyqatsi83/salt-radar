@@ -507,8 +507,10 @@ fn draw_job_detail(
     let left_block = Block::default()
         .borders(Borders::ALL)
         .border_style(left_border_style)
-        .title(format!(" Returns ({}) ", lookup.as_ref().map_or(0, |l| l.returns.len())))
-        .title_style(Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))
+        .title(Line::from(super::bracket_title(vec![Span::styled(
+            format!("Returns ({})", lookup.as_ref().map_or(0, |l| l.returns.len())),
+            Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD),
+        )])))
         .style(Style::default().bg(color::BG_POPUP));
     let left_inner = left_block.inner(horiz[0]);
     f.render_widget(&left_block, horiz[0]);
@@ -600,12 +602,12 @@ fn draw_job_detail(
     } else {
         Style::default().fg(color::BORDER)
     };
-    let right_title = if let Some(ref l) = lookup {
+    let right_title_text = if let Some(ref l) = lookup {
         let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
         if sel < l.returns.len() {
-            format!(" Return from {} ", l.returns[sel].minion_id)
-        } else { " Preview ".to_string() }
-    } else { " Preview ".to_string() };
+            format!("Return from {}", l.returns[sel].minion_id)
+        } else { "Preview".to_string() }
+    } else { "Preview".to_string() };
 
     let mut right_lines: Vec<Line<'static>> = Vec::new();
     if let Some(ref l) = lookup {
@@ -649,8 +651,10 @@ fn draw_job_detail(
     let mut right_block = Block::default()
         .borders(Borders::ALL)
         .border_style(right_border_style)
-        .title(right_title)
-        .title_style(Style::default().fg(if panel_focus { color::CYAN } else { color::TEXT_TITLE }).add_modifier(Modifier::BOLD))
+        .title(Line::from(super::bracket_title(vec![Span::styled(
+            right_title_text,
+            Style::default().fg(if panel_focus { color::CYAN } else { color::TEXT_TITLE }).add_modifier(Modifier::BOLD),
+        )])))
         .style(Style::default().bg(color::BG_POPUP));
     if more_above {
         right_block = right_block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM))).right_aligned());

@@ -73,7 +73,7 @@ pub fn titled_block(title: impl Into<String>, border_style: Style, bg: Color) ->
     Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title(Line::from(Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))))
+        .title(Line::from(bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))])))
         .style(Style::default().bg(bg))
 }
 
@@ -95,7 +95,7 @@ pub fn scroll_window(selected: usize, visible: usize, total: usize) -> (usize, b
 /// above" hint to the top title and adds a "more below" hint on the
 /// bottom border when the list is windowed in that direction.
 pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool) -> Block<'static> {
-    let mut top_spans = vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))];
+    let mut top_spans = bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))]);
     if has_more_above {
         top_spans.push(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM)));
     }
@@ -133,11 +133,29 @@ pub fn border_hints(hints: &[(&str, String)]) -> Line<'static> {
 /// highlight) — same bracket/spacing style as `border_hints`, just without
 /// the red key portion.
 pub fn border_info(text: impl Into<String>) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("\u{2524}", Style::default().fg(color::BORDER)),
-        Span::styled(format!(" {} ", text.into()), Style::default().fg(color::TEXT_TITLE)),
-        Span::styled("\u{251C}", Style::default().fg(color::BORDER)),
-    ])
+    Line::from(bracket_title(vec![Span::styled(text.into(), Style::default().fg(color::TEXT_TITLE))]))
+}
+
+/// Wraps a panel's title content — its label plus any dynamic stats bundled
+/// into it — in a single `┤ ... ├` bracket, space-padded on both sides. Every
+/// piece of info a frame's top border carries should go through this, so it
+/// reads the same as the `┤ key:hint ├` segments already used in the bottom
+/// border (border_hints) instead of running as bare text against the border.
+pub fn bracket_title(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    // Callers built their content for the old bare-text title (with its own
+    // leading/trailing padding); strip that so the bracket's own one-space
+    // padding doesn't end up doubled.
+    if let Some(first) = spans.first_mut() {
+        first.content = std::borrow::Cow::Owned(first.content.trim_start().to_string());
+    }
+    if let Some(last) = spans.last_mut() {
+        last.content = std::borrow::Cow::Owned(last.content.trim_end().to_string());
+    }
+    let mut wrapped = Vec::with_capacity(spans.len() + 2);
+    wrapped.push(Span::styled("\u{2524} ", Style::default().fg(color::BORDER)));
+    wrapped.append(&mut spans);
+    wrapped.push(Span::styled(" \u{251C}", Style::default().fg(color::BORDER)));
+    wrapped
 }
 
 /// btop-style adjustable-value hint: `┤ -VALUE+ ├` with the `-`/`+` keys
