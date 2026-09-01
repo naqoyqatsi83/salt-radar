@@ -236,6 +236,77 @@ fn grain_height(val: &str) -> usize {
     if val.contains('\n') { 1 + val.lines().count() } else { 1 }
 }
 
+/// Coloring for one line of `App::format_return_as_console`'s output —
+/// mirrors Salt's own highstate-style CLI coloring (green/red result,
+/// cyan keys) well enough to keep job output scannable without needing a
+/// second `salt-run --force-color` subprocess call just to get ANSI codes
+/// to translate back into spans.
+/// Faithful port of Salt's own `nested` outputter (`salt/output/nested.py`
+/// — the `NestDisplay.display` method), which is what colors
+/// `salt-run jobs.lookup_jid`'s CLI output. Reimplemented here instead of
+/// shelling out a second `salt-run --force-color` subprocess call per
+/// lookup purely to get colored text, since the ANSI codes it produces
+/// would just get parsed back into spans anyway — this builds the same
+/// spans directly from the JSON return already fetched. Colors are mapped
+/// onto this app's own palette (not raw ANSI) to match the surrounding UI;
+/// the recursive structure (the `----------` dividers, `key:` lines,
+/// `- `/`|_` list bullets, per-branch coloring, retcode-driven red) is a
+/// line-for-line match to the original.
+fn nested_return_lines(value: &serde_json::Value, retcode: i64) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    nested_display(value, 0, "", retcode, &mut out);
+    out
+}
+
+fn nested_push(out: &mut Vec<Line<'static>>, indent: usize, fg: Color, prefix: &str, msg: &str, suffix: &str) {
+    let pad = " ".repeat(indent);
+    let mut spans = vec![Span::styled(format!("{}{}{}", pad, prefix, msg), Style::default().fg(fg))];
+    if !suffix.is_empty() {
+        spans.push(Span::styled(suffix.to_string(), Style::default().fg(color::TEXT)));
+    }
+    out.push(Line::from(spans));
+}
+
+fn nested_display(value: &serde_json::Value, indent: usize, prefix: &str, retcode: i64, out: &mut Vec<Line<'static>>) {
+    match value {
+        serde_json::Value::Null => nested_push(out, indent, color::YELLOW, prefix, "None", ""),
+        serde_json::Value::Bool(b) => nested_push(out, indent, color::YELLOW, prefix, if *b { "True" } else { "False" }, ""),
+        serde_json::Value::Number(n) => nested_push(out, indent, color::YELLOW, prefix, &n.to_string(), ""),
+        serde_json::Value::String(s) => {
+            if !s.is_empty() {
+                let cont_prefix = " ".repeat(prefix.chars().count());
+                for (i, line) in s.lines().enumerate() {
+                    let p: &str = if i == 0 { prefix } else { &cont_prefix };
+                    nested_push(out, indent, color::GREEN, p, line, "");
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            let list_color = if retcode != 0 { color::RED } else { color::GREEN };
+            for item in arr {
+                match item {
+                    serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                        nested_push(out, indent, list_color, "", "|_", "");
+                        let child_prefix = if matches!(item, serde_json::Value::Object(_)) { "" } else { "- " };
+                        nested_display(item, indent + 2, child_prefix, retcode, out);
+                    }
+                    _ => nested_display(item, indent, "- ", retcode, out),
+                }
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let dict_color = if retcode != 0 { color::RED } else { color::CYAN };
+            if indent > 0 {
+                nested_push(out, indent, dict_color, "", "----------", "");
+            }
+            for (k, v) in map.iter() {
+                nested_push(out, indent, dict_color, prefix, k, ":");
+                nested_display(v, indent + 4, "", retcode, out);
+            }
+        }
+    }
+}
+
 fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo, ping_state: &PingState, grains: &Option<Vec<(String, String)>>, grains_scroll: usize, app: &App) {
     let mut lines = header_lines(" Minion Detail ", area.width);
     lines.push(row("ID", minion.id.clone(), color::CYAN));
@@ -628,14 +699,18 @@ fn draw_job_detail(
         let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
         if sel < l.returns.len() {
             let ret = &l.returns[sel];
-            let display_str = if !ret.formatted_text.is_empty() {
-                ret.formatted_text.clone()
+            if !ret.formatted_text.is_empty() {
+                for line in ret.formatted_text.lines() {
+                    let spans = crate::app::App::ansi_to_styled_spans(line, Style::default().fg(color::TEXT));
+                    right_lines.push(Line::from(spans));
+                }
             } else {
-                App::format_return_as_console(&ret.minion_id, &ret.full_return)
-            };
-            for line in display_str.lines() {
-                let spans = crate::app::App::ansi_to_styled_spans(line, Style::default().fg(color::TEXT));
-                right_lines.push(Line::from(spans));
+                // Wrap as {minion_id: full_return} so this renders exactly
+                // as it would in real `salt-run jobs.lookup_jid` output,
+                // where the minion ID is itself just the top-level dict key.
+                let mut wrapper = serde_json::Map::new();
+                wrapper.insert(ret.minion_id.clone(), ret.full_return.clone());
+                right_lines.extend(nested_return_lines(&serde_json::Value::Object(wrapper), ret.retcode));
             }
         } else {
             right_lines.push(Line::from(Span::styled(

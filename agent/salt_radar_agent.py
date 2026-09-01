@@ -690,6 +690,21 @@ def cmd_minion_grains(opts, req):
 
 
 def cmd_jid_lookup(opts, req):
+    """Look up a specific job's per-minion returns.
+
+    A single `salt-run jobs.lookup_jid --out=json` subprocess call — the
+    Rust side already has its own console-style formatter
+    (`App::format_return_as_console`) it falls back to whenever
+    `formatted_text` is empty, so there's no need to *also* shell out a
+    second time for `--force-color` CLI text just to get a human-readable
+    rendering; that second call used to double this lookup's wall-clock
+    cost (and forcing color through a non-interactive subprocess can be far
+    slower than the same command run interactively, which is why this may
+    have looked like much more than 2x in practice). Bonus fix: the parsed
+    JSON result used to be discarded right after parsing (a leftover
+    `lookup_data = {}`), so retcode/success were always reported as a
+    default success regardless of the job's real outcome.
+    """
     jid = req.get("jid", "")
     if not jid:
         result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "jid required"})
@@ -697,28 +712,19 @@ def cmd_jid_lookup(opts, req):
 
     import json as json_mod
 
-    # Run raw CLI output for console format (y key / formatted_text)
-    _color_env = dict(os.environ, CLICOLOR_FORCE="1", FORCE_COLOR="1", TERM="xterm-256color")
-    cli_output = _run_salt_cmd(
-        ["salt-run", "--force-color", "jobs.lookup_jid", jid],
-        timeout=60, env=_color_env,
-    )
-    if not cli_output:
-        result(req["id"], "jid_lookup", ok=False, data={"found": False})
-        return
-
-    # Run JSON output for structured data (Y key / full_return)
     json_output = _run_salt_cmd(
         ["salt-run", "jobs.lookup_jid", jid, "--out=json"],
         timeout=60,
     )
-    lookup_data = {}
-    if json_output:
-        try:
-            lookup_data = json_mod.loads(json_output)
-        except Exception:
-            lookup_data = {}
-        lookup_data = {}
+    if not json_output:
+        result(req["id"], "jid_lookup", ok=False, data={"found": False})
+        return
+
+    try:
+        lookup_data = json_mod.loads(json_output)
+    except Exception:
+        result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "failed to parse salt-run output"})
+        return
 
     def _derive_retcode_and_success(return_val):
         if isinstance(return_val, dict):
@@ -741,42 +747,16 @@ def cmd_jid_lookup(opts, req):
             return (0, return_val)
         return (0, True)
 
-    # Parse CLI output into per-minion chunks (lines may contain ANSI codes).
-    # Minion header = stripped line starting at col 0 ending with ':' (e.g. "ol9:")
-    import re
-    def _strip_ansi(s):
-        return re.sub(r'\x1b\[[0-9;]*m', '', s)
-    per_minion = {}
-    lines = cli_output.splitlines()
-    current_minion = None
-    current_lines = []
-    for line in lines:
-        plain = _strip_ansi(line)
-        if plain and not plain[0].isspace() and plain.endswith(":"):
-            if current_minion is not None:
-                per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
-            current_minion = plain[:-1].strip()
-            current_lines = [line]
-        elif current_minion is not None:
-            current_lines.append(line)
-    if current_minion is not None:
-        per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
-
     returns = []
-    for mid, formatted_text in per_minion.items():
-        ret_val = lookup_data.get(mid)
-        retcode, success = _derive_retcode_and_success(ret_val) if ret_val is not None else (0, True)
+    for mid, ret_val in lookup_data.items():
+        retcode, success = _derive_retcode_and_success(ret_val)
 
-        # Sanitise JSON return for full_return
-        if ret_val is not None:
-            try:
-                clean_return = json_mod.loads(json_mod.dumps(ret_val, default=str))
-            except Exception:
-                clean_return = str(ret_val)
-        else:
-            clean_return = formatted_text
+        try:
+            clean_return = json_mod.loads(json_mod.dumps(ret_val, default=str))
+        except Exception:
+            clean_return = str(ret_val)
 
-        summary = (formatted_text or "")[:200]
+        summary = json_mod.dumps(clean_return, default=str)[:200]
 
         returns.append({
             "minion_id": str(mid),
@@ -784,7 +764,9 @@ def cmd_jid_lookup(opts, req):
             "retcode": retcode,
             "summary": summary,
             "full_return": clean_return,
-            "formatted_text": formatted_text,
+            # Left blank — the Rust side renders a console-style view from
+            # full_return itself when this is empty (see App::format_return_as_console).
+            "formatted_text": "",
         })
 
     data = {
