@@ -175,14 +175,10 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
     // doesn't, so this just falls back to a plain "Loading..." line).
     if app.cache_loading && !app.cache_loaded {
         let elapsed = app.cache_loading_at.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
-        let mut spans = vec![Span::styled("  Loading job cache", Style::default().fg(color::TEXT_DIM))];
+        let mut spans = vec![Span::styled("  Loading job cache... ", Style::default().fg(color::TEXT_DIM))];
         if let Some(loaded) = app.cache_load_progress {
-            spans.push(Span::styled(
-                format!("... {} jobs read", loaded),
-                Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            spans.push(Span::styled("...", Style::default().fg(color::TEXT_DIM)));
+            spans.push(Span::styled(format!("{}", loaded), Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(" jobs read", Style::default().fg(color::TEXT_DIM)));
         }
         spans.push(Span::styled(format!(" ({:.0}s)", elapsed), Style::default().fg(color::TEXT_DIM)));
         lines.push(Line::from(spans));
