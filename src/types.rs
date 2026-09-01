@@ -327,6 +327,12 @@ pub struct JidLookup {
     pub tgt: String,
     pub start_time: String,
     pub returns: Vec<JidReturn>,
+    /// How long the agent's `salt-run jobs.lookup_jid` subprocess call and
+    /// its own post-processing each took — shown in the popup header so a
+    /// slow lookup is visible right there instead of needing to go dig
+    /// through the agent's stderr log.
+    pub subprocess_secs: f64,
+    pub postprocess_secs: f64,
 }
 
 #[derive(Clone, Debug)]

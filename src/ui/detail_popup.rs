@@ -546,10 +546,22 @@ fn draw_job_detail(
 
     // ── Build header lines (JID, metadata) ──
     let short_jid: String = jid.chars().take(28).collect();
-    let mut header_lines: Vec<Line<'static>> = vec![
-        Line::from(Span::styled(format!("  Job {}", short_jid),
-            Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
-    ];
+    let mut jid_line = vec![Span::styled(format!("  Job {}", short_jid),
+        Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))];
+    // Per-lookup timing from the agent (salt-run subprocess + our own
+    // post-processing) — right here in the header so a slow lookup is
+    // visible without having to go dig through the agent's stderr log.
+    if let Some(l) = lookup.as_ref() {
+        if l.subprocess_secs > 0.0 || l.postprocess_secs > 0.0 {
+            let total = l.subprocess_secs + l.postprocess_secs;
+            let timing_color = if total >= 10.0 { color::ORANGE } else { color::TEXT_DIM };
+            jid_line.push(Span::styled(
+                format!("  (salt-run {:.1}s, parse {:.1}s)", l.subprocess_secs, l.postprocess_secs),
+                Style::default().fg(timing_color),
+            ));
+        }
+    }
+    let mut header_lines: Vec<Line<'static>> = vec![Line::from(jid_line)];
     header_lines.push(Line::from(""));
     let epoch_str = if job_start_epoch > 0.0 {
         use chrono::{DateTime, Local};

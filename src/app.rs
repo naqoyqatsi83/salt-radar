@@ -4958,6 +4958,8 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
         tgt,
         start_time: String::new(),
         returns,
+        subprocess_secs: 0.0,
+        postprocess_secs: 0.0,
     })
 }
 
@@ -5004,6 +5006,8 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
         tgt: data["tgt"].as_str().unwrap_or("").to_string(),
         start_time: data["start_time"].as_str().unwrap_or("").to_string(),
         returns: Vec::new(),
+        subprocess_secs: data["subprocess_secs"].as_f64().unwrap_or(0.0),
+        postprocess_secs: data["postprocess_secs"].as_f64().unwrap_or(0.0),
     };
     if let Some(arr) = data["returns"].as_array() {
         for entry in arr {

@@ -693,17 +693,19 @@ def cmd_jid_lookup(opts, req):
     """Look up a specific job's per-minion returns.
 
     A single `salt-run jobs.lookup_jid --out=json` subprocess call — the
-    Rust side already has its own console-style formatter
-    (`App::format_return_as_console`) it falls back to whenever
-    `formatted_text` is empty, so there's no need to *also* shell out a
-    second time for `--force-color` CLI text just to get a human-readable
-    rendering; that second call used to double this lookup's wall-clock
-    cost (and forcing color through a non-interactive subprocess can be far
-    slower than the same command run interactively, which is why this may
-    have looked like much more than 2x in practice). Bonus fix: the parsed
-    JSON result used to be discarded right after parsing (a leftover
-    `lookup_data = {}`), so retcode/success were always reported as a
-    default success regardless of the job's real outcome.
+    Rust side already renders return data itself (a port of Salt's own
+    `nested` outputter, see `nested_return_lines` in detail_popup.rs), so
+    there's no need to *also* shell out a second time for `--force-color`
+    CLI text just to get colored output; that second call used to double
+    this lookup's wall-clock cost. Bonus fix: the parsed JSON result used
+    to be discarded right after parsing (a leftover `lookup_data = {}`),
+    so retcode/success were always reported as a default success
+    regardless of the job's real outcome.
+
+    `subprocess_secs`/`postprocess_secs` are returned alongside the data so
+    the Rust side can show a per-lookup timing breakdown right in the
+    popup header — useful for tracking down a lookup that's slow here but
+    fast when the same `salt-run` command is run by hand.
     """
     jid = req.get("jid", "")
     if not jid:
@@ -712,10 +714,12 @@ def cmd_jid_lookup(opts, req):
 
     import json as json_mod
 
+    t0 = time.time()
     json_output = _run_salt_cmd(
         ["salt-run", "jobs.lookup_jid", jid, "--out=json"],
         timeout=60,
     )
+    t1 = time.time()
     if not json_output:
         result(req["id"], "jid_lookup", ok=False, data={"found": False})
         return
@@ -764,8 +768,9 @@ def cmd_jid_lookup(opts, req):
             "retcode": retcode,
             "summary": summary,
             "full_return": clean_return,
-            # Left blank — the Rust side renders a console-style view from
-            # full_return itself when this is empty (see App::format_return_as_console).
+            # Left blank — the Rust side renders a colored console-style
+            # view from full_return itself when this is empty (see
+            # nested_return_lines in src/ui/detail_popup.rs).
             "formatted_text": "",
         })
 
@@ -775,6 +780,8 @@ def cmd_jid_lookup(opts, req):
         "tgt": "",
         "start_time": "",
         "returns": returns,
+        "subprocess_secs": round(t1 - t0, 2),
+        "postprocess_secs": round(time.time() - t1, 2),
     }
     result(req["id"], "jid_lookup", data=data)
 
