@@ -42,12 +42,24 @@ def _init_output():
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
+_NDJSON_LOCK = threading.Lock()
+
+
 def ndjson(obj):
-    """Write a JSON line to the saved output fd and flush immediately."""
+    """Write a JSON line to the saved output fd and flush immediately.
+
+    Every command now dispatches on its own thread (see `dispatch`), so
+    concurrent writers are the norm rather than the exception — a single
+    `os.write()` call is atomic only up to PIPE_BUF (4096 bytes on Linux);
+    anything larger (a big job return, a large grains dump, ...) written
+    by two threads at once could otherwise interleave into a line neither
+    side can parse. The lock keeps each message's bytes contiguous.
+    """
     global _OUTPUT_FD
     fd = _OUTPUT_FD if _OUTPUT_FD is not None else 1
     data = json.dumps(obj, default=str) + "\n"
-    os.write(fd, data.encode())
+    with _NDJSON_LOCK:
+        os.write(fd, data.encode())
 
 
 def result(id_val, cmd, ok=True, data=None):
@@ -1066,24 +1078,27 @@ HANDLERS = {
     "minion_grains": cmd_minion_grains,
 }
 
-# Commands that may block for a long time (Salt runner calls, etc.).
-# These run in a background thread so the agent stays responsive.
-_LONG_RUNNING_CMDS = frozenset(["jid_lookup", "jobs_list"])
-
-
 def dispatch(opts, req):
+    """Hand a request off to its handler on its own thread.
+
+    Every command runs threaded now, not just the ones known to be slow
+    (`jobs_list`, `jid_lookup`) — `main()`'s `for line in sys.stdin` loop
+    previously ran every *other* handler inline, so on a busy master a
+    slow synchronous command (e.g. `list_processes`/`get_zmq_connections`
+    taking a while under load) blocked the loop from even reading the
+    next stdin line, let alone dispatching it — a `jid_lookup` queued
+    behind one could sit unread for tens of seconds despite finishing in
+    a few once it actually started. See `ndjson`'s lock for the write
+    side of the same change.
+    """
     cmd = req.get("cmd", "")
     handler = HANDLERS.get(cmd)
     if handler is None:
         result(req.get("id", 0), cmd, ok=False, data={"error": "unknown cmd: {}".format(cmd)})
         return
 
-    if cmd in _LONG_RUNNING_CMDS:
-        # Run in a background thread so the main loop stays responsive
-        t = threading.Thread(target=_run_handler, args=(handler, opts, req), daemon=True)
-        t.start()
-    else:
-        _run_handler(handler, opts, req)
+    t = threading.Thread(target=_run_handler, args=(handler, opts, req), daemon=True)
+    t.start()
 
 
 def _run_handler(handler, opts, req):
