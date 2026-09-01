@@ -462,6 +462,16 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(" contrast: off ", Style::default().fg(color::TEXT_DIM)));
     }
 
+    // Mouse mode indicator — the border hint (`F2:mouse on`) only names
+    // the key, not whether it's currently on or off; this is the actual
+    // current state, same convention as contrast/admin mode.
+    spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
+    if app.mouse_enabled {
+        spans.push(Span::styled(" mouse: ON ", Style::default().fg(color::TEXT_HI).bg(Color::Rgb(80, 55, 0)).add_modifier(Modifier::BOLD)));
+    } else {
+        spans.push(Span::styled(" mouse: off ", Style::default().fg(color::TEXT_DIM)));
+    }
+
     // Selection position on list tabs
     match app.current_tab {
         Tab::Dashboard => {}

@@ -4335,9 +4335,17 @@ impl App {
             return false;
         }
 
-        // Tab bar click (row 1)
+        // Tab bar click (row 1) — only within an actual tab label's column
+        // range; clicking the blank space between/after labels does nothing
+        // instead of silently falling through to Pulse (tab_at_col's old
+        // catch-all made any row-1 click switch tabs, which made a single
+        // stray/garbled mouse event — e.g. from a KVM switch's input
+        // handoff — very likely to swap the view even though it didn't
+        // land anywhere near a real tab).
         if row == 1 {
-            self.current_tab = Self::tab_at_col(col);
+            if let Some(tab) = Self::tab_at_col(col) {
+                self.current_tab = tab;
+            }
             return false;
         }
 
@@ -4646,14 +4654,18 @@ impl App {
     }
 
     /// Map a column position on the tab bar (row 1) to a tab.
-    fn tab_at_col(col: u16) -> Tab {
+    /// `None` for a column that doesn't land on any tab's label (the gaps
+    /// between them, or anything past the last one) — callers should treat
+    /// that as "not a tab bar click" rather than defaulting to some tab.
+    fn tab_at_col(col: u16) -> Option<Tab> {
         match col {
-            0..=12 => Tab::Dashboard,
-            16..=26 => Tab::Minions,
-            30..=39 => Tab::Events,
-            43..=50 => Tab::Jobs,
-            54..=63 => Tab::Alerts,
-            _ => Tab::Pulse,
+            0..=12 => Some(Tab::Dashboard),
+            16..=26 => Some(Tab::Minions),
+            30..=39 => Some(Tab::Events),
+            43..=50 => Some(Tab::Jobs),
+            54..=63 => Some(Tab::Alerts),
+            67..=75 => Some(Tab::Pulse),
+            _ => None,
         }
     }
 
