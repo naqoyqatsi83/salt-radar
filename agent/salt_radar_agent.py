@@ -725,20 +725,30 @@ def cmd_minion_grains(opts, req):
 def cmd_jid_lookup(opts, req):
     """Look up a specific job's per-minion returns.
 
-    A single `salt-run jobs.lookup_jid --out=json` subprocess call — the
-    Rust side already renders return data itself (a port of Salt's own
-    `nested` outputter, see `nested_return_lines` in detail_popup.rs), so
-    there's no need to *also* shell out a second time for `--force-color`
-    CLI text just to get colored output; that second call used to double
-    this lookup's wall-clock cost. Bonus fix: the parsed JSON result used
-    to be discarded right after parsing (a leftover `lookup_data = {}`),
-    so retcode/success were always reported as a default success
-    regardless of the job's real outcome.
+    Runs `salt-run jobs.lookup_jid JID` twice:
 
-    `subprocess_secs`/`postprocess_secs` are returned alongside the data so
-    the Rust side can show a per-lookup timing breakdown right in the
-    popup header — useful for tracking down a lookup that's slow here but
-    fast when the same `salt-run` command is run by hand.
+    - `--force-color` (no `--out` override): captures the *exact* text
+      `salt-run jobs.lookup_jid JID` would print in a real terminal,
+      including which outputter Salt auto-selects. This matters because
+      forcing `--out=json` (as this used to do exclusively) makes Salt
+      skip that auto-selection entirely — for a state.apply/highstate job,
+      `jobs.lookup_jid` actually returns `{"outputter": "highstate", "data":
+      {...}}`, and only the *unforced* CLI path unwraps that and renders it
+      through the highstate outputter (Name/Result/Comment/Duration per
+      state ID). `--out=json` just serializes that wrapper dict as-is,
+      which read like raw, unformatted state IDs (`file_|-...`, `__id__`,
+      `__run_num__`, ...) instead of real `salt-run` output.
+    - `--out=json`: structured data used for the left-panel host list,
+      filtering, and the derived success/retcode per minion (still needed
+      even though the JSON payload for a state job needs the same
+      `{"outputter": ..., "data": ...}` unwrap as above before it can be
+      iterated per-minion).
+
+    This is a real 2x subprocess cost for one lookup, but each command now
+    dispatches on its own thread (see `dispatch`), so it no longer blocks
+    any other command while it runs — `subprocess_secs`/`postprocess_secs`
+    are still returned so the Rust side can show the breakdown in the
+    popup header.
     """
     jid = req.get("jid", "")
     if not jid:
@@ -748,6 +758,10 @@ def cmd_jid_lookup(opts, req):
     import json as json_mod
 
     t0 = time.time()
+    raw_output = _run_salt_cmd(
+        ["salt-run", "jobs.lookup_jid", jid, "--force-color"],
+        timeout=60,
+    ) or ""
     json_output = _run_salt_cmd(
         ["salt-run", "jobs.lookup_jid", jid, "--out=json"],
         timeout=60,
@@ -762,6 +776,13 @@ def cmd_jid_lookup(opts, req):
     except Exception:
         result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "failed to parse salt-run output"})
         return
+
+    # A state.apply/highstate/orchestrate job's lookup_jid return isn't
+    # {minion: return} directly — it's wrapped so the CLI knows to render
+    # it through the highstate outputter instead of the default nested one.
+    # See salt.runner.Runner.run()'s own identical check.
+    if isinstance(lookup_data, dict) and set(lookup_data.keys()) == {"outputter", "data"}:
+        lookup_data = lookup_data["data"]
 
     def _derive_retcode_and_success(return_val):
         if isinstance(return_val, dict):
@@ -784,8 +805,67 @@ def cmd_jid_lookup(opts, req):
             return (0, return_val)
         return (0, True)
 
+    import re
+    _ansi_re = re.compile("\x1b\\[[0-9;]*m")
+
+    def _strip_ansi_with_map(text):
+        """Strip ANSI escapes while tracking, for each character kept, its
+        index in the original string — so a position found in the stripped
+        text (used for reliably matching a bare "mid:" header even though
+        `--force-color` puts escape codes right before it) can be mapped
+        back to a slice boundary in the original (still-colored) text."""
+        out_chars = []
+        pos_map = []
+        i, n = 0, len(text)
+        while i < n:
+            m = _ansi_re.match(text, i)
+            if m:
+                i = m.end()
+                continue
+            out_chars.append(text[i])
+            pos_map.append(i)
+            i += 1
+        return "".join(out_chars), pos_map
+
+    _stripped, _pos_map = _strip_ansi_with_map(raw_output)
+
+    def _to_raw_pos(stripped_pos):
+        if stripped_pos >= len(_pos_map):
+            return len(raw_output)
+        return _pos_map[stripped_pos]
+
+    def _extract_section(mid):
+        """Pull this minion's own section out of the raw multi-minion CLI
+        text — everything from its "mid:" header up to the next minion's
+        header (or EOF) — preserving the original ANSI color codes."""
+        if not _stripped.strip():
+            return ""
+        marker = "\n" + mid + ":"
+        if _stripped.startswith(mid + ":"):
+            content_start = 0
+        else:
+            pos = _stripped.find(marker)
+            if pos == -1:
+                return ""
+            content_start = pos + 1
+        rest = _stripped[content_start + len(mid) + 1:]
+        next_stripped_pos = len(_stripped)
+        for other_mid in lookup_data:
+            other_mid = str(other_mid)
+            if other_mid == mid:
+                continue
+            np = rest.find("\n" + other_mid + ":")
+            if np != -1:
+                candidate = content_start + len(mid) + 1 + np
+                if candidate < next_stripped_pos:
+                    next_stripped_pos = candidate
+        raw_start = _to_raw_pos(content_start)
+        raw_end = _to_raw_pos(next_stripped_pos)
+        return raw_output[raw_start:raw_end].strip()
+
     returns = []
     for mid, ret_val in lookup_data.items():
+        mid = str(mid)
         retcode, success = _derive_retcode_and_success(ret_val)
 
         try:
@@ -796,15 +876,16 @@ def cmd_jid_lookup(opts, req):
         summary = json_mod.dumps(clean_return, default=str)[:200]
 
         returns.append({
-            "minion_id": str(mid),
+            "minion_id": mid,
             "success": success,
             "retcode": retcode,
             "summary": summary,
             "full_return": clean_return,
-            # Left blank — the Rust side renders a colored console-style
-            # view from full_return itself when this is empty (see
-            # nested_return_lines in src/ui/detail_popup.rs).
-            "formatted_text": "",
+            # This minion's exact slice of the real `salt-run jobs.lookup_jid`
+            # CLI output (correct outputter, real ANSI colors). Falls back to
+            # the JSON-reconstructed nested view (see nested_return_lines in
+            # src/ui/detail_popup.rs) only if the raw text couldn't be split.
+            "formatted_text": _extract_section(mid),
         })
 
     data = {
