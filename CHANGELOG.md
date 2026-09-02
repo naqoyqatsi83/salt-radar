@@ -5,22 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-09-02
 
-### Fixed
-- Agent: `minion_cache_list` (polled every `dashboard_secs`, 2s by default) no longer forks a `salt-key -L` subprocess and no longer unconditionally unpickles every minion's cache entry on every poll. Grains are now only re-fetched when a minion's cache mtime has actually moved since the last poll, so fleets with a large number of permanently-dead minions (e.g. leftover test minions never cleaned up by autoclean) don't pay a full unpickle-everything cost every couple of seconds. Fixes excessive agent CPU usage on masters with thousands of stale minion cache entries (#79).
-- Job Detail return preview colored a minion's whole return red whenever that minion's job failed. Real `salt-run jobs.lookup_jid` never does this — it doesn't pass a per-minion retcode to Salt's nested outputter, so its dict/list coloring is always the normal cyan/green regardless of any individual minion's result. The preview now matches the real command's output instead of diverging from it on failed jobs.
-- Job Detail return preview showed raw, unformatted state IDs (`file_|-...`, `__id__`, `__run_num__`, ...) for state.apply/highstate jobs instead of real `salt-run jobs.lookup_jid` output. Forcing `--out=json` (needed for the structured per-minion data) makes Salt skip auto-selecting the highstate outputter for state jobs, and `jobs.lookup_jid` itself returns those wrapped in an `{"outputter": "highstate", "data": {...}}` envelope that was also never being unwrapped before iterating per-minion. The agent now also runs a `--force-color`, non-`--out`-forced lookup to capture the exact CLI text (whichever outputter Salt would really use, real colors included) and slices out each minion's own section of it for display, only falling back to the JSON reconstruction if that raw capture is unavailable.
-
-## [0.6.0] - 2026-09-01
-
-This release folds in `v0.6.0-rc1` through `v0.6.0-rc16`. Where a later RC
+This release folds in `v0.6.0-rc1` through `v0.6.0-rc17`. Where a later RC
 changed or fixed something an earlier RC in this same range introduced, only
 the final end-state behavior is described below — the intermediate iterations
-aren't (see the individual RC tags for that history). One such case: rc13
-added a `~/.config` fallback for `salt-radar.toml`; rc14 then reworked the
-Config Editor's border hints around it. The behavior actually shipping in
-this release is the "Config file lookup" entry under Changed below.
+aren't (see the individual RC tags for that history). Two such cases:
+rc13 added a `~/.config` fallback for `salt-radar.toml`; rc14 then reworked
+the Config Editor's border hints around it — the behavior actually shipping
+in this release is the "Config file lookup" entry under Changed below.
+Likewise, rc16 made Job Detail lookups a single `--out=json` subprocess
+call with the return rendered by a Rust-side outputter port; rc17 restored
+a second `--force-color` call alongside it after finding real gaps in that
+approach — see the Job Detail entry under Fixed below for the shipped
+end state.
 
 ### Added
 - Status bar now shows mouse mode's actual on/off state (matching the existing admin mode/contrast indicators), since the `F2:mouse on` border hint only names the key, not whether pressing it turns mouse mode on or off.
@@ -64,7 +62,8 @@ this release is the "Config file lookup" entry under Changed below.
 
 ### Fixed
 - A stray/garbled mouse click landing on the tab bar row could silently jump to Pulse regardless of where it landed — the column-to-tab lookup defaulted anything outside the five known tab-label ranges to Pulse instead of doing nothing, so any click on the (usually large) blank space to the right of the tabs also switched tabs. This made a single spurious mouse event — e.g. from a KVM switch's input handoff — likely to swap the view even without landing anywhere near a real tab.
-- Job Detail lookups (opening a specific job's return data) ran two sequential `salt-run jobs.lookup_jid` subprocess calls — one forcing colored CLI output just to derive `formatted_text`, one for structured JSON data — instead of one; the JSON call's result was also being discarded immediately after parsing (a leftover `lookup_data = {}`), so every return's success/retcode was silently reported as a default success regardless of whether the job actually failed. Now a single JSON-only call is made; the Rust side renders the return itself with a line-for-line port of Salt's own `nested` outputter (`salt/output/nested.py`) — same `----------` dividers, same `key:`/`- `/`|_` structure, same per-branch coloring (green strings, yellow numbers/booleans, cyan keys turning red when the job failed) — instead of shelling out again just to get colored CLI text.
+- Job Detail lookups (opening a specific job's return data) diverged from real `salt-run jobs.lookup_jid` output in three ways: the JSON call's parsed result was discarded immediately after parsing (a leftover `lookup_data = {}`), so every return's success/retcode was silently reported as a default success regardless of whether the job actually failed; the return preview colored a failed minion's whole output red, which the real command never does (it doesn't pass a per-minion retcode to Salt's nested outputter, so dict/list coloring is always the normal cyan/green); and state.apply/highstate jobs rendered as a raw, unformatted state-ID dict (`file_|-...`, `__id__`, `__run_num__`, ...) instead of the real highstate-formatted output, because forcing `--out=json` (to get structured per-minion data) makes Salt skip auto-selecting the highstate outputter, and `jobs.lookup_jid` itself wraps those returns in an `{"outputter": "highstate", "data": {...}}` envelope that was never being unwrapped before iterating per-minion. All three are fixed: the JSON call's result is parsed and unwrapped correctly for real retcode/success, and a second `--force-color` (non-`--out`-forced) call captures the exact CLI text — real outputter selection, real colors — sliced per minion for display, falling back to a line-for-line port of Salt's own `nested` outputter (`salt/output/nested.py`) only if that raw capture is unavailable.
+- Agent's `minion_cache_list` (polled every `dashboard_secs`, 2s by default) forked a `salt-key -L` subprocess and unconditionally unpickled every minion's cache entry on every poll — on a fleet with a large number of permanently-dead minions (e.g. leftover test minions never cleaned up by autoclean, thousands on some masters), this pegged agent CPU indefinitely. Grains are now only re-fetched when a minion's cache mtime has actually moved since the last poll, and `salt-key -L` is replaced with the same in-process `salt.key.Key` lookup `list_keys` already used.
 - Job Cache entries always showed the default `glob` target type in the detail popup instead of the job's actual one (compound, list, etc.) — the agent checked the same (lowercase, always-absent) `tgt_type` key twice instead of falling back from the capitalized `Target-type` key `jobs.list_jobs` actually returns.
 - Event Sniffer popup reset its selection to the newest event on every single newly-captured event, regardless of what the user had selected — on an active master, this made it impossible to keep an event selected long enough to inspect it.
 - Jobs tab: switching focus between the Live Jobs and Job Cache panels (`←`/`→`) stopped changing either panel's border color once any popup had ever been opened while on that tab — `popup_tab` is only set when a popup opens and never cleared when it closes, so the new focus-dimming check was reading it as "a popup is still open" forever after the first one, permanently dimming both panels regardless of which had actual keyboard focus.
