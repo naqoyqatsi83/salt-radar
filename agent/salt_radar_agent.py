@@ -42,12 +42,24 @@ def _init_output():
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
+_NDJSON_LOCK = threading.Lock()
+
+
 def ndjson(obj):
-    """Write a JSON line to the saved output fd and flush immediately."""
+    """Write a JSON line to the saved output fd and flush immediately.
+
+    Every command now dispatches on its own thread (see `dispatch`), so
+    concurrent writers are the norm rather than the exception — a single
+    `os.write()` call is atomic only up to PIPE_BUF (4096 bytes on Linux);
+    anything larger (a big job return, a large grains dump, ...) written
+    by two threads at once could otherwise interleave into a line neither
+    side can parse. The lock keeps each message's bytes contiguous.
+    """
     global _OUTPUT_FD
     fd = _OUTPUT_FD if _OUTPUT_FD is not None else 1
     data = json.dumps(obj, default=str) + "\n"
-    os.write(fd, data.encode())
+    with _NDJSON_LOCK:
+        os.write(fd, data.encode())
 
 
 def result(id_val, cmd, ok=True, data=None):
@@ -530,52 +542,73 @@ def cmd_config_snapshot(opts, req):
     result(req["id"], "config_snapshot", data=data)
 
 
+# mid -> {"mtime": int, "grains": {"os": ..., "osrelease": ..., ...}} — see
+# cmd_minion_cache_list for why this exists.
+_minion_grains_cache = {}
+
+
 def cmd_minion_cache_list(opts, req):
-    """Fetch minion cache data — salt-key for names, then Salt cache for grains."""
+    """Fetch minion cache data — salt.key for names, then Salt cache for grains.
+
+    `cache.fetch()` unpickles a file per minion — real work. On a fleet
+    with a large number of permanently-dead minions (created for testing
+    and never cleaned up by autoclean; some masters carry thousands of
+    these) doing that unconditionally on every poll (every `dashboard_secs`,
+    2s by default) means thousands of unpickles every couple of seconds,
+    forever, for minions whose grains can never change again. `cache.updated()`
+    is a cheap stat-only call, so grains are only re-fetched when a minion's
+    cache mtime has actually moved since the last poll — dead minions get
+    stat'd, not unpickled, on every subsequent tick.
+
+    Also uses `salt.key.Key` in-process (like `cmd_list_keys`) instead of
+    forking a `salt-key -L` subprocess every tick.
+    """
     minions = []
-    seen = set()
+    salt = _import_salt()
 
-    # Step 1: get the minion list from salt-key (reliable, always works)
     try:
-        import subprocess as sp, json as json_mod
-        output = _run_salt_cmd(["salt-key", "-L", "--out=json"], timeout=15)
-        if output:
-            key_data = json_mod.loads(output)
-            for mid in key_data.get("minions", []):
-                minions.append({"id": mid, "last_seen": 0, "cache_updated": 0})
-                seen.add(mid)
+        key_ids = salt.key.Key(opts).list_keys().get("minions", [])
     except Exception:
-        pass
+        key_ids = []
 
-    # Step 2: enrich with grains data from the cache (if available). Each
-    # minion is looked up independently so one bad cache entry can't abort
-    # enrichment for the rest of a large fleet.
     try:
-        salt = _import_salt()
         cache = salt.cache.factory(opts)
-        minion_ids = cache.list("minions") or []
     except Exception:
-        minion_ids = []
+        cache = None
 
-    for mid in minion_ids:
-        try:
-            entry = {"id": mid}
-            grains = cache.fetch("minions", mid)
-            if grains:
-                entry["os"] = grains.get("os", "")
-                entry["osrelease"] = grains.get("osrelease", "")
-                entry["saltversion"] = grains.get("saltversion", "")
-                entry["cpuarch"] = grains.get("cpuarch", "")
-            entry["last_seen"] = cache.updated("minions", mid) or 0
-            entry["cache_updated"] = cache.updated("minions", mid) or 0
-            if mid in seen:
-                # Update existing entry with cache data
-                for e in minions:
-                    if e["id"] == mid:
-                        e.update(entry)
-                        break
-        except Exception:
-            continue
+    for mid in key_ids:
+        entry = {"id": mid, "last_seen": 0, "cache_updated": 0}
+        if cache is not None:
+            try:
+                mtime = cache.updated("minions", mid) or 0
+                entry["last_seen"] = mtime
+                entry["cache_updated"] = mtime
+
+                cached = _minion_grains_cache.get(mid)
+                if cached is not None and cached["mtime"] == mtime:
+                    entry.update(cached["grains"])
+                else:
+                    grains = cache.fetch("minions", mid)
+                    grain_fields = {}
+                    if grains:
+                        grain_fields = {
+                            "os": grains.get("os", ""),
+                            "osrelease": grains.get("osrelease", ""),
+                            "saltversion": grains.get("saltversion", ""),
+                            "cpuarch": grains.get("cpuarch", ""),
+                        }
+                    entry.update(grain_fields)
+                    _minion_grains_cache[mid] = {"mtime": mtime, "grains": grain_fields}
+            except Exception:
+                pass
+        minions.append(entry)
+
+    # Drop entries for minions no longer in salt-key (deleted/rejected)
+    # so this doesn't grow without bound over a long-running agent.
+    if key_ids:
+        key_id_set = set(key_ids)
+        for stale in [m for m in _minion_grains_cache if m not in key_id_set]:
+            del _minion_grains_cache[stale]
 
     result(req["id"], "minion_cache_list", data={"minions": minions})
 
@@ -620,11 +653,13 @@ def cmd_alive_check(opts, req):
             return
         key_data = json_mod.loads(output)
         all_minions = key_data.get("minions", [])
-        # A minion is "up" if it has a cache file (means it has checked in)
+        # A minion is "up" if it has a cache entry (means it has checked in).
+        # Layout is a directory per minion holding data.p, not a flat
+        # "<mid>.p" file — e.g. /var/cache/salt/master/minions/<mid>/data.p.
         cachedir = opts.get("cachedir", "/var/cache/salt/master")
         minion_cache_dir = os.path.join(cachedir, "minions")
         for mid in all_minions:
-            cache_file = os.path.join(minion_cache_dir, "{}.p".format(mid))
+            cache_file = os.path.join(minion_cache_dir, mid, "data.p")
             if os.path.exists(cache_file):
                 up.append(mid)
             else:
@@ -670,9 +705,17 @@ def cmd_minion_grains(opts, req):
             if isinstance(grains_data, dict):
                 for key in sorted(grains_data.keys()):
                     val = grains_data[key]
-                    val_str = str(val) if not isinstance(val, str) else val
-                    if len(val_str) > 500:
-                        val_str = val_str[:500] + "..."
+                    if isinstance(val, str):
+                        val_str = val
+                    elif isinstance(val, (list, dict)):
+                        # Pretty-print nested structures (interfaces, disks,
+                        # pythonpath, etc.) instead of a single-line repr —
+                        # the TUI renders each line indented under the key.
+                        val_str = json_mod.dumps(val, indent=2, sort_keys=True)
+                    else:
+                        val_str = str(val)
+                    if len(val_str) > 2000:
+                        val_str = val_str[:2000] + "\n..."
                     pairs.append({"key": key, "value": val_str})
     except Exception:
         pairs = []
@@ -680,6 +723,33 @@ def cmd_minion_grains(opts, req):
 
 
 def cmd_jid_lookup(opts, req):
+    """Look up a specific job's per-minion returns.
+
+    Runs `salt-run jobs.lookup_jid JID` twice:
+
+    - `--force-color` (no `--out` override): captures the *exact* text
+      `salt-run jobs.lookup_jid JID` would print in a real terminal,
+      including which outputter Salt auto-selects. This matters because
+      forcing `--out=json` (as this used to do exclusively) makes Salt
+      skip that auto-selection entirely — for a state.apply/highstate job,
+      `jobs.lookup_jid` actually returns `{"outputter": "highstate", "data":
+      {...}}`, and only the *unforced* CLI path unwraps that and renders it
+      through the highstate outputter (Name/Result/Comment/Duration per
+      state ID). `--out=json` just serializes that wrapper dict as-is,
+      which read like raw, unformatted state IDs (`file_|-...`, `__id__`,
+      `__run_num__`, ...) instead of real `salt-run` output.
+    - `--out=json`: structured data used for the left-panel host list,
+      filtering, and the derived success/retcode per minion (still needed
+      even though the JSON payload for a state job needs the same
+      `{"outputter": ..., "data": ...}` unwrap as above before it can be
+      iterated per-minion).
+
+    This is a real 2x subprocess cost for one lookup, but each command now
+    dispatches on its own thread (see `dispatch`), so it no longer blocks
+    any other command while it runs — `subprocess_secs`/`postprocess_secs`
+    are still returned so the Rust side can show the breakdown in the
+    popup header.
+    """
     jid = req.get("jid", "")
     if not jid:
         result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "jid required"})
@@ -687,28 +757,32 @@ def cmd_jid_lookup(opts, req):
 
     import json as json_mod
 
-    # Run raw CLI output for console format (y key / formatted_text)
-    _color_env = dict(os.environ, CLICOLOR_FORCE="1", FORCE_COLOR="1", TERM="xterm-256color")
-    cli_output = _run_salt_cmd(
-        ["salt-run", "--force-color", "jobs.lookup_jid", jid],
-        timeout=60, env=_color_env,
-    )
-    if not cli_output:
-        result(req["id"], "jid_lookup", ok=False, data={"found": False})
-        return
-
-    # Run JSON output for structured data (Y key / full_return)
+    t0 = time.time()
+    raw_output = _run_salt_cmd(
+        ["salt-run", "jobs.lookup_jid", jid, "--force-color"],
+        timeout=60,
+    ) or ""
     json_output = _run_salt_cmd(
         ["salt-run", "jobs.lookup_jid", jid, "--out=json"],
         timeout=60,
     )
-    lookup_data = {}
-    if json_output:
-        try:
-            lookup_data = json_mod.loads(json_output)
-        except Exception:
-            lookup_data = {}
-        lookup_data = {}
+    t1 = time.time()
+    if not json_output:
+        result(req["id"], "jid_lookup", ok=False, data={"found": False})
+        return
+
+    try:
+        lookup_data = json_mod.loads(json_output)
+    except Exception:
+        result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "failed to parse salt-run output"})
+        return
+
+    # A state.apply/highstate/orchestrate job's lookup_jid return isn't
+    # {minion: return} directly — it's wrapped so the CLI knows to render
+    # it through the highstate outputter instead of the default nested one.
+    # See salt.runner.Runner.run()'s own identical check.
+    if isinstance(lookup_data, dict) and set(lookup_data.keys()) == {"outputter", "data"}:
+        lookup_data = lookup_data["data"]
 
     def _derive_retcode_and_success(return_val):
         if isinstance(return_val, dict):
@@ -731,50 +805,87 @@ def cmd_jid_lookup(opts, req):
             return (0, return_val)
         return (0, True)
 
-    # Parse CLI output into per-minion chunks (lines may contain ANSI codes).
-    # Minion header = stripped line starting at col 0 ending with ':' (e.g. "ol9:")
     import re
-    def _strip_ansi(s):
-        return re.sub(r'\x1b\[[0-9;]*m', '', s)
-    per_minion = {}
-    lines = cli_output.splitlines()
-    current_minion = None
-    current_lines = []
-    for line in lines:
-        plain = _strip_ansi(line)
-        if plain and not plain[0].isspace() and plain.endswith(":"):
-            if current_minion is not None:
-                per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
-            current_minion = plain[:-1].strip()
-            current_lines = [line]
-        elif current_minion is not None:
-            current_lines.append(line)
-    if current_minion is not None:
-        per_minion[current_minion] = "\n".join(current_lines).rstrip("\n")
+    _ansi_re = re.compile("\x1b\\[[0-9;]*m")
+
+    def _strip_ansi_with_map(text):
+        """Strip ANSI escapes while tracking, for each character kept, its
+        index in the original string — so a position found in the stripped
+        text (used for reliably matching a bare "mid:" header even though
+        `--force-color` puts escape codes right before it) can be mapped
+        back to a slice boundary in the original (still-colored) text."""
+        out_chars = []
+        pos_map = []
+        i, n = 0, len(text)
+        while i < n:
+            m = _ansi_re.match(text, i)
+            if m:
+                i = m.end()
+                continue
+            out_chars.append(text[i])
+            pos_map.append(i)
+            i += 1
+        return "".join(out_chars), pos_map
+
+    _stripped, _pos_map = _strip_ansi_with_map(raw_output)
+
+    def _to_raw_pos(stripped_pos):
+        if stripped_pos >= len(_pos_map):
+            return len(raw_output)
+        return _pos_map[stripped_pos]
+
+    def _extract_section(mid):
+        """Pull this minion's own section out of the raw multi-minion CLI
+        text — everything from its "mid:" header up to the next minion's
+        header (or EOF) — preserving the original ANSI color codes."""
+        if not _stripped.strip():
+            return ""
+        marker = "\n" + mid + ":"
+        if _stripped.startswith(mid + ":"):
+            content_start = 0
+        else:
+            pos = _stripped.find(marker)
+            if pos == -1:
+                return ""
+            content_start = pos + 1
+        rest = _stripped[content_start + len(mid) + 1:]
+        next_stripped_pos = len(_stripped)
+        for other_mid in lookup_data:
+            other_mid = str(other_mid)
+            if other_mid == mid:
+                continue
+            np = rest.find("\n" + other_mid + ":")
+            if np != -1:
+                candidate = content_start + len(mid) + 1 + np
+                if candidate < next_stripped_pos:
+                    next_stripped_pos = candidate
+        raw_start = _to_raw_pos(content_start)
+        raw_end = _to_raw_pos(next_stripped_pos)
+        return raw_output[raw_start:raw_end].strip()
 
     returns = []
-    for mid, formatted_text in per_minion.items():
-        ret_val = lookup_data.get(mid)
-        retcode, success = _derive_retcode_and_success(ret_val) if ret_val is not None else (0, True)
+    for mid, ret_val in lookup_data.items():
+        mid = str(mid)
+        retcode, success = _derive_retcode_and_success(ret_val)
 
-        # Sanitise JSON return for full_return
-        if ret_val is not None:
-            try:
-                clean_return = json_mod.loads(json_mod.dumps(ret_val, default=str))
-            except Exception:
-                clean_return = str(ret_val)
-        else:
-            clean_return = formatted_text
+        try:
+            clean_return = json_mod.loads(json_mod.dumps(ret_val, default=str))
+        except Exception:
+            clean_return = str(ret_val)
 
-        summary = (formatted_text or "")[:200]
+        summary = json_mod.dumps(clean_return, default=str)[:200]
 
         returns.append({
-            "minion_id": str(mid),
+            "minion_id": mid,
             "success": success,
             "retcode": retcode,
             "summary": summary,
             "full_return": clean_return,
-            "formatted_text": formatted_text,
+            # This minion's exact slice of the real `salt-run jobs.lookup_jid`
+            # CLI output (correct outputter, real ANSI colors). Falls back to
+            # the JSON-reconstructed nested view (see nested_return_lines in
+            # src/ui/detail_popup.rs) only if the raw text couldn't be split.
+            "formatted_text": _extract_section(mid),
         })
 
     data = {
@@ -783,6 +894,8 @@ def cmd_jid_lookup(opts, req):
         "tgt": "",
         "start_time": "",
         "returns": returns,
+        "subprocess_secs": round(t1 - t0, 2),
+        "postprocess_secs": round(time.time() - t1, 2),
     }
     result(req["id"], "jid_lookup", data=data)
 
@@ -794,21 +907,29 @@ _event_stop = threading.Event()
 
 
 def _parse_stamp(stamp):
-    """Convert Salt's _stamp (ISO-8601 string or datetime) to a Unix timestamp float."""
+    """Convert Salt's _stamp (ISO-8601 string or datetime) to a Unix timestamp float.
+
+    Salt's _stamp is always UTC but carries no tzinfo — Python's naive
+    .timestamp() silently assumes the *local* timezone instead, which
+    shifted every event's timestamp by the local UTC offset (matches
+    _jid_to_epoch's own tzinfo=utc handling below).
+    """
     if stamp is None:
         return time.time()
     try:
-        from datetime import datetime
+        from datetime import datetime, timezone
         if isinstance(stamp, (int, float)):
             return float(stamp)
         if isinstance(stamp, datetime):
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
             return stamp.timestamp()
         if isinstance(stamp, str):
             s = stamp.strip()
             for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
                         "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
                 try:
-                    return datetime.strptime(s[:26], fmt).timestamp()
+                    return datetime.strptime(s[:26], fmt).replace(tzinfo=timezone.utc).timestamp()
                 except ValueError:
                     continue
     except (ValueError, OSError):
@@ -837,9 +958,10 @@ def _event_loop(opts):
     """Run in a background thread: listen on event bus, forward events to stdout."""
     import salt.utils.event
     try:
-        sock_dir = opts.get("sock_dir", "")
-        if not sock_dir:
-            sock_dir = os.path.join(opts.get("cachedir", "/var/cache/salt/master"), "master")
+        # opts comes from salt.config.master_config(), which always
+        # resolves sock_dir from Salt's own defaults (typically
+        # /var/run/salt/master, not under cachedir) — no need to guess it.
+        sock_dir = opts["sock_dir"]
         me = salt.utils.event.MasterEvent(sock_dir, opts, listen=True)
         for evt in me.iter_events(tag="", full=True):
             if _event_stop.is_set():
@@ -905,11 +1027,51 @@ def cmd_fleet_scan(opts, req):
     })
 
 
-def cmd_jobs_list(opts, req):
-    """Fetch recent jobs from the master job cache via salt-run subprocess.
+def _fast_local_job_walk(opts, on_progress):
+    """Read the local_cache job directory ourselves, one job at a time, via
+    Salt's own (private) local_cache returner helpers — rather than the
+    atomic `salt-run jobs.list_jobs` call, which only returns once it has
+    already read the entire cache with no visibility into how far along it
+    is. `on_progress(count)` is invoked periodically as jobs are read, so a
+    slow cache (tens of thousands of jobs) can show live progress instead
+    of an opaque multi-second freeze.
 
-    Uses subprocess (same as cmd_jid_lookup) to avoid RunnerClient threading
-    issues inside the agent.
+    Only correct for the `local_cache` job-cache backend — callers must
+    check `master_job_cache`/`ext_job_cache` first and fall back to the
+    slower salt-run-based path for any other backend (redis, mysql, etcd).
+    Reaches into `local_cache`'s private `_walk_through`/`_job_dir`, so any
+    failure (e.g. a future Salt version renaming them) raises and the
+    caller falls back to the safe path rather than surfacing a broken cache
+    view.
+    """
+    import salt.returners.local_cache as local_cache_mod
+    import salt.utils.jid as jid_mod
+
+    # These modules normally get `__opts__` injected by Salt's loader when
+    # loaded as a returner plugin; called directly like this, it has to be
+    # set by hand before `_job_dir()`/`_walk_through()` (which read it) work.
+    local_cache_mod.__opts__ = opts
+
+    jobs = {}
+    count = 0
+    for jid, job, _t_path, _final in local_cache_mod._walk_through(local_cache_mod._job_dir()):
+        jobs[jid] = jid_mod.format_jid_instance(jid, job)
+        count += 1
+        if count % 250 == 0:
+            on_progress(count)
+    on_progress(count)
+    return jobs
+
+
+def cmd_jobs_list(opts, req):
+    """Fetch recent jobs from the master job cache.
+
+    Uses a direct, incremental read of the job cache directory (reporting
+    progress as it goes — see `_fast_local_job_walk`) when the configured
+    job-cache backend is Salt's default `local_cache`; falls back to the
+    same atomic `salt-run jobs.list_jobs` subprocess call (as cmd_jid_lookup
+    uses, to avoid RunnerClient threading issues inside the agent) for any
+    other backend, or if the fast path fails for any reason.
 
     Optional request fields:
       - filter_text (str): search across jid/fun/tgt/user on the full cache
@@ -918,16 +1080,29 @@ def cmd_jobs_list(opts, req):
     """
     import json as json_mod
 
-    output = _run_salt_cmd(["salt-run", "jobs.list_jobs", "--out=json"], timeout=90)
-    if not output:
-        result(req["id"], "jobs_list", ok=False, data={"error": "salt-run jobs.list_jobs failed"})
-        return
+    def on_progress(count):
+        ndjson({"type": "progress", "id": req["id"], "cmd": "jobs_list", "data": {"loaded": count}})
 
-    try:
-        result_data = json_mod.loads(output)
-    except Exception as exc:
-        result(req["id"], "jobs_list", ok=False, data={"error": "failed to parse output: {}".format(str(exc))})
-        return
+    result_data = None
+    returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
+    if returner == "local_cache":
+        try:
+            result_data = _fast_local_job_walk(opts, on_progress)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            result_data = None
+
+    if result_data is None:
+        output = _run_salt_cmd(["salt-run", "jobs.list_jobs", "--out=json"], timeout=90)
+        if not output:
+            result(req["id"], "jobs_list", ok=False, data={"error": "salt-run jobs.list_jobs failed"})
+            return
+
+        try:
+            result_data = json_mod.loads(output)
+        except Exception as exc:
+            result(req["id"], "jobs_list", ok=False, data={"error": "failed to parse output: {}".format(str(exc))})
+            return
 
     filter_text = req.get("filter_text", "")
     max_results = req.get("max_results", 500)
@@ -939,7 +1114,7 @@ def cmd_jobs_list(opts, req):
             continue
         fun = info.get("Function", info.get("fun", ""))
         tgt = info.get("Target", info.get("tgt", ""))
-        tgt_type = info.get("tgt_type", info.get("tgt_type", "glob"))
+        tgt_type = info.get("Target-type", info.get("tgt_type", "glob"))
         user = info.get("User", info.get("user", ""))
         # Use JID-derived epoch as primary — the JID always encodes the master
         # wall-clock time (YYYYMMDDHHMMSSuuuuuu) and is reliable even when the
@@ -1005,24 +1180,27 @@ HANDLERS = {
     "minion_grains": cmd_minion_grains,
 }
 
-# Commands that may block for a long time (Salt runner calls, etc.).
-# These run in a background thread so the agent stays responsive.
-_LONG_RUNNING_CMDS = frozenset(["jid_lookup", "jobs_list"])
-
-
 def dispatch(opts, req):
+    """Hand a request off to its handler on its own thread.
+
+    Every command runs threaded now, not just the ones known to be slow
+    (`jobs_list`, `jid_lookup`) — `main()`'s `for line in sys.stdin` loop
+    previously ran every *other* handler inline, so on a busy master a
+    slow synchronous command (e.g. `list_processes`/`get_zmq_connections`
+    taking a while under load) blocked the loop from even reading the
+    next stdin line, let alone dispatching it — a `jid_lookup` queued
+    behind one could sit unread for tens of seconds despite finishing in
+    a few once it actually started. See `ndjson`'s lock for the write
+    side of the same change.
+    """
     cmd = req.get("cmd", "")
     handler = HANDLERS.get(cmd)
     if handler is None:
         result(req.get("id", 0), cmd, ok=False, data={"error": "unknown cmd: {}".format(cmd)})
         return
 
-    if cmd in _LONG_RUNNING_CMDS:
-        # Run in a background thread so the main loop stays responsive
-        t = threading.Thread(target=_run_handler, args=(handler, opts, req), daemon=True)
-        t.start()
-    else:
-        _run_handler(handler, opts, req)
+    t = threading.Thread(target=_run_handler, args=(handler, opts, req), daemon=True)
+    t.start()
 
 
 def _run_handler(handler, opts, req):

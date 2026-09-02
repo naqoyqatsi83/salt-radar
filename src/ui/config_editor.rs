@@ -3,7 +3,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, ConfigEditorState};
+use crate::app::App;
 use super::color;
 use super::detail_popup;
 
@@ -16,7 +16,31 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
     let area = detail_popup::centered_rect(68, 70, f.area());
     f.render_widget(Clear, area);
 
-    let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER), color::BG_DARK);
+    let config_path = std::fs::canonicalize(&app.config_path)
+        .unwrap_or_else(|_| app.config_path.clone())
+        .display()
+        .to_string();
+    let editing_order = state.editing
+        && matches!(state.fields.get(state.selected).map(|f| f.kind), Some(ConfigFieldKind::Order));
+    let hints: Vec<(&str, String)> = if editing_order {
+        vec![
+            ("Esc", "cancel".to_string()),
+            ("\u{2191}\u{2193}", "select".to_string()),
+            ("+/-", "move item".to_string()),
+            ("Enter", "confirm".to_string()),
+        ]
+    } else {
+        vec![
+            ("Esc/q", "close".to_string()),
+            ("\u{2191}\u{2193}", "move".to_string()),
+            ("PgUp/PgDn", "page".to_string()),
+            ("Home/End", "top/bottom".to_string()),
+            ("Enter", "edit".to_string()),
+        ]
+    };
+    let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER_HI), color::BG_DARK)
+        .title_bottom(super::border_hints(&hints, color::BORDER_HI).left_aligned())
+        .title_bottom(super::border_info(format!("saved to: {}", config_path), color::BORDER_HI).right_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -57,7 +81,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 ).style(sel_style));
                 if is_sel {
                     lines.push(Line::from(Span::styled(
-                        "    Enter to save and restart",
+                        "    'Enter' to save and restart",
                         Style::default().fg(color::TEXT_DIM),
                     )));
                 }
@@ -90,6 +114,34 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     }
                 }
             }
+            ConfigFieldKind::Order => {
+                let is_sel = field_idx == state.selected;
+                let editing = is_sel && state.editing;
+                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+
+                if is_sel { sel_line = lines.len(); }
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {:<label_w$}", field.label, label_w = label_w),
+                        sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                    ),
+                    Span::styled(
+                        field.label_value.clone(),
+                        sel_style.fg(if editing { color::YELLOW } else { color::TEXT }),
+                    ),
+                ]));
+                if editing {
+                    for (i, item) in field.label_value.split(',').enumerate() {
+                        let item_sel = i == state.choice_idx;
+                        let item_style = if item_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                        let marker = if item_sel { "\u{25B8} " } else { "  " };
+                        lines.push(Line::from(Span::styled(
+                            format!("      {}{}", marker, item),
+                            item_style.fg(if item_sel { color::YELLOW } else { color::TEXT_DIM }).add_modifier(if item_sel { Modifier::BOLD } else { Modifier::empty() }),
+                        )));
+                    }
+                }
+            }
             _ => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
@@ -116,12 +168,6 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             }
         }
     }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Esc to close  \u{b7} \u{2191}\u{2193} to move  \u{b7} Enter to edit  \u{b7} Save & Restart to apply",
-        Style::default().fg(color::TEXT_DIM),
-    )));
 
     if let Some(ref err) = state.save_error {
         lines.push(Line::from(Span::styled(

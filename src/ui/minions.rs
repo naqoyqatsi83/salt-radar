@@ -10,17 +10,17 @@ use crate::app::App;
 
 use super::color;
 
-pub fn draw_minions(f: &mut Frame, area: Rect, app: &App) {
+pub fn draw_minions(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
 
-    draw_minion_list(f, cols[0], app);
+    draw_minion_list(f, cols[0], app, focused);
     draw_fleet_overview(f, cols[1], app);
 }
 
-fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
+fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let mut lines: Vec<Line> = Vec::new();
     let total = app.filtered_minions_len();
     let selected = app.minion_selected.min(total.saturating_sub(1));
@@ -37,15 +37,8 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!(" /{}/ ", app.filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
-    } else {
-        lines.push(Line::from(Span::styled("   // filter  r events", Style::default().fg(color::TEXT_DIM))));
-    }
-
-    // ── Hide/collapse hints ──────────────────────────────────────────────
-    if app.hide_timed_out {
-        lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]  x to toggle", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
-    } else if app.fleet_data.is_some() {
-        lines.push(Line::from(Span::styled("  x Hide  z Toggle  r Events", Style::default().fg(color::TEXT_DIM))));
+    } else if app.hide_timed_out {
+        lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
     }
 
     // ── Admin status line ─────────────────────────────────────────────────
@@ -55,7 +48,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         } else if app.fleet_data.is_some() {
             lines.push(Line::from(Span::styled("  [Admin] Scan complete", Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD))));
         } else {
-            lines.push(Line::from(Span::styled("  [Admin] Press S to scan fleet", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled("  [Admin] Ready to scan fleet", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD))));
         }
     }
 
@@ -170,7 +163,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
                 } else if to_count > 0 && !app.hide_timed_out {
                     // Collapsible section header row
                     let prefix = if app.timed_out_collapsed { "\u{25B6}" } else { "\u{25BC}" };
-                    let hint = if app.timed_out_collapsed { "  z/Enter to expand" } else { "" };
+                    let hint = if app.timed_out_collapsed { "  'z'/'Enter' to expand" } else { "" };
                     let line = Line::from(vec![
                         Span::styled(format!("  {} Timed out ({}){}", prefix, to_count, hint),
                             Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
@@ -181,12 +174,29 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let block = super::list_block(
+    let mut hints: Vec<(&str, String)> = vec![
+        ("/", "filter".to_string()),
+        ("Enter", "detail".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
+        ("r", "events".to_string()),
+    ];
+    if app.fleet_data.is_some() {
+        hints.push(("x", if app.hide_timed_out { "show timed-out".to_string() } else { "hide timed-out".to_string() }));
+        if !app.hide_timed_out {
+            hints.push(("z", "collapse timed-out".to_string()));
+        }
+    }
+    if app.admin_mode {
+        hints.push(("s", "scan fleet".to_string()));
+    }
+    let block = super::list_block_hinted(
         format!(" Minions ({}) ", total),
-        Style::default().fg(color::BORDER),
+        Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
         color::BG_DARK,
         has_more_above,
         has_more_below,
+        &hints,
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -371,7 +381,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(color::YELLOW),
             )));
             lines.push(Line::from(Span::styled(
-                "    Enable admin mode and press S for full fleet scan",
+                "    Enable admin mode and press 's' for full fleet scan",
                 Style::default().fg(color::TEXT_DIM),
             )));
         }
@@ -380,7 +390,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
     } else {
         lines.push(Line::from(Span::styled("  No fleet data.", Style::default().fg(color::TEXT_DIM))));
         lines.push(Line::from(Span::styled("  Activate admin mode and", Style::default().fg(color::TEXT_DIM))));
-        lines.push(Line::from(Span::styled("  press S to scan the fleet.", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("  press 's' to scan the fleet.", Style::default().fg(color::TEXT_DIM))));
     }
 
     f.render_widget(

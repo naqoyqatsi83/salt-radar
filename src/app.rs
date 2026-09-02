@@ -5,8 +5,7 @@ use std::os::unix::fs::MetadataExt;
 use std::process::Stdio;
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::text::Span;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -15,7 +14,6 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::alerts::{AlertEngine, ServiceMemThresholds};
-use crate::collectors;
 use crate::config::{load_config, AppConfig};
 use crate::types::*;
 
@@ -35,6 +33,9 @@ pub struct ServiceTrend {
 pub struct App {
     // Config
     pub config: AppConfig,
+    /// Where `config` was loaded from and gets saved back to — see
+    /// `config::resolve_config_path`.
+    pub config_path: std::path::PathBuf,
 
     // Tabs
     pub current_tab: Tab,
@@ -93,14 +94,32 @@ pub struct App {
 
     // Cursor positions
     pub event_selected: usize,
+    /// Events are displayed oldest-at-top/newest-at-bottom, tail-style. While
+    /// following, the selection stays pinned to the newest event as new ones
+    /// arrive (like `tail -f`); the moment the user moves selection off the
+    /// last row, following turns off so a busy master doesn't yank the
+    /// selection out from under them, and turns back on once they navigate
+    /// back down to the tail (or press End).
+    pub events_following: bool,
     pub job_selected: usize,
     pub alert_selected: usize,
     pub minion_selected: usize,
     pub pulse_selected: usize,
     pub pulse_grid_cols: usize,
+    /// The dot grid's actual rendered inner area, set by draw_dot_panel
+    /// each frame — mouse-click hit testing reads this directly instead of
+    /// re-deriving the panel's screen geometry by hand, so the two can't
+    /// silently drift apart the way they did when the Legend panel was
+    /// added below the grid without the click handler being updated.
+    pub pulse_grid_area: Rect,
 
     // Agent NDJSON reader thread
     pub agent_rx: Arc<Mutex<VecDeque<AgentMessage>>>,
+    /// Count of inbound messages the reader thread dropped because
+    /// `agent_rx` hit its cap (see agent::MAX_QUEUE_LEN) — surfaced in the
+    /// title frame so a sustained event-bus burst outrunning the drain rate
+    /// is visible instead of silently growing memory.
+    pub agent_backlog_dropped: Arc<std::sync::atomic::AtomicU64>,
     agent_req_id: u64,
     config_tick: u64,
     /// Pending jid_lookup (request_id, jid) waiting for async result
@@ -229,6 +248,19 @@ pub struct App {
     pub return_to_sniffer: Option<SnifferState>,
     /// When viewing event detail from MinionEvents, pressing q returns to the list
     pub return_to_minion_events: Option<(String, usize)>,
+    /// When admin mode is enabled/cancelled from within the Minion Detail
+    /// popup (its own hint advertises `A` for this), the popup should come
+    /// back afterward instead of dropping to the Minions list.
+    pub return_to_minion_detail: Option<String>,
+    /// Viewport-aware last valid scroll position for the Event Detail
+    /// popup, recomputed and written back every render (see
+    /// `ui::detail_popup::draw_event_detail`) — the key handler clamps
+    /// Down/PageDown/End against this real bound instead of guessing,
+    /// which is what keeps PageUp responsive right after End.
+    pub event_detail_scroll_max: usize,
+    /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
+    /// content preview (right panel).
+    pub job_detail_scroll_max: usize,
     /// Filter state for MinionEvents popup
     pub minion_events_filter: String,
     pub minion_events_is_filtering: bool,
@@ -258,6 +290,10 @@ pub struct App {
     pub cache_max_results: usize,
     pub cache_offset: usize,
     pub cache_loading_at: Option<Instant>,
+    /// Live count of jobs read so far during a `jobs_list` fetch, from the
+    /// agent's incremental progress messages — `None` until the first one
+    /// arrives (or if the agent fell back to the non-incremental path).
+    pub cache_load_progress: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -265,6 +301,10 @@ pub enum AgentMessage {
     Result { id: u64, cmd: String, ok: bool, data: serde_json::Value },
     Event { tag: String, data: serde_json::Value, ts: f64 },
     Error { id: Option<u64>, message: String },
+    /// Incremental progress for a long-running command (currently just
+    /// `jobs_list`'s live job-cache walk) — arrives zero or more times
+    /// before the final `Result`.
+    Progress { cmd: String, loaded: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -285,6 +325,12 @@ pub enum ConfigFieldKind {
     /// A field with a fixed, small set of valid values — edited via an
     /// inline picker (arrow keys + Enter) instead of free-text entry.
     Choice(&'static [&'static str]),
+    /// A comma-separated ordered list (currently just `graph_order`) —
+    /// edited by moving a cursor between items (arrow keys) and moving the
+    /// selected item up/down in the order (`+`/`-`), instead of hand-typing
+    /// the raw comma-separated string where a typo or dropped token is easy
+    /// to make and hard to notice.
+    Order,
     SaveButton,
 }
 
@@ -344,8 +390,8 @@ impl MinionActivityItem {
 #[derive(Clone, Debug)]
 pub enum DetailPopup {
     Minion(String, PingState, Option<Vec<(String, String)>>, usize),
-    SaltEvent(SaltEvent, usize, bool),
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_max: usize, content_scroll_mode: bool },
+    SaltEvent(SaltEvent, usize),
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
     EventSniffer(crate::types::SnifferState),
@@ -355,10 +401,12 @@ pub enum DetailPopup {
 
 impl App {
     pub fn new() -> Self {
-        let config = load_config(&std::path::Path::new("salt-radar.toml"));
+        let config_path = crate::config::resolve_config_path();
+        let config = load_config(&config_path);
         let config_secs = config.config_secs;
         let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let agent_backlog_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let pid = std::process::id();
 
         // PID-based temp paths to avoid conflicts between multiple users or instances
@@ -369,16 +417,18 @@ impl App {
 
         // Spawn agent
         let rx = agent_rx.clone();
+        let dropped = agent_backlog_dropped.clone();
         let agent_path = config.agent_path.clone();
         let python_bin = config.python_bin.clone();
         let master_config = config.master_config.clone();
         let cmd_path_agent = cmd_path.clone();
         std::thread::spawn(move || {
-            crate::agent::agent_main(rx, &agent_path, &python_bin, &master_config, &cmd_path_agent);
+            crate::agent::agent_main(rx, dropped, &agent_path, &python_bin, &master_config, &cmd_path_agent);
         });
 
         Self {
             config,
+            config_path,
             current_tab: Tab::Dashboard,
             session_start: Instant::now(),
             tick_count: 0,
@@ -420,6 +470,9 @@ impl App {
             sniffer_dirty: false,
             return_to_sniffer: None,
             return_to_minion_events: None,
+            return_to_minion_detail: None,
+            event_detail_scroll_max: 0,
+            job_detail_scroll_max: 0,
             minion_events_filter: String::new(),
             minion_events_is_filtering: false,
             hide_timed_out: false,
@@ -447,6 +500,7 @@ impl App {
             cache_max_results: 500,
             cache_offset: 0,
             cache_loading_at: None,
+            cache_load_progress: None,
 
             admin_mode: false,
             admin_mode_pending: false,
@@ -458,13 +512,16 @@ impl App {
             is_filtering: false,
 
             event_selected: 0,
+            events_following: true,
             job_selected: 0,
             alert_selected: 0,
             minion_selected: 0,
             pulse_selected: 0,
             pulse_grid_cols: 0,
+            pulse_grid_area: Rect::default(),
 
             agent_rx,
+            agent_backlog_dropped,
             agent_req_id: 0,
             config_tick: config_secs,
             pending_jid_lookup: None,
@@ -563,7 +620,6 @@ impl App {
                                 if minion.key_status.is_none() {
                                     minion.key_status = Some(KeyStatus::Accepted);
                                 }
-                                minion.connected = true;
                                 // Preserve enriched fields from event processing
                                 if let Some(&i) = minion_index.get(&minion.id) {
                                     let existing = &self.minion_info[i];
@@ -576,6 +632,14 @@ impl App {
                                     if existing.cache_updated_epoch > minion.cache_updated_epoch { minion.cache_updated_epoch = existing.cache_updated_epoch; }
                                     // Fleet scan timed_out status is not known to the cache — preserve it
                                     if existing.timed_out { minion.timed_out = true; }
+                                    // Being present in the master's minion cache means it was
+                                    // synced at some point — it says nothing about whether the
+                                    // minion is reachable *now*. Only alive_check (the real
+                                    // liveness probe) should set this; otherwise it fights with
+                                    // alive_check's result every cache refresh, flapping the
+                                    // Pulse Details panel between Connected/Unknown regardless
+                                    // of actual minion state.
+                                    minion.connected = existing.connected;
                                 }
                             }
                             // Sort: timed-out last, then by ID
@@ -731,6 +795,7 @@ impl App {
                         }
                         "jobs_list" => {
                             self.cache_loading_at = None;
+                            self.cache_load_progress = None;
                             if ok {
                                 self.jobs_cache = parse_cache_jobs(&data);
                                 self.cache_total_count = data["total_count"].as_u64().unwrap_or(0) as usize;
@@ -928,12 +993,24 @@ impl App {
                     }
                     let evt = SaltEvent { tag, data, ts };
                     self.events_since_last_tick.push(evt.clone());
-                    if self.events.len() >= self.config.event_buffer_size {
+                    let events_evicted = self.events.len() >= self.config.event_buffer_size;
+                    if events_evicted {
                         self.events.pop_front();
                     }
                     self.events.push_back(evt);
                     self.events_total += 1;
                     self.last_event_time = Some(Instant::now());
+                    // Only the unfiltered case can be adjusted precisely here
+                    // (a filtered view's index space depends on which events
+                    // match, not on `self.events` directly) — a filtered,
+                    // non-following selection may occasionally drift by one
+                    // on eviction, which the render-time `.min(total - 1)`
+                    // clamp keeps harmless.
+                    if self.filter_text.is_empty() {
+                        Self::advance_tail_selection(&mut self.event_selected, self.events_following, events_evicted, self.events.len());
+                    } else if self.events_following {
+                        self.event_selected = self.filtered_events_len().saturating_sub(1);
+                    }
 
                     // Track live jobs from events
                     if let Some(evt) = self.events.back() {
@@ -945,11 +1022,12 @@ impl App {
                         if !state.paused {
                             if let Some(evt) = self.events.back() {
                                 if Self::matches_sniffer_event(evt, &state.minion_ids) {
-                                    if state.buffer.len() >= state.max_size {
+                                    let sniffer_evicted = state.buffer.len() >= state.max_size;
+                                    if sniffer_evicted {
                                         state.buffer.pop_front();
                                     }
                                     state.buffer.push_back(evt.clone());
-                                    state.selected = 0;
+                                    Self::advance_tail_selection(&mut state.selected, state.following, sniffer_evicted, state.buffer.len());
                                     self.sniffer_dirty = true;
                                 }
                             }
@@ -959,6 +1037,11 @@ impl App {
                 AgentMessage::Error { message, .. } => {
                     self.agent.last_error = Some(message);
                     self.agent.connected = false;
+                }
+                AgentMessage::Progress { cmd, loaded } => {
+                    if cmd == "jobs_list" {
+                        self.cache_load_progress = Some(loaded);
+                    }
                 }
             }
             if processed >= MAX_PER_DRAIN { break; }
@@ -1036,6 +1119,19 @@ impl App {
             || self.fleet_scanning
             || self.cache_loading
             || matches!(self.detail_popup, Some(DetailPopup::EventSniffer(ref s)) if !s.paused)
+            // A zmq_ping/job_ping round-trip is outstanding — without this,
+            // the reply sits unread in agent_rx until the main loop's
+            // event::poll(timeout) happens to expire at the next full tick,
+            // and since latency is measured from send to drain, that idle
+            // wait gets counted as "latency" — the whole figure would then
+            // just track tick_interval_ms instead of real round-trip time.
+            || self.zmq_ping_sent_at.is_some()
+            || self.job_ping_pending.is_some()
+            // A backlog in agent_rx means the event-bus arrival rate is
+            // outrunning MAX_PER_DRAIN at the normal tick cadence — poll
+            // faster until drain_agent_messages() catches back up, instead
+            // of leaving the excess queued for a full tick_interval_ms.
+            || !self.agent_rx.lock().unwrap().is_empty()
     }
 
     /// Clamp all cursor selections to valid bounds
@@ -1052,6 +1148,16 @@ impl App {
             .min(self.filtered_minions_len().saturating_sub(1));
         self.pulse_selected = self.pulse_selected
             .min(self.pulse_minions_count().saturating_sub(1));
+    }
+
+    /// While live-typing an Events filter, keep the selection pinned to the
+    /// newest match (as long as it was already following) so the narrowing
+    /// result set stays tail-anchored instead of settling on whatever
+    /// index the previous filter text happened to leave selected.
+    fn follow_events_tail_if_filtering(&mut self) {
+        if self.current_tab == Tab::Events && self.events_following {
+            self.event_selected = self.filtered_events_len().saturating_sub(1);
+        }
     }
 
     fn matches_filter(text: &str, pat: &str) -> bool {
@@ -1078,6 +1184,22 @@ impl App {
             }
         }
         false
+    }
+
+    /// Keeps a tail-following selection index correct as one item is
+    /// appended to a capped, oldest-at-front buffer (Events, Sniffer) that
+    /// may have just evicted its oldest entry to stay under its cap. While
+    /// `following`, the selection stays pinned to the newest item (tail
+    /// mode, like `tail -f`); otherwise, an eviction shifts every
+    /// surviving index down by one, so `selected` is adjusted to keep
+    /// pointing at the same logical item (clamped to 0 if that item was
+    /// itself the one just evicted).
+    fn advance_tail_selection(selected: &mut usize, following: bool, evicted: bool, new_len: usize) {
+        if following {
+            *selected = new_len.saturating_sub(1);
+        } else if evicted {
+            *selected = selected.saturating_sub(1);
+        }
     }
 
     fn matches_sniffer_event(evt: &SaltEvent, minion_ids: &[String]) -> bool {
@@ -1147,17 +1269,19 @@ impl App {
         }
         let pat = &self.filter_text;
         let known = self.accepted_ids();
-        self.events.iter().rev().filter(|e| Self::matches_event(e, pat, &known)).count()
+        self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).count()
     }
 
+    /// Index 0 is the oldest buffered event — events display oldest-at-top,
+    /// newest-at-bottom (tail-style, see `events_following`), matching
+    /// `self.events`'s own front-to-back order (oldest pushed first).
     pub fn get_filtered_event(&self, index: usize) -> Option<&SaltEvent> {
         if self.filter_text.is_empty() {
-            let rev_idx = self.events.len().saturating_sub(1).saturating_sub(index);
-            return self.events.get(rev_idx);
+            return self.events.get(index);
         }
         let pat = &self.filter_text;
         let known = self.accepted_ids();
-        self.events.iter().rev().filter(|e| Self::matches_event(e, pat, &known)).nth(index)
+        self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).nth(index)
     }
 
     /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
@@ -1498,7 +1622,7 @@ impl App {
                 ConfigField { label: "show_activity_graph", label_value: on_off(cfg.show_activity_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_cpu_graph", label_value: on_off(cfg.show_cpu_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_mem_graph", label_value: on_off(cfg.show_mem_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
-                ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Order },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -1519,7 +1643,7 @@ impl App {
         let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         for f in fields {
             match f.kind {
-                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) => {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order => {
                     vals.insert(f.label, f.label_value.as_str());
                 }
                 _ => {}
@@ -1568,7 +1692,7 @@ impl App {
             graph_order: vals.get("graph_order").unwrap_or(&"cpu,mem,zmq,events,activity").to_string(),
         };
 
-        crate::config::write_config(&std::path::Path::new("salt-radar.toml"), &new_config)
+        crate::config::write_config(&self.config_path, &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
         self.config = new_config;
         // A changed zmq_latency_source (or any save) shouldn't leave a stale
@@ -1607,6 +1731,54 @@ impl App {
                         }
                         KeyCode::Esc => {
                             s.editing = false;
+                        }
+                        _ => {}
+                    }
+                    return false;
+                }
+                // Order fields (currently just graph_order): arrows move a
+                // cursor between items, +/- move the item under the cursor
+                // up/down in the order — no free-text entry, so a typo or
+                // dropped token isn't possible.
+                if matches!(s.fields.get(s.selected).map(|f| f.kind), Some(ConfigFieldKind::Order)) {
+                    match code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            s.choice_idx = s.choice_idx.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let len = s.fields.get(s.selected).map_or(0, |f| f.label_value.split(',').count());
+                            if s.choice_idx + 1 < len { s.choice_idx += 1; }
+                        }
+                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                            if let Some(field) = s.fields.get_mut(s.selected) {
+                                let mut items: Vec<&str> = field.label_value.split(',').collect();
+                                if s.choice_idx > 0 && s.choice_idx < items.len() {
+                                    items.swap(s.choice_idx, s.choice_idx - 1);
+                                    field.label_value = items.join(",");
+                                    s.choice_idx -= 1;
+                                }
+                            }
+                        }
+                        KeyCode::Char('-') | KeyCode::Char('_') => {
+                            if let Some(field) = s.fields.get_mut(s.selected) {
+                                let mut items: Vec<&str> = field.label_value.split(',').collect();
+                                if s.choice_idx + 1 < items.len() {
+                                    items.swap(s.choice_idx, s.choice_idx + 1);
+                                    field.label_value = items.join(",");
+                                    s.choice_idx += 1;
+                                }
+                            }
+                        }
+                        KeyCode::Enter => {
+                            s.editing = false;
+                            s.input.clear();
+                        }
+                        KeyCode::Esc => {
+                            if let Some(field) = s.fields.get_mut(s.selected) {
+                                field.label_value = s.input.clone();
+                            }
+                            s.editing = false;
+                            s.input.clear();
                         }
                         _ => {}
                     }
@@ -1718,7 +1890,7 @@ impl App {
                     Some(DetailPopup::ConfigEditor(ref s)) => {
                         match s.fields.get(s.selected).map(|f| &f.kind) {
                             Some(ConfigFieldKind::SaveButton) => Some("save"),
-                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) => {
+                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) | Some(ConfigFieldKind::Order) => {
                                 Some("edit")
                             }
                             _ => None,
@@ -1751,6 +1923,12 @@ impl App {
                             if let Some((val, kind)) = field_info {
                                 if let ConfigFieldKind::Choice(options) = kind {
                                     s.choice_idx = options.iter().position(|o| *o == val).unwrap_or(0);
+                                } else if let ConfigFieldKind::Order = kind {
+                                    // s.input snapshots the pre-edit order so Esc can restore it —
+                                    // +/- mutate field.label_value live so the list re-renders in
+                                    // its new order immediately, not just on confirm.
+                                    s.input = val;
+                                    s.choice_idx = 0;
                                 } else {
                                     s.input = val;
                                 }
@@ -1778,7 +1956,7 @@ impl App {
                 self.return_to_minion_events = None;
                 self.return_to_sniffer = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
-                    self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
+                    self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
                     self.popup_tab = Some(self.current_tab);
                 }
             }
@@ -1805,7 +1983,6 @@ impl App {
                             return_is_filtering: false,
                             panel_focus: false,
                             content_scroll: 0,
-                            content_scroll_max: 0,
                             content_scroll_mode: false,
                         });
                         self.popup_tab = Some(self.current_tab);
@@ -1836,7 +2013,6 @@ impl App {
                             return_is_filtering: false,
                             panel_focus: false,
                             content_scroll: 0,
-                            content_scroll_max: 0,
                             content_scroll_mode: false,
                         });
                         self.popup_tab = Some(self.current_tab);
@@ -2706,7 +2882,13 @@ impl App {
         let _ = std::fs::remove_file(&self.copy_path);
         let _ = std::fs::remove_file(&self.clip_log_path);
         let _ = std::fs::remove_file(&self.clip_debug_path);
+
+        // Persist the current dashboard graph layout (F4-F8 toggles) so it
+        // survives a restart instead of reverting to whatever was last
+        // saved through the Config Editor.
+        let _ = crate::config::write_config(&self.config_path, &self.config);
     }
+
     fn process_fleet_returns(&mut self) {
         let jid = match &self.fleet_scan_jid {
             Some(j) => j.clone(),
@@ -2855,7 +3037,7 @@ impl App {
         }
 
         // Refresh collectors at interval, not every tick
-        if let Some(ref cfg) = self.config_snapshot {
+        if self.config_snapshot.is_some() {
             let interval = self.config.dashboard_secs.max(1);
             if self.tick_count % interval == 0 {
                 self.send_agent_cmd("minion_cache_list", None);
@@ -2917,11 +3099,6 @@ impl App {
         self.events_last_sec_count += self.events_since_last_tick.len() as u64;
         self.events_since_last_tick.clear();
 
-
-        // Update host uptime from collector
-        if let Some(ref cfg) = self.config_snapshot {
-            // Handled by agent cmd in interval block
-        }
 
         // Compute network transfer rates from cumulative byte counters
         if let Some(prev_time) = self.prev_network_time {
@@ -3081,7 +3258,7 @@ impl App {
                 if since.elapsed().as_secs() >= 120 {
                     self.cache_loading = false;
                     self.cache_loading_at = None;
-                    self.cache_load_error = Some("Request timed out after 120s. Press r to retry.".to_string());
+                    self.cache_load_error = Some("Request timed out after 120s. Press 'r' to retry.".to_string());
                 }
             }
         }
@@ -3120,6 +3297,7 @@ impl App {
         self.cache_loading_at = Some(Instant::now());
         self.cache_loaded = false;
         self.cache_load_error = None;
+        self.cache_load_progress = None;
         self.send_agent_cmd("jobs_list", Some(extra));
     }
 
@@ -3127,7 +3305,7 @@ impl App {
         // Help overlay handles its own dismiss
         if self.show_help {
             match code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') => {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') | KeyCode::F(1) => {
                     self.show_help = false;
                 }
                 _ => {}
@@ -3162,6 +3340,7 @@ impl App {
                                 max_size: sniffer_max,
                                 paused: false,
                                 selected: 0,
+                                following: true,
                                 highlight_keywords: ids,
                                 highlight_input: None,
                             }
@@ -3207,7 +3386,17 @@ impl App {
                     KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
                     KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
+                    KeyCode::Char('6') => { self.current_tab = Tab::Pulse; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
+                    KeyCode::F(2) => {
+                        self.mouse_enabled = !self.mouse_enabled;
+                        self.needs_mouse_toggle = true;
+                        return false;
+                    }
+                    KeyCode::Char('?') | KeyCode::F(1) => {
+                        self.show_help = true;
+                        return false;
+                    }
                     _ => {}
                 }
             }
@@ -3239,7 +3428,6 @@ impl App {
                     ref mut return_is_filtering,
                     ref mut panel_focus,
                     ref mut content_scroll,
-                    ref mut content_scroll_max,
                     ref mut content_scroll_mode,
                     ref lookup,
                     ref jid,
@@ -3284,6 +3472,12 @@ impl App {
                     }
                     // Right panel (content preview) focused
                     if *panel_focus {
+                        // self.job_detail_scroll_max is the true viewport-aware
+                        // last-scroll-position for the return preview, recomputed
+                        // and written back every render (see draw_job_detail) —
+                        // clamping against it (instead of growing unbounded) is
+                        // what keeps End from scrolling past the last line and
+                        // PageUp responsive right afterward.
                         if *content_scroll_mode {
                             match code {
                                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -3293,16 +3487,16 @@ impl App {
                                     *content_scroll = content_scroll.saturating_sub(1);
                                 }
                                 KeyCode::Down | KeyCode::Char('j') => {
-                                    *content_scroll += 1;
+                                    *content_scroll = (*content_scroll + 1).min(self.job_detail_scroll_max);
                                 }
                                 KeyCode::PageUp => {
                                     *content_scroll = content_scroll.saturating_sub(10);
                                 }
                                 KeyCode::PageDown => {
-                                    *content_scroll += 10;
+                                    *content_scroll = (*content_scroll + 10).min(self.job_detail_scroll_max);
                                 }
                                 KeyCode::Home => { *content_scroll = 0; }
-                                KeyCode::End => { *content_scroll = usize::MAX / 2; }
+                                KeyCode::End => { *content_scroll = self.job_detail_scroll_max; }
                                 _ => {}
                             }
                             return false;
@@ -3314,16 +3508,9 @@ impl App {
                             KeyCode::Enter => {
                                 *content_scroll_mode = true;
                                 *content_scroll = 0;
-                                if let Some(ref l) = lookup {
-                                    let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
-                                    if sel < l.returns.len() {
-                                        let display_str = &l.returns[sel].formatted_text;
-                                        *content_scroll_max = if display_str.is_empty() { 0 } else { display_str.lines().count() };
-                                    }
-                                }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                *content_scroll += 1;
+                                *content_scroll = (*content_scroll + 1).min(self.job_detail_scroll_max);
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
                                 *content_scroll = content_scroll.saturating_sub(1);
@@ -3332,10 +3519,10 @@ impl App {
                                 *content_scroll = content_scroll.saturating_sub(10);
                             }
                             KeyCode::PageDown => {
-                                *content_scroll += 10;
+                                *content_scroll = (*content_scroll + 10).min(self.job_detail_scroll_max);
                             }
                             KeyCode::Home => { *content_scroll = 0; }
-                            KeyCode::End => { *content_scroll = usize::MAX / 2; }
+                            KeyCode::End => { *content_scroll = self.job_detail_scroll_max; }
                             KeyCode::Char('y') => {
                                 if let Some(ref l) = lookup {
                                     let idx = selected_return.unwrap_or(0);
@@ -3383,13 +3570,6 @@ impl App {
                                 *panel_focus = true;
                                 *content_scroll = 0;
                                 *content_scroll_mode = false;
-                                if let Some(ref l) = lookup {
-                                    let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
-                                    if sel < l.returns.len() {
-                                        let display_str = &l.returns[sel].formatted_text;
-                                        *content_scroll_max = if display_str.is_empty() { 0 } else { display_str.lines().count() };
-                                    }
-                                }
                             }
                         }
                         KeyCode::Char('/') => {
@@ -3511,11 +3691,13 @@ impl App {
                         KeyCode::Enter => {
                             self.admin_mode = true;
                             self.admin_mode_pending = false;
-                            self.detail_popup = None;
+                            self.detail_popup = self.return_to_minion_detail.take()
+                                .map(|mid| DetailPopup::Minion(mid, PingState::Idle, None, 0));
                         }
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('a') | KeyCode::Char('A') => {
                             self.admin_mode_pending = false;
-                            self.detail_popup = None;
+                            self.detail_popup = self.return_to_minion_detail.take()
+                                .map(|mid| DetailPopup::Minion(mid, PingState::Idle, None, 0));
                         }
                         _ => {}
                     }
@@ -3545,10 +3727,9 @@ impl App {
                     }
                     match code {
                         KeyCode::Enter => {
-                            let rev_idx = state.buffer.len().saturating_sub(1).saturating_sub(state.selected);
-                            if let Some(evt) = state.buffer.get(rev_idx) {
+                            if let Some(evt) = state.buffer.get(state.selected) {
                                 self.return_to_sniffer = Some(state.clone());
-                                self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
+                                self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
                                 self.popup_tab = Some(self.current_tab);
                             }
                         }
@@ -3557,23 +3738,29 @@ impl App {
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             state.selected = state.selected.saturating_sub(1);
+                            state.following = state.selected + 1 >= state.buffer.len();
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
                             let max = state.buffer.len().saturating_sub(1);
                             state.selected = state.selected.saturating_add(1).min(max);
+                            state.following = state.selected + 1 >= state.buffer.len();
                         }
                         KeyCode::PageUp => {
                             state.selected = state.selected.saturating_sub(10);
+                            state.following = state.selected + 1 >= state.buffer.len();
                         }
                         KeyCode::PageDown => {
                             let max = state.buffer.len().saturating_sub(1);
                             state.selected = state.selected.saturating_add(10).min(max);
+                            state.following = state.selected + 1 >= state.buffer.len();
                         }
                         KeyCode::Home => {
                             state.selected = 0;
+                            state.following = state.buffer.len() <= 1;
                         }
                         KeyCode::End => {
                             state.selected = state.buffer.len().saturating_sub(1);
+                            state.following = true;
                         }
                         KeyCode::Char('p') | KeyCode::Char('P') => {
                             state.paused = !state.paused;
@@ -3602,30 +3789,15 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::SaltEvent(ref evt, ref mut scroll_offset, ref mut scroll_mode) => {
-                    if *scroll_mode {
-                        match code {
-                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                                *scroll_mode = false;
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                *scroll_offset = scroll_offset.saturating_sub(1);
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                *scroll_offset += 1;
-                            }
-                            KeyCode::PageUp => {
-                                *scroll_offset = scroll_offset.saturating_sub(10);
-                            }
-                            KeyCode::PageDown => {
-                                *scroll_offset += 10;
-                            }
-                            KeyCode::Home => { *scroll_offset = 0; }
-                            KeyCode::End => { *scroll_offset = usize::MAX / 2; }
-                            _ => {}
-                        }
-                        return false;
-                    }
+                DetailPopup::SaltEvent(ref evt, ref mut scroll_offset) => {
+                    // self.event_detail_scroll_max is the true viewport-aware
+                    // last-scroll-position, recomputed and written back every
+                    // render (see draw_event_detail) — clamping against it here
+                    // (rather than against the popup's raw line count, or not at
+                    // all) is what keeps Down/PageDown/End from running
+                    // scroll_offset past where content actually ends, which
+                    // previously made PageUp appear to do nothing for several
+                    // presses after End.
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             if let Some(sniffer) = self.return_to_sniffer.take() {
@@ -3640,11 +3812,21 @@ impl App {
                                 self.detail_popup = None;
                             }
                         }
-                        KeyCode::Enter => {
-                            *scroll_mode = true;
-                            *scroll_offset = 0;
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            *scroll_offset = scroll_offset.saturating_sub(1);
                         }
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            *scroll_offset = (*scroll_offset + 1).min(self.event_detail_scroll_max);
+                        }
+                        KeyCode::PageUp => {
+                            *scroll_offset = scroll_offset.saturating_sub(10);
+                        }
+                        KeyCode::PageDown => {
+                            *scroll_offset = (*scroll_offset + 10).min(self.event_detail_scroll_max);
+                        }
+                        KeyCode::Home => { *scroll_offset = 0; }
+                        KeyCode::End => { *scroll_offset = self.event_detail_scroll_max; }
+                        KeyCode::Char('y') => {
                             let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
                                 .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
                                 .unwrap_or_else(|| evt.ts.to_string());
@@ -3654,6 +3836,9 @@ impl App {
                                 ts,
                                 serde_json::to_string_pretty(&evt.data).unwrap_or_default()
                             ));
+                        }
+                        KeyCode::Char('Y') => {
+                            clipboard_text = Some(serde_json::to_string_pretty(&evt.data).unwrap_or_default());
                         }
                         _ => {}
                     }
@@ -3690,7 +3875,7 @@ impl App {
                 }
                 DetailPopup::Minion(ref mid, _, ref mut grains, ref mut grains_scroll) => {
                     match code {
-                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             self.detail_popup = None;
                         }
                         KeyCode::Char('g') | KeyCode::Char('G') if self.admin_mode => {
@@ -3698,20 +3883,33 @@ impl App {
                             *grains = Some(Vec::new());
                             *grains_scroll = 0;
                         }
+                        KeyCode::Char('a') | KeyCode::Char('A') if self.admin_mode => {
+                            self.admin_mode = false;
+                        }
+                        KeyCode::Char('a') | KeyCode::Char('A') if !self.admin_mode && !self.is_filtering => {
+                            self.return_to_minion_detail = Some(mid.clone());
+                            self.admin_mode_pending = true;
+                            self.detail_popup = Some(DetailPopup::AdminConfirm);
+                            self.popup_tab = Some(self.current_tab);
+                        }
                         KeyCode::Up | KeyCode::Char('k') => {
                             *grains_scroll = grains_scroll.saturating_sub(1);
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
-                            *grains_scroll += 1;
+                            let max = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            *grains_scroll = (*grains_scroll + 1).min(max);
                         }
                         KeyCode::PageUp => {
                             *grains_scroll = grains_scroll.saturating_sub(10);
                         }
                         KeyCode::PageDown => {
-                            *grains_scroll += 10;
+                            let max = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            *grains_scroll = (*grains_scroll + 10).min(max);
                         }
                         KeyCode::Home => { *grains_scroll = 0; }
-                        KeyCode::End => { *grains_scroll = usize::MAX / 2; }
+                        KeyCode::End => {
+                            *grains_scroll = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                        }
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             clipboard_text = Some(mid.clone());
                         }
@@ -3797,7 +3995,6 @@ impl App {
                                             return_is_filtering: false,
                                             panel_focus: false,
                                             content_scroll: 0,
-                                            content_scroll_max: 0,
                                             content_scroll_mode: false,
                                         });
                                         self.popup_tab = Some(self.current_tab);
@@ -3831,7 +4028,7 @@ impl App {
                             _ => None,
                         };
                         if let Some(evt) = evt_enter {
-                            self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0, false));
+                            self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0));
                         }
                     }
                 }
@@ -3862,22 +4059,30 @@ impl App {
                     self.is_filtering = false;
                     self.filter_text.clear();
                     self.clamp_selection();
+                    self.follow_events_tail_if_filtering();
                 }
                 KeyCode::Enter => {
                     self.is_filtering = false;
-                    self.event_selected = 0;
                     self.job_selected = 0;
                     self.alert_selected = 0;
                     self.minion_selected = 0;
+                    if self.current_tab == Tab::Events {
+                        self.event_selected = self.filtered_events_len().saturating_sub(1);
+                        self.events_following = true;
+                    } else {
+                        self.event_selected = 0;
+                    }
                     self.clamp_selection();
                 }
                 KeyCode::Backspace => {
                     self.filter_text.pop();
                     self.clamp_selection();
+                    self.follow_events_tail_if_filtering();
                 }
                 KeyCode::Char(c) => {
                     self.filter_text.push(c);
                     self.clamp_selection();
+                    self.follow_events_tail_if_filtering();
                 }
                 _ => {}
             }
@@ -3920,14 +4125,10 @@ impl App {
         match code {
             KeyCode::Char('q') | KeyCode::Char('Q') => return true,
             KeyCode::Char('=') | KeyCode::Char('+') => {
-                if self.current_tab == Tab::Dashboard {
-                    self.tick_interval_ms = (self.tick_interval_ms + 500).min(30_000);
-                }
+                self.tick_interval_ms = (self.tick_interval_ms + 500).min(30_000);
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
-                if self.current_tab == Tab::Dashboard {
-                    self.tick_interval_ms = self.tick_interval_ms.saturating_sub(500).max(500);
-                }
+                self.tick_interval_ms = self.tick_interval_ms.saturating_sub(500).max(500);
             }
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 if self.admin_mode {
@@ -4015,7 +4216,7 @@ impl App {
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
             }
-            KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => {
+            KeyCode::Char('?') | KeyCode::F(1) => {
                 self.show_help = true;
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -4071,6 +4272,7 @@ impl App {
             KeyCode::Char('3') => self.current_tab = Tab::Events,
             KeyCode::Char('4') => self.current_tab = Tab::Jobs,
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
+            KeyCode::Char('6') => self.current_tab = Tab::Pulse,
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
                     self.pulse_up();
@@ -4095,6 +4297,21 @@ impl App {
                 self.needs_mouse_toggle = true;
             }
             KeyCode::F(3) => self.open_config_editor(),
+            KeyCode::F(4) if self.current_tab == Tab::Dashboard => {
+                self.config.show_cpu_graph = !self.config.show_cpu_graph;
+            }
+            KeyCode::F(5) if self.current_tab == Tab::Dashboard => {
+                self.config.show_mem_graph = !self.config.show_mem_graph;
+            }
+            KeyCode::F(6) if self.current_tab == Tab::Dashboard => {
+                self.config.show_zmq_graph = !self.config.show_zmq_graph;
+            }
+            KeyCode::F(7) if self.current_tab == Tab::Dashboard => {
+                self.config.show_events_graph = !self.config.show_events_graph;
+            }
+            KeyCode::F(8) if self.current_tab == Tab::Dashboard => {
+                self.config.show_activity_graph = !self.config.show_activity_graph;
+            }
             _ => {}
         }
         false
@@ -4118,21 +4335,31 @@ impl App {
             return false;
         }
 
-        // Tab bar click (row 1)
+        // Tab bar click (row 1) — only within an actual tab label's column
+        // range; clicking the blank space between/after labels does nothing
+        // instead of silently falling through to Pulse (tab_at_col's old
+        // catch-all made any row-1 click switch tabs, which made a single
+        // stray/garbled mouse event — e.g. from a KVM switch's input
+        // handoff — very likely to swap the view even though it didn't
+        // land anywhere near a real tab).
         if row == 1 {
-            self.current_tab = Self::tab_at_col(col);
+            if let Some(tab) = Self::tab_at_col(col) {
+                self.current_tab = tab;
+            }
             return false;
         }
 
-        // Content area click (rows 2 to h-2; h-1 = key hints)
+        // Content area click (rows 3 to h-2; h-1 = key hints).
+        // Layout (src/ui/mod.rs): title/tab frame is Length(3) (rows 0-2),
+        // content area starts at row 3, status bar is the last row (h-1).
         let r = row as usize;
-        if r < 2 || r >= h.saturating_sub(1) {
+        if r < 3 || r >= h.saturating_sub(1) {
             return false;
         }
 
-        // Content area height = h-3 (title + tab + key hints)
-        // Inner panel height = (h-3) - 2 (block top/bottom borders) = h-5
-        let inner_h = h.saturating_sub(5);
+        // Content area height = h-4 (title/tab frame + status bar).
+        // Inner panel height = (h-4) - 2 (block top/bottom borders) = h-6.
+        let inner_h = h.saturating_sub(6);
 
         match self.current_tab {
             Tab::Minions => {
@@ -4147,8 +4374,8 @@ impl App {
                 let selected = self.minion_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                // Data starts at: inner.y(3) + overhead + header(1)
-                let data_start = 3 + overhead + 1;
+                // Data starts at: inner.y(4) + overhead + header(1)
+                let data_start = 4 + overhead + 1;
                 if r >= data_start {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
@@ -4171,12 +4398,13 @@ impl App {
                 let selected = self.event_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                // Data starts at: inner.y(3) + filter(1) + header(1) = 5
-                let data_start = 3 + 2;
+                // Data starts at: inner.y(4) + filter(1) + header(1) = 6
+                let data_start = 4 + 2;
                 if r >= data_start {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
                         self.event_selected = (scroll + visual_idx).min(total - 1);
+                        self.events_following = self.event_selected + 1 >= total;
                         self.clamp_selection();
                     }
                 }
@@ -4190,7 +4418,7 @@ impl App {
                 let selected = self.alert_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                let data_start = 3 + 2;
+                let data_start = 4 + 2;
                 if r >= data_start {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
@@ -4218,7 +4446,7 @@ impl App {
                     let selected = self.cache_selected.min(total.saturating_sub(1));
                     let scroll = scroll_offset(selected, visible, total);
 
-                    let data_start = 3 + 2; // inner.y(3) + filter(1) + header(1)
+                    let data_start = 4 + 2; // inner.y(4) + filter(1) + header(1)
                     if r >= data_start {
                         let visual_idx = r - data_start;
                         if visual_idx < visible {
@@ -4234,7 +4462,7 @@ impl App {
                     let selected = self.job_selected.min(total.saturating_sub(1));
                     let scroll = scroll_offset(selected, visible, total);
 
-                    let data_start = 3 + 2;
+                    let data_start = 4 + 2;
                     if r >= data_start {
                         let visual_idx = r - data_start;
                         if visual_idx < visible {
@@ -4245,24 +4473,19 @@ impl App {
                 }
             }
             Tab::Pulse => {
-                let w = frame_size.width as usize;
-                let h = frame_size.height as usize;
-
-                // Pulse dot panel: left 65% of content area (y=2), with block border
-                let panel_w = w * 65 / 100;
-                let panel_h = h.saturating_sub(3); // content area height
-                let inner_x = 1;
-                let inner_y = 3; // content y=2 + border=1
-                let inner_w = panel_w.saturating_sub(2);
-
+                // Hit-test against the dot grid's actual rendered area
+                // (recorded by draw_dot_panel each frame) rather than
+                // re-deriving its screen geometry here, so this can't
+                // silently drift out of sync with the real layout again.
+                let area = self.pulse_grid_area;
                 let cx = col as usize;
                 let cy = row as usize;
 
-                if cy >= inner_y && cy < inner_y + panel_h.saturating_sub(2)
-                    && cx >= inner_x && cx < inner_x + inner_w
+                if cy >= area.y as usize && cy < (area.y + area.height) as usize
+                    && cx >= area.x as usize && cx < (area.x + area.width) as usize
                 {
-                    let grid_col = cx - inner_x;
-                    let grid_row = cy - inner_y;
+                    let grid_col = cx - area.x as usize;
+                    let grid_row = cy - area.y as usize;
                     let cols = self.pulse_grid_cols.max(1);
                     let idx = grid_row * cols + grid_col;
                     let count = self.pulse_minions_count();
@@ -4373,7 +4596,7 @@ impl App {
                     match item {
                         MinionActivityItem::Event(_, evt) => {
                             self.return_to_minion_events = Some((mid, item_idx));
-                            self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0, false));
+                            self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
                         }
                         MinionActivityItem::CacheJob(job) => {
                             self.return_to_minion_events = Some((mid, item_idx));
@@ -4393,7 +4616,6 @@ impl App {
                                 return_is_filtering: false,
                                 panel_focus: false,
                                 content_scroll: 0,
-                                content_scroll_max: 0,
                                 content_scroll_mode: false,
                             });
                             self.popup_tab = Some(self.current_tab);
@@ -4432,21 +4654,28 @@ impl App {
     }
 
     /// Map a column position on the tab bar (row 1) to a tab.
-    fn tab_at_col(col: u16) -> Tab {
+    /// `None` for a column that doesn't land on any tab's label (the gaps
+    /// between them, or anything past the last one) — callers should treat
+    /// that as "not a tab bar click" rather than defaulting to some tab.
+    fn tab_at_col(col: u16) -> Option<Tab> {
         match col {
-            0..=12 => Tab::Dashboard,
-            16..=26 => Tab::Minions,
-            30..=39 => Tab::Events,
-            43..=50 => Tab::Jobs,
-            54..=63 => Tab::Alerts,
-            _ => Tab::Pulse,
+            0..=12 => Some(Tab::Dashboard),
+            16..=26 => Some(Tab::Minions),
+            30..=39 => Some(Tab::Events),
+            43..=50 => Some(Tab::Jobs),
+            54..=63 => Some(Tab::Alerts),
+            67..=75 => Some(Tab::Pulse),
+            _ => None,
         }
     }
 
     fn move_up(&mut self) {
         match self.current_tab {
             Tab::Minions => self.minion_selected = self.minion_selected.saturating_sub(1),
-            Tab::Events => self.event_selected = self.event_selected.saturating_sub(1),
+            Tab::Events => {
+                self.event_selected = self.event_selected.saturating_sub(1);
+                self.events_following = self.event_selected + 1 >= self.filtered_events_len();
+            }
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected = self.cache_selected.saturating_sub(1);
@@ -4466,7 +4695,10 @@ impl App {
     fn move_down(&mut self) {
         match self.current_tab {
             Tab::Minions => self.minion_selected += 1,
-            Tab::Events => self.event_selected += 1,
+            Tab::Events => {
+                self.event_selected += 1;
+                self.events_following = self.event_selected + 1 >= self.filtered_events_len();
+            }
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected += 1;
@@ -4486,7 +4718,10 @@ impl App {
     fn move_to_first(&mut self) {
         match self.current_tab {
             Tab::Minions => self.minion_selected = 0,
-            Tab::Events => self.event_selected = 0,
+            Tab::Events => {
+                self.event_selected = 0;
+                self.events_following = self.filtered_events_len() <= 1;
+            }
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected = 0;
@@ -4503,7 +4738,10 @@ impl App {
     fn move_to_last(&mut self) {
         match self.current_tab {
             Tab::Minions => self.minion_selected = self.filtered_minions_len().saturating_sub(1),
-            Tab::Events => self.event_selected = self.filtered_events_len().saturating_sub(1),
+            Tab::Events => {
+                self.event_selected = self.filtered_events_len().saturating_sub(1);
+                self.events_following = true;
+            }
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected = self.filtered_cache_len().saturating_sub(1);
@@ -4732,6 +4970,8 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
         tgt,
         start_time: String::new(),
         returns,
+        subprocess_secs: 0.0,
+        postprocess_secs: 0.0,
     })
 }
 
@@ -4778,6 +5018,8 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
         tgt: data["tgt"].as_str().unwrap_or("").to_string(),
         start_time: data["start_time"].as_str().unwrap_or("").to_string(),
         returns: Vec::new(),
+        subprocess_secs: data["subprocess_secs"].as_f64().unwrap_or(0.0),
+        postprocess_secs: data["postprocess_secs"].as_f64().unwrap_or(0.0),
     };
     if let Some(arr) = data["returns"].as_array() {
         for entry in arr {
@@ -4798,6 +5040,9 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     result
 }
 
+/// Sorted oldest-first (ascending `start_epoch`) so the Job Cache panel
+/// displays newest-at-bottom, matching Live Jobs' convention — regardless
+/// of whatever order the agent's `jobs.list_jobs` call happened to return.
 fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
     let mut result = Vec::new();
     if let Some(arr) = data["jobs"].as_array() {
@@ -4816,6 +5061,7 @@ fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
             });
         }
     }
+    result.sort_by(|a, b| a.start_epoch.total_cmp(&b.start_epoch));
     result
 }
 

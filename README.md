@@ -75,7 +75,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **ZMQ** — established connection counts per port (pub/ret/api), plus a latency sparkline whose source is configurable (`zmq_latency_source`): a local agent liveness ping (default), a real `test.ping` round-trip over the event bus, or Salt's own `master_stats` instrumentation
 - **Event Rate** — Events/sec sparkline with peak and total counters
 - **Minion Activity** — Job return rate sparkline with last-active minion tracking
-- **CPU / Memory** — optional utilization-history sparklines (off by default), toggle alongside the other three sparkline panels via `show_*_graph`; stacking order of all five panels is configurable via `graph_order` — in the Config Editor (`F3`) or `salt-radar.toml`
+- **CPU / Memory** — utilization-history sparklines, toggle alongside the other three sparkline panels via `show_*_graph`; stacking order of all five panels is configurable via `graph_order` — in the Config Editor (`F3`, edited as a reorderable list: `↑↓` to select, `+`/`-` to move) or by hand in `salt-radar.toml`
 - **Job Pulse** — Active jobs with progress bars, rolling success rate, stuck-job count, and p50/p95 completion latency
 
 ### Minions
@@ -89,6 +89,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Live event stream from the Salt event bus (via ZMQ)
 - Full date/time in local and UTC columns
 - Filter by tag, function, minion ID, or any JSON field
+- Event detail popup: copy to clipboard (`y` = tag/timestamp + pretty-printed data, `Y` = raw JSON data only)
 - Advanced **Event Sniffer** — filter events by minion ID substring (`n` key):
   - Pause/resume live capture (`p`)
   - Navigate events with full pretty-printed JSON body
@@ -133,6 +134,7 @@ All thresholds are configurable via `salt-radar.toml` or the in-app Config Edito
 ### Config Editor
 - `F3` opens an in-app editor for every setting in `salt-radar.toml`, grouped by section
 - Free-text fields edit inline; fields with a fixed set of valid values (e.g. `zmq_latency_source`) open an inline picker — arrow keys to move, `Enter` to confirm
+- `graph_order` opens as a reorderable list instead of free text — `↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts — since hand-typing a comma-separated list makes it easy to typo or drop a panel
 - `Save & Restart` writes the TOML file and applies the new config immediately, no process restart needed
 
 ### Clipboard
@@ -176,7 +178,7 @@ Copy the example config and adjust as needed:
 cp salt-radar.toml.example salt-radar.toml
 ```
 
-All settings are optional and can also be edited live from inside the app (`F3`). The config file is looked up in the current directory or `~/.config/salt-radar/salt-radar.toml`. See [`salt-radar.toml.example`](salt-radar.toml.example) for the complete, commented list of every setting (connection paths, refresh intervals, event buffer sizes, all alert thresholds including per-unit memory overrides, and the Dashboard's `zmq_latency_source`/`show_*_graph`/`graph_order` settings) — a representative slice:
+All settings are optional and can also be edited live from inside the app (`F3`), which writes the file back on save — the Config Editor's own bottom border shows exactly which file it's writing to. salt-radar looks for `./salt-radar.toml` in the current directory first (so a per-directory config still works, e.g. if you copied the example there); if that's not present, it falls back to `$XDG_CONFIG_HOME/salt-radar/salt-radar.toml` (usually `~/.config/salt-radar/salt-radar.toml`), creating the directory on first save. See [`salt-radar.toml.example`](salt-radar.toml.example) for the complete, commented list of every setting (connection paths, refresh intervals, event buffer sizes, all alert thresholds including per-unit memory overrides, and the Dashboard's `zmq_latency_source`/`show_*_graph`/`graph_order` settings) — a representative slice:
 
 ```toml
 [salt]
@@ -200,7 +202,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 |-----|--------|
 | `q` | Quit |
 | `Tab` | Switch tab |
-| `1`–`5` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts; `Tab` reaches Pulse) |
+| `1`–`6` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Enter` | Open detail popup |
@@ -208,11 +210,14 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 | `/` | Filter (current tab) |
 | `a` | Toggle admin mode |
 | `c` | Toggle high-contrast selection |
-| `?` / `h` | Help overlay |
+| `?` / `F1` | Help overlay |
 | `F2` | Toggle mouse mode |
 | `F3` | Open Config Editor |
-| `+`/`-` | Adjust refresh interval (Dashboard) |
+| `+`/`-` | Adjust refresh interval |
 | `m` | Toggle sparkline style (Dashboard) |
+| `F4`–`F8` | Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard) |
+
+Most of these are also shown live, btop-style, in the border of the panel they affect (e.g. the title frame's bottom border shows `-2000ms+` for the current refresh interval) — the table above is the full reference.
 
 ### Per-tab
 
@@ -222,6 +227,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 | Minions | `r` | Minion event/return history popup |
 | Minions | `s` | Fleet scan (admin mode only) |
 | Minions | `x` | Hide/show non-responsive minions |
+| Minions | `z` | Collapse/expand timed-out minions into one row (when not hidden) |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
 | Jobs (Cache) | `,`/`.` | Previous/next page |
@@ -251,6 +257,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 | `Home`/`End` | Jump to start/end of output (scroll mode) |
 | `h` | Edit highlight keywords (sniffer) |
 | `p` | Pause/resume (sniffer) |
+| `g` | Fetch grains for this minion (minion detail, admin mode only) |
 
 ## How It Works
 

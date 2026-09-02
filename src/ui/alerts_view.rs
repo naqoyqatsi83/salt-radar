@@ -11,18 +11,25 @@ use super::color;
 const SEV_W: usize = 9;
 const RULE_W: usize = 22;
 
-pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
+pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let total = app.filtered_alerts_len();
     let selected = app.alert_selected.min(total.saturating_sub(1));
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
 
-    let block = super::list_block(
+    let hints: &[(&str, String)] = &[
+        ("/", "filter".to_string()),
+        ("Enter", "detail".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
+    ];
+    let block = super::list_block_hinted(
         format!(" Alerts ({}) ", app.alert_engine.active_count()),
-        Style::default().fg(color::BORDER),
+        Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
         color::BG_DARK,
         has_more_above,
         has_more_below,
+        hints,
     );
 
     let inner = block.inner(area);
@@ -42,10 +49,6 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(format!(" /{}/ ", app.filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled("   Press / to filter", Style::default().fg(color::TEXT_DIM)),
         ]));
     }
 

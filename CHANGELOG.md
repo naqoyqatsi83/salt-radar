@@ -5,144 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-09-02
 
-## [0.6.0-rc10] - 2026-08-29
-
-### Added
-- Per-service overrides for the "Service memory high" alert (Rule 13): `salt-master`/`salt-minion`/`salt-api`/`salt-syndic` can each set their own absolute (`service_mem_abs_threshold_*_mb`) and percent-of-total (`service_mem_pct_threshold_*`) threshold instead of sharing one global pair — `salt-master` legitimately runs with a much larger working set than the others, so a single number was either too loose for the master or too aggressive for everything else. Each override defaults to 0 ("no override, fall back to the global default"), editable via the Config Editor or `salt-radar.toml` (#46)
-- Minions list: a `●` marker in the ID gutter for minions that checked in recently — the "fresh" threshold is derived from the fleet's own median check-in age (clamped 5s-60s) instead of a fixed number, so it stays meaningful whether minions ping every few seconds or every few minutes, and a fleet that goes fully idle stops showing anyone as fresh instead of the threshold drifting up in lockstep with it (#43)
-- Dashboard: the bottom sparkline panels (ZMQ / Events / Minion Activity, plus two new ones — CPU and Memory utilization history) can each be shown or hidden independently via `show_*_graph` in the Config Editor's `[dashboard]` section, and their stacking order is configurable via `graph_order` (default `cpu,mem,zmq,events,activity`) — a comma-separated list of panel keys; unrecognized/duplicate keys are ignored and any panel missing from the list is appended after the ones named. CPU/Memory default off since enabling them changes the existing layout's panel count (#41)
-- Pulse view: the freshest recency tier (return < 5s ago) now renders as a filled `●` instead of the same small `·` middle-dot every other tier uses, since color/boldness alone on a single terminal cell was too subtle to reliably tell the two brightest tiers apart; the second tier (< 5min) got its own `•` bullet glyph too, so the full gradient (`●`/`•`/`·`) reads by shape as well as color
-
-### Fixed
-- Dashboard ZMQ panel: the `ret` port's `:` was pulled into its own standalone dim-gray span while `pub`'s and `api`'s colons were baked into their port's own colored span, so two of the three port colons matched their port number's color and the middle one didn't. `ret`'s `:` now folds into the same span as its port digits (#47)
-- Config Editor: the high-contrast toggle (`c`/`C`) was swallowed while navigating between fields — the editor intercepted every keystroke early as a "global overlay" before the universal contrast-toggle handler ever ran, and never grew its own `c`/`C` arm to compensate. It now toggles contrast in navigation mode (matching the rest of the app) while still typing a literal `c` when editing a field's text (#45)
-- Config Editor: on a small terminal, the field list rendered as one unscrolled `Paragraph` from the top with no scroll offset — navigating past the visible area moved the selection off-screen with no way to tell it could still be reached. The popup now tracks the selected field's line index and scrolls to keep it in view, the same windowing approach every other scrollable panel already uses (#44)
-- Dashboard Services panel: the `Memory` column padded only the digit portion to a 3-digit budget (`{:>3} MB`), so any service at or above 1000 MB (routine for `salt-master`'s Worker/ReqServer/EventPublisher children) overflowed its column and threw every field after it out of alignment, by a different amount per row depending on that row's digit count. The combined `"<value> MB"` string is now right-aligned as one field, sized for up to 5 digits (#40)
-- Alerts panel: the header's spacers before `Rule` and `Description` were hand-typed magic-width strings that didn't match the data rows' actual field widths, so `Rule`/`Description` never lined up with their columns; separately, the `Rule` field's fixed 16-char width was narrower than several real rule names (e.g. `Service memory growth` at 21 chars), which — since `{:<16}` doesn't truncate — ran the rule text straight into `Description` with zero separating space for any alert using one of those longer names. Header and data rows now share the same width constants, and `Rule` is widened to fit the longest current name (#42)
-- Dashboard: CPU/Memory sparklines rendered as full-height bars in Bars display mode even at a genuinely low value (e.g. 3%) — `Sparkline` auto-scales to the *visible window's own max* when no explicit ceiling is set, and unlike the other sparkline panels (which normalize against their own rolling peak before handing off data), CPU/Memory pass a raw absolute percentage, so a small value with nothing higher currently on screen filled the whole bar. Bars mode now renders on the same fixed 0-100 scale Dots mode already used
-
-## [0.6.0-rc9] - 2026-08-28
+This release folds in `v0.6.0-rc1` through `v0.6.0-rc17`. Where a later RC
+changed or fixed something an earlier RC in this same range introduced, only
+the final end-state behavior is described below — the intermediate iterations
+aren't (see the individual RC tags for that history). Two such cases:
+rc13 added a `~/.config` fallback for `salt-radar.toml`; rc14 then reworked
+the Config Editor's border hints around it — the behavior actually shipping
+in this release is the "Config file lookup" entry under Changed below.
+Likewise, rc16 made Job Detail lookups a single `--out=json` subprocess
+call with the return rendered by a Rust-side outputter port; rc17 restored
+a second `--force-color` call alongside it after finding real gaps in that
+approach — see the Job Detail entry under Fixed below for the shipped
+end state.
 
 ### Added
-- Refreshed README screenshots for every tab against the updated UI
-- Config Editor: fields with a fixed, small set of valid values (currently `zmq_latency_source`) now edit via an inline picker — Enter opens a list of the valid options with the current one pre-selected, ↑↓ moves, Enter confirms — instead of free-text entry where a typo silently fell back to default behavior (#37)
-- Scrollable list panels (Minions, Live Jobs, Job Cache, Events, Alerts) now show a "▲ more above" hint in the title and a "▼ more below" hint on the bottom border when the windowed list has content scrolled out of view in that direction, via a shared `scroll_window()`/`list_block()` helper instead of each view silently clipping with no way to tell there's more to scroll to (#38)
-- New "Service memory high" alert rule (Rule 13) flags a unit whose current RSS crosses a configurable absolute (`service_mem_abs_threshold_mb`, default 2048 MB) or percent-of-total-system-memory (`service_mem_pct_threshold`, default 8%) threshold, independent of the existing growth-rate alert — a slow, low-slope leak that's been running for weeks would never trip the rate check alone. Either threshold can be disabled by setting it to 0. Configurable via the `[alerts]` section or the in-app Config Editor (#29)
-
-### Fixed
-- Config Editor's label column was padded to a hardcoded 22 chars, which several labels (e.g. `service_mem_growth_mb_per_hour` at 31 chars) already ran past, jamming the value straight against the label with no separating space. Width is now derived from the longest label actually present
-- ZMQ panel's `job_ping` latency source always read a flat `0ms` — the round-trip clock started only after the agent's response (carrying the dispatched job's JID) arrived, but the actual dispatch happens *inside* that same response's round trip, so on a fast/local fleet the job could already have returned before the clock even started. The clock now starts on the Rust side before dispatch is requested; the agent also dispatches via `LocalClient.cmd_async()` directly instead of shelling out to the `salt` CLI, so per-call interpreter/CLI startup no longer pollutes the measurement
-- Job Pulse `p50/p95` completion latency stuck at `0.0s/0.0s` for jobs dispatched against targets whose minion list isn't resolved at dispatch time (e.g. some glob/compound matchers, async batches) — `target_count` stayed 0 forever so those jobs never met the `returned >= target_count` finalize condition. Jobs with an unknown target count now finalize on first return instead of never (#25)
-- Check-in Age `p50/p90/p99` on the Minions view could read stuck at `0s` on large fleets — the agent's per-minion grains-cache enrichment loop (`minion_cache_list`) ran under a single `try/except` covering the whole batch, so one bad cache lookup aborted enrichment for every minion after it, leaving them at `last_seen: 0` and silently excluded from the percentile population. Each minion is now looked up independently so one failure no longer drops the rest of the fleet (#26)
-- Dashboard Services panel: data rows were one column narrower than the header in the `Status` field, shifting every column after it (`State`/`Flp`/`Memory`/`T`/`Uptime`) out from under its label; `Memory` and `Uptime` also right-aligned their combined value+unit string as one blob, so the unit suffix landed in a different column depending on the value's digit count. Number and unit now render in their own fixed-width sub-fields (#28)
-- Dashboard Services/Key Status/Event Types row: rebalanced the even 3-way split to 2/1/2 since Key Status only ever needs a handful of fixed-format count rows, leaving Services and Event Types cramped at equal thirds; Event Types' panel title now renders in the same title color as its row-mates instead of ratatui's dimmer default (#27)
-- Panel titles were styled ad-hoc per call site, so most views (Minions, Events, Jobs, Alerts, Pulse, Config Editor, and the Returns/Preview detail popups) rendered their title in whatever fallback color was left over from the block's border styling instead of the app's title color, while only a few Dashboard panels applied it explicitly. Added a shared `titled_block()` helper and moved every plain-string `.title(...)` call site onto it, so panel titles are now the same color everywhere (#33)
-- Dot-mode (braille) sparklines lit the top-left dot first for a minimal value instead of filling from the bottom like Bars mode — the fill loop used the bit position directly as the braille dot index instead of an explicit bottom-to-top fill order, so increasing values actually zigzagged between the left/right dot columns rather than rising monotonically. Sparklines now fill dot-by-dot from the bottom row up (#30)
-- Title bar and tab menu merged into a single bordered frame with the app name/version/master version, a centered clock, and the alert count embedded directly in the top border (left/center/right), and the tab list sharing the frame's one content row with host/uptime info. Replaces the previous single-row `Borders::ALL` title bar, which had no room to draw a real box and rendered as a dangling top edge (#32); also removes the duplicate app version, master version, and hostname that the per-tab Dashboard header used to repeat one row below it — that header is gone, and its unique remaining info (radar/host uptime, now both individually labeled instead of one shared ambiguous `uptime:` label with an understated host figure) moved into the frame, visible on every tab instead of only Dashboard (#34)
-- Minions → Fleet Overview: the OS Distribution/Salt Version/Architecture tables padded the name column to a hardcoded 22 chars, so any name longer than that (e.g. a long `osfinger` string) overflowed the field and threw the count/bar/% columns out of alignment for that row. The name column width is now derived from the longest name actually present across the three tables (clamped to a sane min/max), so bars and counts line up regardless of name length (#31)
-- Dashboard Event Types panel: the `Auth` row's bar was sized using the same width budget as every other row, then had a `(X.X/s)` rate suffix appended on top afterward with no reserved space for it — once the auth rate picked up, the row could overflow past the panel's right edge. Moved the rate into the panel's title (`Event Types  auth: X.X/s`), consistent with how Services/Key Status/Events already surface a summary stat in their title instead of a row, removing the overflow risk entirely (#35)
-- Jobs → Job Cache: the fixed-width `JID`/`Fun`/`Target`/`User`/`Started` columns needed ~106 columns before `Started` even started rendering, so it silently clipped off the right edge at common terminal widths — unlike `Fun`/`Target`, which already truncate with `..` past their limit, `Started` had no fallback at all. Reordered to `JID`/`User`/`Started`/`Target`/`Fun` so a narrow panel clips the columns that already handle overflow instead of the one that doesn't (#39)
-- Dashboard's Minion Key Status panel showed a bare `churn:X/min` KPI with no explanation anywhere in the app of what it measures (new pending PKI keys registered in the last 60s). Relabeled to `new pending:X/min` and added a short definition to the in-app Help overlay (`?`/`h`) (#36)
+- Status bar now shows mouse mode's actual on/off state (matching the existing admin mode/contrast indicators), since the `F2:mouse on` border hint only names the key, not whether pressing it turns mouse mode on or off.
+- Job Detail popup header now shows a per-lookup timing breakdown right behind the JID (`salt-run Xs, parse Xs`), turning orange past 10s total — useful for tracking down a lookup that's slow here but fast when the same `salt-run jobs.lookup_jid` command is run by hand, without having to go dig through the agent's stderr log.
+- Job Cache: live "N jobs read" progress while loading, instead of an opaque "Loading..." with no feedback for the whole fetch. The agent now walks the job cache directory itself and reports progress every 250 jobs when the master's job-cache backend is the default `local_cache` (falling back to the previous single-shot `salt-run jobs.list_jobs` call, with no live count, for any other backend).
+- Config Editor (`F3`): edit every `salt-radar.toml` setting grouped by section, with live validation and save-on-restart. Fixed-choice fields (e.g. `zmq_latency_source`) use an inline picker instead of free text, and `graph_order` edits as a reorderable list (`↑↓` select, `+`/`-` move, `Enter` confirm) instead of a hand-typed comma-separated string.
+- Dashboard: CPU and Memory utilization-history sparklines (`F4`/`F5`), alongside the existing ZMQ/Events/Minion-activity panels (`F6`/`F7`/`F8`) — all five enabled by default. Which panels are shown and their stacking order are configurable (`show_*_graph`, `graph_order`) and saved automatically on quit, not just via an explicit Config Editor save.
+- Dashboard Job Pulse panel: rolling job-health KPIs — return success rate, stuck/in-flight job count, completion latency (p50/p95), partial-return rate.
+- Dashboard Event Types panel: real-time counts and proportional bars per category (auth, job return, minion start, beacon, refresh, other), with the live auth rate shown in the panel title.
+- Dashboard Services panel: per-unit restart/flap count (`Flp`, rolling 24h) and a memory-trend arrow (`T`, linear-regression slope over sampled history that requires the recent portion of the window to still be trending upward), plus a worker-pool saturation gauge (`Workers X% busy`) from real per-process CPU sampling.
+- Dashboard ZMQ panel: the latency measurement source is configurable (`zmq_latency_source`) — `agent_ipc` (default, local Rust↔agent round-trip), `job_ping` (dispatches a real `test.ping` and times it over the actual event bus), or `master_stats` (reads Salt's own `master_stats` events; requires `master_stats: True` on the master).
+- Minions tab: per-minion event/return history popup (`r`) showing events, returns, starts, beacons, cache jobs, and alerts for the selected minion, filterable by keyword (`/`); check-in age percentiles (p50/p90/p99) and a `●` "recently checked in" marker in the ID gutter, with the freshness threshold derived from the fleet's own median check-in age.
+- Minion Detail popup: full grains viewer (`g`, admin mode) with indented, type-colored JSON; admin-mode minion ping (`test.ping`) with a live result shown inline.
+- Fleet Overview (Minions tab): OS/Salt-version/architecture distribution bars populate passively from grains traffic on the event bus, without requiring a full admin-mode fleet scan (`s`) first.
+- New alert rules: Stuck job, Reauth storm, Pending key churn, Service flapping, Service memory growth, and Service memory high — the last with independent absolute (`service_mem_abs_threshold_mb`) and percent-of-total-memory (`service_mem_pct_threshold`) thresholds, each overridable per standard Salt service (`salt-master`/`salt-minion`/`salt-api`/`salt-syndic`) since the master legitimately runs with a much larger working set. Total alert rule count: 13.
+- Pulse tab: a Legend panel explaining each recency tier's glyph/color, a direct tab-jump key (`6`), and a distinct `•` glyph for the freshest tier (<5s).
+- Mouse support (`F2`): click to select list rows, double-click to open a detail popup, right-click to close a popup; on/off indicator in the title frame.
+- Every scrollable list or popup (Minions, Events, Jobs, Alerts, Config Editor, Grains/Event/Job detail, Pulse) shows "▲ more above" / "▼ more below" hints when content extends past the visible window, and documents its `PgUp`/`PgDn`/`Home`/`End` bindings.
+- `F1` bound to help, aliasing `?`.
+- README screenshots refreshed for every tab.
 
 ### Changed
-- Dashboard's "ZMQ" latency figure was a synthetic local IPC ping between the Rust TUI and its own Python helper subprocess — it never touched Salt's actual ZeroMQ transport or the master's real health, despite the panel implying otherwise. The measurement source is now configurable via `zmq_latency_source` in a new `[dashboard]` config section (also editable in the Config Editor): `agent_ipc` (default — the original local ping, relabeled "agent IPC" instead of implying it reflects Salt transport health), `job_ping` (periodically dispatches a real `test.ping` and times dispatch → first return over the actual event bus, throttled well below tick cadence since it puts real traffic on the bus), or `master_stats` (listens for Salt's own `salt/stats/<worker>` events — weighted-mean command execution time across workers — requires `master_stats: True` in the master's own config, which salt-radar can't set itself). Whichever source is active, the panel reads an honest "n/a" instead of a number until it has a real sample. The pub/ret/api connection-count part of the panel, which was already real, is unchanged (#37)
-
-## [0.6.0-rc8] - 2026-08-26
-
-### Added
-- Service restart/flap count (rolling 24h) and memory growth trend detection on the Dashboard Services panel: new `Flp` (flap count) and `T` (memory trend arrow) columns per unit, plus two new alert rules — "Service flapping" (`service_flap_threshold_24h`) and "Service memory growth" (`service_mem_growth_mb_per_hour`) — the latter using a linear-regression slope over sampled memory history rather than a static high-water-mark, and requiring the most recent portion of the window to still be trending upward so growth that plateaued (e.g. warm-up/caching) doesn't alert (#24)
-
-## [0.6.0-rc7] - 2026-08-25
-
-### Added
-- Screenshots for every tab in README.md
-
-### Fixed
-- Agent's `/proc/<pid>/stat` parser was splitting on whitespace with fixed field indices, which silently misaligned every field (RSS, utime, stime) for any process whose `comm` contains a space — inflated the Dashboard's Services memory panel by orders of magnitude. Now locates the `comm` field by its closing paren instead of a fixed-index split.
-- Service memory in the Dashboard `Unit` table now reads the systemd unit's cgroup `MemoryCurrent` (covers the whole process tree, shared pages counted once) instead of just the main process's own `VmRSS` (missed all forked Worker/ReqServer/EventPublisher children). Falls back to `VmRSS` of the main process if cgroup accounting is unavailable.
-- Salt processes are now classified with a `Minion` role (was falling into `Unknown`/`?` for any master that also runs a co-located minion). The Services panel's per-role memory line now wraps across multiple rows instead of being hard-clipped mid-word when it doesn't fit on one line, and the panel now reserves the right amount of height for it instead of pushing service rows off the bottom.
-
-## [0.6.0-rc6] - 2026-08-23
-
-### Added
-- MinionEvents popup: filter items by keyword with `/` key (matches tag, JID, function, description)
-- `minion_start` event tag recognized by both EventBreakdown and MinionEvents popup (was falling into "other" bucket)
-- Job Pulse panel on Dashboard now shows rolling job-health KPIs: return success rate, stuck/in-flight job count, completion latency (p50/p95), and partial-return rate
-- "Stuck job" alert rule: fires when a dispatched job hasn't fully returned within `job_straggler_secs`
-- Worker pool saturation gauge on Dashboard Services panel (`Workers X% busy`), from real per-process CPU sampling
-- Auth event rate shown on Dashboard Event Types panel (events/sec)
-- "Reauth storm" alert rule: fires when auth rate and worker saturation are elevated together (`auth_storm_rate_per_sec`, `worker_saturation_pct`)
-- Pending-key churn rate shown on Dashboard Minion Key Status panel and as a new alert rule (`pending_key_churn_per_min`)
-- Check-in age percentiles (p50/p90/p99) on the Minions tab Fleet Overview panel
+- Shortcuts moved out of the bottom key-hint bar and into the border of the panel each one affects (btop-style `┤key:label├`), so a hint stays next to the behavior it switches; the bottom bar is now status-only (interval, agent connectivity, admin/contrast state, selection position). Every popup — previously a mix of hand-written footers, or none at all for the Config Editor — now uses the same border-hint style.
+- Refresh interval (`+`/`-`) is shown as a live btop-style value (`┤-2000ms+├`) in the title frame and works from any tab, not only the Dashboard.
+- Title bar and tab menu merged into one bordered frame (app name/version, master version, centered clock, alert count, host/uptime), replacing both the old single-row title bar and the per-tab Dashboard header that used to repeat the same information one row below it.
+- Config file lookup: `./salt-radar.toml` in the launch directory wins if present; otherwise it falls back to `$XDG_CONFIG_HOME/salt-radar/salt-radar.toml` (usually `~/.config/salt-radar/salt-radar.toml`), creating the directory on first save. An existing per-directory config keeps working unchanged.
+- Sparkline panels default to Dots instead of Bars on first run. CPU/Memory sparklines in Bars mode render on a fixed 0-100 scale instead of auto-scaling to the visible window's own max, which previously exaggerated small values to a full-height bar.
+- Service memory reporting reads the systemd unit's cgroup `MemoryCurrent` (covers the whole process tree, shared pages counted once) instead of just the main process's own RSS, falling back to RSS when cgroup accounting is unavailable.
+- Job Cache's live "N jobs read" loading line: only the count itself is now accent-colored, matching the title text color used elsewhere; the label and elapsed time around it render in a single dim color instead of mixing grey/yellow/grey.
+- System data collection (keys, processes, services, system info) moved from Rust-side `/proc` polling to the Python agent for reliability.
+- Column widths across Dashboard (Services, Key Status, Event Types), Minions (Fleet Overview, list), Jobs (Live/Cache), Alerts, and Config Editor are now derived from the actual content present instead of hardcoded guesses, so long unit/rule/label names no longer overflow their column or misalign the ones after it.
+- Admin-mode key is consistently shown/typed as lowercase `a` everywhere (was `A` in a few spots), and every inline key mention in body text is wrapped in quotes (e.g. `press 's'`) for readability.
+- Fold the CPU/Memory/ZMQ/Events/Minions dashboard sparkline panels' below-graph summary line (avg, load, peak, connection counts, last-activity) into the panel's frame title, reclaiming that row for the sparkline itself instead of duplicating stats already shown up top.
+- Wrap every panel's top-border title (name plus any bundled stats/counts) in a single `┤ ... ├` bracket across the whole app, matching the bracket style already used for bottom-border key hints, instead of running the title as bare text against the border.
+- Border-embedded key hints and title brackets now match the color of the border they're embedded in (dim `BORDER` or bright `BORDER_HI`) instead of always rendering dim, so a highlighted/focused panel doesn't show brighter corners next to dimmer hint brackets.
+- Config Editor, and the single always-navigable panel on each of Minions/Events/Alerts/Pulse (the minion list, event list, alert list, and the Pulse dot-grid), now render their border in the bright `BORDER_HI` color like other focused/interactive panels already did, instead of the dim default.
+- Whichever tab's panel is behind an open popup (a detail popup, Config Editor, or the help overlay) now dims from `BORDER_HI` back to `BORDER` while the popup has focus, instead of still reading as the focused element underneath it.
+- Every "▲ more above" / "▼ more below" scroll indicator now matches the color of the border it's embedded in (dim or bright) instead of always rendering in a fixed dim color regardless of the panel's actual state.
+- Events tab and the Event Sniffer popup now display oldest-at-top, newest-at-bottom (tail-style), matching Live Jobs' existing convention instead of Job Cache's opposite one; Job Cache is also reordered to match. Selection stays pinned to the newest entry while at the tail (like `tail -f`), but the instant you move away from it, following turns off so a busy master doesn't drag your selection to a different event/entry out from under you — pressing `End` (or scrolling back down to the last row) re-engages it.
+- Event Sniffer's title, status, and column-header rows now stay pinned at the top of the popup while scrolling through captured events, instead of scrolling out of view along with the event list.
 
 ### Fixed
-- MinionEvents popup: selection highlight now stops at content width instead of filling full popup width
-- MinionEvents popup: selection highlight width limited to text content using per-span background styling
-- `last_zmq_return` no longer grows unbounded on minion churn — stale entries are pruned on each roster refresh
-- Roster reconciliation on `minion_cache_list` refresh and per-event grains harvest now uses an ID-indexed lookup instead of an O(n) scan per minion/event
-- Minion roster is only re-sorted when a change actually affects ordering, instead of every tick
-- Remove unbounded debug logging to `/tmp/salt-radar-agent-ndjson.log` in the agent (was leftover dev instrumentation with no rotation/cap)
-- `self.jobs` no longer grows unbounded — `JobEntry.age_seconds` was never actually updated after creation, so the age-out cleanup never removed anything
-- Process role classification (Master/Worker/API/Syndic/...) now reads `/proc/<pid>/cmdline` instead of `/proc/<pid>/comm`, which was always the truncated interpreter path and never matched any role — `SaltProcess.role` was effectively always `Unknown`
-- `SaltProcess.cpu_percent` is now real (computed from `/proc/<pid>/stat` utime/stime deltas between polls) instead of a hardcoded `0.0`
-- `KeyInfo.mtime_epoch` is now real (read from the PKI key file's mtime) instead of a hardcoded `0`, for both the `salt.key.Key` and `salt-key -L` fallback paths
+- A stray/garbled mouse click landing on the tab bar row could silently jump to Pulse regardless of where it landed — the column-to-tab lookup defaulted anything outside the five known tab-label ranges to Pulse instead of doing nothing, so any click on the (usually large) blank space to the right of the tabs also switched tabs. This made a single spurious mouse event — e.g. from a KVM switch's input handoff — likely to swap the view even without landing anywhere near a real tab.
+- Job Detail lookups (opening a specific job's return data) diverged from real `salt-run jobs.lookup_jid` output in three ways: the JSON call's parsed result was discarded immediately after parsing (a leftover `lookup_data = {}`), so every return's success/retcode was silently reported as a default success regardless of whether the job actually failed; the return preview colored a failed minion's whole output red, which the real command never does (it doesn't pass a per-minion retcode to Salt's nested outputter, so dict/list coloring is always the normal cyan/green); and state.apply/highstate jobs rendered as a raw, unformatted state-ID dict (`file_|-...`, `__id__`, `__run_num__`, ...) instead of the real highstate-formatted output, because forcing `--out=json` (to get structured per-minion data) makes Salt skip auto-selecting the highstate outputter, and `jobs.lookup_jid` itself wraps those returns in an `{"outputter": "highstate", "data": {...}}` envelope that was never being unwrapped before iterating per-minion. All three are fixed: the JSON call's result is parsed and unwrapped correctly for real retcode/success, and a second `--force-color` (non-`--out`-forced) call captures the exact CLI text — real outputter selection, real colors — sliced per minion for display, falling back to a line-for-line port of Salt's own `nested` outputter (`salt/output/nested.py`) only if that raw capture is unavailable.
+- Agent's `minion_cache_list` (polled every `dashboard_secs`, 2s by default) forked a `salt-key -L` subprocess and unconditionally unpickled every minion's cache entry on every poll — on a fleet with a large number of permanently-dead minions (e.g. leftover test minions never cleaned up by autoclean, thousands on some masters), this pegged agent CPU indefinitely. Grains are now only re-fetched when a minion's cache mtime has actually moved since the last poll, and `salt-key -L` is replaced with the same in-process `salt.key.Key` lookup `list_keys` already used.
+- Job Cache entries always showed the default `glob` target type in the detail popup instead of the job's actual one (compound, list, etc.) — the agent checked the same (lowercase, always-absent) `tgt_type` key twice instead of falling back from the capitalized `Target-type` key `jobs.list_jobs` actually returns.
+- Event Sniffer popup reset its selection to the newest event on every single newly-captured event, regardless of what the user had selected — on an active master, this made it impossible to keep an event selected long enough to inspect it.
+- Jobs tab: switching focus between the Live Jobs and Job Cache panels (`←`/`→`) stopped changing either panel's border color once any popup had ever been opened while on that tab — `popup_tab` is only set when a popup opens and never cleared when it closes, so the new focus-dimming check was reading it as "a popup is still open" forever after the first one, permanently dimming both panels regardless of which had actual keyboard focus.
+- Event Sniffer popup never showed the "▼ more below" indicator even when its event/JSON list overflowed the visible area — it always passed a hardcoded "nothing more" flag instead of computing it from the actual scroll position and content height.
+- Minion Detail popup's "Full Grains" section label was nearly unreadable — it shared the divider rule's very dark color instead of a proper text color.
+- Rust TUI process memory grew unbounded on long sessions against a large fleet (observed ~80MB at start, 300MB+ after 90 minutes) — the inbound agent-message queue had no size cap, and the consumer throttled to the tick interval even during event bursts. The queue is now capped (oldest entries dropped in favor of freshest once full, with a `backlog dropped: N` indicator if ever hit), and the main loop polls at a fast cadence whenever the queue is non-empty so bursts drain in ~100ms slices instead of queuing indefinitely.
+- Pulse view's Details panel misreported every minion as "Unknown" — the liveness check looked for a flat `<cachedir>/minions/<mid>.p` file, but Salt actually stores a per-minion directory (`<cachedir>/minions/<mid>/data.p`) — and could flap between Connected/Unknown because the more-frequent roster refresh was unconditionally overwriting the real liveness check's result. The roster refresh now preserves the existing `connected` value; only the liveness check sets it.
+- ZMQ latency (`agent_ipc`/`job_ping` sources) tracked the refresh interval almost exactly instead of real round-trip time, because a reply sat unread in the queue until the next tick's `event::poll` happened to expire. The main loop now polls at a short cadence whenever a ping is outstanding, so replies are drained within ~100ms of arriving regardless of `tick_interval_ms`.
+- `Last Seen` and job-cache start times could read frozen or offset by a fixed amount on masters whose local timezone isn't UTC — Salt's UTC `_stamp` field was being parsed as local time when converting to a Unix timestamp.
+- Mouse-click row selection (Minions, Events, Alerts, Jobs, Job Cache) and Pulse minion-grid clicks selected the row/minion one below the one actually clicked — both hit-testing paths now use the panel's real rendered geometry instead of geometry hardcoded before later layout changes.
+- Grains, Event Detail, and Job Detail return-content scrolling could scroll past the end with no way back, or need dozens of `PageUp` presses before any visible movement — all three now share the same viewport-aware max-scroll computation, with live "▲ more above"/"▼ more below" indicators. Event Detail also no longer requires pressing `Enter` before arrow/PgUp/PgDn scrolling works.
+- Process role classification (Master/Worker/API/Syndic/Minion) now reads `/proc/<pid>/cmdline` instead of the truncated interpreter path in `/proc/<pid>/comm`, which never matched any role.
+- `SaltProcess.cpu_percent` and `KeyInfo.mtime_epoch` are now real (computed from `/proc/<pid>/stat` deltas and read from PKI file mtimes) instead of hardcoded to `0`.
+- Grains with nested values (interfaces, disks, `pythonpath`, etc.) are now pretty-printed as indented, type-colored JSON instead of a single-line Python `repr()` truncated at 500 chars.
+- Admin mode can now be toggled (`a`) from inside the Minion Detail popup, matching its own hint; confirming/cancelling returns to the same popup instead of dropping back to the Minions list.
+- Dot-mode (braille) sparklines now fill bottom-up like Bars mode instead of zigzagging between dot columns for an increasing value.
+- Panel titles use the app's title color consistently everywhere (most views previously fell back to ratatui's dimmer default).
+- Event Detail's `y`/`Y` copy distinction (readable vs. raw JSON) restored, matching the convention Job Detail already used.
+- Minion Events popup: dim-row note ("dim = older than 5m") no longer clips off the right edge, its title bar no longer shows blank-looking fields for minions with no grains yet, and section-divider rules are sized to the popup's actual rendered width instead of one fixed length.
+- Agent's `/proc/<pid>/stat` parser now locates the `comm` field by its closing paren instead of a fixed whitespace-split index, which previously misaligned RSS/utime/stime (and inflated the Dashboard's memory figures) for any process whose `comm` contains a space.
+- The agent's stdin dispatch loop only backgrounded the `jid_lookup`/`jobs_list` commands onto their own thread — every other command (`list_processes`, `get_zmq_connections`, `minion_cache_list`, etc., all sent on every tick) ran inline, blocking the loop from even reading the next stdin line until that command finished. On a busy master, a job-detail lookup could sit unread behind a backlog of those for tens of seconds despite finishing in a few seconds once actually dispatched. Every agent command now runs on its own thread, with the NDJSON stdout writer locked so concurrent writers can't interleave into an unparseable line.
 
-## [0.6.0-rc4] - 2026-07-07
-
-### Added
-- Per-minion event/return history view on Minions tab: press `r` to open a filtered popup showing all events, returns, starts, beacons, cache jobs, and alerts for the selected minion
-- Event type breakdown panel on Dashboard mid section: real-time counts and proportional bars for auth, job return, minion start, beacon, and other events — shown alongside Services and Minion Keys in a 3-column layout
-- Config editor popup (F3): edit all 12 TOML parameters grouped by section with real-time editing, validation, and save
-- Collapsible timed-out minion section (z key) with expand/collapse indicator on Minions tab
-- Configurable sniffer buffer size via `sniffer_buffer_size` in `salt-radar.toml`
-- Minion list key status column (accepted/pending/rejected/denied) with color coding
-- Full minion grains viewer in detail popup: press `g` in admin mode to fetch and scroll through all grains
-- Minion connection tracking via `alive_check` agent command (passive cache-file check)
-- Admin mode minion ping (`test.ping`) from detail popup with connection result
-- Minion detail popup: key status, connection status, OS, Salt version, CPU architecture, last seen time
-- Agent-based system data collection: key listing, process listing, service discovery, system info, ZMQ connections, minion ping, minion grains commands
-- Agent debug logging to `/tmp/salt-radar-agent-ndjson.log`
-- Deployment target and testing documentation in CLAUDE.md
-- `sniffer_buffer_size` field to config and TOML
-
-### Changed
-- System data collection moved from Rust-side `/proc` collectors to Python agent for reliability
-- Event panel header shows `Events (current/max)` instead of total only
-- Default `event_buffer_size` increased from 5000 to 10000
-- Minion detail popup layout widened to 80% width with split info/grains sections
-- Agent event subscription wrapped in try/except for graceful startup
-- `DetailPopup::Minion` variant refactored to carry ping state, grains data, and scroll position
-- Dashboard key status panel uses max of key list and minion key_status for totals
-- Pulse view filtering uses `key_status` field fallback when key data missing
-
-### Fixed
-- Ghost minions: `cmd_minion_cache_list` now uses `salt-key -L` as the sole source for the minion roster; cache entries (which can contain stale/removed minions) only enrich existing entries
-- Agent system info collector: add `/proc/net/dev` parsing to `cmd_get_system_info` so Dashboard network panel shows actual byte counts and transfer rates
-- MinionEvents popup: auto-load job cache data when popup opens instead of requiring manual Jobs tab visit
-- MinionEvents popup: use distinct cyan color for cache job JID column instead of dim gray that merged with stale entries
-- MinionEvents popup: apply uniform TEXT_DIM to all columns (not just time) when event is older than 5 minutes
-- MinionEvents popup: fix minion connected/disconnected flapping in header by removing `connected = true` from event processing, making alive_check the sole source
-- Sniffer buffer now respects configurable `max_size` instead of hardcoded 1000
-- Timed-out minion `key_status` and enriched fields (osfinger, osrelease, salt_version, cpuarch, last_seen) preserved across cache list refreshes
-- Key status shown in minion list even when key data is from minion_info fallback
-- Fleet scan minions get `key_status: Accepted` by default
-
-## [0.6.0-rc1] - 2026-07-04
-
-### Added
-- Mouse click on Pulse view minion grid now selects the exact minion indicator instead of just left/right half
-- Double-click on list items (Minions, Events, Jobs, Alerts) opens the detail popup (400ms threshold, same cell)
-- Right-click on a popup closes it (except AdminConfirm confirmation dialog)
-- F2 hotkey toggles mouse mode on/off, with visual indicator in the key hints bar (default: enabled)
-
-### Changed
-- List tab click positioning rewritten from proportional calculation to exact row mapping with scroll offset for precise item selection
-- `DBL_CLICK_MS` constant renamed to `dbl_click_ms` for clippy compliance
-
-### Fixed
-- AdminConfirm popup OK/Cancel buttons now correctly distinguished by exact text hitbox coordinates — clicking Cancel no longer enables admin mode
+### Removed
+- Debug/diagnostic logging left over from development: the unbounded `/tmp/salt-radar-agent-ndjson.log`, and the temporary `/tmp/.salt-radar-memdiag-<pid>.log` RSS/collection-size log used to track down the memory-growth fix above — both removed once no longer needed, the underlying fixes stayed.
 
 ## [0.5.1] - 2026-06-29
 

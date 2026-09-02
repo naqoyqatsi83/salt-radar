@@ -18,7 +18,6 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::app::DetailPopup;
 use crate::types::Tab;
-use crate::types::SparklineStyle;
 
 // ─── Theme colors (matching psnet's dark palette) ──────────────────────────
 
@@ -71,10 +70,11 @@ pub mod color {
 /// which view renders it, instead of each call site handing `.title()` a
 /// plain, unstyled string.
 pub fn titled_block(title: impl Into<String>, border_style: Style, bg: Color) -> Block<'static> {
+    let border_color = border_style.fg.unwrap_or(color::BORDER);
     Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title(Line::from(Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))))
+        .title(Line::from(bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))], border_color)))
         .style(Style::default().bg(bg))
 }
 
@@ -96,9 +96,10 @@ pub fn scroll_window(selected: usize, visible: usize, total: usize) -> (usize, b
 /// above" hint to the top title and adds a "more below" hint on the
 /// bottom border when the list is windowed in that direction.
 pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool) -> Block<'static> {
-    let mut top_spans = vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))];
+    let border_color = border_style.fg.unwrap_or(color::BORDER);
+    let mut top_spans = bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::TEXT_TITLE))], border_color);
     if has_more_above {
-        top_spans.push(Span::styled(" \u{25B2} more above ", Style::default().fg(color::TEXT_DIM)));
+        top_spans.push(Span::styled(" \u{25B2} more above ", Style::default().fg(border_color)));
     }
     let mut block = Block::default()
         .borders(Borders::ALL)
@@ -107,10 +108,89 @@ pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_
         .title_top(Line::from(top_spans));
     if has_more_below {
         block = block.title_bottom(
-            Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::TEXT_DIM))).right_aligned(),
+            Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(border_color))).right_aligned(),
         );
     }
     block
+}
+
+/// btop-style border hint: `┤ KEY:label ├` with the key that switches the
+/// behavior picked out in red, built directly into the border it affects
+/// instead of listed in a separate legend. One space pads both sides of
+/// every bracketed segment in this border-decoration family — border_hints,
+/// border_info, value_hint — consistently; none of them run text up against
+/// the ┤/├ glyphs.
+pub fn border_hints(hints: &[(&str, String)], border_color: Color) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (key, label) in hints {
+        spans.push(Span::styled("\u{2524}", Style::default().fg(border_color)));
+        spans.push(Span::styled(format!(" {}", key), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(format!(":{} ", label), Style::default().fg(color::TEXT_TITLE)));
+        spans.push(Span::styled("\u{251C}", Style::default().fg(border_color)));
+    }
+    Line::from(spans)
+}
+
+/// Plain `┤ text ├` border segment for read-only info (no key to
+/// highlight) — same bracket/spacing style as `border_hints`, just without
+/// the red key portion.
+pub fn border_info(text: impl Into<String>, border_color: Color) -> Line<'static> {
+    Line::from(bracket_title(vec![Span::styled(text.into(), Style::default().fg(color::TEXT_TITLE))], border_color))
+}
+
+/// Wraps a panel's title content — its label plus any dynamic stats bundled
+/// into it — in a single `┤ ... ├` bracket, space-padded on both sides. Every
+/// piece of info a frame's top border carries should go through this, so it
+/// reads the same as the `┤ key:hint ├` segments already used in the bottom
+/// border (border_hints) instead of running as bare text against the border.
+/// `border_color` should match whatever color the panel's own border is
+/// currently drawn in (`color::BORDER` or, while focused/interactive,
+/// `color::BORDER_HI`) so the bracket doesn't read as a dimmer color than
+/// the border it's embedded in.
+pub fn bracket_title(mut spans: Vec<Span<'static>>, border_color: Color) -> Vec<Span<'static>> {
+    // Callers built their content for the old bare-text title (with its own
+    // leading/trailing padding); strip that so the bracket's own one-space
+    // padding doesn't end up doubled.
+    if let Some(first) = spans.first_mut() {
+        first.content = std::borrow::Cow::Owned(first.content.trim_start().to_string());
+    }
+    if let Some(last) = spans.last_mut() {
+        last.content = std::borrow::Cow::Owned(last.content.trim_end().to_string());
+    }
+    let mut wrapped = Vec::with_capacity(spans.len() + 2);
+    wrapped.push(Span::styled("\u{2524} ", Style::default().fg(border_color)));
+    wrapped.append(&mut spans);
+    wrapped.push(Span::styled(" \u{251C}", Style::default().fg(border_color)));
+    wrapped
+}
+
+/// btop-style adjustable-value hint: `┤ -VALUE+ ├` with the `-`/`+` keys
+/// that step the value picked out in red, the live value shown plain
+/// between them (e.g. how btop shows its own update-interval in the box
+/// border).
+pub fn value_hint(dec_key: &str, value: impl Into<String>, inc_key: &str, border_color: Color) -> Vec<Span<'static>> {
+    vec![
+        Span::styled("\u{2524}", Style::default().fg(border_color)),
+        Span::styled(format!(" {}", dec_key), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
+        Span::styled(value.into(), Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(inc_key.to_string(), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{251C}", Style::default().fg(border_color)),
+    ]
+}
+
+/// Like `titled_block`, with btop-style hints embedded in the bottom border.
+pub fn titled_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, hints: &[(&str, String)]) -> Block<'static> {
+    let border_color = border_style.fg.unwrap_or(color::BORDER);
+    let block = titled_block(title, border_style, bg);
+    if hints.is_empty() { block } else { block.title_bottom(border_hints(hints, border_color).left_aligned()) }
+}
+
+/// Like `list_block`, with btop-style hints embedded in the bottom border
+/// (left-aligned, alongside the right-aligned "more below" indicator).
+pub fn list_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool, hints: &[(&str, String)]) -> Block<'static> {
+    let border_color = border_style.fg.unwrap_or(color::BORDER);
+    let block = list_block(title, border_style, bg, has_more_above, has_more_below);
+    if hints.is_empty() { block } else { block.title_bottom(border_hints(hints, border_color).left_aligned()) }
 }
 
 pub mod key {
@@ -146,19 +226,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_title_frame(f, main_layout[0], app);
 
+    // A popup (including the globally-triggered Config Editor) steals focus
+    // from whatever tab is behind it, so that tab's normally-always-bright
+    // navigable panel should dim back to the same color as its non-navigable
+    // neighbors instead of still reading as the focused element. `popup_tab`
+    // is only ever set when a popup opens and is never cleared when one
+    // closes (closing just sets `detail_popup` back to `None`), so it must
+    // be gated on `detail_popup.is_some()` too — otherwise a tab that ever
+    // had a popup opened on it reads as permanently unfocused afterward.
+    let popup_active = app.detail_popup.is_some()
+        && (app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))));
+    let tab_focused = !popup_active && !app.show_help;
+
     match app.current_tab {
         Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[1], app),
-        Tab::Minions => minions::draw_minions(f, main_layout[1], app),
-        Tab::Events => events::draw_events(f, main_layout[1], app),
-        Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app),
-        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app),
-        Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app),
+        Tab::Minions => minions::draw_minions(f, main_layout[1], app, tab_focused),
+        Tab::Events => events::draw_events(f, main_layout[1], app, tab_focused),
+        Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app, tab_focused),
+        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused),
+        Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
     }
 
     draw_key_hints(f, main_layout[2], app);
 
     // Detail popup overlay
-    if app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))) { detail_popup::draw_detail_popup(f, app); }
+    if popup_active { detail_popup::draw_detail_popup(f, app); }
 
     // Help overlay
     if app.show_help {
@@ -196,13 +288,38 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     ]);
     let center_title = Line::from(Span::styled(
         format!(" {} ", now),
-        Style::default().fg(Color::Rgb(85, 95, 120)),
+        Style::default().fg(color::TEXT_TITLE),
     ));
-    let right_title = Line::from(Span::styled(
+    let dropped = app.agent_backlog_dropped.load(std::sync::atomic::Ordering::Relaxed);
+    let mut right_spans = value_hint("-", format!("{}ms", app.tick_interval_ms), "+", color::BORDER);
+    if dropped > 0 {
+        right_spans.push(Span::styled("\u{2524}", Style::default().fg(color::BORDER)));
+        right_spans.push(Span::styled(
+            format!(" backlog dropped: {} ", dropped),
+            Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
+        ));
+        right_spans.push(Span::styled("\u{251C}", Style::default().fg(color::BORDER)));
+    }
+    right_spans.push(Span::styled("\u{2524}", Style::default().fg(color::BORDER)));
+    right_spans.push(Span::styled(
         format!(" alerts: {} ", app.alert_engine.active_count()),
         Style::default().fg(if app.alert_engine.active_count() > 0 { color::ORANGE } else { color::GREEN })
             .add_modifier(Modifier::BOLD),
     ));
+    right_spans.push(Span::styled("\u{251C}", Style::default().fg(color::BORDER)));
+    let right_title = Line::from(right_spans);
+
+    let mouse_hint = if app.mouse_enabled { "mouse off".to_string() } else { "mouse on".to_string() };
+    let admin_hint = if app.admin_mode { "admin off".to_string() } else { "admin on".to_string() };
+    let contrast_hint = if app.high_contrast { "contrast off".to_string() } else { "contrast on".to_string() };
+    let global_hints = border_hints(&[
+        ("?/F1", "help".to_string()),
+        ("F2", mouse_hint),
+        ("F3", "config".to_string()),
+        ("c", contrast_hint),
+        ("a", admin_hint),
+        ("q", "quit".to_string()),
+    ], color::BORDER);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -210,7 +327,8 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         .style(Style::default().bg(color::BG_DARK))
         .title_top(left_title.left_aligned())
         .title_top(center_title.centered())
-        .title_top(right_title.right_aligned());
+        .title_top(right_title.right_aligned())
+        .title_bottom(global_hints.right_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -221,11 +339,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         if i > 0 {
             tab_spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
         }
-        let label = if i < 5 {
-            format!(" {} {} ", i + 1, tab.label())
-        } else {
-            format!(" \u{25C9} {} ", tab.label())
-        };
+        let label = format!(" {} {} ", i + 1, tab.label());
         if *tab == app.current_tab {
             tab_spans.push(Span::styled(
                 label,
@@ -305,131 +419,17 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    if app.detail_popup.is_some() {
-        if app.admin_mode_pending {
-            let mut spans = key::render("Enter", "OK");
-            spans.extend(key::render("Esc/q/a", "Cancel"));
-            let paragraph = Paragraph::new(Line::from(spans))
-                .style(Style::default().bg(color::BG_LIGHT));
-            f.render_widget(paragraph, area);
-            return;
-        }
-        if let Some(DetailPopup::EventSniffer(ref state)) = app.detail_popup {
-            let mut spans = key::render("Esc/q", "Close");
-            spans.extend(key::render("\u{2191}\u{2193}", "Scroll"));
-            spans.extend(key::render("Enter", "Detail"));
-            if state.paused {
-                spans.extend(key::render("p", "Resume"));
-            } else {
-                spans.extend(key::render("p", "Pause"));
-            }
-            spans.extend(key::render("c", "Contrast"));
-            spans.extend(key::render("y", "Copy"));
-            let paragraph = Paragraph::new(Line::from(spans))
-                .style(Style::default().bg(color::BG_LIGHT));
-            f.render_widget(paragraph, area);
-            return;
-        }
-        let is_event = matches!(app.detail_popup, Some(DetailPopup::SaltEvent(..)));
-        let is_alert = matches!(app.detail_popup, Some(DetailPopup::Alert(_)));
-        let mut spans = key::render("Esc", "Close");
-        if is_event || is_alert {
-            spans.extend(key::render("y", "Copy"));
-        }
-        let paragraph = Paragraph::new(Line::from(spans))
-            .style(Style::default().bg(color::BG_LIGHT));
-        f.render_widget(paragraph, area);
-        return;
-    }
+    // Popup shortcuts now live embedded in the popup's own border (same
+    // btop style as every panel) instead of duplicated here, so an open
+    // popup no longer blocks this bar — the persistent status stays visible
+    // underneath it, consistent with every other view.
 
-    let common_keys = vec![
-        key::render("q", "Quit"),
-        key::render("Tab", "Switch"),
-        key::render("\u{2191}\u{2193}", "Select"),
-        key::render("?", "Help"),
-        key::render("c", "Contrast"),
-        if app.mouse_enabled { key::render("F2", "Disable mouse") } else { key::render("F2", "Enable mouse") },
-        key::render("F3", "Config"),
-    ];
-
-    let tab_keys = match app.current_tab {
-        Tab::Dashboard => {
-            let mut keys = vec![
-                key::render("1-5", "Tabs"),
-                key::render("+/-", "Interval"),
-                key::render("m", if app.sparkline_style == SparklineStyle::Dots { "Bars" } else { "Dots" }),
-            ];
-            keys.push(key::render("a", "Admin"));
-            keys
-        }
-        Tab::Minions => {
-            let mut keys = vec![key::render("/", "Filter"), key::render("Enter", "Detail")];
-            keys.push(key::render("r", "Events"));
-            keys.push(key::render("a", "Admin"));
-            if app.fleet_data.is_some() {
-                keys.push(key::render("x", "Hide unresponsive"));
-            }
-            if app.admin_mode {
-                keys.push(key::render("s", "Scan fleet"));
-            }
-            keys
-        }
-        Tab::Events => {
-            let mut keys = vec![
-                key::render("/", "Filter"),
-                key::render("Enter", "Detail"),
-                key::render("n", "Sniffer"),
-            ];
-            keys.push(key::render("a", "Admin"));
-            keys
-        }
-        Tab::Jobs => {
-            let mut keys = vec![
-                key::render("/", "Filter"),
-                key::render("Enter", "Detail"),
-                key::render("\u{2190}\u{2192}", "Focus"),
-            ];
-            keys.push(key::render("[ ]", "Limit"));
-            keys.push(key::render(", .", "Page"));
-            keys.push(key::render("r", "Refresh"));
-            keys.push(key::render("a", "Admin"));
-            keys
-        }
-        Tab::Pulse => {
-            let keys = vec![
-                key::render("\u{2191}\u{2193}", "Row"),
-                key::render("\u{2190}\u{2192}", "Col"),
-            ];
-            keys
-        }
-        _ => {
-            let mut keys = vec![
-                key::render("/", "Filter"),
-                key::render("Enter", "Detail"),
-            ];
-            keys.push(key::render("a", "Admin"));
-            keys
-        }
-    };
-
+    // Shortcut hints now live embedded in each panel's own border (btop
+    // style) and the title frame's global hint row — this bar is left for
+    // persistent status indicators only.
     let mut spans: Vec<Span<'static>> = Vec::new();
-    for s in common_keys {
-        spans.extend(s);
-    }
-    spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
-    for s in tab_keys {
-        spans.extend(s);
-    }
 
-    // Refresh interval indicator
-    spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
-    spans.push(Span::styled(
-        format!(" ref: {:.1}s ", app.tick_interval_ms as f64 / 1000.0),
-        Style::default().fg(color::TEXT_DIM),
-    ));
-
-    // Agent status on the right
-    spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
+    // Agent status
     if app.agent.connected {
         spans.push(Span::styled(" agent: ok ", Style::default().fg(color::GREEN)));
     } else {
@@ -460,6 +460,16 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(" contrast: ON ", Style::default().fg(color::TEXT_HI).bg(Color::Rgb(80, 55, 0)).add_modifier(Modifier::BOLD)));
     } else {
         spans.push(Span::styled(" contrast: off ", Style::default().fg(color::TEXT_DIM)));
+    }
+
+    // Mouse mode indicator — the border hint (`F2:mouse on`) only names
+    // the key, not whether it's currently on or off; this is the actual
+    // current state, same convention as contrast/admin mode.
+    spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::TAB_SEPARATOR)));
+    if app.mouse_enabled {
+        spans.push(Span::styled(" mouse: ON ", Style::default().fg(color::TEXT_HI).bg(Color::Rgb(80, 55, 0)).add_modifier(Modifier::BOLD)));
+    } else {
+        spans.push(Span::styled(" mouse: off ", Style::default().fg(color::TEXT_DIM)));
     }
 
     // Selection position on list tabs
@@ -543,6 +553,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(Span::styled("  Help", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
         Line::from(Span::styled("  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", Style::default().fg(Color::Rgb(35, 50, 80)))),
+        Line::from(Span::styled("  Most shortcuts are also shown live in the border of the panel they affect.", Style::default().fg(color::TEXT_DIM))),
         Line::from(""),
         Line::from(vec![
             Span::styled("  q", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
@@ -553,7 +564,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  Switch tab", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  1-5", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  1-6", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Jump to tab", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
@@ -574,14 +585,18 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  +/-", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled("  Adjust refresh interval (Dashboard)", Style::default().fg(color::TEXT)),
+            Span::styled("  Adjust refresh interval", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  m", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Toggle sparkline style (Bars/Dots, Dashboard)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  ?/h", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  F4-F8", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Toggle CPU/Mem/ZMQ/Events/Minions graphs (Dashboard, saved on quit)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ?/F1", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Toggle this help", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
@@ -621,6 +636,26 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  ZMQ latency", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  source is configurable: zmq_latency_source in [dashboard]", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Pulse Status (Details panel)", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  Connected", Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("  most recent liveness probe (~every 5 ticks) found this minion has a cache entry", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Unknown", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  no successful probe result yet (e.g. just discovered) \u{2014} not an error", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Timed out", Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
+            Span::styled("  flagged unresponsive by fleet-scan/staleness tracking", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Minion Detail", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  Last Seen", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  newer of: Salt's own minion-cache mtime, or the last /ret/ event seen live", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::TEXT_DIM))),

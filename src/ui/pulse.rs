@@ -12,25 +12,39 @@ use crate::types::{KeyStatus, MinionInfo};
 use super::color;
 use ratatui::style::Color;
 
-pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App) {
+pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
         .split(area);
 
-    draw_dot_panel(f, cols[0], app);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(7)])
+        .split(cols[0]);
+
+    draw_dot_panel(f, left[0], app, focused);
+    draw_legend_panel(f, left[1]);
     draw_info_panel(f, cols[1], app);
 }
 
-fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = super::titled_block(
+fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
+    let hints: [(&str, String); 4] = [
+        ("\u{2191}\u{2193}", "row".to_string()),
+        ("\u{2190}\u{2192}", "col".to_string()),
+        ("PgUp/PgDn", "jump 10".to_string()),
+        ("Home/End", "first/last".to_string()),
+    ];
+    let block = super::titled_block_hinted(
         format!(" Minion Pulse ({}) ", app.pulse_minions_count()),
-        Style::default().fg(color::BORDER),
+        Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
         color::BG_DARK,
+        &hints,
     );
 
     let inner = block.inner(area);
     f.render_widget(block, area);
+    app.pulse_grid_area = inner;
 
     let minions = gather_minions(app);
     if minions.is_empty() {
@@ -118,13 +132,12 @@ fn tier_color(tier: PulseTier) -> (Color, Modifier) {
     }
 }
 
-/// Shape shrinks with recency — ● Flash → • Recent → · Aging/Stale/TimedOut —
-/// so the gradient reads by size as well as color instead of a binary split.
+/// Shape shrinks with recency — • Flash → · Recent/Aging/Stale/TimedOut —
+/// color is what actually carries the tier; shape only sets Flash apart.
 fn tier_glyph(tier: PulseTier) -> char {
     match tier {
-        PulseTier::Flash => '\u{25CF}',  // ● black circle
-        PulseTier::Recent => '\u{2022}', // • bullet
-        _ => '\u{00B7}',                 // · middle dot
+        PulseTier::Flash => '\u{2022}', // • bullet
+        _ => '\u{00B7}',                // · middle dot
     }
 }
 
@@ -141,6 +154,40 @@ fn tier_style(tier: PulseTier, selected: bool) -> Style {
         style = style.add_modifier(Modifier::REVERSED);
     }
     style
+}
+
+/// Legend panel: explains what each dot in the grid above means
+fn draw_legend_panel(f: &mut Frame, area: Rect) {
+    let block = super::titled_block(" Legend ", Style::default().fg(color::BORDER), color::BG_DARK);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let entries: [(PulseTier, &str); 5] = [
+        (PulseTier::Flash, "return < 5s ago"),
+        (PulseTier::Recent, "return < 5min ago"),
+        (PulseTier::Aging, "return < 10min ago"),
+        (PulseTier::Stale, "return >= 10min ago, or never"),
+        (PulseTier::TimedOut, "minion timed out"),
+    ];
+
+    let lines: Vec<Line> = entries
+        .iter()
+        .map(|(tier, desc)| {
+            let (fg, modif) = tier_color(*tier);
+            Line::from(vec![
+                Span::styled(
+                    format!("  {} ", tier_glyph(*tier)),
+                    Style::default().fg(fg).add_modifier(modif),
+                ),
+                Span::styled(*desc, Style::default().fg(color::TEXT_DIM)),
+            ])
+        })
+        .collect();
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        inner,
+    );
 }
 
 /// Info panel: selected minion details

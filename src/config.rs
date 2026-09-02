@@ -1,4 +1,27 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
+/// directory wins if present (lets you keep a per-directory config, and
+/// preserves behavior for anyone already relying on the old cwd-only
+/// lookup); otherwise it resolves to the XDG config dir
+/// (`$XDG_CONFIG_HOME/salt-radar/salt-radar.toml`, falling back to
+/// `~/.config/salt-radar/salt-radar.toml`) instead of silently writing
+/// into whatever directory the binary happened to be launched from.
+pub fn resolve_config_path() -> PathBuf {
+    let cwd_path = PathBuf::from("salt-radar.toml");
+    if cwd_path.is_file() {
+        return cwd_path;
+    }
+
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+
+    match config_home {
+        Some(dir) => dir.join("salt-radar").join("salt-radar.toml"),
+        None => cwd_path,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -92,8 +115,8 @@ impl Default for AppConfig {
             show_zmq_graph: true,
             show_events_graph: true,
             show_activity_graph: true,
-            show_cpu_graph: false,
-            show_mem_graph: false,
+            show_cpu_graph: true,
+            show_mem_graph: true,
             graph_order: "cpu,mem,zmq,events,activity".into(),
         }
     }
@@ -163,6 +186,11 @@ struct DashboardConfig {
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     let toml = format!(
         "[salt]\n\
          agent_path = {:?}\n\

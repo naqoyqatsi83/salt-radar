@@ -103,7 +103,7 @@ fn enabled_spark_panels(app: &App) -> Vec<SparkPanel> {
 fn draw_no_graphs_hint(f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  No graphs enabled — toggle show_*_graph in Config Editor (F3)",
+            "  No graphs enabled — toggle show_*_graph in Config Editor ('F3')",
             Style::default().fg(color::TEXT_DIM),
         )))
         .style(Style::default().bg(color::BG_DARK)),
@@ -146,7 +146,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(5),  // Host Resources
             Constraint::Length(mid_h), // Services + Key Status (exact-fit)
             Constraint::Length(4),  // Job Pulse (KPI line + up to 3 jobs)
-            Constraint::Min(6),     // Sparklines (at least 6 lines = 2 per panel × 3 default-enabled panels)
+            Constraint::Min(10),    // Sparklines (at least 10 lines = 2 per panel × 5 default-enabled panels)
         ])
         .split(body);
 
@@ -209,8 +209,32 @@ fn make_block_line(title: Line<'static>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER))
-        .title(title)
+        .title(Line::from(super::bracket_title(title.spans, color::BORDER)))
         .style(Style::default().bg(color::BG_DARK))
+}
+
+fn make_block_line_hinted(title: Line<'static>, hints: &[(&str, String)]) -> Block<'static> {
+    let block = make_block_line(title);
+    if hints.is_empty() { block } else { block.title_bottom(super::border_hints(hints, color::BORDER).left_aligned()) }
+}
+
+/// Each sparkline panel's own hide toggle (its existing F-key), plus the
+/// cross-panel bars/dots style toggle embedded once, on whichever panel
+/// happens to be first among the currently-enabled ones.
+fn spark_panel_hints(panel: SparkPanel, app: &App) -> Vec<(&'static str, String)> {
+    let fkey = match panel {
+        SparkPanel::Cpu => "F4",
+        SparkPanel::Mem => "F5",
+        SparkPanel::Zmq => "F6",
+        SparkPanel::Events => "F7",
+        SparkPanel::Activity => "F8",
+    };
+    let mut hints = vec![(fkey, "hide".to_string())];
+    if enabled_spark_panels(app).first() == Some(&panel) {
+        let style_label = if app.sparkline_style == SparklineStyle::Dots { "bars" } else { "dots" };
+        hints.push(("m", style_label.to_string()));
+    }
+    hints
 }
 
 fn count_keys_with_status(keys: &[crate::types::KeyInfo], status: crate::types::KeyStatus) -> usize {
@@ -464,7 +488,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
         service_lines.push(Line::from(vec![
             Span::styled(format!("{:<24}", unit_display), Style::default().fg(color::CYAN)),
-            Span::styled(format!("{:<6}", status_icon), Style::default().fg(status_color)),
+            Span::styled(format!("{:>6}", status_icon), Style::default().fg(status_color)),
             Span::styled(format!(" {:<11}", state_display), Style::default().fg(color::TEXT)),
             Span::styled(format!(" {:>3}", flap_text), Style::default().fg(flap_color)),
             Span::styled(format!(" {:>8} ", memory_text), Style::default().fg(color::YELLOW)),
@@ -614,29 +638,16 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let peak_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max);
-    let short_label = if app.zmq_latency_seen { format!("{:.1}ms", lat) } else { "n/a".to_string() };
-    let peak_label = if app.zmq_latency_seen { format!("{:.1}ms", peak_lat) } else { "n/a".to_string() };
 
-    // Build title — include peak if the panel is wide enough.
-    let title = if area.width >= 40 {
-        Line::from(vec![
-            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
-            Span::styled(format!("{} ", short_label), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
-            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(peak_label, Style::default().fg(color::TEXT_DIM)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
-            Span::styled(short_label, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
-        ])
+    // Label and "no data" hint depend on which source is configured to feed
+    // this KPI (config.zmq_latency_source) — see App::zmq_latency_ms doc.
+    let (source_label, na_hint) = match app.config.zmq_latency_source.as_str() {
+        "master_stats" => ("master exec", "n/a (needs master_stats: True)"),
+        "job_ping" => ("job ping", "n/a (waiting for round-trip)"),
+        _ => ("agent IPC", "measuring..."),
     };
-
-    let block = make_block_line(title);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let lat_display = if app.zmq_latency_seen { format!("{:.1}ms", lat) } else { na_hint.to_string() };
+    let peak_label = if app.zmq_latency_seen { format!("{:.1}ms", peak_lat) } else { "n/a".to_string() };
 
     let pub_port = app.config_snapshot.as_ref().map(|c| c.publish_port).unwrap_or(4505);
     let ret_port = app.config_snapshot.as_ref().map(|c| c.ret_port).unwrap_or(4506);
@@ -647,31 +658,50 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let ret_established = app.zmq_connections.iter().filter(|c| c.local_port == ret_port && c.state == "ESTABLISHED").count();
     let ret_total = app.zmq_connections.iter().filter(|c| c.local_port == ret_port).count();
 
-    // Label and "no data" hint depend on which source is configured to feed
-    // this KPI (config.zmq_latency_source) — see App::zmq_latency_ms doc.
-    let (source_label, na_hint) = match app.config.zmq_latency_source.as_str() {
-        "master_stats" => ("master exec", "n/a (needs master_stats: True)"),
-        "job_ping" => ("job ping", "n/a (waiting for round-trip)"),
-        _ => ("agent IPC", "measuring..."),
-    };
-    let lat_label = if !app.zmq_latency_seen {
-        na_hint.to_string()
+    // Build title — richer detail as the panel grows wide enough to fit it.
+    let title = if area.width >= 90 {
+        let mut spans = vec![
+            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
+            Span::styled(format!("{} ", lat_display), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{} ", peak_label), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!("({}) ", source_label), Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!(":{} pub {}/{} ", pub_port, pub_established, pub_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(":{} ret {}/{}", ret_port, ret_established, ret_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+        ];
+        if api_port > 0 {
+            let api_estab = app.zmq_connections.iter().filter(|c| c.local_port == api_port && c.state == "ESTABLISHED").count();
+            let api_total = app.zmq_connections.iter().filter(|c| c.local_port == api_port).count();
+            spans.push(Span::styled(format!(" :{} api {}/{}", api_port, api_estab, api_total), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
+        }
+        Line::from(spans)
+    } else if area.width >= 40 {
+        Line::from(vec![
+            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
+            Span::styled(format!("{} ", lat_display), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(peak_label, Style::default().fg(color::TEXT_DIM)),
+        ])
     } else {
-        format!("{:.0} ms", lat)
+        Line::from(vec![
+            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
+            Span::styled(lat_display, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
+        ])
     };
 
-    // Full-width sparkline with stats bar below
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
-        .split(inner);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Zmq, app));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
     let lat_idx = app.zmq_latency_idx;
     let ordered_lat: Vec<f64> = (0..2000)
         .map(|i| app.zmq_latency_history[(lat_idx + i) % 2000])
         .collect();
-    let spark_width = inner_layout[0].width.max(1) as usize;
+    let spark_width = inner.width.max(1) as usize;
     let points = spark_width.min(2000);
     let start = ordered_lat.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
@@ -680,27 +710,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
             (v / max_lat * 100.0) as u64
         })
         .collect();
-    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(lat_color), app.sparkline_style);
-
-    // Stats bar below sparkline
-    let mut spans: Vec<Span<'static>> = vec![
-        Span::styled("  ".to_string(), Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!(":{} pub{} ({})  ", pub_port, pub_established, pub_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(":{} ret{} ({})  ", ret_port, ret_established, ret_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-    ];
-    if api_port > 0 {
-        let api_estab = app.zmq_connections.iter().filter(|c| c.local_port == api_port && c.state == "ESTABLISHED").count();
-        let api_total = app.zmq_connections.iter().filter(|c| c.local_port == api_port).count();
-        spans.push(Span::styled(format!(":{} api{} ({})  ", api_port, api_estab, api_total), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
-    }
-    spans.push(Span::styled("\u{2502}  ".to_string(), Style::default().fg(color::BORDER)));
-    spans.push(Span::styled(format!("{}: ", source_label), Style::default().fg(color::TEXT_LABEL)));
-    spans.push(Span::styled(lat_label, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)));
-
-    f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(color::BG_DARK)),
-        inner_layout[1],
-    );
+    render_sparkline(f, inner, &spark_data, Style::default().fg(lat_color), app.sparkline_style);
 }
 
 // ── Event Type Breakdown ────────────────────────────────────────────────────
@@ -720,6 +730,7 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
         ("Job",   bd.job_return, color::CYAN),
         ("Start", bd.start, color::GREEN),
         ("Beacon", bd.beacon, color::PURPLE),
+        ("Refresh", bd.refresh, color::ORANGE),
         ("Other", bd.other, color::TEXT_DIM),
     ];
     let max_count = cats.iter().map(|(_, c, _)| *c).max().unwrap_or(1).max(1);
@@ -731,7 +742,7 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
             let bar_len = ((*count as f64 / max_count as f64) * bar_max as f64).round() as usize;
             let bar = "\u{2588}".repeat(bar_len);
             let spans = vec![
-                Span::styled(format!(" {:<6}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {:<7}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{:>5} ", count), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(bar, Style::default().fg(*color)),
             ];
@@ -753,9 +764,29 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
     let peak_rate = app.event_rate_history.iter().cloned().fold(0.0_f64, f64::max);
+    let last_seen = if app.secs_since_last_event == u64::MAX {
+        "\u{2014}".to_string()
+    } else {
+        format!("{}s ago", app.secs_since_last_event)
+    };
+    let last_color = if app.secs_since_last_event < 5 { color::GREEN }
+        else if app.secs_since_last_event < 30 { color::YELLOW }
+        else { color::ORANGE };
 
-    // Build title — include peak + total if wide enough
-    let title = if area.width >= 40 {
+    // Build title — richer detail as the panel grows wide enough to fit it.
+    let title = if area.width >= 70 {
+        Line::from(vec![
+            Span::styled(" Events ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25b6} ", Style::default().fg(color::CYAN)),
+            Span::styled(format!("{:.1}/s ", app.events_per_sec), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.1}/s ", peak_rate), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("tot:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{} ", app.events_total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("last:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(last_seen, Style::default().fg(last_color)),
+        ])
+    } else if area.width >= 40 {
         Line::from(vec![
             Span::styled(" Events ", Style::default().fg(color::TEXT_TITLE)),
             Span::styled("\u{25b6} ", Style::default().fg(color::CYAN)),
@@ -773,21 +804,16 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         ])
     };
 
-    let block = make_block_line(title);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Events, app));
     let inner = block.inner(area);
     f.render_widget(block, area);
-
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
-        .split(inner);
 
     let max_rate = app.event_rate_history.iter().cloned().fold(0.0_f64, f64::max).max(0.1);
     let idx = app.event_rate_idx;
     let ordered: Vec<f64> = (0..2000)
         .map(|i| app.event_rate_history[(idx + i) % 2000])
         .collect();
-    let spark_width = inner_layout[0].width.max(1) as usize;
+    let spark_width = inner.width.max(1) as usize;
     let points = spark_width.min(2000);
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
@@ -797,30 +823,7 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
-
-    let last_seen = if app.secs_since_last_event == u64::MAX {
-        "\u{2014}".to_string()
-    } else {
-        format!("{}s ago", app.secs_since_last_event)
-    };
-
-    let stats_line = Line::from(vec![
-        Span::styled("  Rate: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{:.1}/s  ", app.events_per_sec), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled("Total: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{}  ", app.events_total), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled("Last: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(last_seen, Style::default().fg(
-            if app.secs_since_last_event < 5 { color::GREEN }
-            else if app.secs_since_last_event < 30 { color::YELLOW }
-            else { color::ORANGE }
-        )),
-    ]);
-    f.render_widget(
-        Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
-        inner_layout[1],
-    );
+    render_sparkline(f, inner, &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
 }
 
 // ── Minion Activity Matrix ───────────────────────────────────────────────────
@@ -828,9 +831,30 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
 fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
     let elapsed = app.last_activity_at.elapsed().as_secs();
     let current_rate = app.current_sec_returns;
+    let rate_color = if current_rate > 0 { color::GREEN } else { color::TEXT_DIM };
 
-    // Build title
-    let title = if area.width >= 40 {
+    let mut total_returns: u64 = 0;
+    for v in &app.activity_matrix { total_returns += v; }
+
+    // Build title — richer detail as the panel grows wide enough to fit it.
+    let title = if area.width >= 70 {
+        let last_str = if app.last_activity_minion.is_empty() {
+            "waiting for minion returns...".to_string()
+        } else if elapsed < 60 {
+            format!("\u{2190} {} \u{2192} {} ({}s ago)", app.last_activity_minion, app.last_activity_fun, elapsed)
+        } else {
+            format!("\u{2190} {} \u{2192} {} ({}m ago)", app.last_activity_minion, app.last_activity_fun, elapsed / 60)
+        };
+        Line::from(vec![
+            Span::styled(" Minions ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled("\u{25c9} ", Style::default().fg(color::GREEN)),
+            Span::styled(format!("{}/s ", current_rate), Style::default().fg(rate_color).add_modifier(Modifier::BOLD)),
+            Span::styled("last: ", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{} ", last_str), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("total:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{}", total_returns), Style::default().fg(color::TEXT_DIM)),
+        ])
+    } else if area.width >= 40 {
         let last_str = if app.last_activity_minion.is_empty() {
             "waiting...".to_string()
         } else {
@@ -839,7 +863,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled(" Minions ", Style::default().fg(color::TEXT_TITLE)),
             Span::styled("\u{25c9} ", Style::default().fg(color::GREEN)),
-            Span::styled(format!("{}/s ", current_rate), Style::default().fg(if current_rate > 0 { color::GREEN } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{}/s ", current_rate), Style::default().fg(rate_color).add_modifier(Modifier::BOLD)),
             Span::styled("last: ", Style::default().fg(color::TEXT_LABEL)),
             Span::styled(last_str, Style::default().fg(color::TEXT_DIM)),
         ])
@@ -847,26 +871,20 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled(" Minions ", Style::default().fg(color::TEXT_TITLE)),
             Span::styled("\u{25c9} ", Style::default().fg(color::GREEN)),
-            Span::styled(format!("{}/s", current_rate), Style::default().fg(if current_rate > 0 { color::GREEN } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{}/s", current_rate), Style::default().fg(rate_color).add_modifier(Modifier::BOLD)),
         ])
     };
 
-    let block = make_block_line(title);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Activity, app));
     let inner = block.inner(area);
     f.render_widget(block, area);
-
-    // Full-width sparkline with stats bar below
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
-        .split(inner);
 
     let max_val = app.activity_matrix.iter().cloned().max().unwrap_or(0).max(1);
     let act_idx = app.activity_matrix_idx;
     let ordered_act: Vec<u64> = (0..2000)
         .map(|i| app.activity_matrix[(act_idx + i) % 2000])
         .collect();
-    let spark_width = inner_layout[0].width.max(1) as usize;
+    let spark_width = inner.width.max(1) as usize;
     let points = spark_width.min(2000);
     let start = ordered_act.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
@@ -876,34 +894,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::GREEN), app.sparkline_style);
-
-    let activity_label = if app.last_activity_minion.is_empty() {
-        "  waiting for minion returns...".to_string()
-    } else if elapsed < 60 {
-        format!(
-            "  last: \u{2190} {} \u{2192} {}  ({}s ago)",
-            app.last_activity_minion, app.last_activity_fun, elapsed,
-        )
-    } else {
-        format!(
-            "  last: \u{2190} {} \u{2192} {}  ({}m ago)",
-            app.last_activity_minion, app.last_activity_fun, elapsed / 60,
-        )
-    };
-    let rate_color = if current_rate > 0 { color::GREEN } else { color::TEXT_DIM };
-
-    let mut total_returns: u64 = 0;
-    for v in &app.activity_matrix { total_returns += v; }
-
-    let stats_line = Line::from(vec![
-        Span::styled(activity_label, Style::default().fg(rate_color)),
-        Span::styled(format!("  total: {}", total_returns), Style::default().fg(color::TEXT_DIM)),
-    ]);
-    f.render_widget(
-        Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
-        inner_layout[1],
-    );
+    render_sparkline(f, inner, &spark_data, Style::default().fg(color::GREEN), app.sparkline_style);
 }
 
 // ── CPU / Memory history ────────────────────────────────────────────────────
@@ -919,7 +910,23 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
     let current_pct = (app.system_info.load_1 / cpu_count * 100.0).clamp(0.0, 100.0);
     let peak_pct = app.cpu_history.iter().cloned().fold(0.0_f64, f64::max);
 
-    let title = if area.width >= 40 {
+    let idx = app.cpu_history_idx;
+    let ordered: Vec<f64> = (0..2000).map(|i| app.cpu_history[(idx + i) % 2000]).collect();
+    let n = (app.cpu_mem_samples as usize).min(ordered.len());
+    let avg_pct = if n > 0 { ordered[ordered.len() - n..].iter().sum::<f64>() / n as f64 } else { 0.0 };
+
+    let title = if area.width >= 70 {
+        Line::from(vec![
+            Span::styled(" CPU ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.0}% ", peak_pct), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("avg:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.0}% ", avg_pct), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("load:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.1}/{:.1}/{:.1}", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15), Style::default().fg(color::TEXT_DIM)),
+        ])
+    } else if area.width >= 40 {
         Line::from(vec![
             Span::styled(" CPU ", Style::default().fg(color::TEXT_TITLE)),
             Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
@@ -933,39 +940,16 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
         ])
     };
 
-    let block = make_block_line(title);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Cpu, app));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
-        .split(inner);
-
-    let idx = app.cpu_history_idx;
-    let ordered: Vec<f64> = (0..2000).map(|i| app.cpu_history[(idx + i) % 2000]).collect();
-    let spark_width = inner_layout[0].width.max(1) as usize;
-    let points = spark_width.min(2000);
+    let spark_width = inner.width.max(1) as usize;
+    let points = spark_width.min(ordered.len());
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::GREEN), app.sparkline_style);
-
-    let n = points.min(app.cpu_mem_samples as usize);
-    let avg_pct = if n > 0 { ordered[ordered.len() - n..].iter().sum::<f64>() / n as f64 } else { 0.0 };
-
-    let stats_line = Line::from(vec![
-        Span::styled("  Load: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{:.1}/{:.1}/{:.1}  ", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15), Style::default().fg(color::TEXT)),
-        Span::styled("avg: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{:.0}%  ", avg_pct), Style::default().fg(color::TEXT_DIM)),
-        Span::styled("peak: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::TEXT_DIM)),
-    ]);
-    f.render_widget(
-        Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
-        inner_layout[1],
-    );
+    render_sparkline(f, inner, &spark_data, Style::default().fg(color::GREEN), app.sparkline_style);
 }
 
 fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
@@ -974,7 +958,25 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
     let current_pct = ((mem_total_kb.saturating_sub(mem_avail_kb)) as f64 / mem_total_kb as f64 * 100.0).clamp(0.0, 100.0);
     let peak_pct = app.mem_history.iter().cloned().fold(0.0_f64, f64::max);
 
-    let title = if area.width >= 40 {
+    let idx = app.mem_history_idx;
+    let ordered: Vec<f64> = (0..2000).map(|i| app.mem_history[(idx + i) % 2000]).collect();
+    let n = (app.cpu_mem_samples as usize).min(ordered.len());
+    let avg_pct = if n > 0 { ordered[ordered.len() - n..].iter().sum::<f64>() / n as f64 } else { 0.0 };
+    let mem_used_mb = mem_total_kb.saturating_sub(mem_avail_kb) / 1024;
+    let mem_total_mb = mem_total_kb / 1024;
+
+    let title = if area.width >= 70 {
+        Line::from(vec![
+            Span::styled(" Memory ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.0}% ", peak_pct), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("avg:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{:.0}% ", avg_pct), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("used:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(format!("{} MB / {} MB", mem_used_mb, mem_total_mb), Style::default().fg(color::TEXT_DIM)),
+        ])
+    } else if area.width >= 40 {
         Line::from(vec![
             Span::styled(" Memory ", Style::default().fg(color::TEXT_TITLE)),
             Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
@@ -988,41 +990,16 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
         ])
     };
 
-    let block = make_block_line(title);
+    let block = make_block_line_hinted(title, &spark_panel_hints(SparkPanel::Mem, app));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let inner_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), if inner.height >= 3 { Constraint::Length(1) } else { Constraint::Length(0) }])
-        .split(inner);
-
-    let idx = app.mem_history_idx;
-    let ordered: Vec<f64> = (0..2000).map(|i| app.mem_history[(idx + i) % 2000]).collect();
-    let spark_width = inner_layout[0].width.max(1) as usize;
-    let points = spark_width.min(2000);
+    let spark_width = inner.width.max(1) as usize;
+    let points = spark_width.min(ordered.len());
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner_layout[0], &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
-
-    let n = points.min(app.cpu_mem_samples as usize);
-    let avg_pct = if n > 0 { ordered[ordered.len() - n..].iter().sum::<f64>() / n as f64 } else { 0.0 };
-    let mem_used_mb = mem_total_kb.saturating_sub(mem_avail_kb) / 1024;
-    let mem_total_mb = mem_total_kb / 1024;
-
-    let stats_line = Line::from(vec![
-        Span::styled("  Used: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{} MB / {} MB  ", mem_used_mb, mem_total_mb), Style::default().fg(color::TEXT)),
-        Span::styled("avg: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{:.0}%  ", avg_pct), Style::default().fg(color::TEXT_DIM)),
-        Span::styled("peak: ", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::TEXT_DIM)),
-    ]);
-    f.render_widget(
-        Paragraph::new(stats_line).style(Style::default().bg(color::BG_DARK)),
-        inner_layout[1],
-    );
+    render_sparkline(f, inner, &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
 }
 
 // ── Job Pulse ────────────────────────────────────────────────────────────────

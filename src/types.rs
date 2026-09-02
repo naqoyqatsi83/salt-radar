@@ -20,7 +20,7 @@ pub enum SparklineStyle {
 }
 
 impl Default for SparklineStyle {
-    fn default() -> Self { Self::Bars }
+    fn default() -> Self { Self::Dots }
 }
 
 impl Tab {
@@ -233,6 +233,7 @@ pub struct EventBreakdown {
     pub job_return: u64,
     pub start: u64,
     pub beacon: u64,
+    pub refresh: u64,
     pub other: u64,
     pub total: u64,
 }
@@ -248,6 +249,12 @@ impl EventBreakdown {
             self.start += 1;
         } else if tag.starts_with("salt/beacon") {
             self.beacon += 1;
+        } else if tag.contains("minion/refresh") {
+            // Minion-management traffic (grains/pillar/modules/beacon-list
+            // refresh) — distinct from a minion actually starting/connecting.
+            // Scoped to minion/refresh/* specifically for now, not every
+            // tag containing "/refresh" anywhere.
+            self.refresh += 1;
         } else {
             self.other += 1;
         }
@@ -272,6 +279,11 @@ pub struct SnifferState {
     pub max_size: usize,
     pub paused: bool,
     pub selected: usize,
+    /// Events display oldest-at-top, newest-at-bottom. While following,
+    /// `selected` stays pinned to the newest captured event as new ones
+    /// arrive (tail -f style); moving selection away from the last row
+    /// turns this off so live traffic doesn't yank the selection around.
+    pub following: bool,
     pub highlight_keywords: Vec<String>,
     /// When Some, the user is editing highlight keywords within the popup
     pub highlight_input: Option<String>,
@@ -315,6 +327,12 @@ pub struct JidLookup {
     pub tgt: String,
     pub start_time: String,
     pub returns: Vec<JidReturn>,
+    /// How long the agent's `salt-run jobs.lookup_jid` subprocess call and
+    /// its own post-processing each took — shown in the popup header so a
+    /// slow lookup is visible right there instead of needing to go dig
+    /// through the agent's stderr log.
+    pub subprocess_secs: f64,
+    pub postprocess_secs: f64,
 }
 
 #[derive(Clone, Debug)]
