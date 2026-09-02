@@ -722,7 +722,14 @@ fn draw_job_detail(
                 // where the minion ID is itself just the top-level dict key.
                 let mut wrapper = serde_json::Map::new();
                 wrapper.insert(ret.minion_id.clone(), ret.full_return.clone());
-                right_lines.extend(nested_return_lines(&serde_json::Value::Object(wrapper), ret.retcode));
+                // `salt-run jobs.lookup_jid` never passes an explicit `_retcode`
+                // to the nested outputter (that kwarg is a `salt`/exec-module
+                // concept, not a runner one) — it defaults to 0 in real Salt,
+                // so the real CLI's dict/list coloring is always the success
+                // colors regardless of any individual minion's own retcode.
+                // Passing `ret.retcode` here colored failed minions red, which
+                // doesn't happen in the actual command's output.
+                right_lines.extend(nested_return_lines(&serde_json::Value::Object(wrapper), 0));
             }
         } else {
             right_lines.push(Line::from(Span::styled(
