@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Agent: `minion_cache_list` (polled every `dashboard_secs`, 2s by default) no longer forks a `salt-key -L` subprocess and no longer unconditionally unpickles every minion's cache entry on every poll. Grains are now only re-fetched when a minion's cache mtime has actually moved since the last poll, so fleets with a large number of permanently-dead minions (e.g. leftover test minions never cleaned up by autoclean) don't pay a full unpickle-everything cost every couple of seconds. Fixes excessive agent CPU usage on masters with thousands of stale minion cache entries (#79).
+
 ## [0.6.0] - 2026-09-01
 
 This release folds in `v0.6.0-rc1` through `v0.6.0-rc16`. Where a later RC

@@ -542,52 +542,73 @@ def cmd_config_snapshot(opts, req):
     result(req["id"], "config_snapshot", data=data)
 
 
+# mid -> {"mtime": int, "grains": {"os": ..., "osrelease": ..., ...}} — see
+# cmd_minion_cache_list for why this exists.
+_minion_grains_cache = {}
+
+
 def cmd_minion_cache_list(opts, req):
-    """Fetch minion cache data — salt-key for names, then Salt cache for grains."""
+    """Fetch minion cache data — salt.key for names, then Salt cache for grains.
+
+    `cache.fetch()` unpickles a file per minion — real work. On a fleet
+    with a large number of permanently-dead minions (created for testing
+    and never cleaned up by autoclean; some masters carry thousands of
+    these) doing that unconditionally on every poll (every `dashboard_secs`,
+    2s by default) means thousands of unpickles every couple of seconds,
+    forever, for minions whose grains can never change again. `cache.updated()`
+    is a cheap stat-only call, so grains are only re-fetched when a minion's
+    cache mtime has actually moved since the last poll — dead minions get
+    stat'd, not unpickled, on every subsequent tick.
+
+    Also uses `salt.key.Key` in-process (like `cmd_list_keys`) instead of
+    forking a `salt-key -L` subprocess every tick.
+    """
     minions = []
-    seen = set()
+    salt = _import_salt()
 
-    # Step 1: get the minion list from salt-key (reliable, always works)
     try:
-        import subprocess as sp, json as json_mod
-        output = _run_salt_cmd(["salt-key", "-L", "--out=json"], timeout=15)
-        if output:
-            key_data = json_mod.loads(output)
-            for mid in key_data.get("minions", []):
-                minions.append({"id": mid, "last_seen": 0, "cache_updated": 0})
-                seen.add(mid)
+        key_ids = salt.key.Key(opts).list_keys().get("minions", [])
     except Exception:
-        pass
+        key_ids = []
 
-    # Step 2: enrich with grains data from the cache (if available). Each
-    # minion is looked up independently so one bad cache entry can't abort
-    # enrichment for the rest of a large fleet.
     try:
-        salt = _import_salt()
         cache = salt.cache.factory(opts)
-        minion_ids = cache.list("minions") or []
     except Exception:
-        minion_ids = []
+        cache = None
 
-    for mid in minion_ids:
-        try:
-            entry = {"id": mid}
-            grains = cache.fetch("minions", mid)
-            if grains:
-                entry["os"] = grains.get("os", "")
-                entry["osrelease"] = grains.get("osrelease", "")
-                entry["saltversion"] = grains.get("saltversion", "")
-                entry["cpuarch"] = grains.get("cpuarch", "")
-            entry["last_seen"] = cache.updated("minions", mid) or 0
-            entry["cache_updated"] = cache.updated("minions", mid) or 0
-            if mid in seen:
-                # Update existing entry with cache data
-                for e in minions:
-                    if e["id"] == mid:
-                        e.update(entry)
-                        break
-        except Exception:
-            continue
+    for mid in key_ids:
+        entry = {"id": mid, "last_seen": 0, "cache_updated": 0}
+        if cache is not None:
+            try:
+                mtime = cache.updated("minions", mid) or 0
+                entry["last_seen"] = mtime
+                entry["cache_updated"] = mtime
+
+                cached = _minion_grains_cache.get(mid)
+                if cached is not None and cached["mtime"] == mtime:
+                    entry.update(cached["grains"])
+                else:
+                    grains = cache.fetch("minions", mid)
+                    grain_fields = {}
+                    if grains:
+                        grain_fields = {
+                            "os": grains.get("os", ""),
+                            "osrelease": grains.get("osrelease", ""),
+                            "saltversion": grains.get("saltversion", ""),
+                            "cpuarch": grains.get("cpuarch", ""),
+                        }
+                    entry.update(grain_fields)
+                    _minion_grains_cache[mid] = {"mtime": mtime, "grains": grain_fields}
+            except Exception:
+                pass
+        minions.append(entry)
+
+    # Drop entries for minions no longer in salt-key (deleted/rejected)
+    # so this doesn't grow without bound over a long-running agent.
+    if key_ids:
+        key_id_set = set(key_ids)
+        for stale in [m for m in _minion_grains_cache if m not in key_id_set]:
+            del _minion_grains_cache[stale]
 
     result(req["id"], "minion_cache_list", data={"minions": minions})
 
