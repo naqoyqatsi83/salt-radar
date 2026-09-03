@@ -815,7 +815,15 @@ def cmd_jid_lookup(opts, req):
 
     t0 = time.time()
     raw_output = _run_salt_cmd(
-        ["salt-run", "jobs.lookup_jid", jid, "--force-color"],
+        [
+            "salt-run", "jobs.lookup_jid", jid, "--force-color",
+            # Always show full state detail regardless of the master's
+            # configured state_output/state_verbose -- a "terse"/"changes"
+            # master default would otherwise hide unchanged/no-op states
+            # from this popup even though the user explicitly opened it to
+            # see everything about this one job.
+            "--state-output=full", "--state-verbose=True",
+        ],
         timeout=60,
     ) or ""
     json_output = _run_salt_cmd(

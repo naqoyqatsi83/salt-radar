@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This will fold in `v0.6.0-rc1` through `v0.6.0-rc23` once released. Where a
+This will fold in `v0.6.0-rc1` through `v0.6.0-rc24` once released. Where a
 later RC changed or fixed something an earlier RC in this same range
 introduced, only the final end-state behavior is described below — the
 intermediate iterations aren't (see the individual RC tags for that
@@ -50,6 +50,7 @@ shipped end state.
 - README screenshots refreshed for every tab.
 
 ### Changed
+- Job Detail's `salt-run jobs.lookup_jid` lookup now always passes `--state-output=full --state-verbose=True`, overriding the master's configured `state_output`/`state_verbose` defaults — a "terse"/"changes" master default would otherwise hide unchanged/no-op states from this popup even though opening it is an explicit request to see everything about that one job.
 - Shortcuts moved out of the bottom key-hint bar and into the border of the panel each one affects (btop-style `┤key:label├`), so a hint stays next to the behavior it switches; the bottom bar is now status-only (interval, agent connectivity, admin/contrast state, selection position). Every popup — previously a mix of hand-written footers, or none at all for the Config Editor — now uses the same border-hint style.
 - Refresh interval (`+`/`-`) is shown as a live btop-style value (`┤-2000ms+├`) in the title frame and works from any tab, not only the Dashboard.
 - Title bar and tab menu merged into one bordered frame (app name/version, master version, centered clock, alert count, host/uptime), replacing both the old single-row title bar and the per-tab Dashboard header that used to repeat the same information one row below it.
