@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This will fold in `v0.6.0-rc1` through `v0.6.0-rc25` once released. Where a
+## [0.6.0] - 2026-09-03
+
+This release folds in `v0.6.0-rc1` through `v0.6.0-rc25`. Where a
 later RC changed or fixed something an earlier RC in this same range
 introduced, only the final end-state behavior is described below — the
 intermediate iterations aren't (see the individual RC tags for that
