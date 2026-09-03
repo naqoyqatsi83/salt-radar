@@ -568,8 +568,14 @@ def cmd_minion_cache_list(opts, req):
 
     try:
         key_ids = salt.key.Key(opts).list_keys().get("minions", [])
-    except Exception:
-        key_ids = []
+    except Exception as exc:
+        # A transient failure here must not report success with an empty
+        # roster -- the Rust side treats a successful minion_cache_list as
+        # the authoritative fleet list and replaces its whole roster with
+        # it, so "ok but empty" would wipe every minion from view (Minions,
+        # Pulse, ...) until the next successful poll.
+        result(req["id"], "minion_cache_list", ok=False, data={"error": str(exc)})
+        return
 
     try:
         cache = salt.cache.factory(opts)
@@ -1251,7 +1257,17 @@ def main():
         except json.JSONDecodeError as exc:
             error(None, "parse error: {}".format(str(exc)))
             continue
-        dispatch(opts, req)
+        try:
+            dispatch(opts, req)
+        except Exception as exc:
+            # dispatch() itself only starts a thread -- failures here are
+            # things like the OS refusing a new thread (e.g. a ulimit hit
+            # after a long, busy session), not handler bugs (those are
+            # already caught inside _run_handler). Letting this propagate
+            # would kill the whole agent process and leave the Rust side
+            # in a permanently dead connection until the app is restarted.
+            error(req.get("id", 0), "dispatch failed: {}".format(str(exc)))
+            traceback.print_exc(file=sys.stderr)
 
 
 if __name__ == "__main__":

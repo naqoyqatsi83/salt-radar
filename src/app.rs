@@ -614,7 +614,7 @@ impl App {
                         "config_snapshot" => {
                             self.config_snapshot = Some(parse_config_snapshot(&data));
                         }
-                        "minion_cache_list" => {
+                        "minion_cache_list" if ok => {
                             let mut minions = parse_minion_list(&data);
                             for minion in &mut minions {
                                 if minion.key_status.is_none() {

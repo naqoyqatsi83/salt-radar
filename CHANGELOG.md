@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- All minions could vanish from the Minions and Pulse views after a long session: the `minion_cache_list` handler replaced the *entire* roster with each poll's result unconditionally, without checking whether that poll actually succeeded — unlike every other agent-result handler here. A single transient failure (e.g. a `salt.key.Key` hiccup, now also reported as `ok: false` instead of a silent empty success — see below) wiped the whole fleet from view until the next successful poll instead of just skipping that refresh and keeping the last known roster.
+- Agent's `cmd_minion_cache_list` reported `ok: true` with an empty minion list whenever `salt.key.Key(opts).list_keys()` raised, instead of reporting failure — masking the exact class of transient error the fix above needs to be able to tell apart from a genuinely empty fleet.
+- The Python agent had no crash recovery: an unhandled exception anywhere in the main dispatch loop (e.g. the OS refusing to start a new thread after a long, busy session hits a `ulimit`) killed the whole process, and the Rust side never restarted it — every view depending on agent data froze permanently for the rest of the session with no way to recover short of quitting. `dispatch()` failures are now caught and reported instead of propagating, and the Rust side now respawns the agent process (resending its startup commands) whenever it exits instead of abandoning the connection for good.
+
 ## [0.6.0] - 2026-09-02
 
 This release folds in `v0.6.0-rc1` through `v0.6.0-rc17`. Where a later RC
