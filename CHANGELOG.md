@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This will fold in `v0.6.0-rc1` through `v0.6.0-rc24` once released. Where a
+This will fold in `v0.6.0-rc1` through `v0.6.0-rc25` once released. Where a
 later RC changed or fixed something an earlier RC in this same range
 introduced, only the final end-state behavior is described below — the
 intermediate iterations aren't (see the individual RC tags for that
@@ -90,6 +90,7 @@ shipped end state.
 - ZMQ latency (`agent_ipc`/`job_ping` sources) tracked the refresh interval almost exactly instead of real round-trip time, because a reply sat unread in the queue until the next tick's `event::poll` happened to expire. The main loop now polls at a short cadence whenever a ping is outstanding, so replies are drained within ~100ms of arriving regardless of `tick_interval_ms`.
 - `Last Seen` and job-cache start times could read frozen or offset by a fixed amount on masters whose local timezone isn't UTC — Salt's UTC `_stamp` field was being parsed as local time when converting to a Unix timestamp.
 - Mouse-click row selection (Minions, Events, Alerts, Jobs, Job Cache) and Pulse minion-grid clicks selected the row/minion one below the one actually clicked — both hit-testing paths now use the panel's real rendered geometry instead of geometry hardcoded before later layout changes.
+- Mouse-click row selection (Minions, Events, Alerts, Jobs, Job Cache — Pulse was unaffected) drifted again and selected one row *above* the one actually clicked: each panel's filter bar only renders when a filter is actually active or typing, but the click handler assumed it was always present, over-counting the header offset by one row whenever no filter was set (the common case). The row math is back in sync with each panel's real conditional layout.
 - Grains, Event Detail, and Job Detail return-content scrolling could scroll past the end with no way back, or need dozens of `PageUp` presses before any visible movement — all three now share the same viewport-aware max-scroll computation, with live "▲ more above"/"▼ more below" indicators. Event Detail also no longer requires pressing `Enter` before arrow/PgUp/PgDn scrolling works.
 - Process role classification (Master/Worker/API/Syndic/Minion) now reads `/proc/<pid>/cmdline` instead of the truncated interpreter path in `/proc/<pid>/comm`, which never matched any role.
 - `SaltProcess.cpu_percent` and `KeyInfo.mtime_epoch` are now real (computed from `/proc/<pid>/stat` deltas and read from PKI file mtimes) instead of hardcoded to `0`.
