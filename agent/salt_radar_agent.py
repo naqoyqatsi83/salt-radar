@@ -546,30 +546,34 @@ def cmd_config_snapshot(opts, req):
 # cmd_minion_cache_list for why this exists.
 _minion_grains_cache = {}
 
+# Cached accepted-minion-key list -- see cmd_minion_cache_list for why this
+# is resolved on its own timer instead of every poll.
+_key_list_cache = {"key_ids": [], "fetched_at": 0.0}
+_KEY_LIST_REFRESH_SECS = 30
 
-def cmd_minion_cache_list(opts, req):
-    """Fetch minion cache data — salt.key for names, then Salt cache for grains.
 
-    `cache.fetch()` unpickles a file per minion — real work. On a fleet
-    with a large number of permanently-dead minions (created for testing
-    and never cleaned up by autoclean; some masters carry thousands of
-    these) doing that unconditionally on every poll (every `dashboard_secs`,
-    2s by default) means thousands of unpickles every couple of seconds,
-    forever, for minions whose grains can never change again. `cache.updated()`
-    is a cheap stat-only call, so grains are only re-fetched when a minion's
-    cache mtime has actually moved since the last poll — dead minions get
-    stat'd, not unpickled, on every subsequent tick.
+def _resolve_key_ids(opts):
+    """Return the accepted-minion-key list, refreshed at most once every
+    `_KEY_LIST_REFRESH_SECS` rather than on every `minion_cache_list` poll
+    (every `dashboard_secs`, 2s by default).
 
     Tries `salt.key.Key` in-process first (like `cmd_list_keys`), falling
     back to a `salt-key -L` subprocess if that raises or comes back empty —
     `salt.key.Key(opts).list_keys()` is not reliable in every environment
     (this exact fallback already existed in `cmd_list_keys` for the same
-    reason); without it, a master where the in-process call doesn't work
-    reports a permanently empty roster instead of ever falling back to the
-    subprocess path that actually works there.
+    reason). But on a master where the in-process call never works, that
+    fallback subprocess forks (a full Python + Salt interpreter startup)
+    on *every* poll instead of the one-off it's meant to be — on a fleet
+    with thousands of minions this alone reintroduces the CPU cost this
+    whole cache exists to avoid. The resolved list is cached for
+    `_KEY_LIST_REFRESH_SECS` regardless of which path produced it, since
+    the accepted-key roster itself changes far less often than any single
+    minion's grains do.
     """
-    minions = []
     salt = _import_salt()
+    now = time.time()
+    if _key_list_cache["key_ids"] and (now - _key_list_cache["fetched_at"]) < _KEY_LIST_REFRESH_SECS:
+        return _key_list_cache["key_ids"]
 
     key_ids = []
     try:
@@ -586,13 +590,39 @@ def cmd_minion_cache_list(opts, req):
             except Exception:
                 key_ids = []
 
+    if key_ids:
+        _key_list_cache["key_ids"] = key_ids
+        _key_list_cache["fetched_at"] = now
+        return key_ids
+
+    # Both paths came up empty this round -- keep serving the last known
+    # good list (if any) rather than treating a transient hiccup in both
+    # paths at once as "the fleet is now empty".
+    return _key_list_cache["key_ids"]
+
+
+def cmd_minion_cache_list(opts, req):
+    """Fetch minion cache data — salt.key for names, then Salt cache for grains.
+
+    `cache.fetch()` unpickles a file per minion — real work. On a fleet
+    with a large number of permanently-dead minions (created for testing
+    and never cleaned up by autoclean; some masters carry thousands of
+    these) doing that unconditionally on every poll (every `dashboard_secs`,
+    2s by default) means thousands of unpickles every couple of seconds,
+    forever, for minions whose grains can never change again. `cache.updated()`
+    is a cheap stat-only call, so grains are only re-fetched when a minion's
+    cache mtime has actually moved since the last poll — dead minions get
+    stat'd, not unpickled, on every subsequent tick.
+    """
+    minions = []
+    key_ids = _resolve_key_ids(opts)
+
     if not key_ids:
-        # Neither path found any accepted minion -- report failure rather
-        # than a "successful" empty roster, so the Rust side (which treats
-        # a successful minion_cache_list as authoritative and replaces its
-        # whole roster with it) keeps showing the last known-good roster
-        # instead of wiping every minion from view over a transient hiccup
-        # in both paths at once.
+        # Never resolved a single accepted key, ever -- report failure
+        # rather than a "successful" empty roster, so the Rust side (which
+        # treats a successful minion_cache_list as authoritative and
+        # replaces its whole roster with it) keeps showing the last
+        # known-good roster instead of wiping every minion from view.
         result(req["id"], "minion_cache_list", ok=False, data={"error": "no minion keys found via salt.key.Key or salt-key -L"})
         return
 
