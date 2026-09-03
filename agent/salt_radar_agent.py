@@ -560,21 +560,40 @@ def cmd_minion_cache_list(opts, req):
     cache mtime has actually moved since the last poll — dead minions get
     stat'd, not unpickled, on every subsequent tick.
 
-    Also uses `salt.key.Key` in-process (like `cmd_list_keys`) instead of
-    forking a `salt-key -L` subprocess every tick.
+    Tries `salt.key.Key` in-process first (like `cmd_list_keys`), falling
+    back to a `salt-key -L` subprocess if that raises or comes back empty —
+    `salt.key.Key(opts).list_keys()` is not reliable in every environment
+    (this exact fallback already existed in `cmd_list_keys` for the same
+    reason); without it, a master where the in-process call doesn't work
+    reports a permanently empty roster instead of ever falling back to the
+    subprocess path that actually works there.
     """
     minions = []
     salt = _import_salt()
 
+    key_ids = []
     try:
         key_ids = salt.key.Key(opts).list_keys().get("minions", [])
-    except Exception as exc:
-        # A transient failure here must not report success with an empty
-        # roster -- the Rust side treats a successful minion_cache_list as
-        # the authoritative fleet list and replaces its whole roster with
-        # it, so "ok but empty" would wipe every minion from view (Minions,
-        # Pulse, ...) until the next successful poll.
-        result(req["id"], "minion_cache_list", ok=False, data={"error": str(exc)})
+    except Exception:
+        pass
+
+    if not key_ids:
+        import json as json_mod
+        output = _run_salt_cmd(["salt-key", "-L", "--out=json"], timeout=15)
+        if output:
+            try:
+                key_ids = json_mod.loads(output).get("minions", [])
+            except Exception:
+                key_ids = []
+
+    if not key_ids:
+        # Neither path found any accepted minion -- report failure rather
+        # than a "successful" empty roster, so the Rust side (which treats
+        # a successful minion_cache_list as authoritative and replaces its
+        # whole roster with it) keeps showing the last known-good roster
+        # instead of wiping every minion from view over a transient hiccup
+        # in both paths at once.
+        result(req["id"], "minion_cache_list", ok=False, data={"error": "no minion keys found via salt.key.Key or salt-key -L"})
         return
 
     try:
