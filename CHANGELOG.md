@@ -5,20 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0] - 2026-09-02
+## [Unreleased]
 
-This release folds in `v0.6.0-rc1` through `v0.6.0-rc17`. Where a later RC
-changed or fixed something an earlier RC in this same range introduced, only
-the final end-state behavior is described below — the intermediate iterations
-aren't (see the individual RC tags for that history). Two such cases:
-rc13 added a `~/.config` fallback for `salt-radar.toml`; rc14 then reworked
-the Config Editor's border hints around it — the behavior actually shipping
+## [0.6.0] - 2026-09-03
+
+This release folds in `v0.6.0-rc1` through `v0.6.0-rc25`. Where a
+later RC changed or fixed something an earlier RC in this same range
+introduced, only the final end-state behavior is described below — the
+intermediate iterations aren't (see the individual RC tags for that
+history). Three such cases: rc13 added a `~/.config` fallback for
+`salt-radar.toml`; rc14 then reworked the Config Editor's border hints
+around it — the behavior actually shipping
 in this release is the "Config file lookup" entry under Changed below.
-Likewise, rc16 made Job Detail lookups a single `--out=json` subprocess
+rc16 made Job Detail lookups a single `--out=json` subprocess
 call with the return rendered by a Rust-side outputter port; rc17 restored
 a second `--force-color` call alongside it after finding real gaps in that
 approach — see the Job Detail entry under Fixed below for the shipped
-end state.
+end state. rc17 also made `minion_cache_list` an in-process `salt.key.Key`
+call only, for the CPU fix described below; rc20 restored a `salt-key -L`
+subprocess fallback after finding the in-process call unreliable on at
+least one real master (where it left the whole roster permanently empty),
+but that fallback ran on every poll on that same master, reintroducing
+the CPU cost rc17 fixed; rc21 caches the resolved key list on its own
+30s timer so the fallback subprocess, when needed, only runs there
+instead of every poll — see the roster entry under Fixed below for the
+shipped end state.
 
 ### Added
 - Status bar now shows mouse mode's actual on/off state (matching the existing admin mode/contrast indicators), since the `F2:mouse on` border hint only names the key, not whether pressing it turns mouse mode on or off.
@@ -41,6 +52,7 @@ end state.
 - README screenshots refreshed for every tab.
 
 ### Changed
+- Job Detail's `salt-run jobs.lookup_jid` lookup now always passes `--state-output=full --state-verbose=True`, overriding the master's configured `state_output`/`state_verbose` defaults — a "terse"/"changes" master default would otherwise hide unchanged/no-op states from this popup even though opening it is an explicit request to see everything about that one job.
 - Shortcuts moved out of the bottom key-hint bar and into the border of the panel each one affects (btop-style `┤key:label├`), so a hint stays next to the behavior it switches; the bottom bar is now status-only (interval, agent connectivity, admin/contrast state, selection position). Every popup — previously a mix of hand-written footers, or none at all for the Config Editor — now uses the same border-hint style.
 - Refresh interval (`+`/`-`) is shown as a live btop-style value (`┤-2000ms+├`) in the title frame and works from any tab, not only the Dashboard.
 - Title bar and tab menu merged into one bordered frame (app name/version, master version, centered clock, alert count, host/uptime), replacing both the old single-row title bar and the per-tab Dashboard header that used to repeat the same information one row below it.
@@ -63,7 +75,13 @@ end state.
 ### Fixed
 - A stray/garbled mouse click landing on the tab bar row could silently jump to Pulse regardless of where it landed — the column-to-tab lookup defaulted anything outside the five known tab-label ranges to Pulse instead of doing nothing, so any click on the (usually large) blank space to the right of the tabs also switched tabs. This made a single spurious mouse event — e.g. from a KVM switch's input handoff — likely to swap the view even without landing anywhere near a real tab.
 - Job Detail lookups (opening a specific job's return data) diverged from real `salt-run jobs.lookup_jid` output in three ways: the JSON call's parsed result was discarded immediately after parsing (a leftover `lookup_data = {}`), so every return's success/retcode was silently reported as a default success regardless of whether the job actually failed; the return preview colored a failed minion's whole output red, which the real command never does (it doesn't pass a per-minion retcode to Salt's nested outputter, so dict/list coloring is always the normal cyan/green); and state.apply/highstate jobs rendered as a raw, unformatted state-ID dict (`file_|-...`, `__id__`, `__run_num__`, ...) instead of the real highstate-formatted output, because forcing `--out=json` (to get structured per-minion data) makes Salt skip auto-selecting the highstate outputter, and `jobs.lookup_jid` itself wraps those returns in an `{"outputter": "highstate", "data": {...}}` envelope that was never being unwrapped before iterating per-minion. All three are fixed: the JSON call's result is parsed and unwrapped correctly for real retcode/success, and a second `--force-color` (non-`--out`-forced) call captures the exact CLI text — real outputter selection, real colors — sliced per minion for display, falling back to a line-for-line port of Salt's own `nested` outputter (`salt/output/nested.py`) only if that raw capture is unavailable.
-- Agent's `minion_cache_list` (polled every `dashboard_secs`, 2s by default) forked a `salt-key -L` subprocess and unconditionally unpickled every minion's cache entry on every poll — on a fleet with a large number of permanently-dead minions (e.g. leftover test minions never cleaned up by autoclean, thousands on some masters), this pegged agent CPU indefinitely. Grains are now only re-fetched when a minion's cache mtime has actually moved since the last poll, and `salt-key -L` is replaced with the same in-process `salt.key.Key` lookup `list_keys` already used.
+- Job Detail return preview lost coloring partway through any multi-line colored block (e.g. a state's `Changes`/stdout text spanning several lines) — real colored CLI output often sets a color once for the whole block instead of repeating the escape code on every line, relying on the terminal to keep it active until the next code. The preview parsed each line's ANSI codes independently (splitting on `\n` before coloring), so only the first line of such a block kept its real color and every line after it fell back to the default color until the next state's own color code reset things. ANSI parsing now runs once over the whole return, carrying color across line boundaries the way a real terminal does.
+- Fleet Overview's OS breakdown showed only a bare version number (e.g. `8.7`) instead of the distro name (`RedHat-8.7`, `OracleLinux-8.7`, ...) — the rc17 CPU fix's rewrite of `minion_cache_list`'s per-minion grain fields dropped `osfinger` (the distro+version grain the OS breakdown actually groups by), silently falling back to the bare `osrelease` version number for every minion instead.
+- Agent's `minion_cache_list` (polled every `dashboard_secs`, 2s by default) unconditionally unpickled every minion's cache entry on every poll — on a fleet with a large number of permanently-dead minions (e.g. leftover test minions never cleaned up by autoclean, thousands on some masters), this pegged agent CPU indefinitely. Grains are now only re-fetched when a minion's cache mtime has actually moved since the last poll.
+- Minions and Pulse could show an empty roster indefinitely, even after a fleet scan (which populates Fleet Overview independently via events, masking the problem there): `minion_cache_list` listed minion IDs via an in-process `salt.key.Key(opts).list_keys()` call, which isn't reliable in every environment — on at least one real master it always came back empty, and with nothing else to fall back to, `minion_info` (both views read from the same roster) had nothing to ever populate it with. Restored the `salt-key -L` subprocess fallback `cmd_list_keys` already had for exactly this. On a master where the in-process call never works, forking that fallback on every poll (every `dashboard_secs`, 2s by default) reintroduced the same per-tick subprocess cost the CPU fix above exists to avoid — the resolved key list (whichever path produced it) is now cached for 30s, since the accepted-key roster itself changes far less often than any single minion's grains.
+- All minions could vanish from the Minions and Pulse views after a long-running session even when the roster-listing above did work: the `minion_cache_list` result handler replaced the *entire* roster with each poll's result unconditionally, without checking whether that poll actually succeeded — unlike every other agent-result handler. A single transient failure (which itself used to report `ok: true` with an empty list instead of a real failure, also fixed) wiped the whole fleet from view until the next successful poll instead of just skipping that refresh and keeping the last known roster.
+- The Python agent had no crash recovery: an unhandled exception anywhere in the main dispatch loop (e.g. the OS refusing to start a new thread after a long, busy session hits a `ulimit`) killed the whole process, and the Rust side never restarted it — every view depending on agent data froze permanently for the rest of the session with no way to recover short of quitting. `dispatch()` failures are now caught and reported instead of propagating, and the Rust side now respawns the agent process (resending its startup commands) whenever it exits instead of abandoning the connection for good.
+- Dashboard Event Types panel's bars lost alignment once any category's count reached 6+ digits — the count field was a hardcoded 5-character width, so a longer count ran into the bar column, and since each row's overflow varied with its own digit count, every row's bar started at a different column instead of lining up. The count column now sizes to the widest count actually present, like other Dashboard panels already do.
 - Job Cache entries always showed the default `glob` target type in the detail popup instead of the job's actual one (compound, list, etc.) — the agent checked the same (lowercase, always-absent) `tgt_type` key twice instead of falling back from the capitalized `Target-type` key `jobs.list_jobs` actually returns.
 - Event Sniffer popup reset its selection to the newest event on every single newly-captured event, regardless of what the user had selected — on an active master, this made it impossible to keep an event selected long enough to inspect it.
 - Jobs tab: switching focus between the Live Jobs and Job Cache panels (`←`/`→`) stopped changing either panel's border color once any popup had ever been opened while on that tab — `popup_tab` is only set when a popup opens and never cleared when it closes, so the new focus-dimming check was reading it as "a popup is still open" forever after the first one, permanently dimming both panels regardless of which had actual keyboard focus.
@@ -74,6 +92,7 @@ end state.
 - ZMQ latency (`agent_ipc`/`job_ping` sources) tracked the refresh interval almost exactly instead of real round-trip time, because a reply sat unread in the queue until the next tick's `event::poll` happened to expire. The main loop now polls at a short cadence whenever a ping is outstanding, so replies are drained within ~100ms of arriving regardless of `tick_interval_ms`.
 - `Last Seen` and job-cache start times could read frozen or offset by a fixed amount on masters whose local timezone isn't UTC — Salt's UTC `_stamp` field was being parsed as local time when converting to a Unix timestamp.
 - Mouse-click row selection (Minions, Events, Alerts, Jobs, Job Cache) and Pulse minion-grid clicks selected the row/minion one below the one actually clicked — both hit-testing paths now use the panel's real rendered geometry instead of geometry hardcoded before later layout changes.
+- Mouse-click row selection (Minions, Events, Alerts, Jobs, Job Cache — Pulse was unaffected) drifted again and selected one row *above* the one actually clicked: each panel's filter bar only renders when a filter is actually active or typing, but the click handler assumed it was always present, over-counting the header offset by one row whenever no filter was set (the common case). The row math is back in sync with each panel's real conditional layout.
 - Grains, Event Detail, and Job Detail return-content scrolling could scroll past the end with no way back, or need dozens of `PageUp` presses before any visible movement — all three now share the same viewport-aware max-scroll computation, with live "▲ more above"/"▼ more below" indicators. Event Detail also no longer requires pressing `Enter` before arrow/PgUp/PgDn scrolling works.
 - Process role classification (Master/Worker/API/Syndic/Minion) now reads `/proc/<pid>/cmdline` instead of the truncated interpreter path in `/proc/<pid>/comm`, which never matched any role.
 - `SaltProcess.cpu_percent` and `KeyInfo.mtime_epoch` are now real (computed from `/proc/<pid>/stat` deltas and read from PKI file mtimes) instead of hardcoded to `0`.

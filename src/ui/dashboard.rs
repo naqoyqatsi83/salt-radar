@@ -734,16 +734,23 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
         ("Other", bd.other, color::TEXT_DIM),
     ];
     let max_count = cats.iter().map(|(_, c, _)| *c).max().unwrap_or(1).max(1);
+    // Sized to the widest count actually present (min 5, matching the old
+    // fixed width) instead of a hardcoded 5 digits — once any category
+    // passes 99999, a fixed width let that count's digits run into the bar
+    // column, and every row's bar started at a different column depending
+    // on its own count's digit width.
+    let count_width = cats.iter().map(|(_, c, _)| c.to_string().len()).max().unwrap_or(1).max(5);
+    let prefix_width = 1 + 7 + count_width + 1; // leading space + label + count + trailing space
 
     let mut lines: Vec<Line> = vec![];
     if bd.total > 0 {
         for (label, count, color) in &cats {
-            let bar_max = inner.width.saturating_sub(14);
+            let bar_max = inner.width.saturating_sub(prefix_width as u16);
             let bar_len = ((*count as f64 / max_count as f64) * bar_max as f64).round() as usize;
             let bar = "\u{2588}".repeat(bar_len);
             let spans = vec![
                 Span::styled(format!(" {:<7}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{:>5} ", count), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{:>width$} ", count, width = count_width), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(bar, Style::default().fg(*color)),
             ];
             lines.push(Line::from(spans));

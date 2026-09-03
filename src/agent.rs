@@ -13,9 +13,35 @@ use crate::app::AgentMessage;
 /// of the freshest ones; `dropped` tracks how many so the UI can surface it.
 const MAX_QUEUE_LEN: usize = 20_000;
 
+/// Runs the Python agent for the lifetime of the app, respawning it whenever
+/// it exits (crash, OOM-kill, an unhandled exception in a busy long-running
+/// session, ...) instead of leaving the connection dead forever — this used
+/// to `return` on exit, silently freezing every view that depends on agent
+/// data (Minions, Pulse, ...) for the rest of the session with no recovery.
 pub fn agent_main(
     tx: Arc<Mutex<VecDeque<AgentMessage>>>,
     dropped: Arc<AtomicU64>,
+    agent_path: &str,
+    python_bin: &str,
+    master_config: &str,
+    cmd_path: &str,
+) {
+    loop {
+        run_agent_once(&tx, &dropped, agent_path, python_bin, master_config, cmd_path);
+        {
+            let mut q = tx.lock().unwrap();
+            q.push_back(AgentMessage::Error {
+                id: None,
+                message: "Agent process exited, restarting...".to_string(),
+            });
+        }
+        thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+fn run_agent_once(
+    tx: &Arc<Mutex<VecDeque<AgentMessage>>>,
+    dropped: &Arc<AtomicU64>,
     agent_path: &str,
     python_bin: &str,
     master_config: &str,
@@ -128,15 +154,8 @@ pub fn agent_main(
             }
         }
         match child.try_wait() {
-            Ok(Some(_)) => {
-                // Process exited
-                let mut q = tx.lock().unwrap();
-                q.push_back(AgentMessage::Error {
-                    id: None,
-                    message: "Agent process exited".to_string(),
-                });
-                return;
-            }
+            // Process exited; the caller (agent_main) reports it and respawns.
+            Ok(Some(_)) => return,
             Ok(None) => {}
             Err(_) => return,
         }

@@ -5,7 +5,7 @@ use std::os::unix::fs::MetadataExt;
 use std::process::Stdio;
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -614,7 +614,7 @@ impl App {
                         "config_snapshot" => {
                             self.config_snapshot = Some(parse_config_snapshot(&data));
                         }
-                        "minion_cache_list" => {
+                        "minion_cache_list" if ok => {
                             let mut minions = parse_minion_list(&data);
                             for minion in &mut minions {
                                 if minion.key_status.is_none() {
@@ -2205,6 +2205,41 @@ impl App {
             spans.push(Span::styled(buf, style));
         }
         spans
+    }
+
+    /// Like `ansi_to_styled_spans`, but for multi-line text — splits the
+    /// result into one `Line` per `\n`, carrying the active style *across*
+    /// line boundaries instead of resetting to `default_style` at each one.
+    /// Real colored CLI output routinely sets a color once for a whole
+    /// multi-line block (e.g. a state's `Changes`/stdout text) rather than
+    /// repeating the escape code on every line, relying on the terminal to
+    /// keep that color active until the next code — calling
+    /// `ansi_to_styled_spans` independently per line (as this used to do,
+    /// via `text.lines()` at the call site) lost that carried-over color on
+    /// every line after the first one that actually contained an escape
+    /// code, falling back to `default_style` instead.
+    pub fn ansi_text_to_lines(text: &str, default_style: Style) -> Vec<Line<'static>> {
+        let spans = Self::ansi_to_styled_spans(text, default_style);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut current: Vec<Span<'static>> = Vec::new();
+        for span in spans {
+            let style = span.style;
+            let content = span.content.into_owned();
+            let mut parts = content.split('\n');
+            if let Some(first) = parts.next() {
+                if !first.is_empty() {
+                    current.push(Span::styled(first.to_string(), style));
+                }
+            }
+            for part in parts {
+                lines.push(Line::from(std::mem::take(&mut current)));
+                if !part.is_empty() {
+                    current.push(Span::styled(part.to_string(), style));
+                }
+            }
+        }
+        lines.push(Line::from(current));
+        lines
     }
 
     /// Format a job return value in salt's nested outputter format.
@@ -4366,8 +4401,11 @@ impl App {
                 let total = self.filtered_minions_len();
                 if total == 0 { return false; }
 
-                let overhead = 1 // filter bar
-                    + if self.fleet_data.is_some() { 1 } else { 0 }
+                // Must match draw_minion_list's own conditions exactly (src/ui/minions.rs)
+                // -- unlike Events/Alerts/Jobs, Minions' own `visible` count is reduced
+                // by this same overhead, not just its data_start.
+                let filter_shown = self.is_filtering || !self.filter_text.is_empty() || self.hide_timed_out;
+                let overhead = if filter_shown { 1 } else { 0 }
                     + if self.admin_mode { 1 } else { 0 };
                 let visible = inner_h.saturating_sub(overhead).saturating_sub(2).max(1);
 
@@ -4393,13 +4431,16 @@ impl App {
                 let total = self.filtered_events_len();
                 if total == 0 { return false; }
 
-                // Events: filter(1) + header(1) = 2 lines before data
+                // draw_event_list's `visible` always reserves 2 rows (filter+header)
+                // regardless of whether the filter bar actually renders, but its
+                // data_start only advances past the filter bar when it's actually
+                // shown -- must match src/ui/events.rs exactly.
                 let visible = inner_h.saturating_sub(2).max(1);
                 let selected = self.event_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                // Data starts at: inner.y(4) + filter(1) + header(1) = 6
-                let data_start = 4 + 2;
+                let filter_shown = self.is_filtering || !self.filter_text.is_empty();
+                let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
                 if r >= data_start {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
@@ -4413,12 +4454,13 @@ impl App {
                 let total = self.filtered_alerts_len();
                 if total == 0 { return false; }
 
-                // Alerts: filter(1) + header(1) = 2 lines before data
+                // Same shape as Events -- must match src/ui/alerts_view.rs exactly.
                 let visible = inner_h.saturating_sub(2).max(1);
                 let selected = self.alert_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                let data_start = 4 + 2;
+                let filter_shown = self.is_filtering || !self.filter_text.is_empty();
+                let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
                 if r >= data_start {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
@@ -4442,11 +4484,13 @@ impl App {
                     let total = self.filtered_cache_len();
                     if total == 0 { return false; }
 
+                    // Same shape as Events -- must match draw_cache_panel exactly.
                     let visible = inner_h.saturating_sub(2).max(1);
                     let selected = self.cache_selected.min(total.saturating_sub(1));
                     let scroll = scroll_offset(selected, visible, total);
 
-                    let data_start = 4 + 2; // inner.y(4) + filter(1) + header(1)
+                    let filter_shown = self.cache_is_filtering || !self.cache_server_filter.is_empty();
+                    let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
                     if r >= data_start {
                         let visual_idx = r - data_start;
                         if visual_idx < visible {
@@ -4458,11 +4502,13 @@ impl App {
                     let total = self.filtered_jobs_len();
                     if total == 0 { return false; }
 
+                    // Same shape as Events -- must match draw_live_jobs_panel exactly.
                     let visible = inner_h.saturating_sub(2).max(1);
                     let selected = self.job_selected.min(total.saturating_sub(1));
                     let scroll = scroll_offset(selected, visible, total);
 
-                    let data_start = 4 + 2;
+                    let filter_shown = self.is_filtering || !self.filter_text.is_empty();
+                    let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
                     if r >= data_start {
                         let visual_idx = r - data_start;
                         if visual_idx < visible {
@@ -5152,3 +5198,4 @@ fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
         }
     }
 }
+

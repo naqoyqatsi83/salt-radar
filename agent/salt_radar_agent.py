@@ -546,6 +546,60 @@ def cmd_config_snapshot(opts, req):
 # cmd_minion_cache_list for why this exists.
 _minion_grains_cache = {}
 
+# Cached accepted-minion-key list -- see cmd_minion_cache_list for why this
+# is resolved on its own timer instead of every poll.
+_key_list_cache = {"key_ids": [], "fetched_at": 0.0}
+_KEY_LIST_REFRESH_SECS = 30
+
+
+def _resolve_key_ids(opts):
+    """Return the accepted-minion-key list, refreshed at most once every
+    `_KEY_LIST_REFRESH_SECS` rather than on every `minion_cache_list` poll
+    (every `dashboard_secs`, 2s by default).
+
+    Tries `salt.key.Key` in-process first (like `cmd_list_keys`), falling
+    back to a `salt-key -L` subprocess if that raises or comes back empty —
+    `salt.key.Key(opts).list_keys()` is not reliable in every environment
+    (this exact fallback already existed in `cmd_list_keys` for the same
+    reason). But on a master where the in-process call never works, that
+    fallback subprocess forks (a full Python + Salt interpreter startup)
+    on *every* poll instead of the one-off it's meant to be — on a fleet
+    with thousands of minions this alone reintroduces the CPU cost this
+    whole cache exists to avoid. The resolved list is cached for
+    `_KEY_LIST_REFRESH_SECS` regardless of which path produced it, since
+    the accepted-key roster itself changes far less often than any single
+    minion's grains do.
+    """
+    salt = _import_salt()
+    now = time.time()
+    if _key_list_cache["key_ids"] and (now - _key_list_cache["fetched_at"]) < _KEY_LIST_REFRESH_SECS:
+        return _key_list_cache["key_ids"]
+
+    key_ids = []
+    try:
+        key_ids = salt.key.Key(opts).list_keys().get("minions", [])
+    except Exception:
+        pass
+
+    if not key_ids:
+        import json as json_mod
+        output = _run_salt_cmd(["salt-key", "-L", "--out=json"], timeout=15)
+        if output:
+            try:
+                key_ids = json_mod.loads(output).get("minions", [])
+            except Exception:
+                key_ids = []
+
+    if key_ids:
+        _key_list_cache["key_ids"] = key_ids
+        _key_list_cache["fetched_at"] = now
+        return key_ids
+
+    # Both paths came up empty this round -- keep serving the last known
+    # good list (if any) rather than treating a transient hiccup in both
+    # paths at once as "the fleet is now empty".
+    return _key_list_cache["key_ids"]
+
 
 def cmd_minion_cache_list(opts, req):
     """Fetch minion cache data — salt.key for names, then Salt cache for grains.
@@ -559,17 +613,18 @@ def cmd_minion_cache_list(opts, req):
     is a cheap stat-only call, so grains are only re-fetched when a minion's
     cache mtime has actually moved since the last poll — dead minions get
     stat'd, not unpickled, on every subsequent tick.
-
-    Also uses `salt.key.Key` in-process (like `cmd_list_keys`) instead of
-    forking a `salt-key -L` subprocess every tick.
     """
     minions = []
-    salt = _import_salt()
+    key_ids = _resolve_key_ids(opts)
 
-    try:
-        key_ids = salt.key.Key(opts).list_keys().get("minions", [])
-    except Exception:
-        key_ids = []
+    if not key_ids:
+        # Never resolved a single accepted key, ever -- report failure
+        # rather than a "successful" empty roster, so the Rust side (which
+        # treats a successful minion_cache_list as authoritative and
+        # replaces its whole roster with it) keeps showing the last
+        # known-good roster instead of wiping every minion from view.
+        result(req["id"], "minion_cache_list", ok=False, data={"error": "no minion keys found via salt.key.Key or salt-key -L"})
+        return
 
     try:
         cache = salt.cache.factory(opts)
@@ -594,6 +649,7 @@ def cmd_minion_cache_list(opts, req):
                         grain_fields = {
                             "os": grains.get("os", ""),
                             "osrelease": grains.get("osrelease", ""),
+                            "osfinger": grains.get("osfinger", ""),
                             "saltversion": grains.get("saltversion", ""),
                             "cpuarch": grains.get("cpuarch", ""),
                         }
@@ -759,7 +815,15 @@ def cmd_jid_lookup(opts, req):
 
     t0 = time.time()
     raw_output = _run_salt_cmd(
-        ["salt-run", "jobs.lookup_jid", jid, "--force-color"],
+        [
+            "salt-run", "jobs.lookup_jid", jid, "--force-color",
+            # Always show full state detail regardless of the master's
+            # configured state_output/state_verbose -- a "terse"/"changes"
+            # master default would otherwise hide unchanged/no-op states
+            # from this popup even though the user explicitly opened it to
+            # see everything about this one job.
+            "--state-output=full", "--state-verbose=True",
+        ],
         timeout=60,
     ) or ""
     json_output = _run_salt_cmd(
@@ -1251,7 +1315,17 @@ def main():
         except json.JSONDecodeError as exc:
             error(None, "parse error: {}".format(str(exc)))
             continue
-        dispatch(opts, req)
+        try:
+            dispatch(opts, req)
+        except Exception as exc:
+            # dispatch() itself only starts a thread -- failures here are
+            # things like the OS refusing a new thread (e.g. a ulimit hit
+            # after a long, busy session), not handler bugs (those are
+            # already caught inside _run_handler). Letting this propagate
+            # would kill the whole agent process and leave the Rust side
+            # in a permanently dead connection until the app is restarted.
+            error(req.get("id", 0), "dispatch failed: {}".format(str(exc)))
+            traceback.print_exc(file=sys.stderr)
 
 
 if __name__ == "__main__":

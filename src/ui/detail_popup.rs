@@ -712,10 +712,7 @@ fn draw_job_detail(
         if sel < l.returns.len() {
             let ret = &l.returns[sel];
             if !ret.formatted_text.is_empty() {
-                for line in ret.formatted_text.lines() {
-                    let spans = crate::app::App::ansi_to_styled_spans(line, Style::default().fg(color::TEXT));
-                    right_lines.push(Line::from(spans));
-                }
+                right_lines.extend(crate::app::App::ansi_text_to_lines(&ret.formatted_text, Style::default().fg(color::TEXT)));
             } else {
                 // Wrap as {minion_id: full_return} so this renders exactly
                 // as it would in real `salt-run jobs.lookup_jid` output,
