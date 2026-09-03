@@ -649,6 +649,7 @@ def cmd_minion_cache_list(opts, req):
                         grain_fields = {
                             "os": grains.get("os", ""),
                             "osrelease": grains.get("osrelease", ""),
+                            "osfinger": grains.get("osfinger", ""),
                             "saltversion": grains.get("saltversion", ""),
                             "cpuarch": grains.get("cpuarch", ""),
                         }
