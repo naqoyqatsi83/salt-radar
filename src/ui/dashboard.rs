@@ -1159,7 +1159,7 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(stats.total_requests.to_string(), Style::default().fg(color::TEXT_DIM)),
         Span::styled(" in/out:", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(
-            format!("{}/s / {}/s", format_bytes(stats.bytes_read_per_sec), format_bytes(stats.bytes_written_per_sec)),
+            format!("{} / {}", format_bytes(stats.bytes_read_per_sec), format_bytes(stats.bytes_written_per_sec)),
             Style::default().fg(color::TEXT_DIM),
         ),
     ])];
