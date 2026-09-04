@@ -88,6 +88,24 @@
 # service_mem_abs_threshold_syndic_mb = 0.0
 # service_mem_pct_threshold_syndic = 0.0
 
+# salt-api's POST /login p95 processing time (seconds) that triggers the
+# "API auth latency" alert — needs the salt-api panel's collect_stats setup,
+# see [api] below and the Dashboard section in README.
+# api_auth_latency_warn_secs = 3.0
+
+[api]
+# Rolling window (in observed requests) backing the salt-api panel's error
+# rate and POST /login p50/p95 latency figures
+# stats_window = 200
+
+# Max entries kept in the API tab's live request log before the oldest are
+# evicted, independent of the age-based prune below
+# log_cap = 1000
+
+# Entries older than this (seconds) are dropped from the API tab's request
+# log every poll regardless of how far under log_cap it is
+# log_max_age_secs = 3600
+
 [dashboard]
 # Source for the Dashboard ZMQ panel's latency figure:
 #   "agent_ipc"    - local Rust<->Python agent round-trip (a liveness check,

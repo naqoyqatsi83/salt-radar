@@ -18,12 +18,6 @@ use crate::config::{load_config, AppConfig};
 use crate::types::*;
 
 const JOB_STATS_WINDOW: usize = 500;
-const API_STATS_WINDOW: usize = 200;
-const API_LOG_CAP: usize = 1000;
-/// Entries older than this are dropped every poll regardless of how far
-/// under API_LOG_CAP the log is — a quiet API shouldn't let the log hold
-/// onto hours-old requests just because traffic never filled it up.
-const API_LOG_MAX_AGE: Duration = Duration::from_secs(3600);
 const SERVICE_TREND_WINDOW: Duration = Duration::from_secs(24 * 3600);
 const SERVICE_MEM_SAMPLE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -211,8 +205,8 @@ pub struct App {
     /// Rolling window of POST /login processing times, in seconds.
     pub api_login_latencies: VecDeque<f64>,
     /// Every newly-observed salt-api request (see api_seen_end_times above),
-    /// oldest first, capped at API_LOG_CAP — feeds the API tab's request log
-    /// and per-endpoint breakdown.
+    /// oldest first, capped at config.api_log_cap — feeds the API tab's
+    /// request log and per-endpoint breakdown.
     pub api_requests_log: VecDeque<ApiLogEntry>,
     pub api_log_selected: usize,
 
@@ -829,11 +823,11 @@ impl App {
                                             .map(|code| code.starts_with('2') || code.starts_with('3'))
                                             .unwrap_or(true);
                                         self.api_status_window.push_back(is_ok);
-                                        if self.api_status_window.len() > API_STATS_WINDOW { self.api_status_window.pop_front(); }
+                                        if self.api_status_window.len() > self.config.api_stats_window { self.api_status_window.pop_front(); }
 
                                         if rec.request_line.contains("/login") {
                                             self.api_login_latencies.push_back(rec.processing_time_secs);
-                                            if self.api_login_latencies.len() > API_STATS_WINDOW { self.api_login_latencies.pop_front(); }
+                                            if self.api_login_latencies.len() > self.config.api_stats_window { self.api_login_latencies.pop_front(); }
                                         }
 
                                         let (method, path) = Self::parse_request_line(&rec.request_line);
@@ -846,7 +840,7 @@ impl App {
                                             response_status: rec.response_status.clone(),
                                             processing_time_secs: rec.processing_time_secs,
                                         });
-                                        if self.api_requests_log.len() > API_LOG_CAP {
+                                        if self.api_requests_log.len() > self.config.api_log_cap {
                                             self.api_requests_log.pop_front();
                                             api_log_evicted += 1;
                                         }
@@ -857,7 +851,8 @@ impl App {
                                     self.api_seen_end_times.retain(|tid, _| live_threads.contains(tid.as_str()));
 
                                     let len_before_age_prune = self.api_requests_log.len();
-                                    self.api_requests_log.retain(|e| e.received_at.elapsed() < API_LOG_MAX_AGE);
+                                    let api_log_max_age = Duration::from_secs(self.config.api_log_max_age_secs);
+                                    self.api_requests_log.retain(|e| e.received_at.elapsed() < api_log_max_age);
                                     api_log_evicted += len_before_age_prune - self.api_requests_log.len();
 
                                     self.api_log_selected = self.api_log_selected.saturating_sub(api_log_evicted);
@@ -1527,8 +1522,8 @@ impl App {
     }
 
     /// Rolling percentage of salt-api requests with a non-2xx/3xx status,
-    /// over the last API_STATS_WINDOW observed requests. None until at
-    /// least one has been observed.
+    /// over the last config.api_stats_window observed requests. None until
+    /// at least one has been observed.
     pub fn api_error_pct(&self) -> Option<f64> {
         if self.api_status_window.is_empty() { return None; }
         let errors = self.api_status_window.iter().filter(|ok| !**ok).count();
@@ -1536,7 +1531,7 @@ impl App {
     }
 
     /// p50/p95 POST /login processing time in seconds, over the last
-    /// API_STATS_WINDOW logins observed. None until at least one has been seen.
+    /// config.api_stats_window logins observed. None until at least one has been seen.
     pub fn api_login_latency_p50_p95(&self) -> Option<(f64, f64)> {
         if self.api_login_latencies.is_empty() { return None; }
         let mut v: Vec<f64> = self.api_login_latencies.iter().copied().collect();
@@ -1861,6 +1856,10 @@ impl App {
                 ConfigField { label: "service_mem_pct_threshold_api", label_value: cfg.service_mem_pct_threshold_api.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_syndic_mb", label_value: cfg.service_mem_abs_threshold_syndic_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold_syndic", label_value: cfg.service_mem_pct_threshold_syndic.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "[api]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "stats_window", label_value: cfg.api_stats_window.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "log_cap", label_value: cfg.api_log_cap.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "log_max_age_secs", label_value: cfg.api_log_max_age_secs.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "[dashboard]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Choice(ZMQ_LATENCY_SOURCES) },
                 ConfigField { label: "show_zmq_graph", label_value: on_off(cfg.show_zmq_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
@@ -1930,6 +1929,9 @@ impl App {
             service_mem_pct_threshold_api: parse_f64("service_mem_pct_threshold_api")?,
             service_mem_abs_threshold_syndic_mb: parse_f64("service_mem_abs_threshold_syndic_mb")?,
             service_mem_pct_threshold_syndic: parse_f64("service_mem_pct_threshold_syndic")?,
+            api_stats_window: parse_usize("stats_window")?,
+            api_log_cap: parse_usize("log_cap")?,
+            api_log_max_age_secs: parse_u64("log_max_age_secs")?,
             zmq_latency_source: vals.get("zmq_latency_source").unwrap_or(&"agent_ipc").to_string(),
             show_zmq_graph: parse_bool("show_zmq_graph"),
             show_events_graph: parse_bool("show_events_graph"),

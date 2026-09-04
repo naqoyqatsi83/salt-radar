@@ -48,6 +48,17 @@ pub struct AppConfig {
     /// latency" alert. Only meaningful once the salt-api panel has real
     /// data — see App::api_login_latency_p50_p95.
     pub api_auth_latency_warn_secs: f64,
+    /// Rolling window (in observed requests) backing the salt-api panel's
+    /// error-rate and POST /login p50/p95 latency figures — see
+    /// App::api_login_latency_p50_p95.
+    pub api_stats_window: usize,
+    /// Max entries kept in the API tab's live request log before the oldest
+    /// are evicted, independent of the age-based prune below.
+    pub api_log_cap: usize,
+    /// Entries older than this (seconds) are dropped from the API tab's
+    /// request log every poll regardless of how far under api_log_cap it is
+    /// — a quiet API shouldn't let the log hold onto hours-old requests.
+    pub api_log_max_age_secs: u64,
     /// Per-unit overrides for the standard bundled Salt services — each 0.0
     /// means "no override, fall back to the global service_mem_*_threshold*
     /// above" (the global fields already use 0.0 to mean "check disabled",
@@ -108,6 +119,9 @@ impl Default for AppConfig {
             service_mem_abs_threshold_mb: 2048.0,
             service_mem_pct_threshold: 8.0,
             api_auth_latency_warn_secs: 3.0,
+            api_stats_window: 200,
+            api_log_cap: 1000,
+            api_log_max_age_secs: 3600,
             service_mem_abs_threshold_master_mb: 0.0,
             service_mem_pct_threshold_master: 0.0,
             service_mem_abs_threshold_minion_mb: 0.0,
@@ -134,6 +148,7 @@ struct TomlConfig {
     events: Option<EventsConfig>,
     alerts: Option<AlertsConfig>,
     dashboard: Option<DashboardConfig>,
+    api: Option<ApiConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -178,6 +193,13 @@ struct AlertsConfig {
     service_mem_pct_threshold_api: Option<f64>,
     service_mem_abs_threshold_syndic_mb: Option<f64>,
     service_mem_pct_threshold_syndic: Option<f64>,
+}
+
+#[derive(serde::Deserialize)]
+struct ApiConfig {
+    stats_window: Option<usize>,
+    log_cap: Option<usize>,
+    log_max_age_secs: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -234,6 +256,11 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          service_mem_abs_threshold_syndic_mb = {}\n\
          service_mem_pct_threshold_syndic = {}\n\
          \n\
+         [api]\n\
+         stats_window = {}\n\
+         log_cap = {}\n\
+         log_max_age_secs = {}\n\
+         \n\
          [dashboard]\n\
          zmq_latency_source = {:?}\n\
          show_zmq_graph = {}\n\
@@ -270,6 +297,9 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.service_mem_pct_threshold_api,
         config.service_mem_abs_threshold_syndic_mb,
         config.service_mem_pct_threshold_syndic,
+        config.api_stats_window,
+        config.api_log_cap,
+        config.api_log_max_age_secs,
         config.zmq_latency_source,
         config.show_zmq_graph,
         config.show_events_graph,
@@ -321,6 +351,11 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.service_mem_pct_threshold_api { cfg.service_mem_pct_threshold_api = v; }
                 if let Some(v) = a.service_mem_abs_threshold_syndic_mb { cfg.service_mem_abs_threshold_syndic_mb = v; }
                 if let Some(v) = a.service_mem_pct_threshold_syndic { cfg.service_mem_pct_threshold_syndic = v; }
+            }
+            if let Some(a) = toml_cfg.api {
+                if let Some(v) = a.stats_window { cfg.api_stats_window = v; }
+                if let Some(v) = a.log_cap { cfg.api_log_cap = v; }
+                if let Some(v) = a.log_max_age_secs { cfg.api_log_max_age_secs = v; }
             }
             if let Some(d) = toml_cfg.dashboard {
                 if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
