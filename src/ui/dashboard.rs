@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::types::SparklineStyle;
+use crate::types::{SparklineStyle, SaltProcessRole};
 
 use super::color;
 
@@ -140,14 +140,24 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     let services_h = (4 + proc_rows + app.services.len() as u16).min(25); // gauge + proc lines + header + N services + 2 border
     let mid_h = key_status_h.max(services_h);
 
+    // salt-api gets a row only when it's actually present on this master —
+    // most masters don't run it, and reserving space for an always-empty
+    // panel would just shrink everything else for no reason.
+    let show_api_row = app.processes.iter().any(|p| p.role == SaltProcessRole::API);
+
+    let mut constraints = vec![
+        Constraint::Length(5),  // Host Resources
+        Constraint::Length(mid_h), // Services + Key Status (exact-fit)
+        Constraint::Length(4),  // Job Pulse (KPI line + up to 3 jobs)
+    ];
+    if show_api_row {
+        constraints.push(Constraint::Length(4)); // salt-api (KPI line + up to 3 recent requests)
+    }
+    constraints.push(Constraint::Min(10)); // Sparklines (at least 10 lines = 2 per panel × 5 default-enabled panels)
+
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),  // Host Resources
-            Constraint::Length(mid_h), // Services + Key Status (exact-fit)
-            Constraint::Length(4),  // Job Pulse (KPI line + up to 3 jobs)
-            Constraint::Min(10),    // Sparklines (at least 10 lines = 2 per panel × 5 default-enabled panels)
-        ])
+        .constraints(constraints)
         .split(body);
 
     draw_host_row(f, sections[0], app);
@@ -167,15 +177,21 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     draw_job_pulse(f, sections[2], app);
 
+    let mut next = 3;
+    if show_api_row {
+        draw_api_row(f, sections[next], app);
+        next += 1;
+    }
+
     // Bottom: stacked full-width sparklines, one per enabled panel, for
     // time-axis correlation.
     let panels = enabled_spark_panels(app);
     if panels.is_empty() {
-        draw_no_graphs_hint(f, sections[3]);
+        draw_no_graphs_hint(f, sections[next]);
     } else {
         let n = panels.len() as u32;
         let constraints: Vec<Constraint> = panels.iter().map(|_| Constraint::Ratio(1, n)).collect();
-        let sparklines = Layout::default().direction(Direction::Vertical).constraints(constraints).split(sections[3]);
+        let sparklines = Layout::default().direction(Direction::Vertical).constraints(constraints).split(sections[next]);
         for (panel, area) in panels.into_iter().zip(sparklines.iter()) {
             panel.draw(f, *area, app);
         }
@@ -187,6 +203,7 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     let proc_rows = proc_rows_for(&group_processes(&app.processes), area.width.saturating_sub(2));
     let services_height = 4 + proc_rows + app.services.len() as u16;
     let panels = enabled_spark_panels(app);
+    let show_api_row = app.processes.iter().any(|p| p.role == SaltProcessRole::API);
 
     let mut constraints = vec![
         Constraint::Length(5),
@@ -194,15 +211,22 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     ];
     constraints.extend(panels.iter().map(|_| Constraint::Length(4)));
     constraints.push(Constraint::Length(4)); // Job Pulse
+    if show_api_row {
+        constraints.push(Constraint::Length(4)); // salt-api
+    }
 
     let layout = Layout::default().direction(Direction::Vertical).constraints(constraints).split(area);
 
     draw_host_row(f, layout[0], app);
     draw_proc_row(f, layout[1], app);
+    let panel_count = panels.len();
     for (i, panel) in panels.into_iter().enumerate() {
         panel.draw(f, layout[2 + i], app);
     }
-    draw_job_pulse(f, layout[layout.len() - 1], app);
+    draw_job_pulse(f, layout[2 + panel_count], app);
+    if show_api_row {
+        draw_api_row(f, layout[3 + panel_count], app);
+    }
 }
 
 fn make_block_line(title: Line<'static>) -> Block<'static> {
@@ -1081,6 +1105,92 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("  {} ", fun_short), Style::default().fg(color::CYAN)),
             Span::styled(progress, Style::default().fg(color).add_modifier(Modifier::BOLD)),
         ]));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        inner,
+    );
+}
+
+/// salt-api's own in-memory request stats (rest_cherrypy's `collect_stats`
+/// option, polled over its /stats endpoint — see agent's `cmd_get_api_stats`).
+/// Only drawn at all when a salt-api process is actually detected running;
+/// even then, the stats themselves need `collect_stats: True` (and
+/// `stats_disable_auth: True`, since this agent never handles auth tokens)
+/// set on the master, so this doubles as a nudge to turn that on.
+fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
+    let stats = &app.api_stats;
+
+    let title = Line::from(vec![
+        Span::styled(" salt-api ", Style::default().fg(color::TEXT_TITLE)),
+        if stats.reachable {
+            Span::styled(format!("{:.1} req/s", stats.requests_per_sec), Style::default().fg(color::CYAN))
+        } else {
+            Span::styled("stats unavailable", Style::default().fg(color::TEXT_DIM))
+        },
+    ]);
+    let block = make_block_line(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if !stats.reachable {
+        let hint = if !stats.configured {
+            "  rest_cherrypy not configured".to_string()
+        } else {
+            format!(
+                "  {}:{} unreachable — set rest_cherrypy: {{collect_stats: True, stats_disable_auth: True}}",
+                stats.scheme, stats.port,
+            )
+        };
+        f.render_widget(
+            Paragraph::new(vec![Line::from(Span::styled(hint, Style::default().fg(color::TEXT_DIM)))])
+                .style(Style::default().bg(color::BG_DARK))
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
+        Span::styled("  current:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(stats.current_requests.to_string(), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(" total:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(stats.total_requests.to_string(), Style::default().fg(color::TEXT_DIM)),
+        Span::styled(" in/out:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(
+            format!("{}/s / {}/s", format_bytes(stats.bytes_read_per_sec), format_bytes(stats.bytes_written_per_sec)),
+            Style::default().fg(color::TEXT_DIM),
+        ),
+    ])];
+
+    // Most recent request per CherryPy worker thread — a live snapshot of
+    // in-flight/just-finished activity, not a request log (see the doc
+    // comment on cmd_get_api_stats for why nothing here is ever logged).
+    let mut recent: Vec<&crate::types::ApiRequestRecord> = stats.requests.iter()
+        .filter(|r| !r.request_line.is_empty())
+        .collect();
+    recent.sort_by(|a, b| b.processing_time_secs.partial_cmp(&a.processing_time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    if recent.is_empty() {
+        lines.push(Line::from(Span::styled("  no requests yet", Style::default().fg(color::TEXT_DIM))));
+    } else {
+        for rec in recent.iter().take(3) {
+            let status_color = match rec.response_status.split_whitespace().next() {
+                Some(s) if s.starts_with('2') => color::GREEN,
+                Some(s) if s.starts_with('4') || s.starts_with('5') => color::RED,
+                _ => color::TEXT_DIM,
+            };
+            let line_short = if rec.request_line.len() > 40 {
+                format!("{}..", &rec.request_line[..38])
+            } else {
+                rec.request_line.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<42}", line_short), Style::default().fg(color::CYAN)),
+                Span::styled(format!("{:<4}", rec.response_status), Style::default().fg(status_color)),
+                Span::styled(format!(" {:.2}s", rec.processing_time_secs), Style::default().fg(color::TEXT_DIM)),
+            ]));
+        }
     }
 
     f.render_widget(

@@ -61,6 +61,7 @@ pub struct App {
     pub service_trends: HashMap<String, ServiceTrend>,
     pub zmq_connections: Vec<ZmqConn>,
     pub system_info: SystemInfo,
+    pub api_stats: ApiStats,
 
     // Minion cache (from agent)
     pub minion_info: Vec<MinionInfo>,
@@ -459,6 +460,7 @@ impl App {
             service_trends: HashMap::new(),
             zmq_connections: Vec::new(),
             system_info: SystemInfo::default(),
+            api_stats: ApiStats::default(),
 
             minion_info: Vec::new(),
             minion_info_dirty: false,
@@ -734,6 +736,24 @@ impl App {
                         "get_zmq_connections" => {
                             if ok {
                                 self.zmq_connections = serde_json::from_value(data["connections"].clone()).unwrap_or_default();
+                            }
+                        }
+                        "get_api_stats" => {
+                            if ok {
+                                self.api_stats = ApiStats {
+                                    configured: data["configured"].as_bool().unwrap_or(false),
+                                    reachable: data["reachable"].as_bool().unwrap_or(false),
+                                    port: data["port"].as_u64().unwrap_or(0) as u16,
+                                    scheme: data["scheme"].as_str().unwrap_or("").to_string(),
+                                    error: data["error"].as_str().unwrap_or("").to_string(),
+                                    current_requests: data["current_requests"].as_u64().unwrap_or(0),
+                                    total_requests: data["total_requests"].as_u64().unwrap_or(0),
+                                    requests_per_sec: data["requests_per_sec"].as_f64().unwrap_or(0.0),
+                                    bytes_read_per_sec: data["bytes_read_per_sec"].as_f64().unwrap_or(0.0),
+                                    bytes_written_per_sec: data["bytes_written_per_sec"].as_f64().unwrap_or(0.0),
+                                    uptime_secs: data["uptime_secs"].as_f64().unwrap_or(0.0),
+                                    requests: serde_json::from_value(data["requests"].clone()).unwrap_or_default(),
+                                };
                             }
                         }
                         "zmq_ping" => {
@@ -3111,6 +3131,9 @@ impl App {
                 self.send_agent_cmd("list_processes", None);
                 self.send_agent_cmd("list_services", None);
                 self.send_agent_cmd("get_system_info", None);
+                if self.processes.iter().any(|p| p.role == SaltProcessRole::API) {
+                    self.send_agent_cmd("get_api_stats", None);
+                }
             }
             // Connections are cheap — /proc/net/tcp reads — refresh every tick
             self.send_agent_cmd("get_zmq_connections", None);

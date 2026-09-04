@@ -208,6 +208,40 @@ pub struct SystemInfo {
     pub cpu_percent: f64,
 }
 
+// ─── salt-api stats (rest_cherrypy collect_stats, polled over /stats) ─────
+
+#[derive(Clone, Debug, Default)]
+pub struct ApiStats {
+    /// rest_cherrypy is configured on this master at all (opts has the key).
+    pub configured: bool,
+    /// The /stats endpoint actually answered — false if collect_stats/
+    /// stats_disable_auth aren't set, salt-api isn't running, or the poll
+    /// otherwise failed (see `error`).
+    pub reachable: bool,
+    pub port: u16,
+    pub scheme: String,
+    pub error: String,
+    pub current_requests: u64,
+    pub total_requests: u64,
+    pub requests_per_sec: f64,
+    pub bytes_read_per_sec: f64,
+    pub bytes_written_per_sec: f64,
+    pub uptime_secs: f64,
+    /// One entry per CherryPy worker thread: that thread's current (or most
+    /// recently completed) request. Not a request log — a live snapshot of
+    /// in-flight/recent activity, capped at however many worker threads
+    /// salt-api has (thread_pool, default 100).
+    pub requests: Vec<ApiRequestRecord>,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct ApiRequestRecord {
+    pub client: String,
+    pub request_line: String,
+    pub response_status: String,
+    pub processing_time_secs: f64,
+}
+
 // ─── Config snapshot (from agent) ──────────────────────────────────────────
 
 #[derive(Clone, Debug, Default)]

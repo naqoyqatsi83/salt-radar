@@ -77,6 +77,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Minion Activity** — Job return rate sparkline with last-active minion tracking
 - **CPU / Memory** — utilization-history sparklines, toggle alongside the other three sparkline panels via `show_*_graph`; stacking order of all five panels is configurable via `graph_order` — in the Config Editor (`F3`, edited as a reorderable list: `↑↓` to select, `+`/`-` to move) or by hand in `salt-radar.toml`
 - **Job Pulse** — Active jobs with progress bars, rolling success rate, stuck-job count, and p50/p95 completion latency
+- **salt-api** — shown only when a `salt-api` process is detected; request rate, in-flight/total request counts, and the most recent request per worker thread (path, status, timing). Needs `rest_cherrypy: {collect_stats: True, stats_disable_auth: True}` in the master config — salt-radar polls `GET /stats`, salt-api's own built-in in-memory request-stats endpoint (CherryPy's `cpstats`), which records the request line, client, status and timing entirely in process memory. This is a different mechanism from Salt's `log_level`/access logging: nothing is ever written to disk, and the request *line* it records never includes the body — so credentials sent in a POST body (e.g. `/login`) are never captured. `stats_disable_auth` is required because salt-radar's agent never handles or stores salt-api auth tokens.
 
 ### Minions
 - Scrollable minion list with dynamic column widths (ID, OS, Salt Version, Arch)

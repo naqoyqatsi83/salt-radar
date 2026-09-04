@@ -432,6 +432,79 @@ def cmd_get_system_info(opts, req):
     result(req["id"], "get_system_info", data=info)
 
 
+def cmd_get_api_stats(opts, req):
+    """Poll salt-api's built-in in-memory request stats (rest_cherrypy's
+    `collect_stats` option, backed by CherryPy's cpstats tool) over its own
+    /stats endpoint.
+
+    This is deliberately not a log file: cpstats records request line
+    (method+path, never the body), client, response status, and timing
+    entirely in the running salt-api process's memory (`logging.statistics`,
+    just reusing the `logging` module as a data container -- nothing is
+    written to disk), independent of Salt's own log_level. A request body
+    can carry credentials (e.g. POST /login); the request *line* CherryPy
+    records here never does. Requires the master config to opt in with
+    `rest_cherrypy: {collect_stats: True, stats_disable_auth: True}` --
+    without both, /stats either 404s (not mounted) or 401s (needs a token,
+    which this agent deliberately never handles -- see README).
+    """
+    rest_cherrypy = opts.get("rest_cherrypy") or {}
+    if not rest_cherrypy:
+        result(req["id"], "get_api_stats", data={"configured": False})
+        return
+
+    port = rest_cherrypy.get("port", 8000)
+    scheme = "http" if rest_cherrypy.get("disable_ssl", False) else "https"
+    url = "{}://127.0.0.1:{}/stats".format(scheme, port)
+
+    import urllib.request
+    import urllib.error
+    import ssl
+    import json as json_mod
+
+    ctx = None
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        http_req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(http_req, timeout=5, context=ctx) as resp:
+            body = resp.read().decode("utf-8", "replace")
+        stats = json_mod.loads(body)
+    except Exception as exc:
+        result(req["id"], "get_api_stats", data={
+            "configured": True, "reachable": False, "port": port, "scheme": scheme,
+            "error": str(exc),
+        })
+        return
+
+    app_stats = stats.get("CherryPy Applications", {}) if isinstance(stats, dict) else {}
+    requests = []
+    for rec in app_stats.get("Requests", {}).values():
+        requests.append({
+            "client": rec.get("Client", ""),
+            "request_line": rec.get("Request-Line", ""),
+            "response_status": rec.get("Response Status") or "",
+            "processing_time_secs": rec.get("Processing Time") or 0.0,
+        })
+
+    result(req["id"], "get_api_stats", data={
+        "configured": True,
+        "reachable": True,
+        "port": port,
+        "scheme": scheme,
+        "current_requests": app_stats.get("Current Requests", 0),
+        "total_requests": app_stats.get("Total Requests", 0),
+        "requests_per_sec": app_stats.get("Requests/Second", 0.0),
+        "bytes_read_per_sec": app_stats.get("Bytes Read/Second", 0.0),
+        "bytes_written_per_sec": app_stats.get("Bytes Written/Second", 0.0),
+        "uptime_secs": app_stats.get("Uptime", 0.0),
+        "requests": requests,
+    })
+
+
 def cmd_get_zmq_connections(opts, req):
     connections = []
     try:
@@ -1253,6 +1326,7 @@ HANDLERS = {
     "list_services": cmd_list_services,
     "get_system_info": cmd_get_system_info,
     "get_zmq_connections": cmd_get_zmq_connections,
+    "get_api_stats": cmd_get_api_stats,
     "alive_check": cmd_alive_check,
     "minion_ping": cmd_minion_ping,
     "minion_grains": cmd_minion_grains,
