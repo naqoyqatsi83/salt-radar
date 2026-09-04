@@ -48,6 +48,13 @@ pub struct App {
 
     // Collector data
     pub keys: Vec<KeyInfo>,
+    /// Accepted key IDs, kept in sync whenever `keys` is (re)populated —
+    /// event/job filtering matches against this on every keystroke while
+    /// filtering, and on a master with thousands of keys, rebuilding this
+    /// set from `keys` on every single one of those calls (previously what
+    /// `accepted_ids()` did) made typing into the filter box visibly lag,
+    /// worse the busier the master, since a redraw fires on every character.
+    accepted_id_set: HashSet<String>,
     pub processes: Vec<SaltProcess>,
     pub services: Vec<ServiceHealth>,
     /// Per-unit restart/flap history and memory sample history, keyed by unit name.
@@ -446,6 +453,7 @@ impl App {
             config_snapshot: None,
 
             keys: Vec::new(),
+            accepted_id_set: HashSet::new(),
             processes: Vec::new(),
             services: Vec::new(),
             service_trends: HashMap::new(),
@@ -671,6 +679,10 @@ impl App {
                         "list_keys" => {
                             if ok {
                                 self.keys = serde_json::from_value(data["keys"].clone()).unwrap_or_default();
+                                self.accepted_id_set = self.keys.iter()
+                                    .filter(|k| k.status == KeyStatus::Accepted)
+                                    .map(|k| k.id.clone())
+                                    .collect();
                             }
                         }
                         "list_processes" => {
@@ -1187,7 +1199,7 @@ impl App {
         text.to_lowercase().contains(&pat.to_lowercase())
     }
 
-    fn matches_event(evt: &SaltEvent, pat: &str, known_minions: &HashSet<&str>) -> bool {
+    fn matches_event(evt: &SaltEvent, pat: &str, known_minions: &HashSet<String>) -> bool {
         if pat.is_empty() { return true; }
         if Self::matches_filter(&evt.tag, pat)
             || evt.data["fun"].as_str().map(|f| Self::matches_filter(f, pat)).unwrap_or(false)
@@ -1247,7 +1259,7 @@ impl App {
         }
     }
 
-    fn matches_job(job: &JobEntry, pat: &str, known_minions: &HashSet<&str>) -> bool {
+    fn matches_job(job: &JobEntry, pat: &str, known_minions: &HashSet<String>) -> bool {
         if pat.is_empty() { return true; }
         if Self::matches_filter(&job.jid, pat)
             || Self::matches_filter(&job.fun, pat)
@@ -1278,11 +1290,8 @@ impl App {
             || Self::matches_filter(&minion.salt_version, pat)
     }
 
-    fn accepted_ids(&self) -> HashSet<&str> {
-        self.keys.iter()
-            .filter(|k| k.status == KeyStatus::Accepted)
-            .map(|k| k.id.as_str())
-            .collect()
+    fn accepted_ids(&self) -> &HashSet<String> {
+        &self.accepted_id_set
     }
 
     pub fn filtered_events_len(&self) -> usize {
