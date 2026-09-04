@@ -250,6 +250,9 @@ pub struct ApiLogEntry {
     pub client: String,
     pub method: String,
     pub path: String,
+    /// Full cpstats Request-Line, query string included (the table/log row
+    /// only shows the bare path; the detail popup shows this in full).
+    pub raw_request_line: String,
     pub response_status: String,
     pub processing_time_secs: f64,
 }

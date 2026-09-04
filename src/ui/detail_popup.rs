@@ -56,6 +56,11 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
         DetailPopup::ConfigEditor(_) => {
             super::config_editor::draw_config_editor(f, app);
         }
+        DetailPopup::ApiRequest(entry) => {
+            let area = centered_rect(65, 40, f.area());
+            f.render_widget(Clear, area);
+            draw_api_request_detail(f, area, entry, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+        }
     }
 }
 
@@ -851,6 +856,37 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
     }
 
     lines.push(Line::from(""));
+    let hints: [(&str, String); 2] = [("Esc/q", "close".to_string()), ("y", "copy".to_string())];
+    let status = clipboard_status(clipboard_at, clipboard_warning);
+    render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
+}
+
+fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiLogEntry, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
+    let status_code = entry.response_status.split_whitespace().next().unwrap_or("?");
+    let status_color = match status_code.chars().next() {
+        Some('2') | Some('3') => color::GREEN,
+        Some('4') | Some('5') => color::RED,
+        _ => color::TEXT_DIM,
+    };
+
+    let mut lines = header_lines(" API Request ", area.width);
+    lines.push(row("Method", entry.method.clone(), color::PURPLE));
+    lines.push(row("Path", entry.path.clone(), color::CYAN));
+    lines.push(row("Full request line", entry.raw_request_line.clone(), color::TEXT));
+    lines.push(row("Client", entry.client.clone(), color::TEXT_HI));
+    lines.push(row("Status", entry.response_status.clone(), status_color));
+    lines.push(row("Processing time", format!("{:.3}s", entry.processing_time_secs), color::TEXT_HI));
+    lines.push(row("Captured", format!("{}s ago", entry.received_at.elapsed().as_secs()), color::TEXT_DIM));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Only what cpstats records is available: no request/response body,",
+        Style::default().fg(color::TEXT_DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  no headers \u{2014} so no auth token, credentials, or payload content.",
+        Style::default().fg(color::TEXT_DIM),
+    )));
+
     let hints: [(&str, String); 2] = [("Esc/q", "close".to_string()), ("y", "copy".to_string())];
     let status = clipboard_status(clipboard_at, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);

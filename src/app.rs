@@ -20,6 +20,10 @@ use crate::types::*;
 const JOB_STATS_WINDOW: usize = 500;
 const API_STATS_WINDOW: usize = 200;
 const API_LOG_CAP: usize = 1000;
+/// Entries older than this are dropped every poll regardless of how far
+/// under API_LOG_CAP the log is — a quiet API shouldn't let the log hold
+/// onto hours-old requests just because traffic never filled it up.
+const API_LOG_MAX_AGE: Duration = Duration::from_secs(3600);
 const SERVICE_TREND_WINDOW: Duration = Duration::from_secs(24 * 3600);
 const SERVICE_MEM_SAMPLE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -436,6 +440,7 @@ pub enum DetailPopup {
     EventSniffer(crate::types::SnifferState),
     ConfigEditor(ConfigEditorState),
     MinionEvents { minion_id: String, selected: usize },
+    ApiRequest(ApiLogEntry),
 }
 
 impl App {
@@ -801,6 +806,13 @@ impl App {
                                     self.prev_api_total_requests = self.api_stats.total_requests;
                                     self.prev_api_poll_time = Some(now);
 
+                                    // Counts entries evicted from the front (oldest) this
+                                    // poll, whether by the cap below or the age-based
+                                    // prune after the loop, so api_log_selected can be
+                                    // shifted to keep pointing at the same logical
+                                    // entry -- the same correction Events already makes
+                                    // via advance_tail_selection when its buffer evicts.
+                                    let mut api_log_evicted: usize = 0;
                                     for rec in &self.api_stats.requests {
                                         if rec.end_time <= 0.0 {
                                             continue;
@@ -830,15 +842,25 @@ impl App {
                                             client: rec.client.clone(),
                                             method,
                                             path,
+                                            raw_request_line: rec.request_line.clone(),
                                             response_status: rec.response_status.clone(),
                                             processing_time_secs: rec.processing_time_secs,
                                         });
-                                        if self.api_requests_log.len() > API_LOG_CAP { self.api_requests_log.pop_front(); }
+                                        if self.api_requests_log.len() > API_LOG_CAP {
+                                            self.api_requests_log.pop_front();
+                                            api_log_evicted += 1;
+                                        }
                                     }
                                     // Threads that vanish from the snapshot (worker recycled,
                                     // thread pool shrank) would otherwise linger here forever.
                                     let live_threads: HashSet<&str> = self.api_stats.requests.iter().map(|r| r.thread_id.as_str()).collect();
                                     self.api_seen_end_times.retain(|tid, _| live_threads.contains(tid.as_str()));
+
+                                    let len_before_age_prune = self.api_requests_log.len();
+                                    self.api_requests_log.retain(|e| e.received_at.elapsed() < API_LOG_MAX_AGE);
+                                    api_log_evicted += len_before_age_prune - self.api_requests_log.len();
+
+                                    self.api_log_selected = self.api_log_selected.saturating_sub(api_log_evicted);
                                 }
                             }
                         }
@@ -2247,6 +2269,12 @@ impl App {
             Tab::Alerts => {
                 if let Some(alert) = self.get_filtered_alert(self.alert_selected) {
                     self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                    self.popup_tab = Some(self.current_tab);
+                }
+            }
+            Tab::Api => {
+                if let Some(entry) = self.get_filtered_api_log(self.api_log_selected) {
+                    self.detail_popup = Some(DetailPopup::ApiRequest(entry.clone()));
                     self.popup_tab = Some(self.current_tab);
                 }
             }
@@ -4294,6 +4322,21 @@ impl App {
                         if let Some(evt) = evt_enter {
                             self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0));
                         }
+                    }
+                }
+                DetailPopup::ApiRequest(ref entry) => {
+                    match code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            self.detail_popup = None;
+                        }
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            clipboard_text = Some(format!(
+                                "{}\nClient: {}\nStatus: {}\nProcessing time: {:.3}s",
+                                entry.raw_request_line, entry.client,
+                                entry.response_status, entry.processing_time_secs,
+                            ));
+                        }
+                        _ => {}
                     }
                 }
                 DetailPopup::ConfigEditor(_) => {}

@@ -8,6 +8,18 @@ use crate::app::App;
 
 use super::color;
 
+/// Truncates to at most `max` chars, appending ".." when it does (so the
+/// returned string is always <= max chars) -- every fixed-width column
+/// below relies on this to guarantee it never overflows into the next one.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let keep = max.saturating_sub(2);
+        format!("{}..", s.chars().take(keep).collect::<String>())
+    }
+}
+
 /// salt-api request log + per-endpoint breakdown. Only meaningful once
 /// rest_cherrypy's `collect_stats`/`stats_disable_auth` are set on the
 /// master (see the Dashboard's salt-api panel and README) — this tab shows
@@ -89,6 +101,7 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
 
     let hints: &[(&str, String)] = &[
         ("/", "filter".to_string()),
+        ("Enter", "detail".to_string()),
         ("PgUp/PgDn", "page".to_string()),
         ("Home/End", "top/bottom".to_string()),
     ];
@@ -121,7 +134,7 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            format!("  {:<8}{:<7}{:<32}{:<18}{}", "Age", "Method", "Path", "Status", "Time"),
+            format!("  {:<16}{:<7}{:<21}{:<20}{:<18}{}", "Age", "Method", "Client", "Path", "Status", "Time"),
             Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
         )));
 
@@ -144,8 +157,17 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
                     Style::default().bg(color::BG_DARK)
                 };
 
-                let age = format!("{}s ago", entry.received_at.elapsed().as_secs());
-                let path_str = if entry.path.len() > 32 { format!("{}..", &entry.path[..30]) } else { entry.path.clone() };
+                // API_LOG_MAX_AGE prunes entries past 1h once per poll, so
+                // this is normally well under that -- but truncate anyway
+                // rather than assume the prune always wins the race, since
+                // an un-truncated field here would silently misalign every
+                // column after it (the exact bug class already fixed
+                // elsewhere in this app for Event Types/Fleet Overview).
+                let age_raw = format!("{} ago", super::dashboard::format_duration(entry.received_at.elapsed().as_secs()));
+                let age = truncate(&age_raw, 16);
+                let client_str = truncate(&entry.client, 21);
+                let path_str = truncate(&entry.path, 20);
+                let status_str = truncate(&entry.response_status, 18);
                 let status_code = entry.response_status.split_whitespace().next().unwrap_or("?");
                 let status_color = match status_code.chars().next() {
                     Some('2') | Some('3') => color::GREEN,
@@ -154,10 +176,11 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
                 };
 
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<8}", age), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(format!("  {:<16}", age), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(format!("{:<7}", entry.method), Style::default().fg(color::PURPLE)),
-                    Span::styled(format!("{:<32}", path_str), Style::default().fg(color::CYAN)),
-                    Span::styled(format!("{:<18}", entry.response_status), Style::default().fg(status_color)),
+                    Span::styled(format!("{:<21}", client_str), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(format!("{:<20}", path_str), Style::default().fg(color::CYAN)),
+                    Span::styled(format!("{:<18}", status_str), Style::default().fg(status_color)),
                     Span::styled(format!("{:.2}s", entry.processing_time_secs), Style::default().fg(color::TEXT_DIM)),
                 ]).style(sel_style));
             }
@@ -201,7 +224,7 @@ fn draw_endpoint_breakdown(f: &mut Frame, area: Rect, app: &App) {
         )));
         let max_rows = (inner.height as usize).saturating_sub(3);
         for ep in breakdown.iter().take(max_rows) {
-            let path_str = if ep.path.len() > 20 { format!("{}..", &ep.path[..18]) } else { ep.path.clone() };
+            let path_str = truncate(&ep.path, 20);
             let err_color = if ep.error_pct >= 10.0 { color::RED } else if ep.error_pct > 0.0 { color::YELLOW } else { color::GREEN };
             lines.push(Line::from(vec![
                 Span::styled(format!(" {:<7}", ep.method), Style::default().fg(color::PURPLE)),

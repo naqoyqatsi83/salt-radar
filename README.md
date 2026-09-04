@@ -132,9 +132,11 @@ All thresholds are configurable via `salt-radar.toml` or the in-app Config Edito
 ### API
 Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `collect_stats`/`stats_disable_auth` setup):
 
-- Live request log — age, method, path, status, timing — built by salt-radar itself from cpstats' per-thread snapshots (filterable by `/`)
+- Live request log — age, method, client, path, status, timing — built by salt-radar itself from cpstats' per-thread snapshots (filterable by `/`); `Enter` opens a detail popup with the full request line (query string included), client, status, and processing time
 - Per-endpoint breakdown — request count, avg/p95 latency, error rate, grouped by method+path
 - Best-effort, not a complete record: cpstats only ever exposes the *latest* request per CherryPy worker thread, so a thread that completes more than one request between two polls only shows the last one
+- Bounded two ways: capped at 1000 entries, and entries older than 1 hour are pruned every poll regardless of how full the log is
+- Only what cpstats records is ever visible: no request/response body, no headers — so no credentials, payload content, or which minion/job/user was involved
 
 ### Admin Mode
 - Toggle with `a` (danger-zone confirmation dialog required)
