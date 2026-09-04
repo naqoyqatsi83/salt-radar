@@ -233,6 +233,11 @@ pub struct App {
     prev_network_tx_bytes: u64,
     prev_network_time: Option<Instant>,
 
+    // System-wide CPU% tracking (from /proc/stat cumulative jiffies)
+    prev_cpu_total_jiffies: u64,
+    prev_cpu_idle_jiffies: u64,
+    prev_cpu_time: Option<Instant>,
+
     // Mouse support
     pub mouse_enabled: bool,
     pub needs_mouse_toggle: bool,
@@ -575,6 +580,10 @@ impl App {
             prev_network_tx_bytes: 0,
             prev_network_time: None,
 
+            prev_cpu_total_jiffies: 0,
+            prev_cpu_idle_jiffies: 0,
+            prev_cpu_time: None,
+
             pid,
             cmd_path,
             copy_path,
@@ -695,6 +704,19 @@ impl App {
                         "get_system_info" => {
                             if ok {
                                 self.system_info = serde_json::from_value(data.clone()).unwrap_or_default();
+                                let now = Instant::now();
+                                if let Some(prev_at) = self.prev_cpu_time {
+                                    let elapsed = now.duration_since(prev_at).as_secs_f64();
+                                    let total_delta = self.system_info.cpu_total_jiffies.saturating_sub(self.prev_cpu_total_jiffies);
+                                    let idle_delta = self.system_info.cpu_idle_jiffies.saturating_sub(self.prev_cpu_idle_jiffies);
+                                    if elapsed > 0.0 && total_delta > 0 {
+                                        let busy_delta = total_delta.saturating_sub(idle_delta);
+                                        self.system_info.cpu_percent = (busy_delta as f64 / total_delta as f64 * 100.0).clamp(0.0, 100.0);
+                                    }
+                                }
+                                self.prev_cpu_total_jiffies = self.system_info.cpu_total_jiffies;
+                                self.prev_cpu_idle_jiffies = self.system_info.cpu_idle_jiffies;
+                                self.prev_cpu_time = Some(now);
                             }
                         }
                         "get_zmq_connections" => {
@@ -3115,9 +3137,7 @@ impl App {
             // that then lingers in the ring buffer (unlike the live gauge,
             // which just self-corrects on the next real sample).
             if self.system_info.mem_total_kb > 0 {
-                let cpu_count = self.config_snapshot.as_ref().map(|c| c.cpu_count).unwrap_or(1).max(1) as f64;
-                let cpu_pct = (self.system_info.load_1 / cpu_count * 100.0).clamp(0.0, 100.0);
-                self.cpu_history[self.cpu_history_idx] = cpu_pct;
+                self.cpu_history[self.cpu_history_idx] = self.system_info.cpu_percent;
                 self.cpu_history_idx = (self.cpu_history_idx + 1) % 2000;
 
                 let mem_total_kb = self.system_info.mem_total_kb;

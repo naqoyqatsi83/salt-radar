@@ -913,8 +913,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
 // a percentage would visually exaggerate a fleet that never gets very busy).
 
 fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
-    let cpu_count = app.config_snapshot.as_ref().map(|c| c.cpu_count).unwrap_or(1).max(1) as f64;
-    let current_pct = (app.system_info.load_1 / cpu_count * 100.0).clamp(0.0, 100.0);
+    let current_pct = app.system_info.cpu_percent;
     let peak_pct = app.cpu_history.iter().cloned().fold(0.0_f64, f64::max);
 
     let idx = app.cpu_history_idx;

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Dashboard's CPU panel (and the CPU history feeding its sparkline/avg/peak) was actually reporting 1-minute load average divided by core count, not real CPU utilization — a stale sample after a load spike ended, `load_1` stays elevated for a while as an exponentially-decayed figure even once real, instantaneous usage has already dropped, which read as CPU stuck at 100% while a tool like `btop` (sampling `/proc/stat` directly) already showed it back down. The panel now computes real system-wide CPU% from `/proc/stat` cumulative jiffies deltas between polls, the same way the per-process CPU%s next to it already were; the "Host Resources" gauge, which is explicitly labeled `Load:`, is unaffected and still shows the real load average as intended.
+
 ## [0.6.0] - 2026-09-03
 
 This release folds in `v0.6.0-rc1` through `v0.6.0-rc25`. Where a

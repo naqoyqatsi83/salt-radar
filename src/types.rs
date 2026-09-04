@@ -197,6 +197,15 @@ pub struct SystemInfo {
     pub network_tx_bytes: u64,
     pub network_rx_rate: f64,
     pub network_tx_rate: f64,
+    /// Cumulative system-wide CPU jiffies from /proc/stat ("cpu " line);
+    /// cpu_percent is computed from the delta between polls (see App::update),
+    /// same as load_1 was previously misused for this — load average is a
+    /// ~1-minute exponentially-decayed figure that lags well behind real
+    /// instantaneous usage (e.g. tools like btop), unlike this.
+    pub cpu_total_jiffies: u64,
+    pub cpu_idle_jiffies: u64,
+    #[serde(default)]
+    pub cpu_percent: f64,
 }
 
 // ─── Config snapshot (from agent) ──────────────────────────────────────────

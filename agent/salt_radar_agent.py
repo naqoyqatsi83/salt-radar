@@ -362,6 +362,7 @@ def cmd_get_system_info(opts, req):
         "cache_disk_usage_pct": 0.0, "pki_disk_usage_pct": 0.0,
         "uptime_secs": 0, "network_rx_bytes": 0, "network_tx_bytes": 0,
         "network_rx_rate": 0.0, "network_tx_rate": 0.0,
+        "cpu_total_jiffies": 0, "cpu_idle_jiffies": 0,
     }
     try:
         # Load
@@ -370,6 +371,19 @@ def cmd_get_system_info(opts, req):
             info["load_1"] = float(load[0])
             info["load_5"] = float(load[1])
             info["load_15"] = float(load[2])
+
+        # CPU: cumulative jiffies from the system-wide "cpu " line -- the Rust
+        # side derives instantaneous % from the delta between two polls, the
+        # same way load average (above) is decayed but nothing here is.
+        with open("/proc/stat", "r") as f:
+            for line in f:
+                if line.startswith("cpu "):
+                    fields = [int(x) for x in line.split()[1:]]
+                    # user, nice, system, idle, iowait, irq, softirq, steal, ...
+                    idle = fields[3] + (fields[4] if len(fields) > 4 else 0)
+                    info["cpu_total_jiffies"] = sum(fields)
+                    info["cpu_idle_jiffies"] = idle
+                    break
 
         # Mem
         with open("/proc/meminfo", "r") as f:
