@@ -105,7 +105,7 @@ fn header_lines(title: &str, area_width: u16) -> Vec<Line<'static>> {
 fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> {
     Line::from(vec![
         Span::styled(
-            format!("  {:<16}", label),
+            format!("  {:<20}", label),
             Style::default().fg(color::TEXT_LABEL),
         ),
         Span::styled(value, Style::default().fg(value_color).add_modifier(Modifier::BOLD)),
