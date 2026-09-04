@@ -11,6 +11,7 @@ pub enum Tab {
     Jobs,
     Alerts,
     Pulse,
+    Api,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,18 +32,20 @@ impl Tab {
             Self::Events => Self::Jobs,
             Self::Jobs => Self::Alerts,
             Self::Alerts => Self::Pulse,
-            Self::Pulse => Self::Dashboard,
+            Self::Pulse => Self::Api,
+            Self::Api => Self::Dashboard,
         }
     }
 
     pub fn prev(&self) -> Self {
         match self {
-            Self::Dashboard => Self::Pulse,
+            Self::Dashboard => Self::Api,
             Self::Minions => Self::Dashboard,
             Self::Events => Self::Minions,
             Self::Jobs => Self::Events,
             Self::Alerts => Self::Jobs,
             Self::Pulse => Self::Alerts,
+            Self::Api => Self::Pulse,
         }
     }
 
@@ -54,6 +57,7 @@ impl Tab {
             Self::Jobs => "Jobs",
             Self::Alerts => "Alerts",
             Self::Pulse => "Pulse",
+            Self::Api => "API",
         }
     }
 }
@@ -232,6 +236,34 @@ pub struct ApiStats {
     /// in-flight/recent activity, capped at however many worker threads
     /// salt-api has (thread_pool, default 100).
     pub requests: Vec<ApiRequestRecord>,
+}
+
+/// One completed salt-api request, kept in App::api_requests_log — built by
+/// watching cpstats' per-thread snapshot for requests that are new since the
+/// last poll (see App::update's "get_api_stats" handler). Not a complete
+/// record: if a single worker thread completes more than one request between
+/// two polls, only the last one is ever visible in the snapshot this is
+/// built from.
+#[derive(Clone, Debug)]
+pub struct ApiLogEntry {
+    pub received_at: std::time::Instant,
+    pub client: String,
+    pub method: String,
+    pub path: String,
+    pub response_status: String,
+    pub processing_time_secs: f64,
+}
+
+/// Per-endpoint (method+path) rollup of the captured request log —
+/// see App::api_endpoint_breakdown.
+#[derive(Clone, Debug)]
+pub struct ApiEndpointStats {
+    pub method: String,
+    pub path: String,
+    pub count: usize,
+    pub avg_secs: f64,
+    pub p95_secs: f64,
+    pub error_pct: f64,
 }
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]

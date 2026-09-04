@@ -19,6 +19,7 @@ use crate::types::*;
 
 const JOB_STATS_WINDOW: usize = 500;
 const API_STATS_WINDOW: usize = 200;
+const API_LOG_CAP: usize = 1000;
 const SERVICE_TREND_WINDOW: Duration = Duration::from_secs(24 * 3600);
 const SERVICE_MEM_SAMPLE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -205,6 +206,11 @@ pub struct App {
     pub api_status_window: VecDeque<bool>,
     /// Rolling window of POST /login processing times, in seconds.
     pub api_login_latencies: VecDeque<f64>,
+    /// Every newly-observed salt-api request (see api_seen_end_times above),
+    /// oldest first, capped at API_LOG_CAP — feeds the API tab's request log
+    /// and per-endpoint breakdown.
+    pub api_requests_log: VecDeque<ApiLogEntry>,
+    pub api_log_selected: usize,
 
     /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
     /// used to compute cpu_percent from the delta between polls.
@@ -589,6 +595,8 @@ impl App {
             api_seen_end_times: HashMap::new(),
             api_status_window: VecDeque::new(),
             api_login_latencies: VecDeque::new(),
+            api_requests_log: VecDeque::new(),
+            api_log_selected: 0,
             job_outcome_window: VecDeque::new(),
             prev_proc_cpu: HashMap::new(),
             clk_tck: 100.0,
@@ -815,6 +823,17 @@ impl App {
                                             self.api_login_latencies.push_back(rec.processing_time_secs);
                                             if self.api_login_latencies.len() > API_STATS_WINDOW { self.api_login_latencies.pop_front(); }
                                         }
+
+                                        let (method, path) = Self::parse_request_line(&rec.request_line);
+                                        self.api_requests_log.push_back(ApiLogEntry {
+                                            received_at: now,
+                                            client: rec.client.clone(),
+                                            method,
+                                            path,
+                                            response_status: rec.response_status.clone(),
+                                            processing_time_secs: rec.processing_time_secs,
+                                        });
+                                        if self.api_requests_log.len() > API_LOG_CAP { self.api_requests_log.pop_front(); }
                                     }
                                     // Threads that vanish from the snapshot (worker recycled,
                                     // thread pool shrank) would otherwise linger here forever.
@@ -1269,6 +1288,8 @@ impl App {
             .min(self.filtered_minions_len().saturating_sub(1));
         self.pulse_selected = self.pulse_selected
             .min(self.pulse_minions_count().saturating_sub(1));
+        self.api_log_selected = self.api_log_selected
+            .min(self.filtered_api_log_len().saturating_sub(1));
     }
 
     /// While live-typing an Events filter, keep the selection pinned to the
@@ -1474,6 +1495,15 @@ impl App {
         Some((pick(0.50), pick(0.95)))
     }
 
+    /// Splits a cpstats "Request-Line" ("METHOD /path?query HTTP/1.1") into
+    /// (method, path) for grouping — drops the query string and HTTP version.
+    fn parse_request_line(line: &str) -> (String, String) {
+        let mut parts = line.split_whitespace();
+        let method = parts.next().unwrap_or("?").to_string();
+        let path = parts.next().unwrap_or("?").split('?').next().unwrap_or("?").to_string();
+        (method, path)
+    }
+
     /// Rolling percentage of salt-api requests with a non-2xx/3xx status,
     /// over the last API_STATS_WINDOW observed requests. None until at
     /// least one has been observed.
@@ -1647,6 +1677,62 @@ impl App {
         }
         let pat = &self.filter_text;
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).nth(index)
+    }
+
+    fn matches_api_log_entry(entry: &ApiLogEntry, pat: &str) -> bool {
+        if pat.is_empty() { return true; }
+        Self::matches_filter(&entry.method, pat)
+            || Self::matches_filter(&entry.path, pat)
+            || Self::matches_filter(&entry.response_status, pat)
+            || Self::matches_filter(&entry.client, pat)
+    }
+
+    /// Index 0 is the oldest buffered request — same oldest-at-top,
+    /// newest-at-bottom convention as Events (self.events).
+    pub fn filtered_api_log_len(&self) -> usize {
+        if self.filter_text.is_empty() {
+            return self.api_requests_log.len();
+        }
+        let pat = &self.filter_text;
+        self.api_requests_log.iter().filter(|e| Self::matches_api_log_entry(e, pat)).count()
+    }
+
+    pub fn get_filtered_api_log(&self, index: usize) -> Option<&ApiLogEntry> {
+        if self.filter_text.is_empty() {
+            return self.api_requests_log.get(index);
+        }
+        let pat = &self.filter_text;
+        self.api_requests_log.iter().filter(|e| Self::matches_api_log_entry(e, pat)).nth(index)
+    }
+
+    /// Per-endpoint (method+path) breakdown of the captured request log:
+    /// count, avg/p95 latency, error rate — sorted by count descending.
+    pub fn api_endpoint_breakdown(&self) -> Vec<ApiEndpointStats> {
+        let mut groups: HashMap<(String, String), Vec<(f64, bool)>> = HashMap::new();
+        for entry in &self.api_requests_log {
+            let is_ok = entry.response_status.split_whitespace().next()
+                .map(|c| c.starts_with('2') || c.starts_with('3'))
+                .unwrap_or(true);
+            groups.entry((entry.method.clone(), entry.path.clone()))
+                .or_default()
+                .push((entry.processing_time_secs, is_ok));
+        }
+        let mut stats: Vec<ApiEndpointStats> = groups.into_iter().map(|((method, path), mut samples)| {
+            let count = samples.len();
+            let errors = samples.iter().filter(|(_, ok)| !ok).count();
+            samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let avg = samples.iter().map(|(t, _)| t).sum::<f64>() / count as f64;
+            let p95_idx = ((count - 1) as f64 * 0.95).round() as usize;
+            let p95 = samples[p95_idx].0;
+            ApiEndpointStats {
+                method, path, count,
+                avg_secs: avg,
+                p95_secs: p95,
+                error_pct: 100.0 * errors as f64 / count as f64,
+            }
+        }).collect();
+        stats.sort_by(|a, b| b.count.cmp(&a.count));
+        stats
     }
 
     pub fn pulse_minions_count(&self) -> usize {
@@ -3564,6 +3650,7 @@ impl App {
                     KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
                     KeyCode::Char('6') => { self.current_tab = Tab::Pulse; return false; }
+                    KeyCode::Char('7') => { self.current_tab = Tab::Api; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
                     KeyCode::F(2) => {
                         self.mouse_enabled = !self.mouse_enabled;
@@ -4450,6 +4537,7 @@ impl App {
             KeyCode::Char('4') => self.current_tab = Tab::Jobs,
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
             KeyCode::Char('6') => self.current_tab = Tab::Pulse,
+            KeyCode::Char('7') => self.current_tab = Tab::Api,
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
                     self.pulse_up();
@@ -4607,6 +4695,25 @@ impl App {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
                         self.alert_selected = (scroll + visual_idx).min(total - 1);
+                        self.clamp_selection();
+                    }
+                }
+            }
+            Tab::Api => {
+                let total = self.filtered_api_log_len();
+                if total == 0 { return false; }
+
+                // Same shape as Events -- must match draw_api's request-log panel exactly.
+                let visible = inner_h.saturating_sub(2).max(1);
+                let selected = self.api_log_selected.min(total.saturating_sub(1));
+                let scroll = scroll_offset(selected, visible, total);
+
+                let filter_shown = self.is_filtering || !self.filter_text.is_empty();
+                let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        self.api_log_selected = (scroll + visual_idx).min(total - 1);
                         self.clamp_selection();
                     }
                 }
@@ -4853,6 +4960,7 @@ impl App {
             43..=50 => Some(Tab::Jobs),
             54..=63 => Some(Tab::Alerts),
             67..=75 => Some(Tab::Pulse),
+            79..=85 => Some(Tab::Api),
             _ => None,
         }
     }
@@ -4872,6 +4980,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
+            Tab::Api => self.api_log_selected = self.api_log_selected.saturating_sub(1),
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_sub(1).min(max);
@@ -4895,6 +5004,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected += 1,
+            Tab::Api => self.api_log_selected += 1,
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_add(1).min(max);
@@ -4918,6 +5028,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = 0,
+            Tab::Api => self.api_log_selected = 0,
             Tab::Pulse => self.pulse_selected = 0,
             _ => {}
         }
@@ -4938,6 +5049,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
+            Tab::Api => self.api_log_selected = self.filtered_api_log_len().saturating_sub(1),
             Tab::Pulse => self.pulse_selected = self.pulse_minions_count().saturating_sub(1),
             _ => {}
         }

@@ -129,6 +129,13 @@ Live overview of your Salt Master with real-time sparkline panels:
 
 All thresholds are configurable via `salt-radar.toml` or the in-app Config Editor (`F3`).
 
+### API
+Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `collect_stats`/`stats_disable_auth` setup):
+
+- Live request log — age, method, path, status, timing — built by salt-radar itself from cpstats' per-thread snapshots (filterable by `/`)
+- Per-endpoint breakdown — request count, avg/p95 latency, error rate, grouped by method+path
+- Best-effort, not a complete record: cpstats only ever exposes the *latest* request per CherryPy worker thread, so a thread that completes more than one request between two polls only shows the last one
+
 ### Admin Mode
 - Toggle with `a` (danger-zone confirmation dialog required)
 - **Fleet scan** (`s`): runs `grains.items` on all minions via Salt LocalClient, populates OS/Salt Version/Arch data
@@ -204,7 +211,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 |-----|--------|
 | `q` | Quit |
 | `Tab` | Switch tab |
-| `1`–`6` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/Pulse) |
+| `1`–`7` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/Pulse/API) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Enter` | Open detail popup |

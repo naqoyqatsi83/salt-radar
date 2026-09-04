@@ -5,6 +5,7 @@ mod jobs;
 mod alerts_view;
 mod pulse;
 mod minion_events;
+mod api_view;
 
 pub mod config_editor;
 pub mod detail_popup;
@@ -245,6 +246,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app, tab_focused),
         Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused),
         Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
+        Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused),
     }
 
     draw_key_hints(f, main_layout[2], app);
@@ -333,7 +335,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     // Tab menu (left) and host/uptime (right) share the one content row.
-    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Pulse];
+    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Pulse, Tab::Api];
     let mut tab_spans: Vec<Span<'static>> = Vec::new();
     for (i, tab) in tabs.iter().enumerate() {
         if i > 0 {
@@ -504,6 +506,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 Tab::Events => (app.event_selected + 1, app.filtered_events_len()),
                 Tab::Alerts => (app.alert_selected + 1, app.filtered_alerts_len()),
                 Tab::Pulse => (app.pulse_selected + 1, app.pulse_minions_count()),
+                Tab::Api => (app.api_log_selected + 1, app.filtered_api_log_len()),
                 _ => (0, 0),
             };
             if total > 0 {
@@ -564,7 +567,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  Switch tab", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  1-6", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  1-7", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Jump to tab", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
@@ -650,6 +653,16 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  Timed out", Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
             Span::styled("  flagged unresponsive by fleet-scan/staleness tracking", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  API tab", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  requires", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  rest_cherrypy: {collect_stats: True, stats_disable_auth: True} on the master", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  request log", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  best-effort: only sees each worker thread's latest request per poll", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled("  Minion Detail", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
