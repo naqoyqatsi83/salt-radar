@@ -482,12 +482,19 @@ def cmd_get_api_stats(opts, req):
 
     app_stats = stats.get("CherryPy Applications", {}) if isinstance(stats, dict) else {}
     requests = []
-    for rec in app_stats.get("Requests", {}).values():
+    for tid, rec in app_stats.get("Requests", {}).items():
         requests.append({
+            "thread_id": str(tid),
             "client": rec.get("Client", ""),
             "request_line": rec.get("Request-Line", ""),
             "response_status": rec.get("Response Status") or "",
             "processing_time_secs": rec.get("Processing Time") or 0.0,
+            # Epoch seconds this request finished -- lets the Rust side tell
+            # whether a given worker thread has completed a *new* request
+            # since the last poll (cpstats only ever keeps the latest
+            # request per thread, so this is how we dedupe across polls
+            # instead of re-counting the same still-latest one every time).
+            "end_time": rec.get("End Time") or 0.0,
         })
 
     result(req["id"], "get_api_stats", data={

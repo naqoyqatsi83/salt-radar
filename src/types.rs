@@ -236,10 +236,12 @@ pub struct ApiStats {
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct ApiRequestRecord {
+    pub thread_id: String,
     pub client: String,
     pub request_line: String,
     pub response_status: String,
     pub processing_time_secs: f64,
+    pub end_time: f64,
 }
 
 // ─── Config snapshot (from agent) ──────────────────────────────────────────

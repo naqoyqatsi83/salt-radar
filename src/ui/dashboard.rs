@@ -1125,7 +1125,11 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
     let title = Line::from(vec![
         Span::styled(" salt-api ", Style::default().fg(color::TEXT_TITLE)),
         if stats.reachable {
-            Span::styled(format!("{:.1} req/s", stats.requests_per_sec), Style::default().fg(color::CYAN))
+            // Recent rate (App::api_requests_per_sec_recent), not cpstats'
+            // own Requests/Second -- that's a lifetime average since salt-api
+            // started, which barely moves once uptime is more than a few
+            // minutes and would make this look frozen on a long-running server.
+            Span::styled(format!("{:.1} req/s", app.api_requests_per_sec_recent), Style::default().fg(color::CYAN))
         } else {
             Span::styled("stats unavailable", Style::default().fg(color::TEXT_DIM))
         },
@@ -1152,11 +1156,32 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    let err_pct = app.api_error_pct();
+    let err_str = err_pct.map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into());
+    let err_color = match err_pct {
+        Some(p) if p >= 10.0 => color::RED,
+        Some(p) if p > 0.0 => color::YELLOW,
+        Some(_) => color::GREEN,
+        None => color::TEXT_DIM,
+    };
+    let login_p95 = app.api_login_latency_p50_p95().map(|(_, p95)| p95);
+    let login_str = login_p95.map(|s| format!("{:.2}s", s)).unwrap_or_else(|| "--".into());
+    let login_color = match login_p95 {
+        Some(s) if s >= 3.0 => color::RED,
+        Some(s) if s >= 1.0 => color::YELLOW,
+        Some(_) => color::GREEN,
+        None => color::TEXT_DIM,
+    };
+
     let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
         Span::styled("  current:", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(stats.current_requests.to_string(), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
         Span::styled(" total:", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(stats.total_requests.to_string(), Style::default().fg(color::TEXT_DIM)),
+        Span::styled(" errors:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(err_str, Style::default().fg(err_color).add_modifier(Modifier::BOLD)),
+        Span::styled(" login p95:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(login_str, Style::default().fg(login_color).add_modifier(Modifier::BOLD)),
         Span::styled(" in/out:", Style::default().fg(color::TEXT_LABEL)),
         Span::styled(
             format!("{} / {}", format_bytes(stats.bytes_read_per_sec), format_bytes(stats.bytes_written_per_sec)),

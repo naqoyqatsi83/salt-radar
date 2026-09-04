@@ -44,6 +44,10 @@ pub struct AppConfig {
     pub service_mem_growth_mb_per_hour: f64,
     pub service_mem_abs_threshold_mb: f64,
     pub service_mem_pct_threshold: f64,
+    /// p95 POST /login processing time (seconds) that triggers the "API auth
+    /// latency" alert. Only meaningful once the salt-api panel has real
+    /// data — see App::api_login_latency_p50_p95.
+    pub api_auth_latency_warn_secs: f64,
     /// Per-unit overrides for the standard bundled Salt services — each 0.0
     /// means "no override, fall back to the global service_mem_*_threshold*
     /// above" (the global fields already use 0.0 to mean "check disabled",
@@ -103,6 +107,7 @@ impl Default for AppConfig {
             service_mem_growth_mb_per_hour: 50.0,
             service_mem_abs_threshold_mb: 2048.0,
             service_mem_pct_threshold: 8.0,
+            api_auth_latency_warn_secs: 3.0,
             service_mem_abs_threshold_master_mb: 0.0,
             service_mem_pct_threshold_master: 0.0,
             service_mem_abs_threshold_minion_mb: 0.0,
@@ -164,6 +169,7 @@ struct AlertsConfig {
     service_mem_growth_mb_per_hour: Option<f64>,
     service_mem_abs_threshold_mb: Option<f64>,
     service_mem_pct_threshold: Option<f64>,
+    api_auth_latency_warn_secs: Option<f64>,
     service_mem_abs_threshold_master_mb: Option<f64>,
     service_mem_pct_threshold_master: Option<f64>,
     service_mem_abs_threshold_minion_mb: Option<f64>,
@@ -218,6 +224,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          service_mem_growth_mb_per_hour = {}\n\
          service_mem_abs_threshold_mb = {}\n\
          service_mem_pct_threshold = {}\n\
+         api_auth_latency_warn_secs = {}\n\
          service_mem_abs_threshold_master_mb = {}\n\
          service_mem_pct_threshold_master = {}\n\
          service_mem_abs_threshold_minion_mb = {}\n\
@@ -254,6 +261,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.service_mem_growth_mb_per_hour,
         config.service_mem_abs_threshold_mb,
         config.service_mem_pct_threshold,
+        config.api_auth_latency_warn_secs,
         config.service_mem_abs_threshold_master_mb,
         config.service_mem_pct_threshold_master,
         config.service_mem_abs_threshold_minion_mb,
@@ -304,6 +312,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
                 if let Some(v) = a.service_mem_abs_threshold_mb { cfg.service_mem_abs_threshold_mb = v; }
                 if let Some(v) = a.service_mem_pct_threshold { cfg.service_mem_pct_threshold = v; }
+                if let Some(v) = a.api_auth_latency_warn_secs { cfg.api_auth_latency_warn_secs = v; }
                 if let Some(v) = a.service_mem_abs_threshold_master_mb { cfg.service_mem_abs_threshold_master_mb = v; }
                 if let Some(v) = a.service_mem_pct_threshold_master { cfg.service_mem_pct_threshold_master = v; }
                 if let Some(v) = a.service_mem_abs_threshold_minion_mb { cfg.service_mem_abs_threshold_minion_mb = v; }

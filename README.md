@@ -77,7 +77,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Minion Activity** — Job return rate sparkline with last-active minion tracking
 - **CPU / Memory** — utilization-history sparklines, toggle alongside the other three sparkline panels via `show_*_graph`; stacking order of all five panels is configurable via `graph_order` — in the Config Editor (`F3`, edited as a reorderable list: `↑↓` to select, `+`/`-` to move) or by hand in `salt-radar.toml`
 - **Job Pulse** — Active jobs with progress bars, rolling success rate, stuck-job count, and p50/p95 completion latency
-- **salt-api** — shown only when a `salt-api` process is detected; request rate, in-flight/total request counts, and the most recent request per worker thread (path, status, timing). Needs `rest_cherrypy: {collect_stats: True, stats_disable_auth: True}` in the master config — salt-radar polls `GET /stats`, salt-api's own built-in in-memory request-stats endpoint (CherryPy's `cpstats`), which records the request line, client, status and timing entirely in process memory. This is a different mechanism from Salt's `log_level`/access logging: nothing is ever written to disk, and the request *line* it records never includes the body — so credentials sent in a POST body (e.g. `/login`) are never captured. `stats_disable_auth` is required because salt-radar's agent never handles or stores salt-api auth tokens.
+- **salt-api** — shown only when a `salt-api` process is detected; request rate, error rate, `POST /login` p50/p95 latency, in-flight/total request counts, and the most recent request per worker thread (path, status, timing). Needs `rest_cherrypy: {collect_stats: True, stats_disable_auth: True}` in the master config — salt-radar polls `GET /stats`, salt-api's own built-in in-memory request-stats endpoint (CherryPy's `cpstats`), which records the request line, client, status and timing entirely in process memory. This is a different mechanism from Salt's `log_level`/access logging: nothing is ever written to disk, and the request *line* it records never includes the body — so credentials sent in a POST body (e.g. `/login`) are never captured. `stats_disable_auth` is required because salt-radar's agent never handles or stores salt-api auth tokens. Request rate is a real recent figure (computed by salt-radar from the delta between polls); error rate and login latency are also tracked by salt-radar itself, since cpstats only exposes a lifetime-average rate and a live per-thread snapshot, not cumulative error/latency counters of its own.
 
 ### Minions
 - Scrollable minion list with dynamic column widths (ID, OS, Salt Version, Arch)
@@ -110,7 +110,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Detail panel on the side: key status, connection status, OS, Salt version, last return time
 
 ### Alerts
-13 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
+14 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
 
 - **Stale minion** — not seen within `stale_minion_secs`
 - **Pending key** — pending longer than `pending_key_secs`
@@ -125,6 +125,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Service flapping** — a unit restarted more than `service_flap_threshold_24h` times in 24h
 - **Service memory growth** — sustained upward memory slope past `service_mem_growth_mb_per_hour`, independent of flapping
 - **Service memory high** — a unit's current RSS crosses an absolute (`service_mem_abs_threshold_mb`) or percent-of-total-memory (`service_mem_pct_threshold`) threshold, independent of growth rate; salt-master/minion/api/syndic can each override these globals (e.g. `service_mem_abs_threshold_master_mb`)
+- **API auth latency** — salt-api's `POST /login` p95 processing time crosses `api_auth_latency_warn_secs`, a common early symptom of PAM/LDAP/eauth backend trouble (needs the salt-api panel's `collect_stats` setup — see Dashboard above)
 
 All thresholds are configurable via `salt-radar.toml` or the in-app Config Editor (`F3`).
 

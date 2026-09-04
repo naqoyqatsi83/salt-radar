@@ -18,6 +18,7 @@ use crate::config::{load_config, AppConfig};
 use crate::types::*;
 
 const JOB_STATS_WINDOW: usize = 500;
+const API_STATS_WINDOW: usize = 200;
 const SERVICE_TREND_WINDOW: Duration = Duration::from_secs(24 * 3600);
 const SERVICE_MEM_SAMPLE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -185,6 +186,25 @@ pub struct App {
     pub job_completion_latencies: VecDeque<f64>,
     /// Rolling window of job close-out outcomes (true = partial return)
     pub job_outcome_window: VecDeque<bool>,
+
+    // salt-api stats tracking (see App::update's "get_api_stats" handler).
+    // cpstats' Requests/Second is a lifetime average since salt-api started,
+    // which barely moves on a long-running server — prev_api_total_requests
+    // lets us compute a real recent rate from the delta instead, the same
+    // way network/CPU rates are derived elsewhere in this file.
+    prev_api_total_requests: u64,
+    prev_api_poll_time: Option<Instant>,
+    pub api_requests_per_sec_recent: f64,
+    /// Last-seen End Time per worker thread ID, so a newly-observed request
+    /// (End Time advanced since last poll) can be told apart from the same
+    /// still-latest one cpstats keeps showing between polls — without this,
+    /// a quiet API would double-count its last request on every poll.
+    api_seen_end_times: HashMap<String, f64>,
+    /// Rolling window of individual (non-cpstats-provided) request outcomes:
+    /// true = 2xx, false = 4xx/5xx — cpstats has no cumulative error counter.
+    pub api_status_window: VecDeque<bool>,
+    /// Rolling window of POST /login processing times, in seconds.
+    pub api_login_latencies: VecDeque<f64>,
 
     /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
     /// used to compute cpu_percent from the delta between polls.
@@ -563,6 +583,12 @@ impl App {
             job_ping_pending: None,
             job_returns_window: VecDeque::new(),
             job_completion_latencies: VecDeque::new(),
+            prev_api_total_requests: 0,
+            prev_api_poll_time: None,
+            api_requests_per_sec_recent: 0.0,
+            api_seen_end_times: HashMap::new(),
+            api_status_window: VecDeque::new(),
+            api_login_latencies: VecDeque::new(),
             job_outcome_window: VecDeque::new(),
             prev_proc_cpu: HashMap::new(),
             clk_tck: 100.0,
@@ -754,6 +780,47 @@ impl App {
                                     uptime_secs: data["uptime_secs"].as_f64().unwrap_or(0.0),
                                     requests: serde_json::from_value(data["requests"].clone()).unwrap_or_default(),
                                 };
+
+                                if self.api_stats.reachable {
+                                    let now = Instant::now();
+                                    if let Some(prev_at) = self.prev_api_poll_time {
+                                        let elapsed = now.duration_since(prev_at).as_secs_f64();
+                                        let delta = self.api_stats.total_requests.saturating_sub(self.prev_api_total_requests);
+                                        if elapsed > 0.0 {
+                                            self.api_requests_per_sec_recent = delta as f64 / elapsed;
+                                        }
+                                    }
+                                    self.prev_api_total_requests = self.api_stats.total_requests;
+                                    self.prev_api_poll_time = Some(now);
+
+                                    for rec in &self.api_stats.requests {
+                                        if rec.end_time <= 0.0 {
+                                            continue;
+                                        }
+                                        let is_new = self.api_seen_end_times.get(&rec.thread_id)
+                                            .map(|prev_end| rec.end_time > *prev_end)
+                                            .unwrap_or(true);
+                                        self.api_seen_end_times.insert(rec.thread_id.clone(), rec.end_time);
+                                        if !is_new {
+                                            continue;
+                                        }
+
+                                        let is_ok = rec.response_status.split_whitespace().next()
+                                            .map(|code| code.starts_with('2') || code.starts_with('3'))
+                                            .unwrap_or(true);
+                                        self.api_status_window.push_back(is_ok);
+                                        if self.api_status_window.len() > API_STATS_WINDOW { self.api_status_window.pop_front(); }
+
+                                        if rec.request_line.contains("/login") {
+                                            self.api_login_latencies.push_back(rec.processing_time_secs);
+                                            if self.api_login_latencies.len() > API_STATS_WINDOW { self.api_login_latencies.pop_front(); }
+                                        }
+                                    }
+                                    // Threads that vanish from the snapshot (worker recycled,
+                                    // thread pool shrank) would otherwise linger here forever.
+                                    let live_threads: HashSet<&str> = self.api_stats.requests.iter().map(|r| r.thread_id.as_str()).collect();
+                                    self.api_seen_end_times.retain(|tid, _| live_threads.contains(tid.as_str()));
+                                }
                             }
                         }
                         "zmq_ping" => {
@@ -1407,6 +1474,25 @@ impl App {
         Some((pick(0.50), pick(0.95)))
     }
 
+    /// Rolling percentage of salt-api requests with a non-2xx/3xx status,
+    /// over the last API_STATS_WINDOW observed requests. None until at
+    /// least one has been observed.
+    pub fn api_error_pct(&self) -> Option<f64> {
+        if self.api_status_window.is_empty() { return None; }
+        let errors = self.api_status_window.iter().filter(|ok| !**ok).count();
+        Some(100.0 * errors as f64 / self.api_status_window.len() as f64)
+    }
+
+    /// p50/p95 POST /login processing time in seconds, over the last
+    /// API_STATS_WINDOW logins observed. None until at least one has been seen.
+    pub fn api_login_latency_p50_p95(&self) -> Option<(f64, f64)> {
+        if self.api_login_latencies.is_empty() { return None; }
+        let mut v: Vec<f64> = self.api_login_latencies.iter().copied().collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pick = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        Some((pick(0.50), pick(0.95)))
+    }
+
     /// Rolling percentage of closed-out jobs where returned < target_count,
     /// over the last JOB_STATS_WINDOW closed jobs. None until one has closed.
     pub fn job_partial_pct(&self) -> Option<f64> {
@@ -1658,6 +1744,7 @@ impl App {
                 ConfigField { label: "service_mem_growth_mb_per_hour", label_value: cfg.service_mem_growth_mb_per_hour.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_mb", label_value: cfg.service_mem_abs_threshold_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold", label_value: cfg.service_mem_pct_threshold.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "api_auth_latency_warn_secs", label_value: cfg.api_auth_latency_warn_secs.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_master_mb", label_value: cfg.service_mem_abs_threshold_master_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold_master", label_value: cfg.service_mem_pct_threshold_master.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_minion_mb", label_value: cfg.service_mem_abs_threshold_minion_mb.to_string(), kind: ConfigFieldKind::F64 },
@@ -1726,6 +1813,7 @@ impl App {
             service_mem_growth_mb_per_hour: parse_f64("service_mem_growth_mb_per_hour")?,
             service_mem_abs_threshold_mb: parse_f64("service_mem_abs_threshold_mb")?,
             service_mem_pct_threshold: parse_f64("service_mem_pct_threshold")?,
+            api_auth_latency_warn_secs: parse_f64("api_auth_latency_warn_secs")?,
             service_mem_abs_threshold_master_mb: parse_f64("service_mem_abs_threshold_master_mb")?,
             service_mem_pct_threshold_master: parse_f64("service_mem_pct_threshold_master")?,
             service_mem_abs_threshold_minion_mb: parse_f64("service_mem_abs_threshold_minion_mb")?,
@@ -3298,6 +3386,8 @@ impl App {
                 syndic_abs_mb: self.config.service_mem_abs_threshold_syndic_mb,
                 syndic_pct: self.config.service_mem_pct_threshold_syndic,
             },
+            self.api_login_latency_p50_p95().map(|(_, p95)| p95),
+            self.config.api_auth_latency_warn_secs,
         );
 
         // Eagerly finalize jobs that reached full completion — record completion
