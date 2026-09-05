@@ -111,6 +111,51 @@ fn draw_no_graphs_hint(f: &mut Frame, area: Rect) {
     );
 }
 
+/// The Dashboard's middle row (Services / Minion Key Status / Event Types),
+/// each independently toggleable via config.show_services / show_key_status
+/// / show_event_types. Weights re-normalize over whichever subset is
+/// actually enabled, so hiding one column doesn't leave a gap — the
+/// remaining columns just split the row's width between them.
+#[derive(Clone, Copy)]
+enum MidPanel {
+    Services,
+    KeyStatus,
+    EventTypes,
+}
+
+impl MidPanel {
+    fn enabled(self, app: &App) -> bool {
+        match self {
+            MidPanel::Services => app.config.show_services,
+            MidPanel::KeyStatus => app.config.show_key_status,
+            MidPanel::EventTypes => app.config.show_event_types,
+        }
+    }
+
+    fn weight(self) -> u32 {
+        match self {
+            MidPanel::Services => MID_ROW_RATIO[0],
+            MidPanel::KeyStatus => MID_ROW_RATIO[1],
+            MidPanel::EventTypes => MID_ROW_RATIO[2],
+        }
+    }
+
+    fn draw(self, f: &mut Frame, area: Rect, app: &App) {
+        match self {
+            MidPanel::Services => draw_proc_row(f, area, app),
+            MidPanel::KeyStatus => draw_key_status(f, area, app),
+            MidPanel::EventTypes => draw_event_breakdown(f, area, app),
+        }
+    }
+}
+
+fn enabled_mid_panels(app: &App) -> Vec<MidPanel> {
+    [MidPanel::Services, MidPanel::KeyStatus, MidPanel::EventTypes]
+        .into_iter()
+        .filter(|p| p.enabled(app))
+        .collect()
+}
+
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // Small terminal fallback: vertical stacked layout
     if area.height < 26 {
@@ -120,36 +165,45 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     let body = area;
 
+    let mid_panels = enabled_mid_panels(app);
+
     // Top section: fixed-height info panels
     // Bottom section: stacked full-width sparklines fill remaining space
     let key_status_h = 8u16; // 4 key rows + separator + total + 2 border
-    // Services panel is the first of a 3-way horizontal split of `body`; mirror
-    // that split just for its width so the proc-row estimate matches what
-    // draw_proc_row actually renders with, rather than assuming a fixed 1 line.
-    let services_col_width = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Ratio(MID_ROW_RATIO[0], 5),
-            Constraint::Ratio(MID_ROW_RATIO[1], 5),
-            Constraint::Ratio(MID_ROW_RATIO[2], 5),
-        ])
-        .split(Rect::new(0, 0, body.width, 1))[0]
-        .width
-        .saturating_sub(2); // block borders
-    let proc_rows = proc_rows_for(&group_processes(&app.processes), services_col_width);
-    let services_h = (4 + proc_rows + app.services.len() as u16).min(25); // gauge + proc lines + header + N services + 2 border
+    // Services panel's width depends on how many mid-row columns are
+    // actually enabled; mirror that split just for its width so the
+    // proc-row estimate matches what draw_proc_row actually renders with,
+    // rather than assuming a fixed 1 line.
+    let services_h = if mid_panels.iter().any(|p| matches!(p, MidPanel::Services)) {
+        let total_weight: u32 = mid_panels.iter().map(|p| p.weight()).sum();
+        let services_col_width = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(mid_panels.iter().map(|p| Constraint::Ratio(p.weight(), total_weight)).collect::<Vec<_>>())
+            .split(Rect::new(0, 0, body.width, 1))[mid_panels.iter().position(|p| matches!(p, MidPanel::Services)).unwrap()]
+            .width
+            .saturating_sub(2); // block borders
+        let proc_rows = proc_rows_for(&group_processes(&app.processes), services_col_width);
+        (4 + proc_rows + app.services.len() as u16).min(25) // gauge + proc lines + header + N services + 2 border
+    } else {
+        0
+    };
     let mid_h = key_status_h.max(services_h);
 
     // salt-api gets a row only when it's actually present on this master —
     // most masters don't run it, and reserving space for an always-empty
     // panel would just shrink everything else for no reason.
-    let show_api_row = app.processes.iter().any(|p| p.role == SaltProcessRole::API);
+    let show_api_row = app.config.show_salt_api && app.processes.iter().any(|p| p.role == SaltProcessRole::API);
 
-    let mut constraints = vec![
-        Constraint::Length(5),  // Host Resources
-        Constraint::Length(mid_h), // Services + Key Status (exact-fit)
-        Constraint::Length(4),  // Job Pulse (KPI line + up to 3 jobs)
-    ];
+    let mut constraints = vec![];
+    if app.config.show_host_resources {
+        constraints.push(Constraint::Length(5)); // Host Resources
+    }
+    if !mid_panels.is_empty() {
+        constraints.push(Constraint::Length(mid_h)); // Services + Key Status + Event Types (exact-fit)
+    }
+    if app.config.show_job_pulse {
+        constraints.push(Constraint::Length(4)); // Job Pulse (KPI line + up to 3 jobs)
+    }
     if show_api_row {
         constraints.push(Constraint::Length(4)); // salt-api (KPI line + up to 3 recent requests)
     }
@@ -160,24 +214,29 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
         .constraints(constraints)
         .split(body);
 
-    draw_host_row(f, sections[0], app);
+    let mut next = 0;
+    if app.config.show_host_resources {
+        draw_host_row(f, sections[next], app);
+        next += 1;
+    }
 
-    // Services + Minion key status + Event breakdown horizontal split
-    let mid = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Ratio(MID_ROW_RATIO[0], 5),
-            Constraint::Ratio(MID_ROW_RATIO[1], 5),
-            Constraint::Ratio(MID_ROW_RATIO[2], 5),
-        ])
-        .split(sections[1]);
-    draw_proc_row(f, mid[0], app);
-    draw_key_status(f, mid[1], app);
-    draw_event_breakdown(f, mid[2], app);
+    if !mid_panels.is_empty() {
+        let total_weight: u32 = mid_panels.iter().map(|p| p.weight()).sum();
+        let mid = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(mid_panels.iter().map(|p| Constraint::Ratio(p.weight(), total_weight)).collect::<Vec<_>>())
+            .split(sections[next]);
+        for (panel, area) in mid_panels.iter().zip(mid.iter()) {
+            panel.draw(f, *area, app);
+        }
+        next += 1;
+    }
 
-    draw_job_pulse(f, sections[2], app);
+    if app.config.show_job_pulse {
+        draw_job_pulse(f, sections[next], app);
+        next += 1;
+    }
 
-    let mut next = 3;
     if show_api_row {
         draw_api_row(f, sections[next], app);
         next += 1;
@@ -198,34 +257,53 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// Fallback for small terminals: vertical stacked layout (same as original)
+/// Fallback for small terminals: vertical stacked layout (same as original).
+/// Key Status and Event Types don't get their own row in this layout (they
+/// never have — compact mode already dropped them for space), so only
+/// Services' own toggle applies here; Key Status/Event Types' toggles just
+/// have no effect on a terminal this small.
 fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     let proc_rows = proc_rows_for(&group_processes(&app.processes), area.width.saturating_sub(2));
     let services_height = 4 + proc_rows + app.services.len() as u16;
     let panels = enabled_spark_panels(app);
-    let show_api_row = app.processes.iter().any(|p| p.role == SaltProcessRole::API);
+    let show_api_row = app.config.show_salt_api && app.processes.iter().any(|p| p.role == SaltProcessRole::API);
 
-    let mut constraints = vec![
-        Constraint::Length(5),
-        Constraint::Length(services_height),
-    ];
+    let mut constraints = vec![];
+    if app.config.show_host_resources {
+        constraints.push(Constraint::Length(5));
+    }
+    if app.config.show_services {
+        constraints.push(Constraint::Length(services_height));
+    }
     constraints.extend(panels.iter().map(|_| Constraint::Length(4)));
-    constraints.push(Constraint::Length(4)); // Job Pulse
+    if app.config.show_job_pulse {
+        constraints.push(Constraint::Length(4)); // Job Pulse
+    }
     if show_api_row {
         constraints.push(Constraint::Length(4)); // salt-api
     }
 
     let layout = Layout::default().direction(Direction::Vertical).constraints(constraints).split(area);
 
-    draw_host_row(f, layout[0], app);
-    draw_proc_row(f, layout[1], app);
-    let panel_count = panels.len();
-    for (i, panel) in panels.into_iter().enumerate() {
-        panel.draw(f, layout[2 + i], app);
+    let mut next = 0;
+    if app.config.show_host_resources {
+        draw_host_row(f, layout[next], app);
+        next += 1;
     }
-    draw_job_pulse(f, layout[2 + panel_count], app);
+    if app.config.show_services {
+        draw_proc_row(f, layout[next], app);
+        next += 1;
+    }
+    for panel in panels {
+        panel.draw(f, layout[next], app);
+        next += 1;
+    }
+    if app.config.show_job_pulse {
+        draw_job_pulse(f, layout[next], app);
+        next += 1;
+    }
     if show_api_row {
-        draw_api_row(f, layout[3 + panel_count], app);
+        draw_api_row(f, layout[next], app);
     }
 }
 

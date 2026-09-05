@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Dashboard: `show_host_resources`/`show_services`/`show_key_status`/`show_event_types`/`show_job_pulse`/`show_salt_api` config settings, each independently hiding one of the Dashboard's fixed (non-sparkline) panels — same on/off toggle, in the Config Editor (`F3`), as the existing sparkline `show_*_graph` settings. Hiding one of Services/Minion Key Status/Event Types reflows the row to fill the freed width instead of leaving a gap.
+
 ### Fixed
 - Typing or pasting into the Jobs (or Minions/Events/Alerts/API) filter recomputed every tab's filtered-list length on every keystroke, not just the tab actually being filtered — most costly, it re-ran Events' fallback full-JSON-stringify match against the entire buffered event list regardless of which tab was open. On a busy master with a large event buffer, this made pasting a JID into the Jobs filter take 60s+ to become active, one keystroke at a time. The per-character clamp now only recomputes the active tab's own filtered length.
 

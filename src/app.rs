@@ -1903,6 +1903,12 @@ impl App {
                 ConfigField { label: "show_cpu_graph", label_value: on_off(cfg.show_cpu_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_mem_graph", label_value: on_off(cfg.show_mem_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Order },
+                ConfigField { label: "show_host_resources", label_value: on_off(cfg.show_host_resources), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_services", label_value: on_off(cfg.show_services), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_key_status", label_value: on_off(cfg.show_key_status), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_event_types", label_value: on_off(cfg.show_event_types), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_job_pulse", label_value: on_off(cfg.show_job_pulse), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_salt_api", label_value: on_off(cfg.show_salt_api), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -1974,6 +1980,12 @@ impl App {
             show_cpu_graph: parse_bool("show_cpu_graph"),
             show_mem_graph: parse_bool("show_mem_graph"),
             graph_order: vals.get("graph_order").unwrap_or(&"cpu,mem,zmq,events,activity").to_string(),
+            show_host_resources: parse_bool("show_host_resources"),
+            show_services: parse_bool("show_services"),
+            show_key_status: parse_bool("show_key_status"),
+            show_event_types: parse_bool("show_event_types"),
+            show_job_pulse: parse_bool("show_job_pulse"),
+            show_salt_api: parse_bool("show_salt_api"),
         };
 
         crate::config::write_config(&self.config_path, &new_config)

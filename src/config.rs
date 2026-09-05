@@ -94,6 +94,16 @@ pub struct AppConfig {
     /// missing from the list is appended after the ones named, so a partial
     /// or malformed value degrades gracefully instead of losing a panel.
     pub graph_order: String,
+    /// Which of the Dashboard's fixed (non-sparkline) panels are shown, all
+    /// defaulting on so existing configs/behavior are unaffected. salt-api
+    /// still only ever renders when the process is actually detected —
+    /// this just adds a user opt-out on top of that.
+    pub show_host_resources: bool,
+    pub show_services: bool,
+    pub show_key_status: bool,
+    pub show_event_types: bool,
+    pub show_job_pulse: bool,
+    pub show_salt_api: bool,
 }
 
 impl Default for AppConfig {
@@ -137,6 +147,12 @@ impl Default for AppConfig {
             show_cpu_graph: true,
             show_mem_graph: true,
             graph_order: "cpu,mem,zmq,events,activity".into(),
+            show_host_resources: true,
+            show_services: true,
+            show_key_status: true,
+            show_event_types: true,
+            show_job_pulse: true,
+            show_salt_api: true,
         }
     }
 }
@@ -211,6 +227,12 @@ struct DashboardConfig {
     show_cpu_graph: Option<bool>,
     show_mem_graph: Option<bool>,
     graph_order: Option<String>,
+    show_host_resources: Option<bool>,
+    show_services: Option<bool>,
+    show_key_status: Option<bool>,
+    show_event_types: Option<bool>,
+    show_job_pulse: Option<bool>,
+    show_salt_api: Option<bool>,
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
@@ -268,7 +290,13 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          show_activity_graph = {}\n\
          show_cpu_graph = {}\n\
          show_mem_graph = {}\n\
-         graph_order = {:?}\n",
+         graph_order = {:?}\n\
+         show_host_resources = {}\n\
+         show_services = {}\n\
+         show_key_status = {}\n\
+         show_event_types = {}\n\
+         show_job_pulse = {}\n\
+         show_salt_api = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -307,6 +335,12 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.show_cpu_graph,
         config.show_mem_graph,
         config.graph_order,
+        config.show_host_resources,
+        config.show_services,
+        config.show_key_status,
+        config.show_event_types,
+        config.show_job_pulse,
+        config.show_salt_api,
     );
     std::fs::write(path, toml)
 }
@@ -365,6 +399,12 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = d.show_cpu_graph { cfg.show_cpu_graph = v; }
                 if let Some(v) = d.show_mem_graph { cfg.show_mem_graph = v; }
                 if let Some(v) = d.graph_order { cfg.graph_order = v; }
+                if let Some(v) = d.show_host_resources { cfg.show_host_resources = v; }
+                if let Some(v) = d.show_services { cfg.show_services = v; }
+                if let Some(v) = d.show_key_status { cfg.show_key_status = v; }
+                if let Some(v) = d.show_event_types { cfg.show_event_types = v; }
+                if let Some(v) = d.show_job_pulse { cfg.show_job_pulse = v; }
+                if let Some(v) = d.show_salt_api { cfg.show_salt_api = v; }
             }
         }
     }
