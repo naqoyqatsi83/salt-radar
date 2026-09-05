@@ -436,6 +436,10 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
 fn group_processes(processes: &[crate::types::SaltProcess]) -> Vec<(String, u64, usize)> {
     let mut groups: Vec<(String, u64, usize)> = vec![];
     for p in processes {
+        // Unknown means the agent's classifier couldn't match this pid to a
+        // Salt process at all -- it isn't a Salt sub-role to display, it's
+        // (should the agent's own filtering ever regress) an unrelated
+        // process on the host that must not be counted as "Salt RSS".
         let label = match p.role {
             crate::types::SaltProcessRole::Master => "Master",
             crate::types::SaltProcessRole::API => "API",
@@ -444,7 +448,7 @@ fn group_processes(processes: &[crate::types::SaltProcess]) -> Vec<(String, u64,
             crate::types::SaltProcessRole::Minion => "Minion",
             crate::types::SaltProcessRole::EventPublisher => "EventPub",
             crate::types::SaltProcessRole::ReqServer => "ReqSrv",
-            crate::types::SaltProcessRole::Unknown => "?",
+            crate::types::SaltProcessRole::Unknown => continue,
         };
         if let Some((_, total, count)) = groups.iter_mut().find(|(l, _, _)| l == label) {
             *total += p.rss_kb;
@@ -477,11 +481,16 @@ fn proc_rows_for(groups: &[(String, u64, usize)], width: u16) -> u16 {
 }
 
 fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
-    let total_rss_used: u64 = app.processes.iter().map(|p| p.rss_kb).sum();
+    // Unknown-role entries are excluded -- the agent already only reports
+    // actual Salt processes, but this guards against ever again silently
+    // summing every process on the host (VS Code, a browser, ...) into
+    // "Salt RSS", which is how that figure previously read over 100%.
+    let salt_processes = app.processes.iter().filter(|p| p.role != crate::types::SaltProcessRole::Unknown);
+    let total_rss_used: u64 = salt_processes.clone().map(|p| p.rss_kb).sum();
     let mem_total_kb = app.system_info.mem_total_kb.max(1);
     let mem_pct = (total_rss_used as f64 / mem_total_kb as f64) * 100.0;
 
-    let proc_count = app.processes.len();
+    let proc_count = salt_processes.count();
 
     let mem_gauge_fg = if mem_pct > 80.0 { color::ORANGE } else if mem_pct > 55.0 { color::YELLOW } else { color::GREEN };
     let title = Line::from(vec![

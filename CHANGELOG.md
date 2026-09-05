@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Typing or pasting into the Jobs (or Minions/Events/Alerts/API) filter recomputed every tab's filtered-list length on every keystroke, not just the tab actually being filtered — most costly, it re-ran Events' fallback full-JSON-stringify match against the entire buffered event list regardless of which tab was open. On a busy master with a large event buffer, this made pasting a JID into the Jobs filter take 60s+ to become active, one keystroke at a time. The per-character clamp now only recomputes the active tab's own filtered length.
+- Dashboard's Services panel could show memory usage over 100% (and wildly inflated "Salt RSS"/process counts): the agent's process scanner walked every PID on the host, not just Salt's own, and anything that didn't match a known salt-* cmdline pattern was still included as an "Unknown"-role process rather than excluded — on a host also running unrelated software, that summed the whole system's RSS into a figure labeled "Salt RSS". The agent now skips non-Salt processes entirely, and the Rust side excludes Unknown-role entries from the aggregate as a second layer of defense.
 
 ## [0.6.1] - 2026-09-05
 

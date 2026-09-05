@@ -176,8 +176,15 @@ def cmd_list_processes(opts, req):
                         # utime (field 14) + stime (field 15) -> indices 11, 12
                         cpu_ticks = int(rest[11]) + int(rest[12])
 
-                    # Determine role
-                    role = "Unknown"
+                    # Determine role. Every real salt-* process (including
+                    # its sub-workers/threads: MWorker-N, EventPublisher,
+                    # ReqServer, FileserverUpdate, Maintenance, ...) still
+                    # carries "salt-master"/"salt-minion"/"salt-api"/
+                    # "salt-syndic" somewhere in its cmdline, so a process
+                    # matching none of these isn't an unclassified Salt
+                    # process -- it's an unrelated process on the host
+                    # (this scan walks all of /proc, not just Salt's PIDs)
+                    # and must be skipped, not counted as "Unknown".
                     if "MWorker-" in cmdline: role = "Worker"
                     elif "EventPublisher" in cmdline: role = "EventPublisher"
                     elif "ReqServer" in cmdline: role = "ReqServer"
@@ -185,6 +192,8 @@ def cmd_list_processes(opts, req):
                     elif "salt-api" in cmdline: role = "API"
                     elif "salt-syndic" in cmdline: role = "Syndic"
                     elif "salt-minion" in cmdline: role = "Minion"
+                    else:
+                        continue
 
                     processes.append({
                         "pid": pid,
