@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Typing or pasting into the Jobs (or Minions/Events/Alerts/API) filter recomputed every tab's filtered-list length on every keystroke, not just the tab actually being filtered — most costly, it re-ran Events' fallback full-JSON-stringify match against the entire buffered event list regardless of which tab was open. On a busy master with a large event buffer, this made pasting a JID into the Jobs filter take 60s+ to become active, one keystroke at a time. The per-character clamp now only recomputes the active tab's own filtered length.
+
 ## [0.6.1] - 2026-09-05
 
 This release folds in `v0.6.1-rc1` through `v0.6.1-rc8`, plus the

@@ -1309,6 +1309,41 @@ impl App {
             .min(self.filtered_api_log_len().saturating_sub(1));
     }
 
+    /// Clamp only the selection for the tab actively being typed/pasted into.
+    ///
+    /// `filter_text`/`is_filtering` (and `cache_filter_text`/`cache_is_filtering`)
+    /// are shared across Minions/Events/Alerts/Api/Jobs, but only `current_tab`
+    /// is ever the one being filtered (Tab/BackTab are unreachable while
+    /// filtering) -- recomputing every other tab's filtered length on every
+    /// keystroke, most notably Events' full JSON-stringify fallback in
+    /// `matches_event`, is pure waste and the cause of the paste-a-JID-into-Jobs
+    /// slowdown on masters with a large event buffer. Called from the hot
+    /// per-character paths; `clamp_selection()` still runs on Esc/Enter (once
+    /// per filter session) so every tab's selection stays valid once filtering
+    /// stops.
+    fn clamp_active_filter_selection(&mut self) {
+        match self.current_tab {
+            Tab::Minions => self.minion_selected = self.minion_selected
+                .min(self.filtered_minions_len().saturating_sub(1)),
+            Tab::Events => self.event_selected = self.event_selected
+                .min(self.filtered_events_len().saturating_sub(1)),
+            Tab::Alerts => self.alert_selected = self.alert_selected
+                .min(self.filtered_alerts_len().saturating_sub(1)),
+            Tab::Api => self.api_log_selected = self.api_log_selected
+                .min(self.filtered_api_log_len().saturating_sub(1)),
+            Tab::Jobs => {
+                if self.cache_focus {
+                    self.cache_selected = self.cache_selected
+                        .min(self.filtered_cache_len().saturating_sub(1));
+                } else {
+                    self.job_selected = self.job_selected
+                        .min(self.filtered_jobs_len().saturating_sub(1));
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// While live-typing an Events filter, keep the selection pinned to the
     /// newest match (as long as it was already following) so the narrowing
     /// result set stays tail-anchored instead of settling on whatever
@@ -4385,12 +4420,12 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     self.filter_text.pop();
-                    self.clamp_selection();
+                    self.clamp_active_filter_selection();
                     self.follow_events_tail_if_filtering();
                 }
                 KeyCode::Char(c) => {
                     self.filter_text.push(c);
-                    self.clamp_selection();
+                    self.clamp_active_filter_selection();
                     self.follow_events_tail_if_filtering();
                 }
                 _ => {}
@@ -4420,11 +4455,11 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     self.cache_filter_text.pop();
-                    self.clamp_selection();
+                    self.clamp_active_filter_selection();
                 }
                 KeyCode::Char(c) => {
                     self.cache_filter_text.push(c);
-                    self.clamp_selection();
+                    self.clamp_active_filter_selection();
                 }
                 _ => {}
             }
