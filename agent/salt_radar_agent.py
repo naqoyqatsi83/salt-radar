@@ -447,22 +447,63 @@ def cmd_get_system_info(opts, req):
 # is rejected, not on every poll.
 _api_token_cache = {}
 
-# Cached (username, password) per (minion_id, path) for "pillar" mode --
-# compiling pillar is real work (rendering SLS through the top file), so
-# this is only redone when there's no cached value yet or a login with the
-# cached value has just failed (credentials rotated in pillar), not on
-# every poll tick alongside the (much cheaper) token cache above.
-_api_pillar_creds_cache = {}
+# Placeholder ID pillar is compiled "for" in "pillar" mode -- not a real
+# minion, and it doesn't need to be one. Salt's pillar compilation always
+# takes a minion_id (for top.sls matching and any {{ opts.id }}-style
+# templating in the SLS), but salt-radar doesn't care whose pillar tree it
+# reads, only that a top.sls entry actually assigns the relevant SLS -- so
+# point that entry at '*' (or grains-based matching, if your top.sls
+# already uses that for every minion) rather than a specific minion ID.
+_STATS_PILLAR_ID = "salt-radar"
+
+# Cached compiled pillar dict for "pillar" mode -- compiling pillar is real
+# work (rendering SLS through the top file), so this is only redone when
+# there's no cached value yet or a login using values resolved from it has
+# just failed (credentials rotated in pillar), not on every poll tick
+# alongside the (much cheaper) token cache above.
+_api_pillar_compiled_cache = None
+
+
+def _pillar_get(compiled, path):
+    """Walk a colon-delimited path into a compiled pillar dict, the same
+    shape `salt-call pillar.get` resolves. Returns None if any segment is
+    missing.
+    """
+    node = compiled
+    for key in path.split(":"):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def _compile_stats_pillar(opts, force_refresh=False):
+    """Compile pillar master-side for _STATS_PILLAR_ID -- no live round-trip
+    to any minion. Cached across polls; force_refresh re-renders (e.g. a
+    login with previously-resolved values just failed, so they may have
+    rotated in pillar since).
+    """
+    global _api_pillar_compiled_cache
+    if not force_refresh and _api_pillar_compiled_cache is not None:
+        return _api_pillar_compiled_cache, None
+    try:
+        salt = _import_salt()
+        pil = salt.pillar.get_pillar(opts, {}, _STATS_PILLAR_ID, saltenv=opts.get("saltenv") or "base")
+        compiled = pil.compile_pillar()
+        _api_pillar_compiled_cache = compiled
+        return compiled, None
+    except Exception as exc:
+        return None, "pillar compilation failed: {}".format(exc)
 
 
 def _resolve_api_stats_auth(opts, req, force_refresh=False):
     """Resolve (username, password) for authenticated /stats access, per
     api_stats_auth_mode ("plaintext" reads them straight off the request;
-    "pillar" compiles the target minion's pillar master-side -- no live
-    round-trip to that minion -- and pulls them out of it, cached until a
-    login with the resolved value fails). Returns None on "none" mode or on
-    any resolution failure (bad pillar path, missing minion, etc.), logging
-    why via the returned error string.
+    "pillar" compiles pillar master-side -- no live round-trip to any
+    minion -- and reads two independent paths out of it, cached until a
+    login with the resolved values fails). Returns None on "none" mode or
+    on any resolution failure (bad pillar path, etc.), logging why via the
+    returned error string.
     """
     mode = req.get("auth_mode") or "none"
     if mode == "none":
@@ -475,33 +516,18 @@ def _resolve_api_stats_auth(opts, req, force_refresh=False):
         return username, password, None
 
     if mode == "pillar":
-        minion_id = req.get("auth_pillar_minion") or ""
-        path = req.get("auth_pillar_path") or ""
-        if not minion_id or not path:
-            return None, None, "stats_auth_pillar_minion/stats_auth_pillar_path not set"
-        cache_key = (minion_id, path)
-        if not force_refresh and cache_key in _api_pillar_creds_cache:
-            username, password = _api_pillar_creds_cache[cache_key]
-            return username, password, None
-        try:
-            salt = _import_salt()
-            cache = salt.cache.factory(opts)
-            grains = cache.fetch("minions", minion_id) or {}
-            pil = salt.pillar.get_pillar(opts, grains, minion_id, saltenv=opts.get("saltenv") or "base")
-            compiled = pil.compile_pillar()
-            node = compiled
-            for key in path.split(":"):
-                if not isinstance(node, dict) or key not in node:
-                    return None, None, "pillar path {!r} not found for minion {!r}".format(path, minion_id)
-                node = node[key]
-            username = node.get("username") if isinstance(node, dict) else None
-            password = node.get("password") if isinstance(node, dict) else None
-            if not username or not password:
-                return None, None, "pillar path {!r} missing username/password keys".format(path)
-            _api_pillar_creds_cache[cache_key] = (username, password)
-            return username, password, None
-        except Exception as exc:
-            return None, None, "pillar resolution failed: {}".format(exc)
+        username_path = req.get("auth_username_pillar_path") or ""
+        password_path = req.get("auth_password_pillar_path") or ""
+        if not username_path or not password_path:
+            return None, None, "stats_auth_username_pillar_path/stats_auth_password_pillar_path not set"
+        compiled, err = _compile_stats_pillar(opts, force_refresh=force_refresh)
+        if err:
+            return None, None, err
+        username = _pillar_get(compiled, username_path)
+        password = _pillar_get(compiled, password_path)
+        if not username or not password:
+            return None, None, "pillar paths {!r}/{!r} did not both resolve to values".format(username_path, password_path)
+        return username, password, None
 
     return None, None, "unknown stats_auth_mode {!r}".format(mode)
 

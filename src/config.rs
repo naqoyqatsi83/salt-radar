@@ -72,10 +72,13 @@ pub struct AppConfig {
     /// `api_stats_auth_username`/`api_stats_auth_password` read straight
     /// from this config file (marked insecure — stored and transmitted to
     /// the agent as plain text). "pillar" resolves those same two values,
-    /// once and then cached, from `api_stats_auth_pillar_minion`'s compiled
-    /// pillar at `api_stats_auth_pillar_path`, entirely master-side (no
-    /// live round-trip to that minion, and the credential never passes
-    /// through this config file or the Rust process at all).
+    /// once and then cached, from `api_stats_auth_username_pillar_path`/
+    /// `api_stats_auth_password_pillar_path` — like two independent
+    /// `pillar.get` calls, entirely master-side (no live round-trip to any
+    /// minion, and the credential never passes through this config file or
+    /// the Rust process at all). Which minion's pillar tree these paths
+    /// live under doesn't matter to salt-radar — see the doc comment on the
+    /// path fields below.
     pub api_stats_auth_mode: String,
     /// eauth backend the login uses (pam, ldap, file, ...) — see Salt's
     /// `external_auth` docs. Only meaningful when api_stats_auth_mode is
@@ -85,15 +88,15 @@ pub struct AppConfig {
     /// mode's own doc comment above for the security tradeoff.
     pub api_stats_auth_username: String,
     pub api_stats_auth_password: String,
-    /// Minion ID whose pillar is compiled (master-side, no live minion
-    /// round-trip) to resolve credentials when api_stats_auth_mode is
-    /// "pillar".
-    pub api_stats_auth_pillar_minion: String,
-    /// Colon-delimited path into that minion's compiled pillar, resolving
-    /// to a dict with "username" and "password" string keys — e.g.
-    /// "salt_radar:api_creds" for `salt_radar: {api_creds: {username: ...,
-    /// password: ...}}`.
-    pub api_stats_auth_pillar_path: String,
+    /// Colon-delimited pillar paths resolving directly to the username/
+    /// password strings, for api_stats_auth_mode = "pillar" — e.g.
+    /// "salt_radar:api_user" for a pillar shaped `salt_radar: {api_user:
+    /// ...}`. Compiled against a fixed internal placeholder ID, not a real
+    /// minion, so which minion (if any) these paths are "for" is
+    /// irrelevant — write the pillar SLS to match every target (e.g. a
+    /// `top.sls` entry under `'*'`) rather than one specific minion ID.
+    pub api_stats_auth_username_pillar_path: String,
+    pub api_stats_auth_password_pillar_path: String,
     /// Per-unit overrides for the standard bundled Salt services — each 0.0
     /// means "no override, fall back to the global service_mem_*_threshold*
     /// above" (the global fields already use 0.0 to mean "check disabled",
@@ -172,8 +175,8 @@ impl Default for AppConfig {
             api_stats_auth_eauth: "pam".into(),
             api_stats_auth_username: String::new(),
             api_stats_auth_password: String::new(),
-            api_stats_auth_pillar_minion: String::new(),
-            api_stats_auth_pillar_path: String::new(),
+            api_stats_auth_username_pillar_path: String::new(),
+            api_stats_auth_password_pillar_path: String::new(),
             service_mem_abs_threshold_master_mb: 0.0,
             service_mem_pct_threshold_master: 0.0,
             service_mem_abs_threshold_minion_mb: 0.0,
@@ -263,8 +266,8 @@ struct ApiConfig {
     stats_auth_eauth: Option<String>,
     stats_auth_username: Option<String>,
     stats_auth_password: Option<String>,
-    stats_auth_pillar_minion: Option<String>,
-    stats_auth_pillar_path: Option<String>,
+    stats_auth_username_pillar_path: Option<String>,
+    stats_auth_password_pillar_path: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -336,8 +339,8 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          stats_auth_eauth = {:?}\n\
          stats_auth_username = {:?}\n\
          stats_auth_password = {:?}\n\
-         stats_auth_pillar_minion = {:?}\n\
-         stats_auth_pillar_path = {:?}\n\
+         stats_auth_username_pillar_path = {:?}\n\
+         stats_auth_password_pillar_path = {:?}\n\
          \n\
          [dashboard]\n\
          zmq_latency_source = {:?}\n\
@@ -389,8 +392,8 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.api_stats_auth_eauth,
         config.api_stats_auth_username,
         config.api_stats_auth_password,
-        config.api_stats_auth_pillar_minion,
-        config.api_stats_auth_pillar_path,
+        config.api_stats_auth_username_pillar_path,
+        config.api_stats_auth_password_pillar_path,
         config.zmq_latency_source,
         config.show_zmq_graph,
         config.show_events_graph,
@@ -458,8 +461,8 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.stats_auth_eauth { cfg.api_stats_auth_eauth = v; }
                 if let Some(v) = a.stats_auth_username { cfg.api_stats_auth_username = v; }
                 if let Some(v) = a.stats_auth_password { cfg.api_stats_auth_password = v; }
-                if let Some(v) = a.stats_auth_pillar_minion { cfg.api_stats_auth_pillar_minion = v; }
-                if let Some(v) = a.stats_auth_pillar_path { cfg.api_stats_auth_pillar_path = v; }
+                if let Some(v) = a.stats_auth_username_pillar_path { cfg.api_stats_auth_username_pillar_path = v; }
+                if let Some(v) = a.stats_auth_password_pillar_path { cfg.api_stats_auth_password_pillar_path = v; }
             }
             if let Some(d) = toml_cfg.dashboard {
                 if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }

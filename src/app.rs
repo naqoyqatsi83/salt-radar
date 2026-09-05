@@ -1913,8 +1913,8 @@ impl App {
                 ConfigField { label: "stats_auth_eauth", label_value: cfg.api_stats_auth_eauth.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "stats_auth_username", label_value: cfg.api_stats_auth_username.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "stats_auth_password", label_value: cfg.api_stats_auth_password.clone(), kind: ConfigFieldKind::Str },
-                ConfigField { label: "stats_auth_pillar_minion", label_value: cfg.api_stats_auth_pillar_minion.clone(), kind: ConfigFieldKind::Str },
-                ConfigField { label: "stats_auth_pillar_path", label_value: cfg.api_stats_auth_pillar_path.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "stats_auth_username_pillar_path", label_value: cfg.api_stats_auth_username_pillar_path.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "stats_auth_password_pillar_path", label_value: cfg.api_stats_auth_password_pillar_path.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "[dashboard]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Choice(ZMQ_LATENCY_SOURCES) },
                 ConfigField { label: "show_zmq_graph", label_value: on_off(cfg.show_zmq_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
@@ -1998,8 +1998,8 @@ impl App {
             api_stats_auth_eauth: vals.get("stats_auth_eauth").unwrap_or(&"pam").to_string(),
             api_stats_auth_username: vals.get("stats_auth_username").unwrap_or(&"").to_string(),
             api_stats_auth_password: vals.get("stats_auth_password").unwrap_or(&"").to_string(),
-            api_stats_auth_pillar_minion: vals.get("stats_auth_pillar_minion").unwrap_or(&"").to_string(),
-            api_stats_auth_pillar_path: vals.get("stats_auth_pillar_path").unwrap_or(&"").to_string(),
+            api_stats_auth_username_pillar_path: vals.get("stats_auth_username_pillar_path").unwrap_or(&"").to_string(),
+            api_stats_auth_password_pillar_path: vals.get("stats_auth_password_pillar_path").unwrap_or(&"").to_string(),
             zmq_latency_source: vals.get("zmq_latency_source").unwrap_or(&"agent_ipc").to_string(),
             show_zmq_graph: parse_bool("show_zmq_graph"),
             show_events_graph: parse_bool("show_events_graph"),
@@ -3418,8 +3418,8 @@ impl App {
                             "auth_eauth": self.config.api_stats_auth_eauth,
                             "auth_username": self.config.api_stats_auth_username,
                             "auth_password": self.config.api_stats_auth_password,
-                            "auth_pillar_minion": self.config.api_stats_auth_pillar_minion,
-                            "auth_pillar_path": self.config.api_stats_auth_pillar_path,
+                            "auth_username_pillar_path": self.config.api_stats_auth_username_pillar_path,
+                            "auth_password_pillar_path": self.config.api_stats_auth_password_pillar_path,
                         }))
                     };
                     self.send_agent_cmd("get_api_stats", auth);

@@ -117,11 +117,10 @@
 #   "plaintext" - logs in via eauth using stats_auth_username/
 #                 stats_auth_password below, read straight from this file
 #                 -- INSECURE: stored and passed to the agent as plain text
-#   "pillar"    - logs in via eauth using credentials resolved from
-#                 stats_auth_pillar_minion's compiled pillar (master-side,
-#                 no live round-trip to that minion) at the colon-delimited
-#                 stats_auth_pillar_path -- the credential never touches
-#                 this file or the Rust process
+#   "pillar"    - logs in via eauth using credentials resolved from two
+#                 independent pillar paths, compiled master-side with no
+#                 live round-trip to any minion -- the credential never
+#                 touches this file or the Rust process
 # See the README for the minimal eauth ACL scope for the login account
 # (an empty permission list can read /stats but run nothing else).
 # stats_auth_mode = "none"
@@ -135,12 +134,14 @@
 # stats_auth_username = ""
 # stats_auth_password = ""
 
-# Minion ID whose pillar is compiled, and the colon-delimited path into it
-# resolving to a dict with "username"/"password" keys, for
-# stats_auth_mode = "pillar" -- e.g. "salt_radar:api_creds" for a pillar
-# shaped salt_radar: {api_creds: {username: ..., password: ...}}.
-# stats_auth_pillar_minion = ""
-# stats_auth_pillar_path = ""
+# Colon-delimited pillar paths resolving directly to the username/password
+# strings, for stats_auth_mode = "pillar" -- like two independent
+# pillar.get calls, e.g. "salt_radar:api_user" / "salt_radar:api_password"
+# for a pillar shaped salt_radar: {api_user: ..., api_password: ...}.
+# Compiled against a fixed internal placeholder ID, not a real minion --
+# point your top.sls entry at '*' rather than a specific minion ID.
+# stats_auth_username_pillar_path = ""
+# stats_auth_password_pillar_path = ""
 
 [dashboard]
 # Source for the Dashboard ZMQ panel's latency figure:
