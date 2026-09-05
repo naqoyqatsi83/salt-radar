@@ -664,6 +664,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  request log", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  best-effort: only sees each worker thread's latest request per poll", Style::default().fg(color::TEXT)),
         ]),
+        Line::from(vec![
+            Span::styled("  x", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  hide/show salt-radar's own GET /stats poll in the request log (on by default)", Style::default().fg(color::TEXT)),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Job Detail", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
         Line::from(vec![

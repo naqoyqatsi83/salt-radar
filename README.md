@@ -257,6 +257,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Jobs (Cache) | `r` | Refresh job cache |
 | Jobs (Cache) | `←`/`→` | Switch focus between Live Jobs and Cache panels |
 | Pulse | `↑`/`↓`/`←`/`→` | Navigate the minion grid |
+| API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |
 
 ### Config Editor
 

@@ -4519,6 +4519,8 @@ impl App {
                 if self.current_tab == Tab::Minions && self.fleet_data.is_some() {
                     self.hide_timed_out = !self.hide_timed_out;
                     self.clamp_selection();
+                } else if self.current_tab == Tab::Api {
+                    self.config.api_hide_stats_polls = !self.config.api_hide_stats_polls;
                 }
             }
             KeyCode::Char('z') | KeyCode::Char('Z') => {

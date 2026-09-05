@@ -99,14 +99,21 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
 
+    let stats_poll_hint = if app.config.api_hide_stats_polls { "show /stats" } else { "hide /stats" };
     let hints: &[(&str, String)] = &[
         ("/", "filter".to_string()),
         ("Enter", "detail".to_string()),
+        ("x", stats_poll_hint.to_string()),
         ("PgUp/PgDn", "page".to_string()),
         ("Home/End", "top/bottom".to_string()),
     ];
+    let title = if app.config.api_hide_stats_polls {
+        format!(" API Requests ({} captured, /stats hidden) ", app.api_requests_log.len())
+    } else {
+        format!(" API Requests ({} captured) ", app.api_requests_log.len())
+    };
     let block = super::list_block_hinted(
-        format!(" API Requests ({} captured) ", app.api_requests_log.len()),
+        title,
         border_style, color::BG_DARK, has_more_above, has_more_below, hints,
     );
     let inner = block.inner(area);
