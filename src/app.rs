@@ -832,12 +832,11 @@ impl App {
 
                                         let (method, path) = Self::parse_request_line(&rec.request_line);
                                         // salt-radar's own GET /stats poll (the request that
-                                        // populates this very panel) shows up in cpstats like
-                                        // any other request -- left in by default it would
-                                        // drown out real traffic with one entry per poll tick.
-                                        if self.config.api_hide_stats_polls && method == "GET" && path == "/stats" {
-                                            continue;
-                                        }
+                                        // populates this very panel) is always stored -- it's
+                                        // filtered out at display time instead (see
+                                        // api_log_entry_visible) so toggling `x` live shows/
+                                        // hides it retroactively rather than only affecting
+                                        // requests captured from that point on.
                                         self.api_requests_log.push_back(ApiLogEntry {
                                             received_at: now,
                                             client: rec.client.clone(),
@@ -1746,22 +1745,28 @@ impl App {
             || Self::matches_filter(&entry.client, pat)
     }
 
+    /// Whether an entry should be visible given the current
+    /// hide_stats_polls setting -- checked at display time (not ingestion)
+    /// so toggling `x` live shows/hides already-buffered entries instead of
+    /// only affecting requests captured from that point on.
+    fn api_log_entry_visible(&self, entry: &ApiLogEntry) -> bool {
+        !(self.config.api_hide_stats_polls && entry.method == "GET" && entry.path == "/stats")
+    }
+
     /// Index 0 is the oldest buffered request — same oldest-at-top,
     /// newest-at-bottom convention as Events (self.events).
     pub fn filtered_api_log_len(&self) -> usize {
-        if self.filter_text.is_empty() {
-            return self.api_requests_log.len();
-        }
         let pat = &self.filter_text;
-        self.api_requests_log.iter().filter(|e| Self::matches_api_log_entry(e, pat)).count()
+        self.api_requests_log.iter()
+            .filter(|e| self.api_log_entry_visible(e) && Self::matches_api_log_entry(e, pat))
+            .count()
     }
 
     pub fn get_filtered_api_log(&self, index: usize) -> Option<&ApiLogEntry> {
-        if self.filter_text.is_empty() {
-            return self.api_requests_log.get(index);
-        }
         let pat = &self.filter_text;
-        self.api_requests_log.iter().filter(|e| Self::matches_api_log_entry(e, pat)).nth(index)
+        self.api_requests_log.iter()
+            .filter(|e| self.api_log_entry_visible(e) && Self::matches_api_log_entry(e, pat))
+            .nth(index)
     }
 
     /// Per-endpoint (method+path) breakdown of the captured request log:
