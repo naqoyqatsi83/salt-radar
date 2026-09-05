@@ -111,6 +111,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Per-minion return navigation (j/k), scrollable output viewer (Enter)
 - Copy return output to clipboard (y = Salt outputter format, Y = raw JSON)
 - Job detail popup shows correct OK/FAIL status derived from return values
+- Always shows full per-state detail (`--state-output=full --state-verbose=True`), regardless of the master's own `state_output`/`state_verbose` defaults — opening the popup is an explicit request to see everything about that one job, even a "terse"/"changes" master would otherwise hide unchanged/no-op states here
 
 ### Pulse
 - Per-minion return activity at a glance: every minion as a dot in a wrapped grid, color- *and* shape-tiered by recency (`●` bright green flash → `•` green → `·` orange → `·` grey → `·` red for timed out) so adjacent tiers stay distinguishable even at a glance

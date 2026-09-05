@@ -665,6 +665,12 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  best-effort: only sees each worker thread's latest request per poll", Style::default().fg(color::TEXT)),
         ]),
         Line::from(""),
+        Line::from(Span::styled("  Job Detail", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  state detail", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  always full/verbose, overriding the master's own state_output/state_verbose", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(""),
         Line::from(Span::styled("  Minion Detail", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
         Line::from(vec![
             Span::styled("  Last Seen", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
