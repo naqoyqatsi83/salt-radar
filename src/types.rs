@@ -11,6 +11,7 @@ pub enum Tab {
     Jobs,
     Alerts,
     Pulse,
+    Api,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,7 +31,8 @@ impl Tab {
             Self::Minions => Self::Events,
             Self::Events => Self::Jobs,
             Self::Jobs => Self::Alerts,
-            Self::Alerts => Self::Pulse,
+            Self::Alerts => Self::Api,
+            Self::Api => Self::Pulse,
             Self::Pulse => Self::Dashboard,
         }
     }
@@ -42,7 +44,8 @@ impl Tab {
             Self::Events => Self::Minions,
             Self::Jobs => Self::Events,
             Self::Alerts => Self::Jobs,
-            Self::Pulse => Self::Alerts,
+            Self::Api => Self::Alerts,
+            Self::Pulse => Self::Api,
         }
     }
 
@@ -54,6 +57,7 @@ impl Tab {
             Self::Jobs => "Jobs",
             Self::Alerts => "Alerts",
             Self::Pulse => "Pulse",
+            Self::Api => "API",
         }
     }
 }
@@ -197,6 +201,82 @@ pub struct SystemInfo {
     pub network_tx_bytes: u64,
     pub network_rx_rate: f64,
     pub network_tx_rate: f64,
+    /// Cumulative system-wide CPU jiffies from /proc/stat ("cpu " line);
+    /// cpu_percent is computed from the delta between polls (see App::update),
+    /// same as load_1 was previously misused for this — load average is a
+    /// ~1-minute exponentially-decayed figure that lags well behind real
+    /// instantaneous usage (e.g. tools like btop), unlike this.
+    pub cpu_total_jiffies: u64,
+    pub cpu_idle_jiffies: u64,
+    #[serde(default)]
+    pub cpu_percent: f64,
+}
+
+// ─── salt-api stats (rest_cherrypy collect_stats, polled over /stats) ─────
+
+#[derive(Clone, Debug, Default)]
+pub struct ApiStats {
+    /// rest_cherrypy is configured on this master at all (opts has the key).
+    pub configured: bool,
+    /// The /stats endpoint actually answered — false if collect_stats/
+    /// stats_disable_auth aren't set, salt-api isn't running, or the poll
+    /// otherwise failed (see `error`).
+    pub reachable: bool,
+    pub port: u16,
+    pub scheme: String,
+    pub error: String,
+    pub current_requests: u64,
+    pub total_requests: u64,
+    pub requests_per_sec: f64,
+    pub bytes_read_per_sec: f64,
+    pub bytes_written_per_sec: f64,
+    pub uptime_secs: f64,
+    /// One entry per CherryPy worker thread: that thread's current (or most
+    /// recently completed) request. Not a request log — a live snapshot of
+    /// in-flight/recent activity, capped at however many worker threads
+    /// salt-api has (thread_pool, default 100).
+    pub requests: Vec<ApiRequestRecord>,
+}
+
+/// One completed salt-api request, kept in App::api_requests_log — built by
+/// watching cpstats' per-thread snapshot for requests that are new since the
+/// last poll (see App::update's "get_api_stats" handler). Not a complete
+/// record: if a single worker thread completes more than one request between
+/// two polls, only the last one is ever visible in the snapshot this is
+/// built from.
+#[derive(Clone, Debug)]
+pub struct ApiLogEntry {
+    pub received_at: std::time::Instant,
+    pub client: String,
+    pub method: String,
+    pub path: String,
+    /// Full cpstats Request-Line, query string included (the table/log row
+    /// only shows the bare path; the detail popup shows this in full).
+    pub raw_request_line: String,
+    pub response_status: String,
+    pub processing_time_secs: f64,
+}
+
+/// Per-endpoint (method+path) rollup of the captured request log —
+/// see App::api_endpoint_breakdown.
+#[derive(Clone, Debug)]
+pub struct ApiEndpointStats {
+    pub method: String,
+    pub path: String,
+    pub count: usize,
+    pub avg_secs: f64,
+    pub p95_secs: f64,
+    pub error_pct: f64,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct ApiRequestRecord {
+    pub thread_id: String,
+    pub client: String,
+    pub request_line: String,
+    pub response_status: String,
+    pub processing_time_secs: f64,
+    pub end_time: f64,
 }
 
 // ─── Config snapshot (from agent) ──────────────────────────────────────────

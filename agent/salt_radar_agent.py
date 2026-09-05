@@ -25,6 +25,7 @@ def _import_salt():
     import salt.cache
     import salt.runner
     import salt.client
+    import salt.pillar
     return salt
 
 
@@ -176,8 +177,15 @@ def cmd_list_processes(opts, req):
                         # utime (field 14) + stime (field 15) -> indices 11, 12
                         cpu_ticks = int(rest[11]) + int(rest[12])
 
-                    # Determine role
-                    role = "Unknown"
+                    # Determine role. Every real salt-* process (including
+                    # its sub-workers/threads: MWorker-N, EventPublisher,
+                    # ReqServer, FileserverUpdate, Maintenance, ...) still
+                    # carries "salt-master"/"salt-minion"/"salt-api"/
+                    # "salt-syndic" somewhere in its cmdline, so a process
+                    # matching none of these isn't an unclassified Salt
+                    # process -- it's an unrelated process on the host
+                    # (this scan walks all of /proc, not just Salt's PIDs)
+                    # and must be skipped, not counted as "Unknown".
                     if "MWorker-" in cmdline: role = "Worker"
                     elif "EventPublisher" in cmdline: role = "EventPublisher"
                     elif "ReqServer" in cmdline: role = "ReqServer"
@@ -185,6 +193,8 @@ def cmd_list_processes(opts, req):
                     elif "salt-api" in cmdline: role = "API"
                     elif "salt-syndic" in cmdline: role = "Syndic"
                     elif "salt-minion" in cmdline: role = "Minion"
+                    else:
+                        continue
 
                     processes.append({
                         "pid": pid,
@@ -362,6 +372,7 @@ def cmd_get_system_info(opts, req):
         "cache_disk_usage_pct": 0.0, "pki_disk_usage_pct": 0.0,
         "uptime_secs": 0, "network_rx_bytes": 0, "network_tx_bytes": 0,
         "network_rx_rate": 0.0, "network_tx_rate": 0.0,
+        "cpu_total_jiffies": 0, "cpu_idle_jiffies": 0,
     }
     try:
         # Load
@@ -370,6 +381,19 @@ def cmd_get_system_info(opts, req):
             info["load_1"] = float(load[0])
             info["load_5"] = float(load[1])
             info["load_15"] = float(load[2])
+
+        # CPU: cumulative jiffies from the system-wide "cpu " line -- the Rust
+        # side derives instantaneous % from the delta between two polls, the
+        # same way load average (above) is decayed but nothing here is.
+        with open("/proc/stat", "r") as f:
+            for line in f:
+                if line.startswith("cpu "):
+                    fields = [int(x) for x in line.split()[1:]]
+                    # user, nice, system, idle, iowait, irq, softirq, steal, ...
+                    idle = fields[3] + (fields[4] if len(fields) > 4 else 0)
+                    info["cpu_total_jiffies"] = sum(fields)
+                    info["cpu_idle_jiffies"] = idle
+                    break
 
         # Mem
         with open("/proc/meminfo", "r") as f:
@@ -416,6 +440,300 @@ def cmd_get_system_info(opts, req):
     except Exception:
         pass
     result(req["id"], "get_system_info", data=info)
+
+
+# Cached {token: str, eauth: str, username: str} per (scheme, port, eauth,
+# username) -- re-login only happens on first use or after the cached token
+# is rejected, not on every poll.
+_api_token_cache = {}
+
+# Cached compiled pillar dict for "pillar" mode -- compiling pillar is real
+# work (rendering SLS through the top file), so this is only redone when
+# there's no cached value yet or a login using values resolved from it has
+# just failed (credentials rotated in pillar), not on every poll tick
+# alongside the (much cheaper) token cache above.
+_api_pillar_compiled_cache = None
+
+
+def _pillar_get(compiled, path):
+    """Walk a colon-delimited path into a compiled pillar dict, the same
+    shape `salt-call pillar.get` resolves. Returns None if any segment is
+    missing.
+    """
+    node = compiled
+    for key in path.split(":"):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def _compile_stats_pillar(opts, force_refresh=False):
+    """Compile pillar master-side for this master's own local minion ID --
+    the same one `salt-call pillar.get` would use on this box, resolved the
+    same way Salt itself resolves it (cached /etc/salt/minion_id, else the
+    configured/guessed id) -- not a live round-trip, and not a minion the
+    user has to name in salt-radar.toml: it's whichever minion this master
+    already is. Scoped naturally to just this host, matching how a
+    top.sls entry keyed to this master's own minion ID would only ever be
+    compiled for requests made on this box. If this master has no local
+    minion at all, id resolution falls back to a guessed FQDN/IP that
+    almost certainly matches nothing in your top.sls -- pillar mode
+    requires a minion co-located with the master.
+
+    Cached across polls; force_refresh re-renders (e.g. a login with
+    previously-resolved values just failed, so they may have rotated in
+    pillar since).
+    """
+    global _api_pillar_compiled_cache
+    if not force_refresh and _api_pillar_compiled_cache is not None:
+        return _api_pillar_compiled_cache, None
+    try:
+        salt = _import_salt()
+        minion_id, _ = salt.config.get_id(opts)
+        cache = salt.cache.factory(opts)
+        grains = cache.fetch("minions", minion_id) or {}
+        pil = salt.pillar.get_pillar(opts, grains, minion_id, saltenv=opts.get("saltenv") or "base")
+        compiled = pil.compile_pillar()
+        _api_pillar_compiled_cache = compiled
+        return compiled, None
+    except Exception as exc:
+        return None, "pillar compilation failed: {}".format(exc)
+
+
+def _resolve_api_stats_auth(opts, req, force_refresh=False):
+    """Resolve (username, password) for authenticated /stats access, per
+    api_stats_auth_mode ("plaintext" reads them straight off the request;
+    "pillar" compiles pillar master-side -- no live round-trip to any
+    minion -- and reads two independent paths out of it, cached until a
+    login with the resolved values fails). Returns None on "none" mode or
+    on any resolution failure (bad pillar path, etc.), logging why via the
+    returned error string.
+    """
+    mode = req.get("auth_mode") or "none"
+    if mode == "none":
+        return None, None, None
+    if mode == "plaintext":
+        username = req.get("auth_username") or ""
+        password = req.get("auth_password") or ""
+        if not username or not password:
+            return None, None, "stats_auth_username/stats_auth_password not set"
+        return username, password, None
+
+    if mode == "pillar":
+        username_path = req.get("auth_username_pillar_path") or ""
+        password_path = req.get("auth_password_pillar_path") or ""
+        if not username_path or not password_path:
+            return None, None, "stats_auth_username_pillar_path/stats_auth_password_pillar_path not set"
+        compiled, err = _compile_stats_pillar(opts, force_refresh=force_refresh)
+        if err:
+            return None, None, err
+        username = _pillar_get(compiled, username_path)
+        password = _pillar_get(compiled, password_path)
+        if not username or not password:
+            return None, None, "pillar paths {!r}/{!r} did not both resolve to values".format(username_path, password_path)
+        return username, password, None
+
+    return None, None, "unknown stats_auth_mode {!r}".format(mode)
+
+
+def _login_api_token(scheme, port, eauth, username, password):
+    """POST /login and return a fresh token, or None on failure."""
+    import urllib.request
+    import urllib.error
+    import ssl
+    import json as json_mod
+
+    ctx = None
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    url = "{}://127.0.0.1:{}/login".format(scheme, port)
+    body = json_mod.dumps({"username": username, "password": password, "eauth": eauth}).encode("utf-8")
+    http_req = urllib.request.Request(
+        url, data=body,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(http_req, timeout=5, context=ctx) as resp:
+            login_body = resp.read().decode("utf-8", "replace")
+        parsed = json_mod.loads(login_body)
+        return parsed["return"][0]["token"]
+    except Exception:
+        return None
+
+
+def _get_api_token(scheme, port, eauth, username, password, force_relogin=False):
+    """Cached token for (scheme, port, eauth, username), logging in only
+    when there's no cached token yet, the credentials changed, or the
+    caller asks for a forced re-login (a previous request with the cached
+    token came back 401 -- Salt tokens expire server-side on their own
+    schedule that this agent has no visibility into).
+    """
+    key = (scheme, port, eauth, username)
+    cached = _api_token_cache.get(key)
+    if cached and not force_relogin:
+        return cached
+    token = _login_api_token(scheme, port, eauth, username, password)
+    if token:
+        _api_token_cache[key] = token
+        return token
+    _api_token_cache.pop(key, None)
+    return None
+
+
+def _ensure_api_token(opts, req, scheme, port, eauth, force_relogin):
+    """Resolve credentials and get a usable token, one attempt with
+    whatever's cached plus one retry with freshly-resolved credentials if
+    that fails and the mode is "pillar" (a rejected login there could mean
+    the cached pillar-resolved password is stale, not just that the token
+    expired) -- covers both the first-ever login and the post-401 retry in
+    cmd_get_api_stats with the same fallback behavior. Returns (token, None)
+    or (None, error_message).
+    """
+    username, password, auth_err = _resolve_api_stats_auth(opts, req)
+    if auth_err:
+        return None, "auth: {}".format(auth_err)
+    token = _get_api_token(scheme, port, eauth, username, password, force_relogin=force_relogin)
+    if not token and req.get("auth_mode") == "pillar":
+        username, password, auth_err = _resolve_api_stats_auth(opts, req, force_refresh=True)
+        if auth_err:
+            return None, "auth: {}".format(auth_err)
+        token = _get_api_token(scheme, port, eauth, username, password, force_relogin=True)
+    if not token:
+        return None, "salt-api login failed (check stats_auth_eauth/credentials)"
+    return token, None
+
+
+def cmd_get_api_stats(opts, req):
+    """Poll salt-api's built-in in-memory request stats (rest_cherrypy's
+    `collect_stats` option, backed by CherryPy's cpstats tool) over its own
+    /stats endpoint.
+
+    This is deliberately not a log file: cpstats records request line
+    (method+path, never the body), client, response status, and timing
+    entirely in the running salt-api process's memory (`logging.statistics`,
+    just reusing the `logging` module as a data container -- nothing is
+    written to disk), independent of Salt's own log_level. A request body
+    can carry credentials (e.g. POST /login); the request *line* CherryPy
+    records here never does.
+
+    Two ways to access /stats, per api_stats_auth_mode (see AppConfig):
+    "none" (default) relies on `rest_cherrypy: {collect_stats: True,
+    stats_disable_auth: True}` in the master config -- /stats needs no
+    credentials at all, see the README's security note on that tradeoff.
+    "plaintext"/"pillar" instead log in via eauth (stats_disable_auth can
+    stay unset/False) and send the resulting token as X-Auth-Token --
+    slower per the extra request, but no unauthenticated endpoint.
+    """
+    rest_cherrypy = opts.get("rest_cherrypy") or {}
+    if not rest_cherrypy:
+        result(req["id"], "get_api_stats", data={"configured": False})
+        return
+
+    port = rest_cherrypy.get("port", 8000)
+    scheme = "http" if rest_cherrypy.get("disable_ssl", False) else "https"
+    url = "{}://127.0.0.1:{}/stats".format(scheme, port)
+
+    import urllib.request
+    import urllib.error
+    import ssl
+    import json as json_mod
+
+    auth_mode = req.get("auth_mode") or "none"
+    eauth = req.get("auth_eauth") or "pam"
+    auth_headers = {"Accept": "application/json"}
+    if auth_mode != "none":
+        token, auth_err = _ensure_api_token(opts, req, scheme, port, eauth, force_relogin=False)
+        if auth_err:
+            result(req["id"], "get_api_stats", data={
+                "configured": True, "reachable": False, "port": port, "scheme": scheme,
+                "error": auth_err,
+            })
+            return
+        auth_headers["X-Auth-Token"] = token
+
+    ctx = None
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    def _fetch(headers):
+        http_req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(http_req, timeout=5, context=ctx) as resp:
+            return resp.read().decode("utf-8", "replace")
+
+    try:
+        body = _fetch(auth_headers)
+    except urllib.error.HTTPError as exc:
+        # A cached token can go stale server-side (Salt's own token_expire,
+        # or the master having restarted) with no way for this agent to
+        # know ahead of time -- one re-login-and-retry before giving up.
+        if exc.code == 401 and auth_mode != "none":
+            token, auth_err = _ensure_api_token(opts, req, scheme, port, eauth, force_relogin=True)
+            if auth_err:
+                result(req["id"], "get_api_stats", data={
+                    "configured": True, "reachable": False, "port": port, "scheme": scheme,
+                    "error": "{} (after 401)".format(auth_err),
+                })
+                return
+            auth_headers["X-Auth-Token"] = token
+            try:
+                body = _fetch(auth_headers)
+            except Exception as exc2:
+                result(req["id"], "get_api_stats", data={
+                    "configured": True, "reachable": False, "port": port, "scheme": scheme,
+                    "error": str(exc2),
+                })
+                return
+        else:
+            result(req["id"], "get_api_stats", data={
+                "configured": True, "reachable": False, "port": port, "scheme": scheme,
+                "error": str(exc),
+            })
+            return
+    except Exception as exc:
+        result(req["id"], "get_api_stats", data={
+            "configured": True, "reachable": False, "port": port, "scheme": scheme,
+            "error": str(exc),
+        })
+        return
+
+    stats = json_mod.loads(body)
+
+    app_stats = stats.get("CherryPy Applications", {}) if isinstance(stats, dict) else {}
+    requests = []
+    for tid, rec in app_stats.get("Requests", {}).items():
+        requests.append({
+            "thread_id": str(tid),
+            "client": rec.get("Client", ""),
+            "request_line": rec.get("Request-Line", ""),
+            "response_status": rec.get("Response Status") or "",
+            "processing_time_secs": rec.get("Processing Time") or 0.0,
+            # Epoch seconds this request finished -- lets the Rust side tell
+            # whether a given worker thread has completed a *new* request
+            # since the last poll (cpstats only ever keeps the latest
+            # request per thread, so this is how we dedupe across polls
+            # instead of re-counting the same still-latest one every time).
+            "end_time": rec.get("End Time") or 0.0,
+        })
+
+    result(req["id"], "get_api_stats", data={
+        "configured": True,
+        "reachable": True,
+        "port": port,
+        "scheme": scheme,
+        "current_requests": app_stats.get("Current Requests", 0),
+        "total_requests": app_stats.get("Total Requests", 0),
+        "requests_per_sec": app_stats.get("Requests/Second", 0.0),
+        "bytes_read_per_sec": app_stats.get("Bytes Read/Second", 0.0),
+        "bytes_written_per_sec": app_stats.get("Bytes Written/Second", 0.0),
+        "uptime_secs": app_stats.get("Uptime", 0.0),
+        "requests": requests,
+    })
 
 
 def cmd_get_zmq_connections(opts, req):
@@ -1239,6 +1557,7 @@ HANDLERS = {
     "list_services": cmd_list_services,
     "get_system_info": cmd_get_system_info,
     "get_zmq_connections": cmd_get_zmq_connections,
+    "get_api_stats": cmd_get_api_stats,
     "alive_check": cmd_alive_check,
     "minion_ping": cmd_minion_ping,
     "minion_grains": cmd_minion_grains,

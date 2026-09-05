@@ -48,12 +48,20 @@ pub struct App {
 
     // Collector data
     pub keys: Vec<KeyInfo>,
+    /// Accepted key IDs, kept in sync whenever `keys` is (re)populated —
+    /// event/job filtering matches against this on every keystroke while
+    /// filtering, and on a master with thousands of keys, rebuilding this
+    /// set from `keys` on every single one of those calls (previously what
+    /// `accepted_ids()` did) made typing into the filter box visibly lag,
+    /// worse the busier the master, since a redraw fires on every character.
+    accepted_id_set: HashSet<String>,
     pub processes: Vec<SaltProcess>,
     pub services: Vec<ServiceHealth>,
     /// Per-unit restart/flap history and memory sample history, keyed by unit name.
     pub service_trends: HashMap<String, ServiceTrend>,
     pub zmq_connections: Vec<ZmqConn>,
     pub system_info: SystemInfo,
+    pub api_stats: ApiStats,
 
     // Minion cache (from agent)
     pub minion_info: Vec<MinionInfo>,
@@ -178,6 +186,30 @@ pub struct App {
     /// Rolling window of job close-out outcomes (true = partial return)
     pub job_outcome_window: VecDeque<bool>,
 
+    // salt-api stats tracking (see App::update's "get_api_stats" handler).
+    // cpstats' Requests/Second is a lifetime average since salt-api started,
+    // which barely moves on a long-running server — prev_api_total_requests
+    // lets us compute a real recent rate from the delta instead, the same
+    // way network/CPU rates are derived elsewhere in this file.
+    prev_api_total_requests: u64,
+    prev_api_poll_time: Option<Instant>,
+    pub api_requests_per_sec_recent: f64,
+    /// Last-seen End Time per worker thread ID, so a newly-observed request
+    /// (End Time advanced since last poll) can be told apart from the same
+    /// still-latest one cpstats keeps showing between polls — without this,
+    /// a quiet API would double-count its last request on every poll.
+    api_seen_end_times: HashMap<String, f64>,
+    /// Rolling window of individual (non-cpstats-provided) request outcomes:
+    /// true = 2xx, false = 4xx/5xx — cpstats has no cumulative error counter.
+    pub api_status_window: VecDeque<bool>,
+    /// Rolling window of POST /login processing times, in seconds.
+    pub api_login_latencies: VecDeque<f64>,
+    /// Every newly-observed salt-api request (see api_seen_end_times above),
+    /// oldest first, capped at config.api_log_cap — feeds the API tab's
+    /// request log and per-endpoint breakdown.
+    pub api_requests_log: VecDeque<ApiLogEntry>,
+    pub api_log_selected: usize,
+
     /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
     /// used to compute cpu_percent from the delta between polls.
     prev_proc_cpu: HashMap<u32, (u64, Instant)>,
@@ -232,6 +264,11 @@ pub struct App {
     prev_network_rx_bytes: u64,
     prev_network_tx_bytes: u64,
     prev_network_time: Option<Instant>,
+
+    // System-wide CPU% tracking (from /proc/stat cumulative jiffies)
+    prev_cpu_total_jiffies: u64,
+    prev_cpu_idle_jiffies: u64,
+    prev_cpu_time: Option<Instant>,
 
     // Mouse support
     pub mouse_enabled: bool,
@@ -336,6 +373,7 @@ pub enum ConfigFieldKind {
 
 pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
 pub const ON_OFF: &[&str] = &["on", "off"];
+pub const API_STATS_AUTH_MODES: &[&str] = &["none", "plaintext", "pillar"];
 
 fn on_off(b: bool) -> String {
     if b { "on" } else { "off" }.to_string()
@@ -397,6 +435,7 @@ pub enum DetailPopup {
     EventSniffer(crate::types::SnifferState),
     ConfigEditor(ConfigEditorState),
     MinionEvents { minion_id: String, selected: usize },
+    ApiRequest(ApiLogEntry),
 }
 
 impl App {
@@ -441,11 +480,13 @@ impl App {
             config_snapshot: None,
 
             keys: Vec::new(),
+            accepted_id_set: HashSet::new(),
             processes: Vec::new(),
             services: Vec::new(),
             service_trends: HashMap::new(),
             zmq_connections: Vec::new(),
             system_info: SystemInfo::default(),
+            api_stats: ApiStats::default(),
 
             minion_info: Vec::new(),
             minion_info_dirty: false,
@@ -548,6 +589,14 @@ impl App {
             job_ping_pending: None,
             job_returns_window: VecDeque::new(),
             job_completion_latencies: VecDeque::new(),
+            prev_api_total_requests: 0,
+            prev_api_poll_time: None,
+            api_requests_per_sec_recent: 0.0,
+            api_seen_end_times: HashMap::new(),
+            api_status_window: VecDeque::new(),
+            api_login_latencies: VecDeque::new(),
+            api_requests_log: VecDeque::new(),
+            api_log_selected: 0,
             job_outcome_window: VecDeque::new(),
             prev_proc_cpu: HashMap::new(),
             clk_tck: 100.0,
@@ -574,6 +623,10 @@ impl App {
             prev_network_rx_bytes: 0,
             prev_network_tx_bytes: 0,
             prev_network_time: None,
+
+            prev_cpu_total_jiffies: 0,
+            prev_cpu_idle_jiffies: 0,
+            prev_cpu_time: None,
 
             pid,
             cmd_path,
@@ -662,6 +715,10 @@ impl App {
                         "list_keys" => {
                             if ok {
                                 self.keys = serde_json::from_value(data["keys"].clone()).unwrap_or_default();
+                                self.accepted_id_set = self.keys.iter()
+                                    .filter(|k| k.status == KeyStatus::Accepted)
+                                    .map(|k| k.id.clone())
+                                    .collect();
                             }
                         }
                         "list_processes" => {
@@ -695,11 +752,118 @@ impl App {
                         "get_system_info" => {
                             if ok {
                                 self.system_info = serde_json::from_value(data.clone()).unwrap_or_default();
+                                let now = Instant::now();
+                                if let Some(prev_at) = self.prev_cpu_time {
+                                    let elapsed = now.duration_since(prev_at).as_secs_f64();
+                                    let total_delta = self.system_info.cpu_total_jiffies.saturating_sub(self.prev_cpu_total_jiffies);
+                                    let idle_delta = self.system_info.cpu_idle_jiffies.saturating_sub(self.prev_cpu_idle_jiffies);
+                                    if elapsed > 0.0 && total_delta > 0 {
+                                        let busy_delta = total_delta.saturating_sub(idle_delta);
+                                        self.system_info.cpu_percent = (busy_delta as f64 / total_delta as f64 * 100.0).clamp(0.0, 100.0);
+                                    }
+                                }
+                                self.prev_cpu_total_jiffies = self.system_info.cpu_total_jiffies;
+                                self.prev_cpu_idle_jiffies = self.system_info.cpu_idle_jiffies;
+                                self.prev_cpu_time = Some(now);
                             }
                         }
                         "get_zmq_connections" => {
                             if ok {
                                 self.zmq_connections = serde_json::from_value(data["connections"].clone()).unwrap_or_default();
+                            }
+                        }
+                        "get_api_stats" => {
+                            if ok {
+                                self.api_stats = ApiStats {
+                                    configured: data["configured"].as_bool().unwrap_or(false),
+                                    reachable: data["reachable"].as_bool().unwrap_or(false),
+                                    port: data["port"].as_u64().unwrap_or(0) as u16,
+                                    scheme: data["scheme"].as_str().unwrap_or("").to_string(),
+                                    error: data["error"].as_str().unwrap_or("").to_string(),
+                                    current_requests: data["current_requests"].as_u64().unwrap_or(0),
+                                    total_requests: data["total_requests"].as_u64().unwrap_or(0),
+                                    requests_per_sec: data["requests_per_sec"].as_f64().unwrap_or(0.0),
+                                    bytes_read_per_sec: data["bytes_read_per_sec"].as_f64().unwrap_or(0.0),
+                                    bytes_written_per_sec: data["bytes_written_per_sec"].as_f64().unwrap_or(0.0),
+                                    uptime_secs: data["uptime_secs"].as_f64().unwrap_or(0.0),
+                                    requests: serde_json::from_value(data["requests"].clone()).unwrap_or_default(),
+                                };
+
+                                if self.api_stats.reachable {
+                                    let now = Instant::now();
+                                    if let Some(prev_at) = self.prev_api_poll_time {
+                                        let elapsed = now.duration_since(prev_at).as_secs_f64();
+                                        let delta = self.api_stats.total_requests.saturating_sub(self.prev_api_total_requests);
+                                        if elapsed > 0.0 {
+                                            self.api_requests_per_sec_recent = delta as f64 / elapsed;
+                                        }
+                                    }
+                                    self.prev_api_total_requests = self.api_stats.total_requests;
+                                    self.prev_api_poll_time = Some(now);
+
+                                    // Counts entries evicted from the front (oldest) this
+                                    // poll, whether by the cap below or the age-based
+                                    // prune after the loop, so api_log_selected can be
+                                    // shifted to keep pointing at the same logical
+                                    // entry -- the same correction Events already makes
+                                    // via advance_tail_selection when its buffer evicts.
+                                    let mut api_log_evicted: usize = 0;
+                                    for rec in &self.api_stats.requests {
+                                        if rec.end_time <= 0.0 {
+                                            continue;
+                                        }
+                                        let is_new = self.api_seen_end_times.get(&rec.thread_id)
+                                            .map(|prev_end| rec.end_time > *prev_end)
+                                            .unwrap_or(true);
+                                        self.api_seen_end_times.insert(rec.thread_id.clone(), rec.end_time);
+                                        if !is_new {
+                                            continue;
+                                        }
+
+                                        let is_ok = rec.response_status.split_whitespace().next()
+                                            .map(|code| code.starts_with('2') || code.starts_with('3'))
+                                            .unwrap_or(true);
+                                        self.api_status_window.push_back(is_ok);
+                                        if self.api_status_window.len() > self.config.api_stats_window { self.api_status_window.pop_front(); }
+
+                                        if rec.request_line.contains("/login") {
+                                            self.api_login_latencies.push_back(rec.processing_time_secs);
+                                            if self.api_login_latencies.len() > self.config.api_stats_window { self.api_login_latencies.pop_front(); }
+                                        }
+
+                                        let (method, path) = Self::parse_request_line(&rec.request_line);
+                                        // salt-radar's own GET /stats poll (the request that
+                                        // populates this very panel) is always stored -- it's
+                                        // filtered out at display time instead (see
+                                        // api_log_entry_visible) so toggling `x` live shows/
+                                        // hides it retroactively rather than only affecting
+                                        // requests captured from that point on.
+                                        self.api_requests_log.push_back(ApiLogEntry {
+                                            received_at: now,
+                                            client: rec.client.clone(),
+                                            method,
+                                            path,
+                                            raw_request_line: rec.request_line.clone(),
+                                            response_status: rec.response_status.clone(),
+                                            processing_time_secs: rec.processing_time_secs,
+                                        });
+                                        if self.api_requests_log.len() > self.config.api_log_cap {
+                                            self.api_requests_log.pop_front();
+                                            api_log_evicted += 1;
+                                        }
+                                    }
+                                    // Threads that vanish from the snapshot (worker recycled,
+                                    // thread pool shrank) would otherwise linger here forever.
+                                    let live_threads: HashSet<&str> = self.api_stats.requests.iter().map(|r| r.thread_id.as_str()).collect();
+                                    self.api_seen_end_times.retain(|tid, _| live_threads.contains(tid.as_str()));
+
+                                    let len_before_age_prune = self.api_requests_log.len();
+                                    let api_log_max_age = Duration::from_secs(self.config.api_log_max_age_secs);
+                                    self.api_requests_log.retain(|e| e.received_at.elapsed() < api_log_max_age);
+                                    api_log_evicted += len_before_age_prune - self.api_requests_log.len();
+
+                                    self.api_log_selected = self.api_log_selected.saturating_sub(api_log_evicted);
+                                }
                             }
                         }
                         "zmq_ping" => {
@@ -1148,6 +1312,43 @@ impl App {
             .min(self.filtered_minions_len().saturating_sub(1));
         self.pulse_selected = self.pulse_selected
             .min(self.pulse_minions_count().saturating_sub(1));
+        self.api_log_selected = self.api_log_selected
+            .min(self.filtered_api_log_len().saturating_sub(1));
+    }
+
+    /// Clamp only the selection for the tab actively being typed/pasted into.
+    ///
+    /// `filter_text`/`is_filtering` (and `cache_filter_text`/`cache_is_filtering`)
+    /// are shared across Minions/Events/Alerts/Api/Jobs, but only `current_tab`
+    /// is ever the one being filtered (Tab/BackTab are unreachable while
+    /// filtering) -- recomputing every other tab's filtered length on every
+    /// keystroke, most notably Events' full JSON-stringify fallback in
+    /// `matches_event`, is pure waste and the cause of the paste-a-JID-into-Jobs
+    /// slowdown on masters with a large event buffer. Called from the hot
+    /// per-character paths; `clamp_selection()` still runs on Esc/Enter (once
+    /// per filter session) so every tab's selection stays valid once filtering
+    /// stops.
+    fn clamp_active_filter_selection(&mut self) {
+        match self.current_tab {
+            Tab::Minions => self.minion_selected = self.minion_selected
+                .min(self.filtered_minions_len().saturating_sub(1)),
+            Tab::Events => self.event_selected = self.event_selected
+                .min(self.filtered_events_len().saturating_sub(1)),
+            Tab::Alerts => self.alert_selected = self.alert_selected
+                .min(self.filtered_alerts_len().saturating_sub(1)),
+            Tab::Api => self.api_log_selected = self.api_log_selected
+                .min(self.filtered_api_log_len().saturating_sub(1)),
+            Tab::Jobs => {
+                if self.cache_focus {
+                    self.cache_selected = self.cache_selected
+                        .min(self.filtered_cache_len().saturating_sub(1));
+                } else {
+                    self.job_selected = self.job_selected
+                        .min(self.filtered_jobs_len().saturating_sub(1));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// While live-typing an Events filter, keep the selection pinned to the
@@ -1165,7 +1366,7 @@ impl App {
         text.to_lowercase().contains(&pat.to_lowercase())
     }
 
-    fn matches_event(evt: &SaltEvent, pat: &str, known_minions: &HashSet<&str>) -> bool {
+    fn matches_event(evt: &SaltEvent, pat: &str, known_minions: &HashSet<String>) -> bool {
         if pat.is_empty() { return true; }
         if Self::matches_filter(&evt.tag, pat)
             || evt.data["fun"].as_str().map(|f| Self::matches_filter(f, pat)).unwrap_or(false)
@@ -1225,7 +1426,7 @@ impl App {
         }
     }
 
-    fn matches_job(job: &JobEntry, pat: &str, known_minions: &HashSet<&str>) -> bool {
+    fn matches_job(job: &JobEntry, pat: &str, known_minions: &HashSet<String>) -> bool {
         if pat.is_empty() { return true; }
         if Self::matches_filter(&job.jid, pat)
             || Self::matches_filter(&job.fun, pat)
@@ -1256,11 +1457,8 @@ impl App {
             || Self::matches_filter(&minion.salt_version, pat)
     }
 
-    fn accepted_ids(&self) -> HashSet<&str> {
-        self.keys.iter()
-            .filter(|k| k.status == KeyStatus::Accepted)
-            .map(|k| k.id.as_str())
-            .collect()
+    fn accepted_ids(&self) -> &HashSet<String> {
+        &self.accepted_id_set
     }
 
     pub fn filtered_events_len(&self) -> usize {
@@ -1351,6 +1549,34 @@ impl App {
     pub fn job_completion_latency_p50_p95(&self) -> Option<(f64, f64)> {
         if self.job_completion_latencies.is_empty() { return None; }
         let mut v: Vec<f64> = self.job_completion_latencies.iter().copied().collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pick = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        Some((pick(0.50), pick(0.95)))
+    }
+
+    /// Splits a cpstats "Request-Line" ("METHOD /path?query HTTP/1.1") into
+    /// (method, path) for grouping — drops the query string and HTTP version.
+    fn parse_request_line(line: &str) -> (String, String) {
+        let mut parts = line.split_whitespace();
+        let method = parts.next().unwrap_or("?").to_string();
+        let path = parts.next().unwrap_or("?").split('?').next().unwrap_or("?").to_string();
+        (method, path)
+    }
+
+    /// Rolling percentage of salt-api requests with a non-2xx/3xx status,
+    /// over the last config.api_stats_window observed requests. None until
+    /// at least one has been observed.
+    pub fn api_error_pct(&self) -> Option<f64> {
+        if self.api_status_window.is_empty() { return None; }
+        let errors = self.api_status_window.iter().filter(|ok| !**ok).count();
+        Some(100.0 * errors as f64 / self.api_status_window.len() as f64)
+    }
+
+    /// p50/p95 POST /login processing time in seconds, over the last
+    /// config.api_stats_window logins observed. None until at least one has been seen.
+    pub fn api_login_latency_p50_p95(&self) -> Option<(f64, f64)> {
+        if self.api_login_latencies.is_empty() { return None; }
+        let mut v: Vec<f64> = self.api_login_latencies.iter().copied().collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let pick = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
         Some((pick(0.50), pick(0.95)))
@@ -1512,6 +1738,68 @@ impl App {
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).nth(index)
     }
 
+    fn matches_api_log_entry(entry: &ApiLogEntry, pat: &str) -> bool {
+        if pat.is_empty() { return true; }
+        Self::matches_filter(&entry.method, pat)
+            || Self::matches_filter(&entry.path, pat)
+            || Self::matches_filter(&entry.response_status, pat)
+            || Self::matches_filter(&entry.client, pat)
+    }
+
+    /// Whether an entry should be visible given the current
+    /// hide_stats_polls setting -- checked at display time (not ingestion)
+    /// so toggling `x` live shows/hides already-buffered entries instead of
+    /// only affecting requests captured from that point on.
+    fn api_log_entry_visible(&self, entry: &ApiLogEntry) -> bool {
+        !(self.config.api_hide_stats_polls && entry.method == "GET" && entry.path == "/stats")
+    }
+
+    /// Index 0 is the oldest buffered request — same oldest-at-top,
+    /// newest-at-bottom convention as Events (self.events).
+    pub fn filtered_api_log_len(&self) -> usize {
+        let pat = &self.filter_text;
+        self.api_requests_log.iter()
+            .filter(|e| self.api_log_entry_visible(e) && Self::matches_api_log_entry(e, pat))
+            .count()
+    }
+
+    pub fn get_filtered_api_log(&self, index: usize) -> Option<&ApiLogEntry> {
+        let pat = &self.filter_text;
+        self.api_requests_log.iter()
+            .filter(|e| self.api_log_entry_visible(e) && Self::matches_api_log_entry(e, pat))
+            .nth(index)
+    }
+
+    /// Per-endpoint (method+path) breakdown of the captured request log:
+    /// count, avg/p95 latency, error rate — sorted by count descending.
+    pub fn api_endpoint_breakdown(&self) -> Vec<ApiEndpointStats> {
+        let mut groups: HashMap<(String, String), Vec<(f64, bool)>> = HashMap::new();
+        for entry in &self.api_requests_log {
+            let is_ok = entry.response_status.split_whitespace().next()
+                .map(|c| c.starts_with('2') || c.starts_with('3'))
+                .unwrap_or(true);
+            groups.entry((entry.method.clone(), entry.path.clone()))
+                .or_default()
+                .push((entry.processing_time_secs, is_ok));
+        }
+        let mut stats: Vec<ApiEndpointStats> = groups.into_iter().map(|((method, path), mut samples)| {
+            let count = samples.len();
+            let errors = samples.iter().filter(|(_, ok)| !ok).count();
+            samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let avg = samples.iter().map(|(t, _)| t).sum::<f64>() / count as f64;
+            let p95_idx = ((count - 1) as f64 * 0.95).round() as usize;
+            let p95 = samples[p95_idx].0;
+            ApiEndpointStats {
+                method, path, count,
+                avg_secs: avg,
+                p95_secs: p95,
+                error_pct: 100.0 * errors as f64 / count as f64,
+            }
+        }).collect();
+        stats.sort_by(|a, b| b.count.cmp(&a.count));
+        stats
+    }
+
     pub fn pulse_minions_count(&self) -> usize {
         let accepted: HashSet<&str> = self.keys.iter()
             .filter(|k| k.status == KeyStatus::Accepted)
@@ -1607,6 +1895,7 @@ impl App {
                 ConfigField { label: "service_mem_growth_mb_per_hour", label_value: cfg.service_mem_growth_mb_per_hour.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_mb", label_value: cfg.service_mem_abs_threshold_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold", label_value: cfg.service_mem_pct_threshold.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "api_auth_latency_warn_secs", label_value: cfg.api_auth_latency_warn_secs.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_master_mb", label_value: cfg.service_mem_abs_threshold_master_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold_master", label_value: cfg.service_mem_pct_threshold_master.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_minion_mb", label_value: cfg.service_mem_abs_threshold_minion_mb.to_string(), kind: ConfigFieldKind::F64 },
@@ -1615,6 +1904,17 @@ impl App {
                 ConfigField { label: "service_mem_pct_threshold_api", label_value: cfg.service_mem_pct_threshold_api.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_syndic_mb", label_value: cfg.service_mem_abs_threshold_syndic_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold_syndic", label_value: cfg.service_mem_pct_threshold_syndic.to_string(), kind: ConfigFieldKind::F64 },
+                ConfigField { label: "[api]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "stats_window", label_value: cfg.api_stats_window.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "log_cap", label_value: cfg.api_log_cap.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "log_max_age_secs", label_value: cfg.api_log_max_age_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "hide_stats_polls", label_value: on_off(cfg.api_hide_stats_polls), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "stats_auth_mode", label_value: cfg.api_stats_auth_mode.clone(), kind: ConfigFieldKind::Choice(API_STATS_AUTH_MODES) },
+                ConfigField { label: "stats_auth_eauth", label_value: cfg.api_stats_auth_eauth.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "stats_auth_username", label_value: cfg.api_stats_auth_username.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "stats_auth_password", label_value: cfg.api_stats_auth_password.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "stats_auth_username_pillar_path", label_value: cfg.api_stats_auth_username_pillar_path.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "stats_auth_password_pillar_path", label_value: cfg.api_stats_auth_password_pillar_path.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "[dashboard]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Choice(ZMQ_LATENCY_SOURCES) },
                 ConfigField { label: "show_zmq_graph", label_value: on_off(cfg.show_zmq_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
@@ -1622,6 +1922,12 @@ impl App {
                 ConfigField { label: "show_activity_graph", label_value: on_off(cfg.show_activity_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_cpu_graph", label_value: on_off(cfg.show_cpu_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_mem_graph", label_value: on_off(cfg.show_mem_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_host_resources", label_value: on_off(cfg.show_host_resources), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_services", label_value: on_off(cfg.show_services), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_key_status", label_value: on_off(cfg.show_key_status), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_event_types", label_value: on_off(cfg.show_event_types), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_job_pulse", label_value: on_off(cfg.show_job_pulse), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "show_salt_api", label_value: on_off(cfg.show_salt_api), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Order },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
@@ -1675,6 +1981,7 @@ impl App {
             service_mem_growth_mb_per_hour: parse_f64("service_mem_growth_mb_per_hour")?,
             service_mem_abs_threshold_mb: parse_f64("service_mem_abs_threshold_mb")?,
             service_mem_pct_threshold: parse_f64("service_mem_pct_threshold")?,
+            api_auth_latency_warn_secs: parse_f64("api_auth_latency_warn_secs")?,
             service_mem_abs_threshold_master_mb: parse_f64("service_mem_abs_threshold_master_mb")?,
             service_mem_pct_threshold_master: parse_f64("service_mem_pct_threshold_master")?,
             service_mem_abs_threshold_minion_mb: parse_f64("service_mem_abs_threshold_minion_mb")?,
@@ -1683,6 +1990,16 @@ impl App {
             service_mem_pct_threshold_api: parse_f64("service_mem_pct_threshold_api")?,
             service_mem_abs_threshold_syndic_mb: parse_f64("service_mem_abs_threshold_syndic_mb")?,
             service_mem_pct_threshold_syndic: parse_f64("service_mem_pct_threshold_syndic")?,
+            api_stats_window: parse_usize("stats_window")?,
+            api_log_cap: parse_usize("log_cap")?,
+            api_log_max_age_secs: parse_u64("log_max_age_secs")?,
+            api_hide_stats_polls: parse_bool("hide_stats_polls"),
+            api_stats_auth_mode: vals.get("stats_auth_mode").unwrap_or(&"none").to_string(),
+            api_stats_auth_eauth: vals.get("stats_auth_eauth").unwrap_or(&"pam").to_string(),
+            api_stats_auth_username: vals.get("stats_auth_username").unwrap_or(&"").to_string(),
+            api_stats_auth_password: vals.get("stats_auth_password").unwrap_or(&"").to_string(),
+            api_stats_auth_username_pillar_path: vals.get("stats_auth_username_pillar_path").unwrap_or(&"").to_string(),
+            api_stats_auth_password_pillar_path: vals.get("stats_auth_password_pillar_path").unwrap_or(&"").to_string(),
             zmq_latency_source: vals.get("zmq_latency_source").unwrap_or(&"agent_ipc").to_string(),
             show_zmq_graph: parse_bool("show_zmq_graph"),
             show_events_graph: parse_bool("show_events_graph"),
@@ -1690,6 +2007,12 @@ impl App {
             show_cpu_graph: parse_bool("show_cpu_graph"),
             show_mem_graph: parse_bool("show_mem_graph"),
             graph_order: vals.get("graph_order").unwrap_or(&"cpu,mem,zmq,events,activity").to_string(),
+            show_host_resources: parse_bool("show_host_resources"),
+            show_services: parse_bool("show_services"),
+            show_key_status: parse_bool("show_key_status"),
+            show_event_types: parse_bool("show_event_types"),
+            show_job_pulse: parse_bool("show_job_pulse"),
+            show_salt_api: parse_bool("show_salt_api"),
         };
 
         crate::config::write_config(&self.config_path, &new_config)
@@ -2022,6 +2345,12 @@ impl App {
             Tab::Alerts => {
                 if let Some(alert) = self.get_filtered_alert(self.alert_selected) {
                     self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                    self.popup_tab = Some(self.current_tab);
+                }
+            }
+            Tab::Api => {
+                if let Some(entry) = self.get_filtered_api_log(self.api_log_selected) {
+                    self.detail_popup = Some(DetailPopup::ApiRequest(entry.clone()));
                     self.popup_tab = Some(self.current_tab);
                 }
             }
@@ -3080,6 +3409,21 @@ impl App {
                 self.send_agent_cmd("list_processes", None);
                 self.send_agent_cmd("list_services", None);
                 self.send_agent_cmd("get_system_info", None);
+                if self.processes.iter().any(|p| p.role == SaltProcessRole::API) {
+                    let auth = if self.config.api_stats_auth_mode == "none" {
+                        None
+                    } else {
+                        Some(serde_json::json!({
+                            "auth_mode": self.config.api_stats_auth_mode,
+                            "auth_eauth": self.config.api_stats_auth_eauth,
+                            "auth_username": self.config.api_stats_auth_username,
+                            "auth_password": self.config.api_stats_auth_password,
+                            "auth_username_pillar_path": self.config.api_stats_auth_username_pillar_path,
+                            "auth_password_pillar_path": self.config.api_stats_auth_password_pillar_path,
+                        }))
+                    };
+                    self.send_agent_cmd("get_api_stats", auth);
+                }
             }
             // Connections are cheap — /proc/net/tcp reads — refresh every tick
             self.send_agent_cmd("get_zmq_connections", None);
@@ -3115,9 +3459,7 @@ impl App {
             // that then lingers in the ring buffer (unlike the live gauge,
             // which just self-corrects on the next real sample).
             if self.system_info.mem_total_kb > 0 {
-                let cpu_count = self.config_snapshot.as_ref().map(|c| c.cpu_count).unwrap_or(1).max(1) as f64;
-                let cpu_pct = (self.system_info.load_1 / cpu_count * 100.0).clamp(0.0, 100.0);
-                self.cpu_history[self.cpu_history_idx] = cpu_pct;
+                self.cpu_history[self.cpu_history_idx] = self.system_info.cpu_percent;
                 self.cpu_history_idx = (self.cpu_history_idx + 1) % 2000;
 
                 let mem_total_kb = self.system_info.mem_total_kb;
@@ -3246,6 +3588,8 @@ impl App {
                 syndic_abs_mb: self.config.service_mem_abs_threshold_syndic_mb,
                 syndic_pct: self.config.service_mem_pct_threshold_syndic,
             },
+            self.api_login_latency_p50_p95().map(|(_, p95)| p95),
+            self.config.api_auth_latency_warn_secs,
         );
 
         // Eagerly finalize jobs that reached full completion — record completion
@@ -3421,7 +3765,8 @@ impl App {
                     KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
                     KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
-                    KeyCode::Char('6') => { self.current_tab = Tab::Pulse; return false; }
+                    KeyCode::Char('6') => { self.current_tab = Tab::Api; return false; }
+                    KeyCode::Char('7') => { self.current_tab = Tab::Pulse; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
                     KeyCode::F(2) => {
                         self.mouse_enabled = !self.mouse_enabled;
@@ -4067,6 +4412,21 @@ impl App {
                         }
                     }
                 }
+                DetailPopup::ApiRequest(ref entry) => {
+                    match code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            self.detail_popup = None;
+                        }
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            clipboard_text = Some(format!(
+                                "{}\nClient: {}\nStatus: {}\nProcessing time: {:.3}s",
+                                entry.raw_request_line, entry.client,
+                                entry.response_status, entry.processing_time_secs,
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
                 DetailPopup::ConfigEditor(_) => {}
             }
         }
@@ -4111,12 +4471,12 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     self.filter_text.pop();
-                    self.clamp_selection();
+                    self.clamp_active_filter_selection();
                     self.follow_events_tail_if_filtering();
                 }
                 KeyCode::Char(c) => {
                     self.filter_text.push(c);
-                    self.clamp_selection();
+                    self.clamp_active_filter_selection();
                     self.follow_events_tail_if_filtering();
                 }
                 _ => {}
@@ -4146,11 +4506,11 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     self.cache_filter_text.pop();
-                    self.clamp_selection();
+                    self.clamp_active_filter_selection();
                 }
                 KeyCode::Char(c) => {
                     self.cache_filter_text.push(c);
-                    self.clamp_selection();
+                    self.clamp_active_filter_selection();
                 }
                 _ => {}
             }
@@ -4189,6 +4549,8 @@ impl App {
                 if self.current_tab == Tab::Minions && self.fleet_data.is_some() {
                     self.hide_timed_out = !self.hide_timed_out;
                     self.clamp_selection();
+                } else if self.current_tab == Tab::Api {
+                    self.config.api_hide_stats_polls = !self.config.api_hide_stats_polls;
                 }
             }
             KeyCode::Char('z') | KeyCode::Char('Z') => {
@@ -4307,7 +4669,8 @@ impl App {
             KeyCode::Char('3') => self.current_tab = Tab::Events,
             KeyCode::Char('4') => self.current_tab = Tab::Jobs,
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
-            KeyCode::Char('6') => self.current_tab = Tab::Pulse,
+            KeyCode::Char('6') => self.current_tab = Tab::Api,
+            KeyCode::Char('7') => self.current_tab = Tab::Pulse,
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
                     self.pulse_up();
@@ -4465,6 +4828,25 @@ impl App {
                     let visual_idx = r - data_start;
                     if visual_idx < visible {
                         self.alert_selected = (scroll + visual_idx).min(total - 1);
+                        self.clamp_selection();
+                    }
+                }
+            }
+            Tab::Api => {
+                let total = self.filtered_api_log_len();
+                if total == 0 { return false; }
+
+                // Same shape as Events -- must match draw_api's request-log panel exactly.
+                let visible = inner_h.saturating_sub(2).max(1);
+                let selected = self.api_log_selected.min(total.saturating_sub(1));
+                let scroll = scroll_offset(selected, visible, total);
+
+                let filter_shown = self.is_filtering || !self.filter_text.is_empty();
+                let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        self.api_log_selected = (scroll + visual_idx).min(total - 1);
                         self.clamp_selection();
                     }
                 }
@@ -4710,7 +5092,8 @@ impl App {
             30..=39 => Some(Tab::Events),
             43..=50 => Some(Tab::Jobs),
             54..=63 => Some(Tab::Alerts),
-            67..=75 => Some(Tab::Pulse),
+            67..=73 => Some(Tab::Api),
+            77..=85 => Some(Tab::Pulse),
             _ => None,
         }
     }
@@ -4730,6 +5113,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
+            Tab::Api => self.api_log_selected = self.api_log_selected.saturating_sub(1),
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_sub(1).min(max);
@@ -4753,6 +5137,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected += 1,
+            Tab::Api => self.api_log_selected += 1,
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_add(1).min(max);
@@ -4776,6 +5161,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = 0,
+            Tab::Api => self.api_log_selected = 0,
             Tab::Pulse => self.pulse_selected = 0,
             _ => {}
         }
@@ -4796,6 +5182,7 @@ impl App {
                 }
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
+            Tab::Api => self.api_log_selected = self.filtered_api_log_len().saturating_sub(1),
             Tab::Pulse => self.pulse_selected = self.pulse_minions_count().saturating_sub(1),
             _ => {}
         }

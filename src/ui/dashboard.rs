@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::types::SparklineStyle;
+use crate::types::{SparklineStyle, SaltProcessRole};
 
 use super::color;
 
@@ -111,6 +111,51 @@ fn draw_no_graphs_hint(f: &mut Frame, area: Rect) {
     );
 }
 
+/// The Dashboard's middle row (Services / Minion Key Status / Event Types),
+/// each independently toggleable via config.show_services / show_key_status
+/// / show_event_types. Weights re-normalize over whichever subset is
+/// actually enabled, so hiding one column doesn't leave a gap — the
+/// remaining columns just split the row's width between them.
+#[derive(Clone, Copy)]
+enum MidPanel {
+    Services,
+    KeyStatus,
+    EventTypes,
+}
+
+impl MidPanel {
+    fn enabled(self, app: &App) -> bool {
+        match self {
+            MidPanel::Services => app.config.show_services,
+            MidPanel::KeyStatus => app.config.show_key_status,
+            MidPanel::EventTypes => app.config.show_event_types,
+        }
+    }
+
+    fn weight(self) -> u32 {
+        match self {
+            MidPanel::Services => MID_ROW_RATIO[0],
+            MidPanel::KeyStatus => MID_ROW_RATIO[1],
+            MidPanel::EventTypes => MID_ROW_RATIO[2],
+        }
+    }
+
+    fn draw(self, f: &mut Frame, area: Rect, app: &App) {
+        match self {
+            MidPanel::Services => draw_proc_row(f, area, app),
+            MidPanel::KeyStatus => draw_key_status(f, area, app),
+            MidPanel::EventTypes => draw_event_breakdown(f, area, app),
+        }
+    }
+}
+
+fn enabled_mid_panels(app: &App) -> Vec<MidPanel> {
+    [MidPanel::Services, MidPanel::KeyStatus, MidPanel::EventTypes]
+        .into_iter()
+        .filter(|p| p.enabled(app))
+        .collect()
+}
+
 pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // Small terminal fallback: vertical stacked layout
     if area.height < 26 {
@@ -120,89 +165,157 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     let body = area;
 
+    let mid_panels = enabled_mid_panels(app);
+
     // Top section: fixed-height info panels
     // Bottom section: stacked full-width sparklines fill remaining space
     let key_status_h = 8u16; // 4 key rows + separator + total + 2 border
-    // Services panel is the first of a 3-way horizontal split of `body`; mirror
-    // that split just for its width so the proc-row estimate matches what
-    // draw_proc_row actually renders with, rather than assuming a fixed 1 line.
-    let services_col_width = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Ratio(MID_ROW_RATIO[0], 5),
-            Constraint::Ratio(MID_ROW_RATIO[1], 5),
-            Constraint::Ratio(MID_ROW_RATIO[2], 5),
-        ])
-        .split(Rect::new(0, 0, body.width, 1))[0]
-        .width
-        .saturating_sub(2); // block borders
-    let proc_rows = proc_rows_for(&group_processes(&app.processes), services_col_width);
-    let services_h = (4 + proc_rows + app.services.len() as u16).min(25); // gauge + proc lines + header + N services + 2 border
+    // Services panel's width depends on how many mid-row columns are
+    // actually enabled; mirror that split just for its width so the
+    // proc-row estimate matches what draw_proc_row actually renders with,
+    // rather than assuming a fixed 1 line.
+    let services_h = if mid_panels.iter().any(|p| matches!(p, MidPanel::Services)) {
+        let total_weight: u32 = mid_panels.iter().map(|p| p.weight()).sum();
+        let services_col_width = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(mid_panels.iter().map(|p| Constraint::Ratio(p.weight(), total_weight)).collect::<Vec<_>>())
+            .split(Rect::new(0, 0, body.width, 1))[mid_panels.iter().position(|p| matches!(p, MidPanel::Services)).unwrap()]
+            .width
+            .saturating_sub(2); // block borders
+        let proc_rows = proc_rows_for(&group_processes(&app.processes), services_col_width);
+        (4 + proc_rows + app.services.len() as u16).min(25) // gauge + proc lines + header + N services + 2 border
+    } else {
+        0
+    };
     let mid_h = key_status_h.max(services_h);
+
+    // salt-api gets a row only when it's actually present on this master —
+    // most masters don't run it, and reserving space for an always-empty
+    // panel would just shrink everything else for no reason.
+    let show_api_row = app.config.show_salt_api && app.processes.iter().any(|p| p.role == SaltProcessRole::API);
+
+    let mut constraints = vec![];
+    if app.config.show_host_resources {
+        constraints.push(Constraint::Length(5)); // Host Resources
+    }
+    if !mid_panels.is_empty() {
+        constraints.push(Constraint::Length(mid_h)); // Services + Key Status + Event Types (exact-fit)
+    }
+    if app.config.show_job_pulse || show_api_row {
+        // Job Pulse and salt-api are both a KPI line + up to 3 rows -- same
+        // fixed height -- and neither needs anywhere near the terminal's
+        // full width, so they share one row side by side instead of each
+        // claiming a full-width row of their own.
+        constraints.push(Constraint::Length(4));
+    }
+    constraints.push(Constraint::Min(10)); // Sparklines (at least 10 lines = 2 per panel × 5 default-enabled panels)
 
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),  // Host Resources
-            Constraint::Length(mid_h), // Services + Key Status (exact-fit)
-            Constraint::Length(4),  // Job Pulse (KPI line + up to 3 jobs)
-            Constraint::Min(10),    // Sparklines (at least 10 lines = 2 per panel × 5 default-enabled panels)
-        ])
+        .constraints(constraints)
         .split(body);
 
-    draw_host_row(f, sections[0], app);
+    let mut next = 0;
+    if app.config.show_host_resources {
+        draw_host_row(f, sections[next], app);
+        next += 1;
+    }
 
-    // Services + Minion key status + Event breakdown horizontal split
-    let mid = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Ratio(MID_ROW_RATIO[0], 5),
-            Constraint::Ratio(MID_ROW_RATIO[1], 5),
-            Constraint::Ratio(MID_ROW_RATIO[2], 5),
-        ])
-        .split(sections[1]);
-    draw_proc_row(f, mid[0], app);
-    draw_key_status(f, mid[1], app);
-    draw_event_breakdown(f, mid[2], app);
+    if !mid_panels.is_empty() {
+        let total_weight: u32 = mid_panels.iter().map(|p| p.weight()).sum();
+        let mid = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(mid_panels.iter().map(|p| Constraint::Ratio(p.weight(), total_weight)).collect::<Vec<_>>())
+            .split(sections[next]);
+        for (panel, area) in mid_panels.iter().zip(mid.iter()) {
+            panel.draw(f, *area, app);
+        }
+        next += 1;
+    }
 
-    draw_job_pulse(f, sections[2], app);
+    if app.config.show_job_pulse || show_api_row {
+        if app.config.show_job_pulse && show_api_row {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(sections[next]);
+            draw_job_pulse(f, cols[0], app);
+            draw_api_row(f, cols[1], app);
+        } else if app.config.show_job_pulse {
+            draw_job_pulse(f, sections[next], app);
+        } else {
+            draw_api_row(f, sections[next], app);
+        }
+        next += 1;
+    }
 
     // Bottom: stacked full-width sparklines, one per enabled panel, for
     // time-axis correlation.
     let panels = enabled_spark_panels(app);
     if panels.is_empty() {
-        draw_no_graphs_hint(f, sections[3]);
+        draw_no_graphs_hint(f, sections[next]);
     } else {
         let n = panels.len() as u32;
         let constraints: Vec<Constraint> = panels.iter().map(|_| Constraint::Ratio(1, n)).collect();
-        let sparklines = Layout::default().direction(Direction::Vertical).constraints(constraints).split(sections[3]);
+        let sparklines = Layout::default().direction(Direction::Vertical).constraints(constraints).split(sections[next]);
         for (panel, area) in panels.into_iter().zip(sparklines.iter()) {
             panel.draw(f, *area, app);
         }
     }
 }
 
-/// Fallback for small terminals: vertical stacked layout (same as original)
+/// Fallback for small terminals: vertical stacked layout (same as original).
+/// Key Status and Event Types don't get their own row in this layout (they
+/// never have — compact mode already dropped them for space), so only
+/// Services' own toggle applies here; Key Status/Event Types' toggles just
+/// have no effect on a terminal this small.
 fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     let proc_rows = proc_rows_for(&group_processes(&app.processes), area.width.saturating_sub(2));
     let services_height = 4 + proc_rows + app.services.len() as u16;
     let panels = enabled_spark_panels(app);
+    let show_api_row = app.config.show_salt_api && app.processes.iter().any(|p| p.role == SaltProcessRole::API);
 
-    let mut constraints = vec![
-        Constraint::Length(5),
-        Constraint::Length(services_height),
-    ];
+    let mut constraints = vec![];
+    if app.config.show_host_resources {
+        constraints.push(Constraint::Length(5));
+    }
+    if app.config.show_services {
+        constraints.push(Constraint::Length(services_height));
+    }
     constraints.extend(panels.iter().map(|_| Constraint::Length(4)));
-    constraints.push(Constraint::Length(4)); // Job Pulse
+    if app.config.show_job_pulse || show_api_row {
+        constraints.push(Constraint::Length(4)); // Job Pulse + salt-api, side by side
+    }
 
     let layout = Layout::default().direction(Direction::Vertical).constraints(constraints).split(area);
 
-    draw_host_row(f, layout[0], app);
-    draw_proc_row(f, layout[1], app);
-    for (i, panel) in panels.into_iter().enumerate() {
-        panel.draw(f, layout[2 + i], app);
+    let mut next = 0;
+    if app.config.show_host_resources {
+        draw_host_row(f, layout[next], app);
+        next += 1;
     }
-    draw_job_pulse(f, layout[layout.len() - 1], app);
+    if app.config.show_services {
+        draw_proc_row(f, layout[next], app);
+        next += 1;
+    }
+    for panel in panels {
+        panel.draw(f, layout[next], app);
+        next += 1;
+    }
+    if app.config.show_job_pulse || show_api_row {
+        if app.config.show_job_pulse && show_api_row {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(layout[next]);
+            draw_job_pulse(f, cols[0], app);
+            draw_api_row(f, cols[1], app);
+        } else if app.config.show_job_pulse {
+            draw_job_pulse(f, layout[next], app);
+        } else {
+            draw_api_row(f, layout[next], app);
+        }
+    }
 }
 
 fn make_block_line(title: Line<'static>) -> Block<'static> {
@@ -323,6 +436,10 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
 fn group_processes(processes: &[crate::types::SaltProcess]) -> Vec<(String, u64, usize)> {
     let mut groups: Vec<(String, u64, usize)> = vec![];
     for p in processes {
+        // Unknown means the agent's classifier couldn't match this pid to a
+        // Salt process at all -- it isn't a Salt sub-role to display, it's
+        // (should the agent's own filtering ever regress) an unrelated
+        // process on the host that must not be counted as "Salt RSS".
         let label = match p.role {
             crate::types::SaltProcessRole::Master => "Master",
             crate::types::SaltProcessRole::API => "API",
@@ -331,7 +448,7 @@ fn group_processes(processes: &[crate::types::SaltProcess]) -> Vec<(String, u64,
             crate::types::SaltProcessRole::Minion => "Minion",
             crate::types::SaltProcessRole::EventPublisher => "EventPub",
             crate::types::SaltProcessRole::ReqServer => "ReqSrv",
-            crate::types::SaltProcessRole::Unknown => "?",
+            crate::types::SaltProcessRole::Unknown => continue,
         };
         if let Some((_, total, count)) = groups.iter_mut().find(|(l, _, _)| l == label) {
             *total += p.rss_kb;
@@ -364,11 +481,16 @@ fn proc_rows_for(groups: &[(String, u64, usize)], width: u16) -> u16 {
 }
 
 fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
-    let total_rss_used: u64 = app.processes.iter().map(|p| p.rss_kb).sum();
+    // Unknown-role entries are excluded -- the agent already only reports
+    // actual Salt processes, but this guards against ever again silently
+    // summing every process on the host (VS Code, a browser, ...) into
+    // "Salt RSS", which is how that figure previously read over 100%.
+    let salt_processes = app.processes.iter().filter(|p| p.role != crate::types::SaltProcessRole::Unknown);
+    let total_rss_used: u64 = salt_processes.clone().map(|p| p.rss_kb).sum();
     let mem_total_kb = app.system_info.mem_total_kb.max(1);
     let mem_pct = (total_rss_used as f64 / mem_total_kb as f64) * 100.0;
 
-    let proc_count = app.processes.len();
+    let proc_count = salt_processes.count();
 
     let mem_gauge_fg = if mem_pct > 80.0 { color::ORANGE } else if mem_pct > 55.0 { color::YELLOW } else { color::GREEN };
     let title = Line::from(vec![
@@ -913,8 +1035,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
 // a percentage would visually exaggerate a fleet that never gets very busy).
 
 fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
-    let cpu_count = app.config_snapshot.as_ref().map(|c| c.cpu_count).unwrap_or(1).max(1) as f64;
-    let current_pct = (app.system_info.load_1 / cpu_count * 100.0).clamp(0.0, 100.0);
+    let current_pct = app.system_info.cpu_percent;
     let peak_pct = app.cpu_history.iter().cloned().fold(0.0_f64, f64::max);
 
     let idx = app.cpu_history_idx;
@@ -1082,6 +1203,121 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("  {} ", fun_short), Style::default().fg(color::CYAN)),
             Span::styled(progress, Style::default().fg(color).add_modifier(Modifier::BOLD)),
         ]));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        inner,
+    );
+}
+
+/// salt-api's own in-memory request stats (rest_cherrypy's `collect_stats`
+/// option, polled over its /stats endpoint — see agent's `cmd_get_api_stats`).
+/// Only drawn at all when a salt-api process is actually detected running;
+/// even then, the stats themselves need `collect_stats: True` set on the
+/// master, plus either `stats_disable_auth: True` (the default,
+/// unauthenticated) or a `stats_auth_mode` set in the Config Editor (an
+/// eauth login instead) — so this doubles as a nudge to turn one of those
+/// on.
+fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
+    let stats = &app.api_stats;
+
+    let title = Line::from(vec![
+        Span::styled(" salt-api ", Style::default().fg(color::TEXT_TITLE)),
+        if stats.reachable {
+            // Recent rate (App::api_requests_per_sec_recent), not cpstats'
+            // own Requests/Second -- that's a lifetime average since salt-api
+            // started, which barely moves once uptime is more than a few
+            // minutes and would make this look frozen on a long-running server.
+            Span::styled(format!("{:.1} req/s", app.api_requests_per_sec_recent), Style::default().fg(color::CYAN))
+        } else {
+            Span::styled("stats unavailable", Style::default().fg(color::TEXT_DIM))
+        },
+    ]);
+    let block = make_block_line(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if !stats.reachable {
+        let hint = if !stats.configured {
+            "  rest_cherrypy not configured".to_string()
+        } else if app.config.api_stats_auth_mode != "none" {
+            format!("  {}:{} unreachable — {}", stats.scheme, stats.port, if stats.error.is_empty() { "check stats_auth_mode settings ('F3')" } else { stats.error.as_str() })
+        } else {
+            format!(
+                "  {}:{} unreachable — set rest_cherrypy: {{collect_stats: True, stats_disable_auth: True}}",
+                stats.scheme, stats.port,
+            )
+        };
+        f.render_widget(
+            Paragraph::new(vec![Line::from(Span::styled(hint, Style::default().fg(color::TEXT_DIM)))])
+                .style(Style::default().bg(color::BG_DARK))
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    }
+
+    let err_pct = app.api_error_pct();
+    let err_str = err_pct.map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into());
+    let err_color = match err_pct {
+        Some(p) if p >= 10.0 => color::RED,
+        Some(p) if p > 0.0 => color::YELLOW,
+        Some(_) => color::GREEN,
+        None => color::TEXT_DIM,
+    };
+    let login_p95 = app.api_login_latency_p50_p95().map(|(_, p95)| p95);
+    let login_str = login_p95.map(|s| format!("{:.2}s", s)).unwrap_or_else(|| "--".into());
+    let login_color = match login_p95 {
+        Some(s) if s >= 3.0 => color::RED,
+        Some(s) if s >= 1.0 => color::YELLOW,
+        Some(_) => color::GREEN,
+        None => color::TEXT_DIM,
+    };
+
+    let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
+        Span::styled("  current:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(stats.current_requests.to_string(), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(" total:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(stats.total_requests.to_string(), Style::default().fg(color::TEXT_DIM)),
+        Span::styled(" errors:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(err_str, Style::default().fg(err_color).add_modifier(Modifier::BOLD)),
+        Span::styled(" login p95:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(login_str, Style::default().fg(login_color).add_modifier(Modifier::BOLD)),
+        Span::styled(" in/out:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(
+            format!("{} / {}", format_bytes(stats.bytes_read_per_sec), format_bytes(stats.bytes_written_per_sec)),
+            Style::default().fg(color::TEXT_DIM),
+        ),
+    ])];
+
+    // Most recent request per CherryPy worker thread — a live snapshot of
+    // in-flight/just-finished activity, not a request log (see the doc
+    // comment on cmd_get_api_stats for why nothing here is ever logged).
+    let mut recent: Vec<&crate::types::ApiRequestRecord> = stats.requests.iter()
+        .filter(|r| !r.request_line.is_empty())
+        .collect();
+    recent.sort_by(|a, b| b.processing_time_secs.partial_cmp(&a.processing_time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    if recent.is_empty() {
+        lines.push(Line::from(Span::styled("  no requests yet", Style::default().fg(color::TEXT_DIM))));
+    } else {
+        for rec in recent.iter().take(3) {
+            let status_color = match rec.response_status.split_whitespace().next() {
+                Some(s) if s.starts_with('2') => color::GREEN,
+                Some(s) if s.starts_with('4') || s.starts_with('5') => color::RED,
+                _ => color::TEXT_DIM,
+            };
+            let line_short = if rec.request_line.len() > 40 {
+                format!("{}..", &rec.request_line[..38])
+            } else {
+                rec.request_line.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<42}", line_short), Style::default().fg(color::CYAN)),
+                Span::styled(format!("{:<4}", rec.response_status), Style::default().fg(status_color)),
+                Span::styled(format!(" {:.2}s", rec.processing_time_secs), Style::default().fg(color::TEXT_DIM)),
+            ]));
+        }
     }
 
     f.render_widget(

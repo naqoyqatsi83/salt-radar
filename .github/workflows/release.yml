@@ -28,21 +28,23 @@ jobs:
       - name: Prepare upload dir
         run: mkdir -p ${{ runner.temp }}/upload
 
-      - name: Build release (x86_64-unknown-linux-gnu)
+      - name: Build release (x86_64-unknown-linux-musl)
         env:
           CARGO_NET_RETRY: 5
           CARGO_HTTP_TIMEOUT: 120
         run: |
-          # Build inside Debian Bullseye (glibc 2.31) for compatibility with older distros
+          # Static musl build: zero glibc dependency, so it runs unmodified on
+          # any x86_64 Linux regardless of the target distro's libc version —
+          # more robust than pinning to an old glibc build image (Debian
+          # Bullseye's own package mirrors broke once it went EOL).
           docker run --rm -v ${{ github.workspace }}:/work -w /work \
             -e CARGO_NET_RETRY=5 -e CARGO_HTTP_TIMEOUT=120 \
-            debian:bullseye-slim bash -c '
+            rust:latest bash -c '
             set -e
-            apt-get update -qq && apt-get install -y -qq curl build-essential > /dev/null
-            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-            . "$HOME/.cargo/env"
+            rustup target add x86_64-unknown-linux-musl
+            apt-get update -qq && apt-get install -y -qq musl-tools > /dev/null
             for i in 1 2 3; do
-            cargo build --release && break
+            cargo build --release --target x86_64-unknown-linux-musl && break
             echo "Build attempt $i failed, retrying..."
             sleep 5
             if [ "$i" = 3 ]; then
@@ -56,7 +58,7 @@ jobs:
         run: |
           VERSION="$VERSION_STRIPPED"
           DPKG_VERSION="${VERSION/-rc/~rc}"
-          BINARY="${{ github.workspace }}/target/release/salt-radar"
+          BINARY="${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/salt-radar"
           PKG_ROOT="${{ runner.temp }}/deb/salt-radar_${DPKG_VERSION}_amd64"
 
           mkdir -p "$PKG_ROOT/DEBIAN"
@@ -75,7 +77,6 @@ jobs:
             printf 'Section: admin\n'
             printf 'Priority: optional\n'
             printf 'Architecture: amd64\n'
-            printf 'Depends: libc6 (>= 2.31)\n'
             printf 'Recommends: python3, salt-master\n'
             printf 'Maintainer: naqoyqatsi83 <naqoyqatsi83@users.noreply.github.com>\n'
             printf 'Description: Non-intrusive read-only TUI for monitoring a Salt Master\n'
@@ -87,16 +88,16 @@ jobs:
 
           dpkg-deb --build "$PKG_ROOT" "${{ runner.temp }}/deb/salt-radar_${DPKG_VERSION}_amd64.deb"
 
-      - name: Create tarball (x86_64-unknown-linux-gnu)
+      - name: Create tarball (x86_64-unknown-linux-musl)
         run: |
           VERSION="$VERSION_STRIPPED"
           TAR_DIR="${{ runner.temp }}/tar"
           mkdir -p "$TAR_DIR/salt-radar-${VERSION}"
-          install -m 0755 "${{ github.workspace }}/target/release/salt-radar" "$TAR_DIR/salt-radar-${VERSION}/salt-radar"
+          install -m 0755 "${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/salt-radar" "$TAR_DIR/salt-radar-${VERSION}/salt-radar"
           install -m 0644 "${{ github.workspace }}/agent/salt_radar_agent.py" "$TAR_DIR/salt-radar-${VERSION}/salt_radar_agent.py"
           cp "${{ github.workspace }}/README.md" "$TAR_DIR/salt-radar-${VERSION}/" 2>/dev/null || true
           cp "${{ github.workspace }}/LICENSE" "$TAR_DIR/salt-radar-${VERSION}/" 2>/dev/null || true
-          cd "$TAR_DIR" && tar czf "${{ runner.temp }}/upload/salt-radar-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" "salt-radar-${VERSION}"
+          cd "$TAR_DIR" && tar czf "${{ runner.temp }}/upload/salt-radar-${VERSION}-x86_64-unknown-linux-musl.tar.gz" "salt-radar-${VERSION}"
 
       - name: Create RPM package
         run: |
@@ -115,7 +116,6 @@ jobs:
             printf 'URL: https://github.com/naqoyqatsi83/salt-radar\n'
             printf 'Group: Applications/System\n'
             printf 'BuildArch: x86_64\n'
-            printf 'Requires: glibc >= 2.31\n'
             printf '\n'
             printf '%%description\n'
             printf 'Real-time monitoring of Salt infrastructure: dashboard, minion fleet,\n'
@@ -137,7 +137,7 @@ jobs:
             printf '%%s\n' '- Initial release'
           } > $HOME/rpmbuild/SPECS/salt-radar.spec
 
-          install -m 0755 "${{ github.workspace }}/target/release/salt-radar" $HOME/rpmbuild/SOURCES/salt-radar
+          install -m 0755 "${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/salt-radar" $HOME/rpmbuild/SOURCES/salt-radar
           install -m 0644 "${{ github.workspace }}/agent/salt_radar_agent.py" $HOME/rpmbuild/SOURCES/salt_radar_agent.py
 
           rpmbuild -ba $HOME/rpmbuild/SPECS/salt-radar.spec

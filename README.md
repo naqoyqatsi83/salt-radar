@@ -51,17 +51,25 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Alerts** — 13 rules covering minion staleness, keys, service health, memory, disk, jobs, and auth
+**Alerts** — 14 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
 <img src="docs/screenshots/alerts.png" alt="Alerts tab">
 
 </td>
 </tr>
-<tr><td colspan="2">
+<tr>
+<td width="50%">
+
+**API** — live salt-api request log and per-endpoint breakdown, built from cpstats
+<img src="docs/screenshots/api.png" alt="API tab">
+
+</td>
+<td width="50%">
 
 **Pulse** — per-minion return activity at a glance, with connection detail on the side
 <img src="docs/screenshots/pulse.png" alt="Pulse tab">
 
-</td></tr>
+</td>
+</tr>
 </table>
 
 ## Features
@@ -76,7 +84,16 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Event Rate** — Events/sec sparkline with peak and total counters
 - **Minion Activity** — Job return rate sparkline with last-active minion tracking
 - **CPU / Memory** — utilization-history sparklines, toggle alongside the other three sparkline panels via `show_*_graph`; stacking order of all five panels is configurable via `graph_order` — in the Config Editor (`F3`, edited as a reorderable list: `↑↓` to select, `+`/`-` to move) or by hand in `salt-radar.toml`
-- **Job Pulse** — Active jobs with progress bars, rolling success rate, stuck-job count, and p50/p95 completion latency
+- **Job Pulse** — Active jobs with progress bars, rolling success rate, stuck-job count, and p50/p95 completion latency. Shares a row with salt-api (side by side) when both are shown, since neither needs the terminal's full width; Job Pulse alone takes the full row when salt-api isn't shown
+- **salt-api** — shown only when a `salt-api` process is detected; request rate, error rate, `POST /login` p50/p95 latency, in-flight/total request counts, and the most recent request per worker thread (path, status, timing). Needs `rest_cherrypy: {collect_stats: True}` in the master config, plus one of two ways to access the `/stats` endpoint that serves this data — salt-radar polls `GET /stats`, salt-api's own built-in in-memory request-stats endpoint (CherryPy's `cpstats`), which records the request line, client, status and timing entirely in process memory. This is a different mechanism from Salt's `log_level`/access logging: nothing is ever written to disk, and the request *line* it records never includes the body — so credentials sent in a POST body (e.g. `/login`) are never captured. Request rate is a real recent figure (computed by salt-radar from the delta between polls); error rate and login latency are also tracked by salt-radar itself, since cpstats only exposes a lifetime-average rate and a live per-thread snapshot, not cumulative error/latency counters of its own.
+  - **`stats_auth_mode = "none"` (default)** — relies on `stats_disable_auth: True` in the master config, so `/stats` needs no credentials at all.
+    - **Security tradeoff**: this setting removes Salt's normal auth-token requirement for the `/stats` endpoint specifically, so once enabled, *anyone who can reach salt-api's REST port* can poll `/stats` with no credentials — not just salt-radar. What leaks to that caller: request lines including query strings (so API endpoint paths/usage patterns), client IP:port, response status, and timing — but never request/response bodies or headers, so auth tokens and credentials (including `POST /login` payloads) are never exposed this way. The risk is proportional to how exposed salt-api's port already is: low if it's bound to localhost or a trusted management network, real if it's reachable more broadly. If that matters in your environment, use one of the two authenticated modes below instead, or firewall salt-api's port to trusted hosts.
+  - **`stats_auth_mode = "plaintext"` or `"pillar"`** (Config Editor, `F3`, `[api]` section) — the agent logs into salt-api via eauth instead, and sends the resulting token as `X-Auth-Token` on every `/stats` poll. `stats_disable_auth` can stay unset. Both modes need `stats_auth_eauth` (the eauth backend, e.g. `pam`) set:
+    - `plaintext` reads `stats_auth_username`/`stats_auth_password` straight out of `salt-radar.toml` — **marked insecure**: stored, and passed to the agent, as plain text.
+    - `pillar` instead resolves username and password from two independent colon-delimited pillar paths, `stats_auth_username_pillar_path` and `stats_auth_password_pillar_path` — like two separate `pillar.get` calls (e.g. `salt_radar:api_user` / `salt_radar:api_password` for a pillar shaped `salt_radar: {api_user: ..., api_password: ...}`). Compiled **master-side, for this master's own local minion ID** — the same one `salt-call pillar.get` would resolve on this box (its cached `/etc/salt/minion_id`, same as `salt.config.get_id`), not something you configure — so it's naturally scoped to just this host: a `top.sls` entry keyed to this master's own minion ID (not `'*'`, which would hand the credential to every minion in the fleet) is all that's needed, and no other minion's pillar compilation ever matches it. No live round-trip either way — this reads local pillar SLS files the same way `salt-run pillar.show_pillar` would. Requires a minion co-located with the master (common, but not universal); resolved once and cached (recompiling pillar every poll would be wasteful), and a login that then fails re-resolves it once in case the values rotated in pillar since.
+    - **Minimal eauth scope**: salt-api's `/stats` endpoint only checks that the login succeeded — it does **not** consult `external_auth`'s per-function ACL the way `/`, `/run`, `/minions`, etc. do. A dedicated eauth account with an **empty permission list** (e.g. `external_auth: {pam: {stats_monitor: []}}`) can therefore log in and read `/stats`, but that same token is rejected by every actual command-execution endpoint — about as close to a "stats-only" role as Salt's eauth model gets.
+    - A stale/rejected token (server restart, `token_expire`) triggers one automatic re-login-and-retry per poll before the panel reports unreachable.
+- Every panel above the sparklines — Host Resources, Services, Minion Key Status, Event Types, Job Pulse, salt-api — can be individually hidden via `show_host_resources`/`show_services`/`show_key_status`/`show_event_types`/`show_job_pulse`/`show_salt_api` in the Config Editor (`F3`), same on/off toggle as the sparkline panels' `show_*_graph`; hiding one of Services/Minion Key Status/Event Types reflows the remaining columns in that row to fill the freed width instead of leaving a gap
 
 ### Minions
 - Scrollable minion list with dynamic column widths (ID, OS, Salt Version, Arch)
@@ -102,6 +119,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Per-minion return navigation (j/k), scrollable output viewer (Enter)
 - Copy return output to clipboard (y = Salt outputter format, Y = raw JSON)
 - Job detail popup shows correct OK/FAIL status derived from return values
+- Always shows full per-state detail (`--state-output=full --state-verbose=True`), regardless of the master's own `state_output`/`state_verbose` defaults — opening the popup is an explicit request to see everything about that one job, even a "terse"/"changes" master would otherwise hide unchanged/no-op states here
 
 ### Pulse
 - Per-minion return activity at a glance: every minion as a dot in a wrapped grid, color- *and* shape-tiered by recency (`●` bright green flash → `•` green → `·` orange → `·` grey → `·` red for timed out) so adjacent tiers stay distinguishable even at a glance
@@ -109,7 +127,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Detail panel on the side: key status, connection status, OS, Salt version, last return time
 
 ### Alerts
-13 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
+14 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
 
 - **Stale minion** — not seen within `stale_minion_secs`
 - **Pending key** — pending longer than `pending_key_secs`
@@ -124,8 +142,19 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Service flapping** — a unit restarted more than `service_flap_threshold_24h` times in 24h
 - **Service memory growth** — sustained upward memory slope past `service_mem_growth_mb_per_hour`, independent of flapping
 - **Service memory high** — a unit's current RSS crosses an absolute (`service_mem_abs_threshold_mb`) or percent-of-total-memory (`service_mem_pct_threshold`) threshold, independent of growth rate; salt-master/minion/api/syndic can each override these globals (e.g. `service_mem_abs_threshold_master_mb`)
+- **API auth latency** — salt-api's `POST /login` p95 processing time crosses `api_auth_latency_warn_secs`, a common early symptom of PAM/LDAP/eauth backend trouble (needs the salt-api panel's `collect_stats` setup — see Dashboard above)
 
 All thresholds are configurable via `salt-radar.toml` or the in-app Config Editor (`F3`).
+
+### API
+Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `collect_stats` setup and the `stats_disable_auth`/`stats_auth_mode` access options):
+
+- Live request log — age, method, client, path, status, timing — built by salt-radar itself from cpstats' per-thread snapshots (filterable by `/`); `Enter` opens a detail popup with the full request line (query string included), client, status, and processing time
+- Per-endpoint breakdown — request count, avg/p95 latency, error rate, grouped by method+path
+- Best-effort, not a complete record: cpstats only ever exposes the *latest* request per CherryPy worker thread, so a thread that completes more than one request between two polls only shows the last one
+- Bounded two ways, both configurable under `[api]` (`log_cap`, default 1000; `log_max_age_secs`, default 3600): capped at `log_cap` entries, and entries older than `log_max_age_secs` are pruned every poll regardless of how full the log is. The salt-api panel's own error-rate/login-latency rolling window (`stats_window`, default 200 requests) lives in the same section.
+- Only what cpstats records is ever visible: no request/response body, no headers — so no credentials, payload content, or which minion/job/user was involved
+- salt-radar's own `GET /stats` poll (the request that populates this log) is filtered out by default — `hide_stats_polls` (`[api]`, default `true`) — since at the Dashboard refresh interval it would otherwise drown out real traffic with one entry per tick. Set to `false`, or press `x` on the API tab to toggle it live — the filter applies at display time, so it hides/shows already-captured entries retroactively, not just ones captured from that point on. `/stats` requests are still always captured and still count against `log_cap`/`log_max_age_secs` even while hidden — this only controls what's shown.
 
 ### Admin Mode
 - Toggle with `a` (danger-zone confirmation dialog required)
@@ -202,7 +231,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 |-----|--------|
 | `q` | Quit |
 | `Tab` | Switch tab |
-| `1`–`6` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/Pulse) |
+| `1`–`7` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Enter` | Open detail popup |
@@ -234,6 +263,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Jobs (Cache) | `r` | Refresh job cache |
 | Jobs (Cache) | `←`/`→` | Switch focus between Live Jobs and Cache panels |
 | Pulse | `↑`/`↓`/`←`/`→` | Navigate the minion grid |
+| API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |
 
 ### Config Editor
 
@@ -322,7 +352,7 @@ src/
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading
 ├── agent.rs             # Python agent subprocess management
-├── alerts/              # Alert engine (13 rules: staleness, keys, services, memory, disk, jobs, auth)
+├── alerts/              # Alert engine (14 rules: staleness, keys, services, memory, disk, jobs, auth, api)
 ├── collectors/          # OS-level data collection
 │   ├── keys.rs          # PKI key file parsing
 │   ├── processes.rs     # /proc scanning for salt processes
@@ -336,6 +366,7 @@ src/
     ├── events.rs        # Events tab
     ├── jobs.rs          # Jobs tab
     ├── alerts_view.rs   # Alerts tab
+    ├── api_view.rs      # API tab
     ├── pulse.rs         # Pulse tab
     ├── minion_events.rs # Per-minion event/return history popup
     ├── config_editor.rs # In-app config editor (F3)

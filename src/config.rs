@@ -44,6 +44,59 @@ pub struct AppConfig {
     pub service_mem_growth_mb_per_hour: f64,
     pub service_mem_abs_threshold_mb: f64,
     pub service_mem_pct_threshold: f64,
+    /// p95 POST /login processing time (seconds) that triggers the "API auth
+    /// latency" alert. Only meaningful once the salt-api panel has real
+    /// data — see App::api_login_latency_p50_p95.
+    pub api_auth_latency_warn_secs: f64,
+    /// Rolling window (in observed requests) backing the salt-api panel's
+    /// error-rate and POST /login p50/p95 latency figures — see
+    /// App::api_login_latency_p50_p95.
+    pub api_stats_window: usize,
+    /// Max entries kept in the API tab's live request log before the oldest
+    /// are evicted, independent of the age-based prune below.
+    pub api_log_cap: usize,
+    /// Entries older than this (seconds) are dropped from the API tab's
+    /// request log every poll regardless of how far under api_log_cap it is
+    /// — a quiet API shouldn't let the log hold onto hours-old requests.
+    pub api_log_max_age_secs: u64,
+    /// Whether salt-radar's own `GET /stats` polling (the request that
+    /// populates this very log) is filtered out of the API tab's request
+    /// log. Defaults on since polling at the Dashboard refresh interval
+    /// would otherwise drown out real traffic with one entry per tick; set
+    /// to false to see it anyway.
+    pub api_hide_stats_polls: bool,
+    /// How the agent authenticates to salt-api's `/stats` endpoint:
+    /// "none" (default) relies on `stats_disable_auth: True` in the master
+    /// config, so `/stats` needs no credentials at all — see the README's
+    /// security note on that tradeoff. "plaintext" logs in with
+    /// `api_stats_auth_username`/`api_stats_auth_password` read straight
+    /// from this config file (marked insecure — stored and transmitted to
+    /// the agent as plain text). "pillar" resolves those same two values,
+    /// once and then cached, from `api_stats_auth_username_pillar_path`/
+    /// `api_stats_auth_password_pillar_path` — like two independent
+    /// `pillar.get` calls, entirely master-side for this master's own local
+    /// minion (no live round-trip, and the credential never passes through
+    /// this config file or the Rust process at all) — see the doc comment
+    /// on the path fields below.
+    pub api_stats_auth_mode: String,
+    /// eauth backend the login uses (pam, ldap, file, ...) — see Salt's
+    /// `external_auth` docs. Only meaningful when api_stats_auth_mode is
+    /// "plaintext" or "pillar".
+    pub api_stats_auth_eauth: String,
+    /// Plaintext credentials for api_stats_auth_mode = "plaintext". See the
+    /// mode's own doc comment above for the security tradeoff.
+    pub api_stats_auth_username: String,
+    pub api_stats_auth_password: String,
+    /// Colon-delimited pillar paths resolving directly to the username/
+    /// password strings, for api_stats_auth_mode = "pillar" — e.g.
+    /// "salt_radar:api_user" for a pillar shaped `salt_radar: {api_user:
+    /// ...}`. Compiled for this master's own local minion ID (the same one
+    /// `salt-call pillar.get` would use on this box) — not something you
+    /// configure here, and requires a minion co-located with the master. A
+    /// `top.sls` entry keyed to that minion's own ID (not `'*'`, which
+    /// would hand the credential to every minion) is all that's needed.
+    pub api_stats_auth_username_pillar_path: String,
+    pub api_stats_auth_password_pillar_path: String,
     /// Per-unit overrides for the standard bundled Salt services — each 0.0
     /// means "no override, fall back to the global service_mem_*_threshold*
     /// above" (the global fields already use 0.0 to mean "check disabled",
@@ -79,6 +132,16 @@ pub struct AppConfig {
     /// missing from the list is appended after the ones named, so a partial
     /// or malformed value degrades gracefully instead of losing a panel.
     pub graph_order: String,
+    /// Which of the Dashboard's fixed (non-sparkline) panels are shown, all
+    /// defaulting on so existing configs/behavior are unaffected. salt-api
+    /// still only ever renders when the process is actually detected —
+    /// this just adds a user opt-out on top of that.
+    pub show_host_resources: bool,
+    pub show_services: bool,
+    pub show_key_status: bool,
+    pub show_event_types: bool,
+    pub show_job_pulse: bool,
+    pub show_salt_api: bool,
 }
 
 impl Default for AppConfig {
@@ -103,6 +166,17 @@ impl Default for AppConfig {
             service_mem_growth_mb_per_hour: 50.0,
             service_mem_abs_threshold_mb: 2048.0,
             service_mem_pct_threshold: 8.0,
+            api_auth_latency_warn_secs: 3.0,
+            api_stats_window: 200,
+            api_log_cap: 1000,
+            api_log_max_age_secs: 3600,
+            api_hide_stats_polls: true,
+            api_stats_auth_mode: "none".into(),
+            api_stats_auth_eauth: "pam".into(),
+            api_stats_auth_username: String::new(),
+            api_stats_auth_password: String::new(),
+            api_stats_auth_username_pillar_path: String::new(),
+            api_stats_auth_password_pillar_path: String::new(),
             service_mem_abs_threshold_master_mb: 0.0,
             service_mem_pct_threshold_master: 0.0,
             service_mem_abs_threshold_minion_mb: 0.0,
@@ -118,6 +192,12 @@ impl Default for AppConfig {
             show_cpu_graph: true,
             show_mem_graph: true,
             graph_order: "cpu,mem,zmq,events,activity".into(),
+            show_host_resources: true,
+            show_services: true,
+            show_key_status: true,
+            show_event_types: true,
+            show_job_pulse: true,
+            show_salt_api: true,
         }
     }
 }
@@ -129,6 +209,7 @@ struct TomlConfig {
     events: Option<EventsConfig>,
     alerts: Option<AlertsConfig>,
     dashboard: Option<DashboardConfig>,
+    api: Option<ApiConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -164,6 +245,7 @@ struct AlertsConfig {
     service_mem_growth_mb_per_hour: Option<f64>,
     service_mem_abs_threshold_mb: Option<f64>,
     service_mem_pct_threshold: Option<f64>,
+    api_auth_latency_warn_secs: Option<f64>,
     service_mem_abs_threshold_master_mb: Option<f64>,
     service_mem_pct_threshold_master: Option<f64>,
     service_mem_abs_threshold_minion_mb: Option<f64>,
@@ -175,6 +257,20 @@ struct AlertsConfig {
 }
 
 #[derive(serde::Deserialize)]
+struct ApiConfig {
+    stats_window: Option<usize>,
+    log_cap: Option<usize>,
+    log_max_age_secs: Option<u64>,
+    hide_stats_polls: Option<bool>,
+    stats_auth_mode: Option<String>,
+    stats_auth_eauth: Option<String>,
+    stats_auth_username: Option<String>,
+    stats_auth_password: Option<String>,
+    stats_auth_username_pillar_path: Option<String>,
+    stats_auth_password_pillar_path: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct DashboardConfig {
     zmq_latency_source: Option<String>,
     show_zmq_graph: Option<bool>,
@@ -183,6 +279,12 @@ struct DashboardConfig {
     show_cpu_graph: Option<bool>,
     show_mem_graph: Option<bool>,
     graph_order: Option<String>,
+    show_host_resources: Option<bool>,
+    show_services: Option<bool>,
+    show_key_status: Option<bool>,
+    show_event_types: Option<bool>,
+    show_job_pulse: Option<bool>,
+    show_salt_api: Option<bool>,
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
@@ -218,6 +320,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          service_mem_growth_mb_per_hour = {}\n\
          service_mem_abs_threshold_mb = {}\n\
          service_mem_pct_threshold = {}\n\
+         api_auth_latency_warn_secs = {}\n\
          service_mem_abs_threshold_master_mb = {}\n\
          service_mem_pct_threshold_master = {}\n\
          service_mem_abs_threshold_minion_mb = {}\n\
@@ -227,6 +330,18 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          service_mem_abs_threshold_syndic_mb = {}\n\
          service_mem_pct_threshold_syndic = {}\n\
          \n\
+         [api]\n\
+         stats_window = {}\n\
+         log_cap = {}\n\
+         log_max_age_secs = {}\n\
+         hide_stats_polls = {}\n\
+         stats_auth_mode = {:?}\n\
+         stats_auth_eauth = {:?}\n\
+         stats_auth_username = {:?}\n\
+         stats_auth_password = {:?}\n\
+         stats_auth_username_pillar_path = {:?}\n\
+         stats_auth_password_pillar_path = {:?}\n\
+         \n\
          [dashboard]\n\
          zmq_latency_source = {:?}\n\
          show_zmq_graph = {}\n\
@@ -234,7 +349,13 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          show_activity_graph = {}\n\
          show_cpu_graph = {}\n\
          show_mem_graph = {}\n\
-         graph_order = {:?}\n",
+         graph_order = {:?}\n\
+         show_host_resources = {}\n\
+         show_services = {}\n\
+         show_key_status = {}\n\
+         show_event_types = {}\n\
+         show_job_pulse = {}\n\
+         show_salt_api = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -254,6 +375,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.service_mem_growth_mb_per_hour,
         config.service_mem_abs_threshold_mb,
         config.service_mem_pct_threshold,
+        config.api_auth_latency_warn_secs,
         config.service_mem_abs_threshold_master_mb,
         config.service_mem_pct_threshold_master,
         config.service_mem_abs_threshold_minion_mb,
@@ -262,6 +384,16 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.service_mem_pct_threshold_api,
         config.service_mem_abs_threshold_syndic_mb,
         config.service_mem_pct_threshold_syndic,
+        config.api_stats_window,
+        config.api_log_cap,
+        config.api_log_max_age_secs,
+        config.api_hide_stats_polls,
+        config.api_stats_auth_mode,
+        config.api_stats_auth_eauth,
+        config.api_stats_auth_username,
+        config.api_stats_auth_password,
+        config.api_stats_auth_username_pillar_path,
+        config.api_stats_auth_password_pillar_path,
         config.zmq_latency_source,
         config.show_zmq_graph,
         config.show_events_graph,
@@ -269,6 +401,12 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.show_cpu_graph,
         config.show_mem_graph,
         config.graph_order,
+        config.show_host_resources,
+        config.show_services,
+        config.show_key_status,
+        config.show_event_types,
+        config.show_job_pulse,
+        config.show_salt_api,
     );
     std::fs::write(path, toml)
 }
@@ -304,6 +442,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
                 if let Some(v) = a.service_mem_abs_threshold_mb { cfg.service_mem_abs_threshold_mb = v; }
                 if let Some(v) = a.service_mem_pct_threshold { cfg.service_mem_pct_threshold = v; }
+                if let Some(v) = a.api_auth_latency_warn_secs { cfg.api_auth_latency_warn_secs = v; }
                 if let Some(v) = a.service_mem_abs_threshold_master_mb { cfg.service_mem_abs_threshold_master_mb = v; }
                 if let Some(v) = a.service_mem_pct_threshold_master { cfg.service_mem_pct_threshold_master = v; }
                 if let Some(v) = a.service_mem_abs_threshold_minion_mb { cfg.service_mem_abs_threshold_minion_mb = v; }
@@ -313,6 +452,18 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.service_mem_abs_threshold_syndic_mb { cfg.service_mem_abs_threshold_syndic_mb = v; }
                 if let Some(v) = a.service_mem_pct_threshold_syndic { cfg.service_mem_pct_threshold_syndic = v; }
             }
+            if let Some(a) = toml_cfg.api {
+                if let Some(v) = a.stats_window { cfg.api_stats_window = v; }
+                if let Some(v) = a.log_cap { cfg.api_log_cap = v; }
+                if let Some(v) = a.log_max_age_secs { cfg.api_log_max_age_secs = v; }
+                if let Some(v) = a.hide_stats_polls { cfg.api_hide_stats_polls = v; }
+                if let Some(v) = a.stats_auth_mode { cfg.api_stats_auth_mode = v; }
+                if let Some(v) = a.stats_auth_eauth { cfg.api_stats_auth_eauth = v; }
+                if let Some(v) = a.stats_auth_username { cfg.api_stats_auth_username = v; }
+                if let Some(v) = a.stats_auth_password { cfg.api_stats_auth_password = v; }
+                if let Some(v) = a.stats_auth_username_pillar_path { cfg.api_stats_auth_username_pillar_path = v; }
+                if let Some(v) = a.stats_auth_password_pillar_path { cfg.api_stats_auth_password_pillar_path = v; }
+            }
             if let Some(d) = toml_cfg.dashboard {
                 if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
                 if let Some(v) = d.show_zmq_graph { cfg.show_zmq_graph = v; }
@@ -321,6 +472,12 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = d.show_cpu_graph { cfg.show_cpu_graph = v; }
                 if let Some(v) = d.show_mem_graph { cfg.show_mem_graph = v; }
                 if let Some(v) = d.graph_order { cfg.graph_order = v; }
+                if let Some(v) = d.show_host_resources { cfg.show_host_resources = v; }
+                if let Some(v) = d.show_services { cfg.show_services = v; }
+                if let Some(v) = d.show_key_status { cfg.show_key_status = v; }
+                if let Some(v) = d.show_event_types { cfg.show_event_types = v; }
+                if let Some(v) = d.show_job_pulse { cfg.show_job_pulse = v; }
+                if let Some(v) = d.show_salt_api { cfg.show_salt_api = v; }
             }
         }
     }

@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-05
+
+This release folds in `v0.6.2-rc1` through `v0.6.2-rc11`. Where a later
+RC changed or fixed something an earlier RC in this same range
+introduced, only the final end-state behavior is described below —
+notably the salt-api `pillar` auth mode, which went through two design
+iterations (a fixed placeholder pillar ID, then briefly `'*'`-targeted
+pillar) before landing on resolving this master's own local minion ID,
+the only one described here.
+
+### Added
+- Dashboard: `show_host_resources`/`show_services`/`show_key_status`/`show_event_types`/`show_job_pulse`/`show_salt_api` config settings, each independently hiding one of the Dashboard's fixed (non-sparkline) panels — same on/off toggle, in the Config Editor (`F3`), as the existing sparkline `show_*_graph` settings. Hiding one of Services/Minion Key Status/Event Types reflows the row to fill the freed width instead of leaving a gap.
+- API tab: `hide_stats_polls` config setting (`[api]`, default `true`) filters salt-radar's own `GET /stats` poll out of the request log — left in, it added one entry per poll tick and drowned out real traffic. Set to `false` to see it anyway, or toggle live with `x` on the API tab — the request log's title shows `/stats hidden` whenever filtering is active, so the toggle state is never invisible. The filter applies at display time (like the existing text filter), so toggling `x` shows/hides already-captured `/stats` entries retroactively instead of only affecting ones captured from that point on.
+- `stats_auth_mode` (`[api]`, default `"none"`): an authenticated alternative to `stats_disable_auth` for the salt-api panel/API tab. `stats_disable_auth` removes salt-api's own auth requirement for `/stats` specifically, so anyone who can reach salt-api's REST port can poll it unauthenticated (scoped to request-line/client/status/timing metadata only, never bodies or headers, but worth firewalling to trusted hosts if that matters) — `stats_auth_mode` avoids that by having the agent log into salt-api via eauth and send the resulting token as `X-Auth-Token` instead. Two credential sources: `"plaintext"` (`stats_auth_username`/`stats_auth_password`, read straight from `salt-radar.toml` — marked insecure) or `"pillar"` (`stats_auth_username_pillar_path`/`stats_auth_password_pillar_path`, two independent colon-delimited pillar paths resolved entirely master-side, for this master's own local minion ID — the same one `salt-call pillar.get` would use here, not something you configure — with no live round-trip and no credential ever touching `salt-radar.toml` or the Rust process; a `top.sls` entry keyed to that minion's own ID, not `'*'`, keeps it scoped to just this host). A rejected/stale token or stale pillar-resolved credentials trigger one automatic re-resolve-and-retry before the panel reports unreachable. README documents the minimal eauth ACL scope (an empty permission list) that can read `/stats` but run nothing else, since `/stats`'s own auth check doesn't consult `external_auth` at all.
+
+### Changed
+- Dashboard: Job Pulse and salt-api now share one row side by side instead of each taking a full-width row — both are a fixed KPI-line-plus-up-to-3-rows panel of the same height, and neither needed the full row width, so combining them frees a full row of vertical space for the sparklines below.
+
+### Fixed
+- Typing or pasting into the Jobs (or Minions/Events/Alerts/API) filter recomputed every tab's filtered-list length on every keystroke, not just the tab actually being filtered — most costly, it re-ran Events' fallback full-JSON-stringify match against the entire buffered event list regardless of which tab was open. On a busy master with a large event buffer, this made pasting a JID into the Jobs filter take 60s+ to become active, one keystroke at a time. The per-character clamp now only recomputes the active tab's own filtered length.
+- Dashboard's Services panel could show memory usage over 100% (and wildly inflated "Salt RSS"/process counts): the agent's process scanner walked every PID on the host, not just Salt's own, and anything that didn't match a known salt-* cmdline pattern was still included as an "Unknown"-role process rather than excluded — on a host also running unrelated software, that summed the whole system's RSS into a figure labeled "Salt RSS". The agent now skips non-Salt processes entirely, and the Rust side excludes Unknown-role entries from the aggregate as a second layer of defense.
+
+## [0.6.1] - 2026-09-05
+
+This release folds in `v0.6.1-rc1` through `v0.6.1-rc8`, plus the
+salt-api/API-tab config exposure, a detail-popup label-padding fix, and
+the API/Pulse tab reorder that landed after rc8. Unlike the v0.6.0
+range, this one is a straight linear build — no RC in this range
+reworked or reverted something an earlier RC in the same range had
+already shipped, so every item below is described once, as it stands
+today.
+
+### Added
+- Dashboard: a `salt-api` panel, shown only when a `salt-api` process is detected — request rate, error rate, `POST /login` p50/p95 latency, in-flight/total request counts, and the most recent request per worker thread (path, status, timing), polled from salt-api's own built-in in-memory request-stats endpoint (CherryPy's `cpstats`, exposed at `GET /stats`) rather than any log file. Needs `rest_cherrypy: {collect_stats: True, stats_disable_auth: True}` in the master config; the panel explains that when the endpoint isn't reachable. This is a different mechanism from `log_level`/access logging — cpstats records only the request line (method+path), never the body, so nothing captures credentials sent in a POST body (e.g. `/login`), and nothing is ever written to disk. `stats_disable_auth` is required because salt-radar's agent never handles or stores salt-api auth tokens — see README for details. Request rate and error rate/login latency are tracked by salt-radar itself, since cpstats only exposes a lifetime-average rate and a live per-thread snapshot, not cumulative error/latency counters of its own.
+- New alert rule: API auth latency — fires when salt-api's `POST /login` p95 crosses `api_auth_latency_warn_secs` (default 3.0s), a common early symptom of PAM/LDAP/eauth backend trouble. Total alert rule count: 14.
+- New **API** tab (`6`): a live, in-memory request log (age, method, client, path, status, timing — filterable by `/`) and a per-endpoint breakdown (count, avg/p95 latency, error rate), both built by salt-radar itself from cpstats' per-thread snapshots — cpstats has no request log or per-endpoint history of its own. Best-effort: only the latest request per CherryPy worker thread is ever visible per poll, so a thread completing more than one request between polls means the earlier one is missed. Shows the same "not reachable" guidance as the Dashboard panel when `collect_stats`/`stats_disable_auth` aren't set. `Enter` opens a detail popup (full request line including query string, client, status, processing time, `y` to copy) — cpstats never gives us more than that: no request/response body, no headers, so no credentials, payload content, or Salt-level context (which minion/job/user) is ever visible.
+- New `[api]` config section (and Config Editor entries): `stats_window` (rolling request count backing the salt-api panel's error-rate/login-latency figures, default 200), `log_cap` (API tab request log cap, default 1000), and `log_max_age_secs` (API tab request log age prune, default 3600). The request log is bounded by both: capped at `log_cap` entries, and entries older than `log_max_age_secs` are pruned every poll regardless of how full the log is, so a quiet API doesn't let it hold onto hours-old requests. Eviction correctly shifts the current selection so it keeps pointing at the same logical entry, the same correction already made for the Events buffer's own eviction.
+- README screenshots refreshed for every tab, including a new one for the API tab.
+
+### Changed
+- Reordered tabs: **API** is now `6` and **Pulse** is `7` (previously the reverse).
+
+### Fixed
+- API Request detail popup: the "Full request line" label ran directly into its value with no gap — the shared detail-row label padding was fixed at 16 columns, one short of this label's own 17-character length, so ratatui's left-pad (which only pads shorter strings, never truncates longer ones) added nothing. Padding is now 20 columns.
+- API tab's request log columns ran together once an entry's age grew past its fixed column width (an un-truncated, ever-growing field silently misaligning everything after it) — the same bug class already fixed for Event Types/Fleet Overview; every field in that row is now truncation-safe.
+- salt-api panel's `in/out` bytes-per-second line showed a doubled `/s` suffix (`0 B/s/s`) — `format_bytes` already appends it.
+- Typing (or pasting) into the Live Jobs/Events filter box could take ages to keep up on a master with a large accepted-key roster (e.g. thousands of leftover test minions never cleaned up by autoclean) — every keystroke redraws the filtered list, and each of those redraws rebuilt a fresh `HashSet` of every accepted minion ID from scratch, once per visible row, to check whether the filter text matched a known minion ID. On a master with thousands of keys, a pasted JID (delivered as a burst of individual keystrokes, since there's no bracketed-paste handling) could take well over a minute to finish filtering. The accepted-ID set is now kept up to date whenever the key list refreshes instead of being rebuilt on every filter check.
+- Mouse mode (`F2`) could "randomly" switch tabs or toggle the sparkline bar/dots style with no corresponding click — `EnableMouseCapture` was requesting button-drag (1002) and any-motion (1003) tracking on top of click tracking (1000), which report an escape sequence for *every* mouse movement whether or not a button is held; salt-radar has no handler for Drag/Moved mouse events at all, so that traffic was pure waste sharing the same stdin stream as keyboard input, and more escape-sequence volume means more chances of a sequence getting split or corrupted on a lossy/high-latency link (SSH, a terminal multiplexer, a KVM's input handoff) and leaking stray bytes into the keyboard-event path. Mouse mode now only requests click tracking and extended SGR coordinates (1000 + 1006).
+- Dashboard's CPU panel (and the CPU history feeding its sparkline/avg/peak) was actually reporting 1-minute load average divided by core count, not real CPU utilization — a stale sample after a load spike ended, `load_1` stays elevated for a while as an exponentially-decayed figure even once real, instantaneous usage has already dropped, which read as CPU stuck at 100% while a tool like `btop` (sampling `/proc/stat` directly) already showed it back down. The panel now computes real system-wide CPU% from `/proc/stat` cumulative jiffies deltas between polls, the same way the per-process CPU%s next to it already were; the "Host Resources" gauge, which is explicitly labeled `Load:`, is unaffected and still shows the real load average as intended.
+
 ## [0.6.0] - 2026-09-03
 
 This release folds in `v0.6.0-rc1` through `v0.6.0-rc25`. Where a

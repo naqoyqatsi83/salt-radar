@@ -20,6 +20,31 @@ use ratatui::Terminal;
 
 use app::App;
 
+// Mouse capture, restricted to just the modes salt-radar actually consumes.
+//
+// crossterm's own EnableMouseCapture also turns on button-drag (1002) and
+// any-motion (1003) tracking, which report an escape sequence for *every*
+// mouse movement, dragged or not -- salt-radar has no handler for Drag/Moved
+// events at all (main's match falls through to `_ => {}` for them), so that
+// traffic is pure waste sharing the same stdin stream as keyboard input.
+// On a lossy/high-latency link (SSH, a terminal multiplexer, a KVM's input
+// handoff -- see the tab-bar/mouse-click bugs already fixed here) more
+// escape-sequence volume means more chances for a sequence to be split or
+// corrupted, which can leak stray bytes into the keyboard-event path. Only
+// requesting click tracking (1000) and extended SGR coordinates (1006) cuts
+// that traffic to just what's needed.
+fn enable_mouse_capture() -> io::Result<()> {
+    use std::io::Write;
+    io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h")?;
+    io::stdout().flush()
+}
+
+fn disable_mouse_capture() -> io::Result<()> {
+    use std::io::Write;
+    io::stdout().write_all(b"\x1b[?1006l\x1b[?1000l")?;
+    io::stdout().flush()
+}
+
 fn main() -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
@@ -28,8 +53,7 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Enable mouse capture for click/scroll support
-    use crossterm::event::{EnableMouseCapture, DisableMouseCapture};
-    io::stdout().execute(EnableMouseCapture)?;
+    enable_mouse_capture()?;
 
     let mut app = App::new();
 
@@ -139,9 +163,9 @@ fn main() -> io::Result<()> {
         if app.needs_mouse_toggle {
             app.needs_mouse_toggle = false;
             if app.mouse_enabled {
-                io::stdout().execute(EnableMouseCapture)?;
+                enable_mouse_capture()?;
             } else {
-                io::stdout().execute(DisableMouseCapture)?;
+                disable_mouse_capture()?;
             }
         }
 
@@ -159,7 +183,7 @@ fn main() -> io::Result<()> {
 
     app.cleanup();
     disable_raw_mode()?;
-    io::stdout().execute(DisableMouseCapture)?;
+    disable_mouse_capture()?;
     io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())
 }

@@ -88,6 +88,64 @@
 # service_mem_abs_threshold_syndic_mb = 0.0
 # service_mem_pct_threshold_syndic = 0.0
 
+# salt-api's POST /login p95 processing time (seconds) that triggers the
+# "API auth latency" alert — needs the salt-api panel's collect_stats setup,
+# see [api] below and the Dashboard section in README.
+# api_auth_latency_warn_secs = 3.0
+
+[api]
+# Rolling window (in observed requests) backing the salt-api panel's error
+# rate and POST /login p50/p95 latency figures
+# stats_window = 200
+
+# Max entries kept in the API tab's live request log before the oldest are
+# evicted, independent of the age-based prune below
+# log_cap = 1000
+
+# Entries older than this (seconds) are dropped from the API tab's request
+# log every poll regardless of how far under log_cap it is
+# log_max_age_secs = 3600
+
+# Filter salt-radar's own GET /stats poll out of the API tab's request log
+# -- left in, it would add one entry per poll tick and drown out real
+# traffic. Set to false to see it too.
+# hide_stats_polls = true
+
+# How the agent authenticates to salt-api's /stats endpoint:
+#   "none"      - relies on stats_disable_auth: True in the master config
+#                 (see README's security note on that tradeoff)
+#   "plaintext" - logs in via eauth using stats_auth_username/
+#                 stats_auth_password below, read straight from this file
+#                 -- INSECURE: stored and passed to the agent as plain text
+#   "pillar"    - logs in via eauth using credentials resolved from two
+#                 independent pillar paths, compiled master-side with no
+#                 live round-trip to any minion -- the credential never
+#                 touches this file or the Rust process
+# See the README for the minimal eauth ACL scope for the login account
+# (an empty permission list can read /stats but run nothing else).
+# stats_auth_mode = "none"
+
+# eauth backend the login uses (pam, ldap, file, ...). Only meaningful when
+# stats_auth_mode is "plaintext" or "pillar".
+# stats_auth_eauth = "pam"
+
+# Plaintext credentials for stats_auth_mode = "plaintext". See its own
+# comment above for the security tradeoff.
+# stats_auth_username = ""
+# stats_auth_password = ""
+
+# Colon-delimited pillar paths resolving directly to the username/password
+# strings, for stats_auth_mode = "pillar" -- like two independent
+# pillar.get calls, e.g. "salt_radar:api_user" / "salt_radar:api_password"
+# for a pillar shaped salt_radar: {api_user: ..., api_password: ...}.
+# Compiled master-side for this master's own local minion ID -- the same
+# one `salt-call pillar.get` would use on this box, not something you
+# configure -- so a top.sls entry keyed to this master's own minion ID
+# (not '*', which would hand it to every minion) is all that's needed.
+# Requires a minion co-located with the master.
+# stats_auth_username_pillar_path = ""
+# stats_auth_password_pillar_path = ""
+
 [dashboard]
 # Source for the Dashboard ZMQ panel's latency figure:
 #   "agent_ipc"    - local Rust<->Python agent round-trip (a liveness check,
@@ -110,3 +168,13 @@
 # keys: cpu, mem, zmq, events, activity. Unrecognized/duplicate keys are
 # ignored; any panel missing from the list is appended after the ones named.
 # graph_order = "cpu,mem,zmq,events,activity"
+
+# Which of the Dashboard's other (non-sparkline) panels are shown — all six
+# default on. salt-api still only ever renders when the process is actually
+# detected on this master; this just adds an opt-out on top of that.
+# show_host_resources = true
+# show_services = true
+# show_key_status = true
+# show_event_types = true
+# show_job_pulse = true
+# show_salt_api = true

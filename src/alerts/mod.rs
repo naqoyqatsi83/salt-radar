@@ -62,6 +62,8 @@ impl AlertEngine {
         service_mem_abs_threshold_mb: f64,
         service_mem_pct_threshold: f64,
         service_mem_overrides: &ServiceMemThresholds,
+        api_login_p95_secs: Option<f64>,
+        api_auth_latency_warn_secs: f64,
     ) {
         let mut active = Vec::new();
 
@@ -329,6 +331,22 @@ impl AlertEngine {
                         details: Vec::new(),
                     });
                 }
+            }
+        }
+
+        // Rule 14: API auth latency — salt-api's POST /login p95 processing
+        // time has crept up, a classic early symptom of PAM/LDAP/eauth
+        // backend trouble before it gets bad enough to actually time out.
+        // Only fires once the salt-api panel has real login samples to judge.
+        if let Some(p95) = api_login_p95_secs {
+            if p95 > api_auth_latency_warn_secs {
+                active.push(ActiveAlert {
+                    key: "api-auth-latency".to_string(),
+                    rule: "API auth latency",
+                    severity: AlertSeverity::Warn,
+                    description: format!("salt-api POST /login p95 at {:.2}s", p95),
+                    details: Vec::new(),
+                });
             }
         }
 
