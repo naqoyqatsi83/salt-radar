@@ -147,7 +147,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 All thresholds are configurable via `salt-radar.toml` or the in-app Config Editor (`F3`).
 
 ### API
-Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `collect_stats`/`stats_disable_auth` setup):
+Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `collect_stats` setup and the `stats_disable_auth`/`stats_auth_mode` access options):
 
 - Live request log — age, method, client, path, status, timing — built by salt-radar itself from cpstats' per-thread snapshots (filterable by `/`); `Enter` opens a detail popup with the full request line (query string included), client, status, and processing time
 - Per-endpoint breakdown — request count, avg/p95 latency, error rate, grouped by method+path
