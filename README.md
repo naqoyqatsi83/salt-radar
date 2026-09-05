@@ -51,17 +51,25 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Alerts** — 13 rules covering minion staleness, keys, service health, memory, disk, jobs, and auth
+**Alerts** — 14 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
 <img src="docs/screenshots/alerts.png" alt="Alerts tab">
 
 </td>
 </tr>
-<tr><td colspan="2">
+<tr>
+<td width="50%">
+
+**API** — live salt-api request log and per-endpoint breakdown, built from cpstats
+<img src="docs/screenshots/api.png" alt="API tab">
+
+</td>
+<td width="50%">
 
 **Pulse** — per-minion return activity at a glance, with connection detail on the side
 <img src="docs/screenshots/pulse.png" alt="Pulse tab">
 
-</td></tr>
+</td>
+</tr>
 </table>
 
 ## Features
@@ -135,7 +143,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 - Live request log — age, method, client, path, status, timing — built by salt-radar itself from cpstats' per-thread snapshots (filterable by `/`); `Enter` opens a detail popup with the full request line (query string included), client, status, and processing time
 - Per-endpoint breakdown — request count, avg/p95 latency, error rate, grouped by method+path
 - Best-effort, not a complete record: cpstats only ever exposes the *latest* request per CherryPy worker thread, so a thread that completes more than one request between two polls only shows the last one
-- Bounded two ways: capped at 1000 entries, and entries older than 1 hour are pruned every poll regardless of how full the log is
+- Bounded two ways, both configurable under `[api]` (`log_cap`, default 1000; `log_max_age_secs`, default 3600): capped at `log_cap` entries, and entries older than `log_max_age_secs` are pruned every poll regardless of how full the log is. The salt-api panel's own error-rate/login-latency rolling window (`stats_window`, default 200 requests) lives in the same section.
 - Only what cpstats records is ever visible: no request/response body, no headers — so no credentials, payload content, or which minion/job/user was involved
 
 ### Admin Mode
@@ -213,7 +221,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 |-----|--------|
 | `q` | Quit |
 | `Tab` | Switch tab |
-| `1`–`7` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/Pulse/API) |
+| `1`–`7` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Enter` | Open detail popup |
@@ -333,7 +341,7 @@ src/
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading
 ├── agent.rs             # Python agent subprocess management
-├── alerts/              # Alert engine (13 rules: staleness, keys, services, memory, disk, jobs, auth)
+├── alerts/              # Alert engine (14 rules: staleness, keys, services, memory, disk, jobs, auth, api)
 ├── collectors/          # OS-level data collection
 │   ├── keys.rs          # PKI key file parsing
 │   ├── processes.rs     # /proc scanning for salt processes
@@ -347,6 +355,7 @@ src/
     ├── events.rs        # Events tab
     ├── jobs.rs          # Jobs tab
     ├── alerts_view.rs   # Alerts tab
+    ├── api_view.rs      # API tab
     ├── pulse.rs         # Pulse tab
     ├── minion_events.rs # Per-minion event/return history popup
     ├── config_editor.rs # In-app config editor (F3)
