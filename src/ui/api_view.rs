@@ -44,6 +44,7 @@ pub fn draw_api(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
 }
 
 fn draw_unavailable(f: &mut Frame, area: Rect, app: &App) {
+    let authed = app.config.api_stats_auth_mode != "none";
     let hint = if !app.api_stats.configured {
         "rest_cherrypy is not configured on this master.".to_string()
     } else {
@@ -52,31 +53,54 @@ fn draw_unavailable(f: &mut Frame, area: Rect, app: &App) {
             app.api_stats.scheme, app.api_stats.port,
         )
     };
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             "  salt-api request stats aren't available.",
             Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(format!("  {}", hint), Style::default().fg(color::TEXT_DIM))),
-        Line::from(""),
-        Line::from(Span::styled(
+    ];
+    if !app.api_stats.error.is_empty() {
+        lines.push(Line::from(Span::styled(format!("  error: {}", app.api_stats.error), Style::default().fg(color::RED))));
+    }
+    lines.push(Line::from(""));
+    if authed {
+        lines.push(Line::from(Span::styled(
             "  Set the following in the master config and restart salt-api:",
             Style::default().fg(color::TEXT_DIM),
-        )),
-        Line::from(Span::styled(
+        )));
+        lines.push(Line::from(Span::styled(
+            "    rest_cherrypy: {collect_stats: True}",
+            Style::default().fg(color::CYAN),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("  Authenticating via stats_auth_mode = {:?} (Config Editor, 'F3') —", app.config.api_stats_auth_mode),
+            Style::default().fg(color::TEXT_DIM),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  check the error above and the eauth/credentials/pillar settings there.",
+            Style::default().fg(color::TEXT_DIM),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  Set the following in the master config and restart salt-api:",
+            Style::default().fg(color::TEXT_DIM),
+        )));
+        lines.push(Line::from(Span::styled(
             "    rest_cherrypy: {collect_stats: True, stats_disable_auth: True}",
             Style::default().fg(color::CYAN),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  See README for why stats_disable_auth is required (this agent",
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  See README for why stats_disable_auth is required (or set",
             Style::default().fg(color::TEXT_DIM),
-        )),
-        Line::from(Span::styled(
-            "  never handles or stores salt-api auth tokens).",
+        )));
+        lines.push(Line::from(Span::styled(
+            "  stats_auth_mode instead of stats_disable_auth — Config Editor, 'F3').",
             Style::default().fg(color::TEXT_DIM),
-        )),
-    ];
+        )));
+    }
 
     let block = super::list_block_hinted(" API ", Style::default().fg(color::BORDER), color::BG_DARK, false, false, &[]);
     let inner = block.inner(area);

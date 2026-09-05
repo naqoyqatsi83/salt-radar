@@ -25,6 +25,7 @@ def _import_salt():
     import salt.cache
     import salt.runner
     import salt.client
+    import salt.pillar
     return salt
 
 
@@ -441,6 +442,140 @@ def cmd_get_system_info(opts, req):
     result(req["id"], "get_system_info", data=info)
 
 
+# Cached {token: str, eauth: str, username: str} per (scheme, port, eauth,
+# username) -- re-login only happens on first use or after the cached token
+# is rejected, not on every poll.
+_api_token_cache = {}
+
+# Cached (username, password) per (minion_id, path) for "pillar" mode --
+# compiling pillar is real work (rendering SLS through the top file), so
+# this is only redone when there's no cached value yet or a login with the
+# cached value has just failed (credentials rotated in pillar), not on
+# every poll tick alongside the (much cheaper) token cache above.
+_api_pillar_creds_cache = {}
+
+
+def _resolve_api_stats_auth(opts, req, force_refresh=False):
+    """Resolve (username, password) for authenticated /stats access, per
+    api_stats_auth_mode ("plaintext" reads them straight off the request;
+    "pillar" compiles the target minion's pillar master-side -- no live
+    round-trip to that minion -- and pulls them out of it, cached until a
+    login with the resolved value fails). Returns None on "none" mode or on
+    any resolution failure (bad pillar path, missing minion, etc.), logging
+    why via the returned error string.
+    """
+    mode = req.get("auth_mode") or "none"
+    if mode == "none":
+        return None, None, None
+    if mode == "plaintext":
+        username = req.get("auth_username") or ""
+        password = req.get("auth_password") or ""
+        if not username or not password:
+            return None, None, "stats_auth_username/stats_auth_password not set"
+        return username, password, None
+
+    if mode == "pillar":
+        minion_id = req.get("auth_pillar_minion") or ""
+        path = req.get("auth_pillar_path") or ""
+        if not minion_id or not path:
+            return None, None, "stats_auth_pillar_minion/stats_auth_pillar_path not set"
+        cache_key = (minion_id, path)
+        if not force_refresh and cache_key in _api_pillar_creds_cache:
+            username, password = _api_pillar_creds_cache[cache_key]
+            return username, password, None
+        try:
+            salt = _import_salt()
+            cache = salt.cache.factory(opts)
+            grains = cache.fetch("minions", minion_id) or {}
+            pil = salt.pillar.get_pillar(opts, grains, minion_id, saltenv=opts.get("saltenv") or "base")
+            compiled = pil.compile_pillar()
+            node = compiled
+            for key in path.split(":"):
+                if not isinstance(node, dict) or key not in node:
+                    return None, None, "pillar path {!r} not found for minion {!r}".format(path, minion_id)
+                node = node[key]
+            username = node.get("username") if isinstance(node, dict) else None
+            password = node.get("password") if isinstance(node, dict) else None
+            if not username or not password:
+                return None, None, "pillar path {!r} missing username/password keys".format(path)
+            _api_pillar_creds_cache[cache_key] = (username, password)
+            return username, password, None
+        except Exception as exc:
+            return None, None, "pillar resolution failed: {}".format(exc)
+
+    return None, None, "unknown stats_auth_mode {!r}".format(mode)
+
+
+def _login_api_token(scheme, port, eauth, username, password):
+    """POST /login and return a fresh token, or None on failure."""
+    import urllib.request
+    import urllib.error
+    import ssl
+    import json as json_mod
+
+    ctx = None
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    url = "{}://127.0.0.1:{}/login".format(scheme, port)
+    body = json_mod.dumps({"username": username, "password": password, "eauth": eauth}).encode("utf-8")
+    http_req = urllib.request.Request(
+        url, data=body,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(http_req, timeout=5, context=ctx) as resp:
+            login_body = resp.read().decode("utf-8", "replace")
+        parsed = json_mod.loads(login_body)
+        return parsed["return"][0]["token"]
+    except Exception:
+        return None
+
+
+def _get_api_token(scheme, port, eauth, username, password, force_relogin=False):
+    """Cached token for (scheme, port, eauth, username), logging in only
+    when there's no cached token yet, the credentials changed, or the
+    caller asks for a forced re-login (a previous request with the cached
+    token came back 401 -- Salt tokens expire server-side on their own
+    schedule that this agent has no visibility into).
+    """
+    key = (scheme, port, eauth, username)
+    cached = _api_token_cache.get(key)
+    if cached and not force_relogin:
+        return cached
+    token = _login_api_token(scheme, port, eauth, username, password)
+    if token:
+        _api_token_cache[key] = token
+        return token
+    _api_token_cache.pop(key, None)
+    return None
+
+
+def _ensure_api_token(opts, req, scheme, port, eauth, force_relogin):
+    """Resolve credentials and get a usable token, one attempt with
+    whatever's cached plus one retry with freshly-resolved credentials if
+    that fails and the mode is "pillar" (a rejected login there could mean
+    the cached pillar-resolved password is stale, not just that the token
+    expired) -- covers both the first-ever login and the post-401 retry in
+    cmd_get_api_stats with the same fallback behavior. Returns (token, None)
+    or (None, error_message).
+    """
+    username, password, auth_err = _resolve_api_stats_auth(opts, req)
+    if auth_err:
+        return None, "auth: {}".format(auth_err)
+    token = _get_api_token(scheme, port, eauth, username, password, force_relogin=force_relogin)
+    if not token and req.get("auth_mode") == "pillar":
+        username, password, auth_err = _resolve_api_stats_auth(opts, req, force_refresh=True)
+        if auth_err:
+            return None, "auth: {}".format(auth_err)
+        token = _get_api_token(scheme, port, eauth, username, password, force_relogin=True)
+    if not token:
+        return None, "salt-api login failed (check stats_auth_eauth/credentials)"
+    return token, None
+
+
 def cmd_get_api_stats(opts, req):
     """Poll salt-api's built-in in-memory request stats (rest_cherrypy's
     `collect_stats` option, backed by CherryPy's cpstats tool) over its own
@@ -452,10 +587,15 @@ def cmd_get_api_stats(opts, req):
     just reusing the `logging` module as a data container -- nothing is
     written to disk), independent of Salt's own log_level. A request body
     can carry credentials (e.g. POST /login); the request *line* CherryPy
-    records here never does. Requires the master config to opt in with
-    `rest_cherrypy: {collect_stats: True, stats_disable_auth: True}` --
-    without both, /stats either 404s (not mounted) or 401s (needs a token,
-    which this agent deliberately never handles -- see README).
+    records here never does.
+
+    Two ways to access /stats, per api_stats_auth_mode (see AppConfig):
+    "none" (default) relies on `rest_cherrypy: {collect_stats: True,
+    stats_disable_auth: True}` in the master config -- /stats needs no
+    credentials at all, see the README's security note on that tradeoff.
+    "plaintext"/"pillar" instead log in via eauth (stats_disable_auth can
+    stay unset/False) and send the resulting token as X-Auth-Token --
+    slower per the extra request, but no unauthenticated endpoint.
     """
     rest_cherrypy = opts.get("rest_cherrypy") or {}
     if not rest_cherrypy:
@@ -471,23 +611,67 @@ def cmd_get_api_stats(opts, req):
     import ssl
     import json as json_mod
 
+    auth_mode = req.get("auth_mode") or "none"
+    eauth = req.get("auth_eauth") or "pam"
+    auth_headers = {"Accept": "application/json"}
+    if auth_mode != "none":
+        token, auth_err = _ensure_api_token(opts, req, scheme, port, eauth, force_relogin=False)
+        if auth_err:
+            result(req["id"], "get_api_stats", data={
+                "configured": True, "reachable": False, "port": port, "scheme": scheme,
+                "error": auth_err,
+            })
+            return
+        auth_headers["X-Auth-Token"] = token
+
     ctx = None
     if scheme == "https":
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-    try:
-        http_req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    def _fetch(headers):
+        http_req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(http_req, timeout=5, context=ctx) as resp:
-            body = resp.read().decode("utf-8", "replace")
-        stats = json_mod.loads(body)
+            return resp.read().decode("utf-8", "replace")
+
+    try:
+        body = _fetch(auth_headers)
+    except urllib.error.HTTPError as exc:
+        # A cached token can go stale server-side (Salt's own token_expire,
+        # or the master having restarted) with no way for this agent to
+        # know ahead of time -- one re-login-and-retry before giving up.
+        if exc.code == 401 and auth_mode != "none":
+            token, auth_err = _ensure_api_token(opts, req, scheme, port, eauth, force_relogin=True)
+            if auth_err:
+                result(req["id"], "get_api_stats", data={
+                    "configured": True, "reachable": False, "port": port, "scheme": scheme,
+                    "error": "{} (after 401)".format(auth_err),
+                })
+                return
+            auth_headers["X-Auth-Token"] = token
+            try:
+                body = _fetch(auth_headers)
+            except Exception as exc2:
+                result(req["id"], "get_api_stats", data={
+                    "configured": True, "reachable": False, "port": port, "scheme": scheme,
+                    "error": str(exc2),
+                })
+                return
+        else:
+            result(req["id"], "get_api_stats", data={
+                "configured": True, "reachable": False, "port": port, "scheme": scheme,
+                "error": str(exc),
+            })
+            return
     except Exception as exc:
         result(req["id"], "get_api_stats", data={
             "configured": True, "reachable": False, "port": port, "scheme": scheme,
             "error": str(exc),
         })
         return
+
+    stats = json_mod.loads(body)
 
     app_stats = stats.get("CherryPy Applications", {}) if isinstance(stats, dict) else {}
     requests = []

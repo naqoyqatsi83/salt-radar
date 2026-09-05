@@ -111,6 +111,37 @@
 # traffic. Set to false to see it too.
 # hide_stats_polls = true
 
+# How the agent authenticates to salt-api's /stats endpoint:
+#   "none"      - relies on stats_disable_auth: True in the master config
+#                 (see README's security note on that tradeoff)
+#   "plaintext" - logs in via eauth using stats_auth_username/
+#                 stats_auth_password below, read straight from this file
+#                 -- INSECURE: stored and passed to the agent as plain text
+#   "pillar"    - logs in via eauth using credentials resolved from
+#                 stats_auth_pillar_minion's compiled pillar (master-side,
+#                 no live round-trip to that minion) at the colon-delimited
+#                 stats_auth_pillar_path -- the credential never touches
+#                 this file or the Rust process
+# See the README for the minimal eauth ACL scope for the login account
+# (an empty permission list can read /stats but run nothing else).
+# stats_auth_mode = "none"
+
+# eauth backend the login uses (pam, ldap, file, ...). Only meaningful when
+# stats_auth_mode is "plaintext" or "pillar".
+# stats_auth_eauth = "pam"
+
+# Plaintext credentials for stats_auth_mode = "plaintext". See its own
+# comment above for the security tradeoff.
+# stats_auth_username = ""
+# stats_auth_password = ""
+
+# Minion ID whose pillar is compiled, and the colon-delimited path into it
+# resolving to a dict with "username"/"password" keys, for
+# stats_auth_mode = "pillar" -- e.g. "salt_radar:api_creds" for a pillar
+# shaped salt_radar: {api_creds: {username: ..., password: ...}}.
+# stats_auth_pillar_minion = ""
+# stats_auth_pillar_path = ""
+
 [dashboard]
 # Source for the Dashboard ZMQ panel's latency figure:
 #   "agent_ipc"    - local Rust<->Python agent round-trip (a liveness check,

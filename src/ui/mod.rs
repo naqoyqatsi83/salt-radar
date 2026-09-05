@@ -658,7 +658,11 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(Span::styled("  API tab", Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))),
         Line::from(vec![
             Span::styled("  requires", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled("  rest_cherrypy: {collect_stats: True, stats_disable_auth: True} on the master", Style::default().fg(color::TEXT)),
+            Span::styled("  rest_cherrypy: {collect_stats: True} on the master, plus stats_disable_auth: True", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  (unauthenticated /stats) or stats_auth_mode = plaintext/pillar (Config Editor)", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  request log", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),

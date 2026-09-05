@@ -1214,9 +1214,11 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
 /// salt-api's own in-memory request stats (rest_cherrypy's `collect_stats`
 /// option, polled over its /stats endpoint — see agent's `cmd_get_api_stats`).
 /// Only drawn at all when a salt-api process is actually detected running;
-/// even then, the stats themselves need `collect_stats: True` (and
-/// `stats_disable_auth: True`, since this agent never handles auth tokens)
-/// set on the master, so this doubles as a nudge to turn that on.
+/// even then, the stats themselves need `collect_stats: True` set on the
+/// master, plus either `stats_disable_auth: True` (the default,
+/// unauthenticated) or a `stats_auth_mode` set in the Config Editor (an
+/// eauth login instead) — so this doubles as a nudge to turn one of those
+/// on.
 fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
     let stats = &app.api_stats;
 
@@ -1239,6 +1241,8 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
     if !stats.reachable {
         let hint = if !stats.configured {
             "  rest_cherrypy not configured".to_string()
+        } else if app.config.api_stats_auth_mode != "none" {
+            format!("  {}:{} unreachable — {}", stats.scheme, stats.port, if stats.error.is_empty() { "check stats_auth_mode settings ('F3')" } else { stats.error.as_str() })
         } else {
             format!(
                 "  {}:{} unreachable — set rest_cherrypy: {{collect_stats: True, stats_disable_auth: True}}",

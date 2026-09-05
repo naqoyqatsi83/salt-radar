@@ -65,6 +65,35 @@ pub struct AppConfig {
     /// would otherwise drown out real traffic with one entry per tick; set
     /// to false to see it anyway.
     pub api_hide_stats_polls: bool,
+    /// How the agent authenticates to salt-api's `/stats` endpoint:
+    /// "none" (default) relies on `stats_disable_auth: True` in the master
+    /// config, so `/stats` needs no credentials at all — see the README's
+    /// security note on that tradeoff. "plaintext" logs in with
+    /// `api_stats_auth_username`/`api_stats_auth_password` read straight
+    /// from this config file (marked insecure — stored and transmitted to
+    /// the agent as plain text). "pillar" resolves those same two values,
+    /// once and then cached, from `api_stats_auth_pillar_minion`'s compiled
+    /// pillar at `api_stats_auth_pillar_path`, entirely master-side (no
+    /// live round-trip to that minion, and the credential never passes
+    /// through this config file or the Rust process at all).
+    pub api_stats_auth_mode: String,
+    /// eauth backend the login uses (pam, ldap, file, ...) — see Salt's
+    /// `external_auth` docs. Only meaningful when api_stats_auth_mode is
+    /// "plaintext" or "pillar".
+    pub api_stats_auth_eauth: String,
+    /// Plaintext credentials for api_stats_auth_mode = "plaintext". See the
+    /// mode's own doc comment above for the security tradeoff.
+    pub api_stats_auth_username: String,
+    pub api_stats_auth_password: String,
+    /// Minion ID whose pillar is compiled (master-side, no live minion
+    /// round-trip) to resolve credentials when api_stats_auth_mode is
+    /// "pillar".
+    pub api_stats_auth_pillar_minion: String,
+    /// Colon-delimited path into that minion's compiled pillar, resolving
+    /// to a dict with "username" and "password" string keys — e.g.
+    /// "salt_radar:api_creds" for `salt_radar: {api_creds: {username: ...,
+    /// password: ...}}`.
+    pub api_stats_auth_pillar_path: String,
     /// Per-unit overrides for the standard bundled Salt services — each 0.0
     /// means "no override, fall back to the global service_mem_*_threshold*
     /// above" (the global fields already use 0.0 to mean "check disabled",
@@ -139,6 +168,12 @@ impl Default for AppConfig {
             api_log_cap: 1000,
             api_log_max_age_secs: 3600,
             api_hide_stats_polls: true,
+            api_stats_auth_mode: "none".into(),
+            api_stats_auth_eauth: "pam".into(),
+            api_stats_auth_username: String::new(),
+            api_stats_auth_password: String::new(),
+            api_stats_auth_pillar_minion: String::new(),
+            api_stats_auth_pillar_path: String::new(),
             service_mem_abs_threshold_master_mb: 0.0,
             service_mem_pct_threshold_master: 0.0,
             service_mem_abs_threshold_minion_mb: 0.0,
@@ -224,6 +259,12 @@ struct ApiConfig {
     log_cap: Option<usize>,
     log_max_age_secs: Option<u64>,
     hide_stats_polls: Option<bool>,
+    stats_auth_mode: Option<String>,
+    stats_auth_eauth: Option<String>,
+    stats_auth_username: Option<String>,
+    stats_auth_password: Option<String>,
+    stats_auth_pillar_minion: Option<String>,
+    stats_auth_pillar_path: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -291,6 +332,12 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          log_cap = {}\n\
          log_max_age_secs = {}\n\
          hide_stats_polls = {}\n\
+         stats_auth_mode = {:?}\n\
+         stats_auth_eauth = {:?}\n\
+         stats_auth_username = {:?}\n\
+         stats_auth_password = {:?}\n\
+         stats_auth_pillar_minion = {:?}\n\
+         stats_auth_pillar_path = {:?}\n\
          \n\
          [dashboard]\n\
          zmq_latency_source = {:?}\n\
@@ -338,6 +385,12 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.api_log_cap,
         config.api_log_max_age_secs,
         config.api_hide_stats_polls,
+        config.api_stats_auth_mode,
+        config.api_stats_auth_eauth,
+        config.api_stats_auth_username,
+        config.api_stats_auth_password,
+        config.api_stats_auth_pillar_minion,
+        config.api_stats_auth_pillar_path,
         config.zmq_latency_source,
         config.show_zmq_graph,
         config.show_events_graph,
@@ -401,6 +454,12 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.log_cap { cfg.api_log_cap = v; }
                 if let Some(v) = a.log_max_age_secs { cfg.api_log_max_age_secs = v; }
                 if let Some(v) = a.hide_stats_polls { cfg.api_hide_stats_polls = v; }
+                if let Some(v) = a.stats_auth_mode { cfg.api_stats_auth_mode = v; }
+                if let Some(v) = a.stats_auth_eauth { cfg.api_stats_auth_eauth = v; }
+                if let Some(v) = a.stats_auth_username { cfg.api_stats_auth_username = v; }
+                if let Some(v) = a.stats_auth_password { cfg.api_stats_auth_password = v; }
+                if let Some(v) = a.stats_auth_pillar_minion { cfg.api_stats_auth_pillar_minion = v; }
+                if let Some(v) = a.stats_auth_pillar_path { cfg.api_stats_auth_pillar_path = v; }
             }
             if let Some(d) = toml_cfg.dashboard {
                 if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
