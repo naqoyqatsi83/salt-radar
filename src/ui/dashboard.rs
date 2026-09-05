@@ -201,11 +201,12 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     if !mid_panels.is_empty() {
         constraints.push(Constraint::Length(mid_h)); // Services + Key Status + Event Types (exact-fit)
     }
-    if app.config.show_job_pulse {
-        constraints.push(Constraint::Length(4)); // Job Pulse (KPI line + up to 3 jobs)
-    }
-    if show_api_row {
-        constraints.push(Constraint::Length(4)); // salt-api (KPI line + up to 3 recent requests)
+    if app.config.show_job_pulse || show_api_row {
+        // Job Pulse and salt-api are both a KPI line + up to 3 rows -- same
+        // fixed height -- and neither needs anywhere near the terminal's
+        // full width, so they share one row side by side instead of each
+        // claiming a full-width row of their own.
+        constraints.push(Constraint::Length(4));
     }
     constraints.push(Constraint::Min(10)); // Sparklines (at least 10 lines = 2 per panel × 5 default-enabled panels)
 
@@ -232,13 +233,19 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
         next += 1;
     }
 
-    if app.config.show_job_pulse {
-        draw_job_pulse(f, sections[next], app);
-        next += 1;
-    }
-
-    if show_api_row {
-        draw_api_row(f, sections[next], app);
+    if app.config.show_job_pulse || show_api_row {
+        if app.config.show_job_pulse && show_api_row {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(sections[next]);
+            draw_job_pulse(f, cols[0], app);
+            draw_api_row(f, cols[1], app);
+        } else if app.config.show_job_pulse {
+            draw_job_pulse(f, sections[next], app);
+        } else {
+            draw_api_row(f, sections[next], app);
+        }
         next += 1;
     }
 
@@ -276,11 +283,8 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
         constraints.push(Constraint::Length(services_height));
     }
     constraints.extend(panels.iter().map(|_| Constraint::Length(4)));
-    if app.config.show_job_pulse {
-        constraints.push(Constraint::Length(4)); // Job Pulse
-    }
-    if show_api_row {
-        constraints.push(Constraint::Length(4)); // salt-api
+    if app.config.show_job_pulse || show_api_row {
+        constraints.push(Constraint::Length(4)); // Job Pulse + salt-api, side by side
     }
 
     let layout = Layout::default().direction(Direction::Vertical).constraints(constraints).split(area);
@@ -298,12 +302,19 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
         panel.draw(f, layout[next], app);
         next += 1;
     }
-    if app.config.show_job_pulse {
-        draw_job_pulse(f, layout[next], app);
-        next += 1;
-    }
-    if show_api_row {
-        draw_api_row(f, layout[next], app);
+    if app.config.show_job_pulse || show_api_row {
+        if app.config.show_job_pulse && show_api_row {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(layout[next]);
+            draw_job_pulse(f, cols[0], app);
+            draw_api_row(f, cols[1], app);
+        } else if app.config.show_job_pulse {
+            draw_job_pulse(f, layout[next], app);
+        } else {
+            draw_api_row(f, layout[next], app);
+        }
     }
 }
 
