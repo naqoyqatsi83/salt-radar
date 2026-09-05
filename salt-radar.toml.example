@@ -138,8 +138,11 @@
 # strings, for stats_auth_mode = "pillar" -- like two independent
 # pillar.get calls, e.g. "salt_radar:api_user" / "salt_radar:api_password"
 # for a pillar shaped salt_radar: {api_user: ..., api_password: ...}.
-# Compiled against a fixed internal placeholder ID, not a real minion --
-# point your top.sls entry at '*' rather than a specific minion ID.
+# Compiled master-side for this master's own local minion ID -- the same
+# one `salt-call pillar.get` would use on this box, not something you
+# configure -- so a top.sls entry keyed to this master's own minion ID
+# (not '*', which would hand it to every minion) is all that's needed.
+# Requires a minion co-located with the master.
 # stats_auth_username_pillar_path = ""
 # stats_auth_password_pillar_path = ""
 

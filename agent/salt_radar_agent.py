@@ -447,15 +447,6 @@ def cmd_get_system_info(opts, req):
 # is rejected, not on every poll.
 _api_token_cache = {}
 
-# Placeholder ID pillar is compiled "for" in "pillar" mode -- not a real
-# minion, and it doesn't need to be one. Salt's pillar compilation always
-# takes a minion_id (for top.sls matching and any {{ opts.id }}-style
-# templating in the SLS), but salt-radar doesn't care whose pillar tree it
-# reads, only that a top.sls entry actually assigns the relevant SLS -- so
-# point that entry at '*' (or grains-based matching, if your top.sls
-# already uses that for every minion) rather than a specific minion ID.
-_STATS_PILLAR_ID = "salt-radar"
-
 # Cached compiled pillar dict for "pillar" mode -- compiling pillar is real
 # work (rendering SLS through the top file), so this is only redone when
 # there's no cached value yet or a login using values resolved from it has
@@ -478,17 +469,31 @@ def _pillar_get(compiled, path):
 
 
 def _compile_stats_pillar(opts, force_refresh=False):
-    """Compile pillar master-side for _STATS_PILLAR_ID -- no live round-trip
-    to any minion. Cached across polls; force_refresh re-renders (e.g. a
-    login with previously-resolved values just failed, so they may have
-    rotated in pillar since).
+    """Compile pillar master-side for this master's own local minion ID --
+    the same one `salt-call pillar.get` would use on this box, resolved the
+    same way Salt itself resolves it (cached /etc/salt/minion_id, else the
+    configured/guessed id) -- not a live round-trip, and not a minion the
+    user has to name in salt-radar.toml: it's whichever minion this master
+    already is. Scoped naturally to just this host, matching how a
+    top.sls entry keyed to this master's own minion ID would only ever be
+    compiled for requests made on this box. If this master has no local
+    minion at all, id resolution falls back to a guessed FQDN/IP that
+    almost certainly matches nothing in your top.sls -- pillar mode
+    requires a minion co-located with the master.
+
+    Cached across polls; force_refresh re-renders (e.g. a login with
+    previously-resolved values just failed, so they may have rotated in
+    pillar since).
     """
     global _api_pillar_compiled_cache
     if not force_refresh and _api_pillar_compiled_cache is not None:
         return _api_pillar_compiled_cache, None
     try:
         salt = _import_salt()
-        pil = salt.pillar.get_pillar(opts, {}, _STATS_PILLAR_ID, saltenv=opts.get("saltenv") or "base")
+        minion_id, _ = salt.config.get_id(opts)
+        cache = salt.cache.factory(opts)
+        grains = cache.fetch("minions", minion_id) or {}
+        pil = salt.pillar.get_pillar(opts, grains, minion_id, saltenv=opts.get("saltenv") or "base")
         compiled = pil.compile_pillar()
         _api_pillar_compiled_cache = compiled
         return compiled, None

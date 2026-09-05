@@ -74,11 +74,10 @@ pub struct AppConfig {
     /// the agent as plain text). "pillar" resolves those same two values,
     /// once and then cached, from `api_stats_auth_username_pillar_path`/
     /// `api_stats_auth_password_pillar_path` — like two independent
-    /// `pillar.get` calls, entirely master-side (no live round-trip to any
-    /// minion, and the credential never passes through this config file or
-    /// the Rust process at all). Which minion's pillar tree these paths
-    /// live under doesn't matter to salt-radar — see the doc comment on the
-    /// path fields below.
+    /// `pillar.get` calls, entirely master-side for this master's own local
+    /// minion (no live round-trip, and the credential never passes through
+    /// this config file or the Rust process at all) — see the doc comment
+    /// on the path fields below.
     pub api_stats_auth_mode: String,
     /// eauth backend the login uses (pam, ldap, file, ...) — see Salt's
     /// `external_auth` docs. Only meaningful when api_stats_auth_mode is
@@ -91,10 +90,11 @@ pub struct AppConfig {
     /// Colon-delimited pillar paths resolving directly to the username/
     /// password strings, for api_stats_auth_mode = "pillar" — e.g.
     /// "salt_radar:api_user" for a pillar shaped `salt_radar: {api_user:
-    /// ...}`. Compiled against a fixed internal placeholder ID, not a real
-    /// minion, so which minion (if any) these paths are "for" is
-    /// irrelevant — write the pillar SLS to match every target (e.g. a
-    /// `top.sls` entry under `'*'`) rather than one specific minion ID.
+    /// ...}`. Compiled for this master's own local minion ID (the same one
+    /// `salt-call pillar.get` would use on this box) — not something you
+    /// configure here, and requires a minion co-located with the master. A
+    /// `top.sls` entry keyed to that minion's own ID (not `'*'`, which
+    /// would hand the credential to every minion) is all that's needed.
     pub api_stats_auth_username_pillar_path: String,
     pub api_stats_auth_password_pillar_path: String,
     /// Per-unit overrides for the standard bundled Salt services — each 0.0
