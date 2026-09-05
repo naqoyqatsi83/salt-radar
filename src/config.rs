@@ -59,6 +59,12 @@ pub struct AppConfig {
     /// request log every poll regardless of how far under api_log_cap it is
     /// — a quiet API shouldn't let the log hold onto hours-old requests.
     pub api_log_max_age_secs: u64,
+    /// Whether salt-radar's own `GET /stats` polling (the request that
+    /// populates this very log) is filtered out of the API tab's request
+    /// log. Defaults on since polling at the Dashboard refresh interval
+    /// would otherwise drown out real traffic with one entry per tick; set
+    /// to false to see it anyway.
+    pub api_hide_stats_polls: bool,
     /// Per-unit overrides for the standard bundled Salt services — each 0.0
     /// means "no override, fall back to the global service_mem_*_threshold*
     /// above" (the global fields already use 0.0 to mean "check disabled",
@@ -132,6 +138,7 @@ impl Default for AppConfig {
             api_stats_window: 200,
             api_log_cap: 1000,
             api_log_max_age_secs: 3600,
+            api_hide_stats_polls: true,
             service_mem_abs_threshold_master_mb: 0.0,
             service_mem_pct_threshold_master: 0.0,
             service_mem_abs_threshold_minion_mb: 0.0,
@@ -216,6 +223,7 @@ struct ApiConfig {
     stats_window: Option<usize>,
     log_cap: Option<usize>,
     log_max_age_secs: Option<u64>,
+    hide_stats_polls: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -282,6 +290,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          stats_window = {}\n\
          log_cap = {}\n\
          log_max_age_secs = {}\n\
+         hide_stats_polls = {}\n\
          \n\
          [dashboard]\n\
          zmq_latency_source = {:?}\n\
@@ -328,6 +337,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.api_stats_window,
         config.api_log_cap,
         config.api_log_max_age_secs,
+        config.api_hide_stats_polls,
         config.zmq_latency_source,
         config.show_zmq_graph,
         config.show_events_graph,
@@ -390,6 +400,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.stats_window { cfg.api_stats_window = v; }
                 if let Some(v) = a.log_cap { cfg.api_log_cap = v; }
                 if let Some(v) = a.log_max_age_secs { cfg.api_log_max_age_secs = v; }
+                if let Some(v) = a.hide_stats_polls { cfg.api_hide_stats_polls = v; }
             }
             if let Some(d) = toml_cfg.dashboard {
                 if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }

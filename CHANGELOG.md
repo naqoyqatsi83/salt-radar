@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Dashboard: `show_host_resources`/`show_services`/`show_key_status`/`show_event_types`/`show_job_pulse`/`show_salt_api` config settings, each independently hiding one of the Dashboard's fixed (non-sparkline) panels — same on/off toggle, in the Config Editor (`F3`), as the existing sparkline `show_*_graph` settings. Hiding one of Services/Minion Key Status/Event Types reflows the row to fill the freed width instead of leaving a gap.
+- API tab: `hide_stats_polls` config setting (`[api]`, default `true`) filters salt-radar's own `GET /stats` poll out of the request log — left in, it added one entry per poll tick and drowned out real traffic. Set to `false` to see it anyway.
+- README: documented the security tradeoff of `stats_disable_auth` (required for the salt-api panel) — it removes salt-api's auth requirement for `/stats` specifically, so anyone reachable to that port can poll it unauthenticated; scoped to request-line/client/status/timing metadata only (no bodies or headers), but worth firewalling to trusted hosts if that matters in your environment.
 
 ### Changed
 - Dashboard: Job Pulse and salt-api now share one row side by side instead of each taking a full-width row — both are a fixed KPI-line-plus-up-to-3-rows panel of the same height, and neither needed the full row width, so combining them frees a full row of vertical space for the sparklines below.

@@ -831,6 +831,13 @@ impl App {
                                         }
 
                                         let (method, path) = Self::parse_request_line(&rec.request_line);
+                                        // salt-radar's own GET /stats poll (the request that
+                                        // populates this very panel) shows up in cpstats like
+                                        // any other request -- left in by default it would
+                                        // drown out real traffic with one entry per poll tick.
+                                        if self.config.api_hide_stats_polls && method == "GET" && path == "/stats" {
+                                            continue;
+                                        }
                                         self.api_requests_log.push_back(ApiLogEntry {
                                             received_at: now,
                                             client: rec.client.clone(),
@@ -1895,6 +1902,7 @@ impl App {
                 ConfigField { label: "stats_window", label_value: cfg.api_stats_window.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "log_cap", label_value: cfg.api_log_cap.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "log_max_age_secs", label_value: cfg.api_log_max_age_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "hide_stats_polls", label_value: on_off(cfg.api_hide_stats_polls), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[dashboard]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Choice(ZMQ_LATENCY_SOURCES) },
                 ConfigField { label: "show_zmq_graph", label_value: on_off(cfg.show_zmq_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
@@ -1973,6 +1981,7 @@ impl App {
             api_stats_window: parse_usize("stats_window")?,
             api_log_cap: parse_usize("log_cap")?,
             api_log_max_age_secs: parse_u64("log_max_age_secs")?,
+            api_hide_stats_polls: parse_bool("hide_stats_polls"),
             zmq_latency_source: vals.get("zmq_latency_source").unwrap_or(&"agent_ipc").to_string(),
             show_zmq_graph: parse_bool("show_zmq_graph"),
             show_events_graph: parse_bool("show_events_graph"),
