@@ -3679,8 +3679,8 @@ impl App {
                     KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
                     KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
-                    KeyCode::Char('6') => { self.current_tab = Tab::Pulse; return false; }
-                    KeyCode::Char('7') => { self.current_tab = Tab::Api; return false; }
+                    KeyCode::Char('6') => { self.current_tab = Tab::Api; return false; }
+                    KeyCode::Char('7') => { self.current_tab = Tab::Pulse; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
                     KeyCode::F(2) => {
                         self.mouse_enabled = !self.mouse_enabled;
@@ -4581,8 +4581,8 @@ impl App {
             KeyCode::Char('3') => self.current_tab = Tab::Events,
             KeyCode::Char('4') => self.current_tab = Tab::Jobs,
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
-            KeyCode::Char('6') => self.current_tab = Tab::Pulse,
-            KeyCode::Char('7') => self.current_tab = Tab::Api,
+            KeyCode::Char('6') => self.current_tab = Tab::Api,
+            KeyCode::Char('7') => self.current_tab = Tab::Pulse,
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
                     self.pulse_up();
@@ -5004,8 +5004,8 @@ impl App {
             30..=39 => Some(Tab::Events),
             43..=50 => Some(Tab::Jobs),
             54..=63 => Some(Tab::Alerts),
-            67..=75 => Some(Tab::Pulse),
-            79..=85 => Some(Tab::Api),
+            67..=73 => Some(Tab::Api),
+            77..=85 => Some(Tab::Pulse),
             _ => None,
         }
     }

@@ -335,7 +335,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     // Tab menu (left) and host/uptime (right) share the one content row.
-    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Pulse, Tab::Api];
+    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Pulse];
     let mut tab_spans: Vec<Span<'static>> = Vec::new();
     for (i, tab) in tabs.iter().enumerate() {
         if i > 0 {

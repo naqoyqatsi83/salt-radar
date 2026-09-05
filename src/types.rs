@@ -31,21 +31,21 @@ impl Tab {
             Self::Minions => Self::Events,
             Self::Events => Self::Jobs,
             Self::Jobs => Self::Alerts,
-            Self::Alerts => Self::Pulse,
-            Self::Pulse => Self::Api,
-            Self::Api => Self::Dashboard,
+            Self::Alerts => Self::Api,
+            Self::Api => Self::Pulse,
+            Self::Pulse => Self::Dashboard,
         }
     }
 
     pub fn prev(&self) -> Self {
         match self {
-            Self::Dashboard => Self::Api,
+            Self::Dashboard => Self::Pulse,
             Self::Minions => Self::Dashboard,
             Self::Events => Self::Minions,
             Self::Jobs => Self::Events,
             Self::Alerts => Self::Jobs,
-            Self::Pulse => Self::Alerts,
-            Self::Api => Self::Pulse,
+            Self::Api => Self::Alerts,
+            Self::Pulse => Self::Api,
         }
     }
 
