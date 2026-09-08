@@ -99,6 +99,10 @@ pub struct App {
     // Filter state
     pub filter_text: String,
     pub is_filtering: bool,
+    /// Events-tab filter actually applied to `self.events` — committed from
+    /// `filter_text` on Enter rather than re-filtered on every keystroke.
+    /// See `filtered_events`/`get_filtered_event`.
+    pub applied_filter: String,
 
     // Cursor positions
     pub event_selected: usize,
@@ -551,6 +555,7 @@ impl App {
 
             filter_text: String::new(),
             is_filtering: false,
+            applied_filter: String::new(),
 
             event_selected: 0,
             events_following: true,
@@ -1170,7 +1175,7 @@ impl App {
                     // non-following selection may occasionally drift by one
                     // on eviction, which the render-time `.min(total - 1)`
                     // clamp keeps harmless.
-                    if self.filter_text.is_empty() {
+                    if self.applied_filter.is_empty() {
                         Self::advance_tail_selection(&mut self.event_selected, self.events_following, events_evicted, self.events.len());
                     } else if self.events_following {
                         self.event_selected = self.filtered_events_len().saturating_sub(1);
@@ -1462,10 +1467,10 @@ impl App {
     }
 
     pub fn filtered_events_len(&self) -> usize {
-        if self.filter_text.is_empty() {
+        if self.applied_filter.is_empty() {
             return self.events.len();
         }
-        let pat = &self.filter_text;
+        let pat = &self.applied_filter;
         let known = self.accepted_ids();
         self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).count()
     }
@@ -1474,12 +1479,26 @@ impl App {
     /// newest-at-bottom (tail-style, see `events_following`), matching
     /// `self.events`'s own front-to-back order (oldest pushed first).
     pub fn get_filtered_event(&self, index: usize) -> Option<&SaltEvent> {
-        if self.filter_text.is_empty() {
+        if self.applied_filter.is_empty() {
             return self.events.get(index);
         }
-        let pat = &self.filter_text;
+        let pat = &self.applied_filter;
         let known = self.accepted_ids();
         self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).nth(index)
+    }
+
+    /// Full filtered event list, computed once. Callers that need more than
+    /// one element (e.g. rendering a page of rows) must use this instead of
+    /// looping `get_filtered_event(idx)` — each of those calls re-scans
+    /// `self.events` from the front, which turns an N-row page into an
+    /// O(rows * events) re-filter on every single redraw.
+    pub fn filtered_events(&self) -> Vec<&SaltEvent> {
+        if self.applied_filter.is_empty() {
+            return self.events.iter().collect();
+        }
+        let pat = &self.applied_filter;
+        let known = self.accepted_ids();
+        self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).collect()
     }
 
     /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
@@ -4453,6 +4472,7 @@ impl App {
                 KeyCode::Esc => {
                     self.is_filtering = false;
                     self.filter_text.clear();
+                    self.applied_filter.clear();
                     self.clamp_selection();
                     self.follow_events_tail_if_filtering();
                 }
@@ -4462,6 +4482,9 @@ impl App {
                     self.alert_selected = 0;
                     self.minion_selected = 0;
                     if self.current_tab == Tab::Events {
+                        // Committed here rather than kept live while typing --
+                        // see the Backspace/Char arms below.
+                        self.applied_filter = self.filter_text.clone();
                         self.event_selected = self.filtered_events_len().saturating_sub(1);
                         self.events_following = true;
                     } else {
@@ -4471,13 +4494,23 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     self.filter_text.pop();
-                    self.clamp_active_filter_selection();
-                    self.follow_events_tail_if_filtering();
+                    // Events applies its filter on Enter (see above), not per
+                    // keystroke -- `self.applied_filter` doesn't change here,
+                    // so re-clamping/re-following against it on every
+                    // character is wasted work (and was the direct cause of
+                    // typing itself stalling the TUI on masters with large
+                    // event buffers). Other tabs still filter live.
+                    if self.current_tab != Tab::Events {
+                        self.clamp_active_filter_selection();
+                        self.follow_events_tail_if_filtering();
+                    }
                 }
                 KeyCode::Char(c) => {
                     self.filter_text.push(c);
-                    self.clamp_active_filter_selection();
-                    self.follow_events_tail_if_filtering();
+                    if self.current_tab != Tab::Events {
+                        self.clamp_active_filter_selection();
+                        self.follow_events_tail_if_filtering();
+                    }
                 }
                 _ => {}
             }
@@ -4640,6 +4673,9 @@ impl App {
                 } else {
                     self.is_filtering = true;
                     self.filter_text.clear();
+                    if self.current_tab == Tab::Events {
+                        self.applied_filter.clear();
+                    }
                 }
             }
             KeyCode::Tab => {

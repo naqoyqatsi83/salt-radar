@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix Events tab filtering causing progressive slowdown and eventual freeze: the event list was re-scanning and re-filtering the entire event buffer once per visible row on every redraw, and again on every keystroke while typing a filter. The filtered list is now computed once per redraw, and the filter is applied on Enter instead of live per character (#98)
+
 ## [0.6.2] - 2026-09-05
 
 This release folds in `v0.6.2-rc1` through `v0.6.2-rc11`. Where a later

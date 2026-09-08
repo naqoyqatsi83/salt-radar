@@ -37,7 +37,11 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App, focused: bool) {
 }
 
 fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool) {
-    let total = app.filtered_events_len();
+    // Filtered once per frame -- indexing into this instead of calling
+    // `get_filtered_event(idx)` per visible row avoids re-scanning the whole
+    // event buffer from the front for every single row on every redraw.
+    let filtered = app.filtered_events();
+    let total = filtered.len();
     let selected = app.event_selected.min(total.saturating_sub(1));
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
@@ -96,10 +100,7 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool) {
             )));
         } else {
             for idx in scroll..(scroll + visible).min(total) {
-                let evt = match app.get_filtered_event(idx) {
-                    Some(e) => e,
-                    None => break,
-                };
+                let evt = filtered[idx];
 
                 let is_selected = idx == selected;
                 let sel_style = if is_selected {
