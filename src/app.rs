@@ -74,6 +74,12 @@ pub struct App {
     pub events_since_last_tick: Vec<SaltEvent>,
     pub event_breakdown: EventBreakdown,
     pub events_per_sec: f64,
+    /// Incrementally maintained subset of `events` matching `applied_filter`.
+    /// Rebuilt in full only when the filter itself changes (Enter/Esc/`/`);
+    /// kept in sync on every ingested/evicted event in O(1) instead of
+    /// re-scanning the whole buffer -- see `sync_filtered_events_cache` and
+    /// `rebuild_filtered_events_cache`.
+    filtered_events_cache: VecDeque<SaltEvent>,
 
     // Live jobs
     pub jobs: Vec<JobEntry>,
@@ -499,6 +505,7 @@ impl App {
             events_since_last_tick: Vec::new(),
             event_breakdown: EventBreakdown::default(),
             events_per_sec: 0.0,
+            filtered_events_cache: VecDeque::new(),
 
             jobs: Vec::new(),
 
@@ -1163,28 +1170,29 @@ impl App {
                     let evt = SaltEvent { tag, data, ts };
                     self.events_since_last_tick.push(evt.clone());
                     let events_evicted = self.events.len() >= self.config.event_buffer_size;
-                    if events_evicted {
-                        self.events.pop_front();
-                    }
+                    let evicted_evt = if events_evicted { self.events.pop_front() } else { None };
+                    // O(1) amortized: checks only the one event coming in and
+                    // (at most) the one going out, instead of re-scanning the
+                    // whole buffer -- see `sync_filtered_events_cache`. A
+                    // busy master can push hundreds of events through a
+                    // single drain_agent_messages() call, and a full re-scan
+                    // per event (or even once per tick) here is what made the
+                    // TUI stall/black out while an Events filter was active
+                    // (#98).
+                    Self::sync_filtered_events_cache(
+                        &mut self.filtered_events_cache,
+                        &self.applied_filter,
+                        &self.accepted_id_set,
+                        &evt,
+                        evicted_evt.as_ref(),
+                    );
                     self.events.push_back(evt);
                     self.events_total += 1;
                     self.last_event_time = Some(Instant::now());
-                    // Only the unfiltered case can be adjusted precisely here
-                    // (a filtered view's index space depends on which events
-                    // match, not on `self.events` directly) — a filtered,
-                    // non-following selection may occasionally drift by one
-                    // on eviction, which the render-time `.min(total - 1)`
-                    // clamp keeps harmless. The filtered case is NOT resolved
-                    // here: this runs once per *event*, and up to
-                    // MAX_PER_DRAIN (200) events are processed per
-                    // drain_agent_messages() call, so calling
-                    // filtered_events_len() (a full buffer re-scan) here
-                    // turns a busy event stream into hundreds of full
-                    // re-scans per tick -- exactly the freeze this was meant
-                    // to fix. It's resolved once per tick instead, after the
-                    // drain loop finishes (see update()).
                     if self.applied_filter.is_empty() {
                         Self::advance_tail_selection(&mut self.event_selected, self.events_following, events_evicted, self.events.len());
+                    } else if self.events_following {
+                        self.event_selected = self.filtered_events_cache.len().saturating_sub(1);
                     }
 
                     // Track live jobs from events
@@ -1474,11 +1482,10 @@ impl App {
 
     pub fn filtered_events_len(&self) -> usize {
         if self.applied_filter.is_empty() {
-            return self.events.len();
+            self.events.len()
+        } else {
+            self.filtered_events_cache.len()
         }
-        let pat = &self.applied_filter;
-        let known = self.accepted_ids();
-        self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).count()
     }
 
     /// Index 0 is the oldest buffered event — events display oldest-at-top,
@@ -1486,25 +1493,71 @@ impl App {
     /// `self.events`'s own front-to-back order (oldest pushed first).
     pub fn get_filtered_event(&self, index: usize) -> Option<&SaltEvent> {
         if self.applied_filter.is_empty() {
-            return self.events.get(index);
+            self.events.get(index)
+        } else {
+            self.filtered_events_cache.get(index)
         }
-        let pat = &self.applied_filter;
-        let known = self.accepted_ids();
-        self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).nth(index)
     }
 
-    /// Full filtered event list, computed once. Callers that need more than
-    /// one element (e.g. rendering a page of rows) must use this instead of
-    /// looping `get_filtered_event(idx)` — each of those calls re-scans
-    /// `self.events` from the front, which turns an N-row page into an
-    /// O(rows * events) re-filter on every single redraw.
+    /// Full filtered event list. O(1) — `filtered_events_cache` is kept in
+    /// sync incrementally as events arrive/are evicted (see
+    /// `sync_filtered_events_cache`) rather than re-scanned here, since a
+    /// busy master can push hundreds of events through the buffer between
+    /// redraws and a per-call re-filter of the whole buffer was the actual
+    /// cause of the TUI stalling/blacking out while an Events filter was
+    /// active (#98).
     pub fn filtered_events(&self) -> Vec<&SaltEvent> {
         if self.applied_filter.is_empty() {
-            return self.events.iter().collect();
+            self.events.iter().collect()
+        } else {
+            self.filtered_events_cache.iter().collect()
         }
-        let pat = &self.applied_filter;
-        let known = self.accepted_ids();
-        self.events.iter().filter(|e| Self::matches_event(e, pat, &known)).collect()
+    }
+
+    /// Full O(events) rebuild of `filtered_events_cache` against the current
+    /// `applied_filter`. Only called when the filter itself changes
+    /// (committed on Enter, or cleared on Esc/`/`) — never per-event or
+    /// per-tick.
+    fn rebuild_filtered_events_cache(&mut self) {
+        if self.applied_filter.is_empty() {
+            self.filtered_events_cache.clear();
+            return;
+        }
+        let pat = self.applied_filter.clone();
+        let known = self.accepted_ids().clone();
+        self.filtered_events_cache = self.events.iter()
+            .filter(|e| Self::matches_event(e, &pat, &known))
+            .cloned()
+            .collect();
+    }
+
+    /// Keeps `filtered_events_cache` consistent with a single event
+    /// ingested/evicted from `self.events`, in O(1) amortized instead of
+    /// re-scanning the buffer. Call this once per event, immediately after
+    /// pushing `new_evt` and (if `evicted` is set) popping it off the front.
+    ///
+    /// Takes its fields individually (rather than `&mut self`) so callers
+    /// already holding an unrelated borrow through `self` -- e.g.
+    /// `drain_agent_messages`' `self.agent_rx.lock()` guard -- can still call
+    /// it; a `&mut self` method here would conflict with that guard.
+    fn sync_filtered_events_cache(
+        cache: &mut VecDeque<SaltEvent>,
+        pat: &str,
+        known: &HashSet<String>,
+        new_evt: &SaltEvent,
+        evicted: Option<&SaltEvent>,
+    ) {
+        if pat.is_empty() {
+            return;
+        }
+        if let Some(evicted_evt) = evicted {
+            if Self::matches_event(evicted_evt, pat, known) {
+                cache.pop_front();
+            }
+        }
+        if Self::matches_event(new_evt, pat, known) {
+            cache.push_back(new_evt.clone());
+        }
     }
 
     /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
@@ -3349,13 +3402,6 @@ impl App {
         // Drain agent messages (must happen every tick)
         self.drain_agent_messages();
 
-        // Resolve tail-following against an active events filter once per
-        // tick rather than once per ingested event -- see the comment in
-        // drain_agent_messages() above.
-        if !self.applied_filter.is_empty() && self.events_following {
-            self.event_selected = self.filtered_events_len().saturating_sub(1);
-        }
-
         // Process fleet scan returns from events buffer
         self.process_fleet_returns();
 
@@ -4486,6 +4532,7 @@ impl App {
                     self.is_filtering = false;
                     self.filter_text.clear();
                     self.applied_filter.clear();
+                    self.filtered_events_cache.clear();
                     self.clamp_selection();
                     self.follow_events_tail_if_filtering();
                 }
@@ -4498,6 +4545,7 @@ impl App {
                         // Committed here rather than kept live while typing --
                         // see the Backspace/Char arms below.
                         self.applied_filter = self.filter_text.clone();
+                        self.rebuild_filtered_events_cache();
                         self.event_selected = self.filtered_events_len().saturating_sub(1);
                         self.events_following = true;
                     } else {
@@ -4688,6 +4736,7 @@ impl App {
                     self.filter_text.clear();
                     if self.current_tab == Tab::Events {
                         self.applied_filter.clear();
+                        self.filtered_events_cache.clear();
                     }
                 }
             }
