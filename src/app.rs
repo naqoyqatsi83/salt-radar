@@ -1174,11 +1174,17 @@ impl App {
                     // match, not on `self.events` directly) — a filtered,
                     // non-following selection may occasionally drift by one
                     // on eviction, which the render-time `.min(total - 1)`
-                    // clamp keeps harmless.
+                    // clamp keeps harmless. The filtered case is NOT resolved
+                    // here: this runs once per *event*, and up to
+                    // MAX_PER_DRAIN (200) events are processed per
+                    // drain_agent_messages() call, so calling
+                    // filtered_events_len() (a full buffer re-scan) here
+                    // turns a busy event stream into hundreds of full
+                    // re-scans per tick -- exactly the freeze this was meant
+                    // to fix. It's resolved once per tick instead, after the
+                    // drain loop finishes (see update()).
                     if self.applied_filter.is_empty() {
                         Self::advance_tail_selection(&mut self.event_selected, self.events_following, events_evicted, self.events.len());
-                    } else if self.events_following {
-                        self.event_selected = self.filtered_events_len().saturating_sub(1);
                     }
 
                     // Track live jobs from events
@@ -3342,6 +3348,13 @@ impl App {
     pub fn update(&mut self) {
         // Drain agent messages (must happen every tick)
         self.drain_agent_messages();
+
+        // Resolve tail-following against an active events filter once per
+        // tick rather than once per ingested event -- see the comment in
+        // drain_agent_messages() above.
+        if !self.applied_filter.is_empty() && self.events_following {
+            self.event_selected = self.filtered_events_len().saturating_sub(1);
+        }
 
         // Process fleet scan returns from events buffer
         self.process_fleet_returns();

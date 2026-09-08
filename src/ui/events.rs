@@ -32,15 +32,16 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App, focused: bool) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    draw_event_list(f, cols[0], app, focused);
-    draw_event_preview(f, cols[1], app);
+    // Filtered once per frame and shared by both panels -- avoids each of
+    // them separately re-scanning the whole (possibly `event_buffer_size`,
+    // default 10000) event buffer.
+    let filtered = app.filtered_events();
+
+    draw_event_list(f, cols[0], app, focused, &filtered);
+    draw_event_preview(f, cols[1], app, &filtered);
 }
 
-fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool) {
-    // Filtered once per frame -- indexing into this instead of calling
-    // `get_filtered_event(idx)` per visible row avoids re-scanning the whole
-    // event buffer from the front for every single row on every redraw.
-    let filtered = app.filtered_events();
+fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered: &[&crate::types::SaltEvent]) {
     let total = filtered.len();
     let selected = app.event_selected.min(total.saturating_sub(1));
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
@@ -133,13 +134,13 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool) {
 }
 
 /// Right panel: preview of the selected event
-fn draw_event_preview(f: &mut Frame, area: Rect, app: &App) {
+fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::types::SaltEvent]) {
     let block = super::titled_block(" Preview ", Style::default().fg(color::BORDER), color::BG_DARK);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let total = app.filtered_events_len();
+    let total = filtered.len();
     if total == 0 {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled("  No event selected.", Style::default().fg(color::TEXT_DIM))))
@@ -150,10 +151,7 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let selected = app.event_selected.min(total.saturating_sub(1));
-    let evt = match app.get_filtered_event(selected) {
-        Some(e) => e,
-        None => return,
-    };
+    let evt = filtered[selected];
 
     let mut lines = Vec::new();
 
