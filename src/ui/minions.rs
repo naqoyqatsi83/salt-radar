@@ -7,6 +7,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::types::Tab;
 
 use super::color;
 
@@ -32,9 +33,9 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool) {
             Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
-    } else if !app.filter_text.is_empty() {
+    } else if !app.filter_text_for(Tab::Minions).is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" /{}/ ", app.filter_text_for(Tab::Minions)), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
     } else if app.hide_timed_out {
@@ -106,7 +107,10 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool) {
                 .collect();
             let to_count = app.minion_info.iter()
                 .filter(|m| accepted_keys.contains(m.id.as_str()) || m.key_status == Some(crate::types::KeyStatus::Accepted))
-                .filter(|m| app.filter_text.is_empty() || crate::app::App::matches_minion(m, &app.filter_text))
+                .filter(|m| {
+                    let pat = app.filter_text_for(Tab::Minions);
+                    pat.is_empty() || crate::app::App::matches_minion(m, pat)
+                })
                 .filter(|m| m.timed_out)
                 .count();
 

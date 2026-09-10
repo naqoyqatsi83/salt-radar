@@ -5,6 +5,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::types::Tab;
 
 use super::color;
 
@@ -45,9 +46,9 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App, focused: bool) {
             Span::styled(filter_text, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
-    } else if !app.filter_text.is_empty() {
+    } else if !app.filter_text_for(Tab::Alerts).is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" /{}/ ", app.filter_text_for(Tab::Alerts)), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
     }

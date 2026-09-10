@@ -103,8 +103,22 @@ pub struct App {
     pub fleet_data: Option<FleetScan>,
 
     // Filter state
+    /// Live edit buffer while `is_filtering` is true, for whichever tab is
+    /// currently focused — NOT itself "the filter" for any tab once editing
+    /// ends. Each of Minions/Jobs/Alerts/Api keeps its own confirmed filter
+    /// in its dedicated field below (Events keeps its own in
+    /// `applied_filter`) precisely so that typing a filter on one tab
+    /// doesn't silently also filter an unrelated tab (a host filter typed
+    /// into Events has no sensible meaning applied to the Api tab's
+    /// method/path/status search, for instance). Tab-switching is blocked
+    /// while `is_filtering` is true (see the key handler), so there's never
+    /// more than one tab's filter being edited at once.
     pub filter_text: String,
     pub is_filtering: bool,
+    pub minions_filter: String,
+    pub jobs_filter: String,
+    pub alerts_filter: String,
+    pub api_filter: String,
     /// Events-tab filter actually applied to `self.events` — committed from
     /// `filter_text` on Enter rather than re-filtered on every keystroke.
     /// See `filtered_events`/`get_filtered_event`.
@@ -147,6 +161,13 @@ pub struct App {
     pending_jid_lookup_at: Option<Instant>,
     /// When Y is pressed, stores (request_id, jid) so the response auto-copies JSON
     pending_y_copy: Option<(u64, String)>,
+    /// Event Detail's own jid_lookup, requested when pretty view is first
+    /// toggled on for a job-return event (request_id, jid, minion_id) — kept
+    /// separate from `pending_jid_lookup` (Job Detail's own) since the two
+    /// popups can be independently open/closed across a popup return-stack.
+    pending_event_pretty: Option<(u64, String, String)>,
+    /// When `pending_event_pretty` was started, for timeout detection
+    pending_event_pretty_at: Option<Instant>,
     /// Events statistics
     pub events_total: u64,
     events_last_sec_count: u64,
@@ -438,7 +459,7 @@ impl MinionActivityItem {
 #[derive(Clone, Debug)]
 pub enum DetailPopup {
     Minion(String, PingState, Option<Vec<(String, String)>>, usize),
-    SaltEvent(SaltEvent, usize),
+    SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch },
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
@@ -562,6 +583,10 @@ impl App {
 
             filter_text: String::new(),
             is_filtering: false,
+            minions_filter: String::new(),
+            jobs_filter: String::new(),
+            alerts_filter: String::new(),
+            api_filter: String::new(),
             applied_filter: String::new(),
 
             event_selected: 0,
@@ -580,6 +605,8 @@ impl App {
             pending_jid_lookup: None,
             pending_jid_lookup_at: None,
             pending_y_copy: None,
+            pending_event_pretty: None,
+            pending_event_pretty_at: None,
             events_total: 0,
             events_last_sec_count: 0,
             events_last_sec_time: Instant::now(),
@@ -1011,6 +1038,26 @@ impl App {
                                     }
                                 }
                             }
+                            // Event Detail's own pretty-view fetch: find this
+                            // specific minion's real formatted_text (or note
+                            // its absence) and hand it to the open popup.
+                            if let Some((ev_id, _, ref mid)) = self.pending_event_pretty {
+                                if id == ev_id {
+                                    let text = jid_data.returns.iter()
+                                        .find(|r| &r.minion_id == mid)
+                                        .map(|r| r.formatted_text.clone())
+                                        .unwrap_or_default();
+                                    self.pending_event_pretty = None;
+                                    self.pending_event_pretty_at = None;
+                                    if let Some(DetailPopup::SaltEvent { ref mut pretty_fetch, .. }) = self.detail_popup {
+                                        *pretty_fetch = if text.trim().is_empty() {
+                                            crate::types::PrettyFetch::Failed
+                                        } else {
+                                            crate::types::PrettyFetch::Ready(text)
+                                        };
+                                    }
+                                }
+                            }
                             // Y key pending: copy pretty JSON of selected return
                             if let Some((y_id, _)) = self.pending_y_copy {
                                 if id == y_id {
@@ -1205,12 +1252,25 @@ impl App {
                         if !state.paused {
                             if let Some(evt) = self.events.back() {
                                 if Self::matches_sniffer_event(evt, &state.minion_ids) {
-                                    let sniffer_evicted = state.buffer.len() >= state.max_size;
-                                    if sniffer_evicted {
+                                    let will_evict = state.buffer.len() >= state.max_size;
+                                    // `selected`/`following` track the filtered (displayed)
+                                    // view, not the raw buffer — only touch them when this
+                                    // push/evict actually changes what's shown, i.e. when the
+                                    // evicted item (if any) or the new item itself passes the
+                                    // active highlight-keyword filter.
+                                    let evicted_visible = will_evict && state.buffer.front()
+                                        .map(|e| state.highlight_keywords.is_empty() || crate::types::SnifferState::event_matches_keywords(e, &state.highlight_keywords))
+                                        .unwrap_or(false);
+                                    if will_evict {
                                         state.buffer.pop_front();
                                     }
                                     state.buffer.push_back(evt.clone());
-                                    Self::advance_tail_selection(&mut state.selected, state.following, sniffer_evicted, state.buffer.len());
+                                    let new_visible = state.highlight_keywords.is_empty()
+                                        || crate::types::SnifferState::event_matches_keywords(evt, &state.highlight_keywords);
+                                    if new_visible || evicted_visible {
+                                        let visible_len = state.filtered_indices().len();
+                                        Self::advance_tail_selection(&mut state.selected, state.following, evicted_visible, visible_len);
+                                    }
                                     self.sniffer_dirty = true;
                                 }
                             }
@@ -1281,6 +1341,23 @@ impl App {
                     self.pending_jid_lookup_at = None;
                     self.return_to_minion_events = None;
                     self.detail_popup = None;
+                }
+            }
+        }
+
+        // Timeout for Event Detail's own pretty-view fetch -- falls back to
+        // the client-side approximation rather than closing the popup, since
+        // (unlike Job Detail) there's already a usable render without it.
+        if self.pending_event_pretty.is_some() {
+            if let Some(started) = self.pending_event_pretty_at {
+                if started.elapsed().as_secs() > 65 {
+                    self.pending_event_pretty = None;
+                    self.pending_event_pretty_at = None;
+                    if let Some(DetailPopup::SaltEvent { ref mut pretty_fetch, .. }) = self.detail_popup {
+                        if matches!(pretty_fetch, crate::types::PrettyFetch::Loading) {
+                            *pretty_fetch = crate::types::PrettyFetch::Failed;
+                        }
+                    }
                 }
             }
         }
@@ -1385,18 +1462,71 @@ impl App {
         text.to_lowercase().contains(&pat.to_lowercase())
     }
 
+    /// Splits a filter pattern into its comma-separated terms (trimmed, empty
+    /// tokens dropped) — mirrors Salt's own list-targeting syntax
+    /// (`salt -L 'web1,web2'`) instead of introducing regex: a filter of
+    /// `web1, web2` means "matches web1 OR web2", not a literal substring
+    /// containing a comma.
+    fn filter_terms(pat: &str) -> Vec<&str> {
+        pat.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect()
+    }
+
+    /// Case-insensitive wildcard match (`*` = any run of characters, `?` =
+    /// any single character), anchored across the whole of `text` — the same
+    /// semantics as Salt's own glob minion targeting (`salt 'web*' ...`).
+    /// Classic O(n*m) DP wildcard-matching table; hostnames are short enough
+    /// that this is effectively instant.
+    fn glob_match(text: &str, pattern: &str) -> bool {
+        let t: Vec<char> = text.to_lowercase().chars().collect();
+        let p: Vec<char> = pattern.to_lowercase().chars().collect();
+        let (tn, pn) = (t.len(), p.len());
+        let mut dp = vec![vec![false; pn + 1]; tn + 1];
+        dp[0][0] = true;
+        for j in 1..=pn {
+            if p[j - 1] == '*' { dp[0][j] = dp[0][j - 1]; }
+        }
+        for i in 1..=tn {
+            for j in 1..=pn {
+                dp[i][j] = match p[j - 1] {
+                    '*' => dp[i - 1][j] || dp[i][j - 1],
+                    '?' => dp[i - 1][j - 1],
+                    c => dp[i - 1][j - 1] && c == t[i - 1],
+                };
+            }
+        }
+        dp[tn][pn]
+    }
+
+    /// A term matches a host/minion-id field via glob semantics if it looks
+    /// like a glob (contains `*`/`?`), otherwise via the same plain substring
+    /// semantics as every other field — so `web` still matches `web1` without
+    /// requiring `web*`, but `web*` anchors to the whole id like Salt's CLI
+    /// targeting does.
+    fn host_matches_term(host: &str, term: &str) -> bool {
+        if term.contains('*') || term.contains('?') {
+            Self::glob_match(host, term)
+        } else {
+            Self::matches_filter(host, term)
+        }
+    }
+
     fn matches_event(evt: &SaltEvent, pat: &str, known_minions: &HashSet<String>) -> bool {
-        if pat.is_empty() { return true; }
-        if Self::matches_filter(&evt.tag, pat)
-            || evt.data["fun"].as_str().map(|f| Self::matches_filter(f, pat)).unwrap_or(false)
-            || evt.data["id"].as_str().map(|i| Self::matches_filter(i, pat)).unwrap_or(false)
-            || Self::matches_filter(&evt.data.to_string(), pat)
+        let terms = Self::filter_terms(pat);
+        if terms.is_empty() { return true; }
+        terms.iter().any(|term| Self::matches_event_term(evt, term, known_minions))
+    }
+
+    fn matches_event_term(evt: &SaltEvent, term: &str, known_minions: &HashSet<String>) -> bool {
+        if Self::matches_filter(&evt.tag, term)
+            || evt.data["fun"].as_str().map(|f| Self::matches_filter(f, term)).unwrap_or(false)
+            || evt.data["id"].as_str().map(|i| Self::host_matches_term(i, term)).unwrap_or(false)
+            || Self::matches_filter(&evt.data.to_string(), term)
         {
             return true;
         }
-        // If the filter matches a known minion ID, also show events targeted at
+        // If the term matches a known minion ID, also show events targeted at
         // all minions ("*") or whose tgt pattern could match that minion.
-        if known_minions.iter().any(|m| Self::matches_filter(m, pat)) {
+        if known_minions.iter().any(|m| Self::host_matches_term(m, term)) {
             if let Some(tgt) = evt.data["tgt"].as_str() {
                 if tgt == "*" || known_minions.iter().any(|m| Self::matches_filter(tgt, m)) {
                     return true;
@@ -1446,15 +1576,20 @@ impl App {
     }
 
     fn matches_job(job: &JobEntry, pat: &str, known_minions: &HashSet<String>) -> bool {
-        if pat.is_empty() { return true; }
-        if Self::matches_filter(&job.jid, pat)
-            || Self::matches_filter(&job.fun, pat)
-            || Self::matches_filter(&job.tgt, pat)
+        let terms = Self::filter_terms(pat);
+        if terms.is_empty() { return true; }
+        terms.iter().any(|term| Self::matches_job_term(job, term, known_minions))
+    }
+
+    fn matches_job_term(job: &JobEntry, term: &str, known_minions: &HashSet<String>) -> bool {
+        if Self::matches_filter(&job.jid, term)
+            || Self::matches_filter(&job.fun, term)
+            || Self::host_matches_term(&job.tgt, term)
         {
             return true;
         }
         // Show jobs targeting "*" when searching for a known minion
-        if known_minions.iter().any(|m| Self::matches_filter(m, pat)) {
+        if known_minions.iter().any(|m| Self::host_matches_term(m, term)) {
             if job.tgt == "*" {
                 return true;
             }
@@ -1463,21 +1598,88 @@ impl App {
     }
 
     fn matches_alert(alert: &AlertEntry, pat: &str) -> bool {
-        if pat.is_empty() { return true; }
-        Self::matches_filter(alert.rule, pat)
-            || Self::matches_filter(&alert.description, pat)
+        let terms = Self::filter_terms(pat);
+        if terms.is_empty() { return true; }
+        terms.iter().any(|term| {
+            Self::matches_filter(alert.rule, term) || Self::matches_filter(&alert.description, term)
+        })
     }
 
     pub fn matches_minion(minion: &MinionInfo, pat: &str) -> bool {
-        if pat.is_empty() { return true; }
-        Self::matches_filter(&minion.id, pat)
-            || Self::matches_filter(&minion.os, pat)
-            || Self::matches_filter(&minion.osrelease, pat)
-            || Self::matches_filter(&minion.salt_version, pat)
+        let terms = Self::filter_terms(pat);
+        if terms.is_empty() { return true; }
+        terms.iter().any(|term| {
+            Self::host_matches_term(&minion.id, term)
+                || Self::matches_filter(&minion.os, term)
+                || Self::matches_filter(&minion.osrelease, term)
+                || Self::matches_filter(&minion.salt_version, term)
+        })
     }
 
     fn accepted_ids(&self) -> &HashSet<String> {
         &self.accepted_id_set
+    }
+
+    /// The filter terms currently driving the Events list — `filter_text`
+    /// while actively typing (so highlighting tracks live as you type),
+    /// `applied_filter` once confirmed (what `filtered_events()` itself
+    /// matches against; see the `applied_filter` field doc for why Events
+    /// debounces to Enter rather than filtering per-keystroke like every
+    /// other tab). Used to color-highlight matched terms in the event list.
+    /// The confirmed filter text for `tab` — the live edit buffer
+    /// (`filter_text`) if `tab` is the one currently being typed into,
+    /// otherwise that tab's own dedicated field, never another tab's.
+    pub fn filter_text_for(&self, tab: Tab) -> &str {
+        if self.is_filtering && self.current_tab == tab {
+            return &self.filter_text;
+        }
+        match tab {
+            Tab::Minions => &self.minions_filter,
+            Tab::Jobs => &self.jobs_filter,
+            Tab::Alerts => &self.alerts_filter,
+            Tab::Api => &self.api_filter,
+            _ => &self.filter_text,
+        }
+    }
+
+    /// Commits `text` as `self.current_tab`'s own filter — called on
+    /// Enter/Esc from the filter-input handler once editing ends. A no-op
+    /// for tabs that don't keep a dedicated field (Events uses
+    /// `applied_filter` instead, set directly by its own Enter/Esc arms).
+    fn commit_tab_filter(&mut self, text: &str) {
+        match self.current_tab {
+            Tab::Minions => self.minions_filter = text.to_string(),
+            Tab::Jobs => self.jobs_filter = text.to_string(),
+            Tab::Alerts => self.alerts_filter = text.to_string(),
+            Tab::Api => self.api_filter = text.to_string(),
+            _ => {}
+        }
+    }
+
+    /// Expands any glob term (contains `*`/`?`) to the concrete minion IDs
+    /// it matches — a glob never literally appears in rendered text (there's
+    /// no "debian12-*" substring anywhere to highlight), so used as-is it
+    /// would never match anything. Falls back to the raw term if it matches
+    /// no known minion, so an in-progress/nonsense glob doesn't just vanish.
+    /// Plain (non-glob) terms pass through unchanged. Shared by the Events
+    /// tab's own filter terms and the Event Sniffer's `color_terms` (see
+    /// `SnifferState`) so both resolve host globs identically.
+    fn resolve_host_terms<'a>(&self, terms: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        let known = self.accepted_ids();
+        terms.into_iter().flat_map(|term| {
+            if term.contains('*') || term.contains('?') {
+                let matched: Vec<String> = known.iter().filter(|m| Self::glob_match(m, term)).cloned().collect();
+                if matched.is_empty() { vec![term.to_string()] } else { matched }
+            } else {
+                vec![term.to_string()]
+            }
+        }).collect()
+    }
+
+    pub fn events_filter_terms(&self) -> Vec<String> {
+        let pat: &str = if self.is_filtering { &self.filter_text } else { &self.applied_filter };
+        let terms = Self::filter_terms(pat);
+        self.resolve_host_terms(terms)
     }
 
     pub fn filtered_events_len(&self) -> usize {
@@ -1771,19 +1973,19 @@ impl App {
     }
 
     pub fn filtered_jobs_len(&self) -> usize {
-        if self.filter_text.is_empty() {
+        let pat = self.filter_text_for(Tab::Jobs);
+        if pat.is_empty() {
             return self.jobs.len();
         }
-        let pat = &self.filter_text;
         let known = self.accepted_ids();
         self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).count()
     }
 
     pub fn get_filtered_job(&self, index: usize) -> Option<&JobEntry> {
-        if self.filter_text.is_empty() {
+        let pat = self.filter_text_for(Tab::Jobs);
+        if pat.is_empty() {
             return self.jobs.get(index);
         }
-        let pat = &self.filter_text;
         let known = self.accepted_ids();
         self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).nth(index)
     }
@@ -1801,27 +2003,30 @@ impl App {
     }
 
     pub fn filtered_alerts_len(&self) -> usize {
-        if self.filter_text.is_empty() {
+        let pat = self.filter_text_for(Tab::Alerts);
+        if pat.is_empty() {
             return self.alert_engine.alerts.len();
         }
-        let pat = &self.filter_text;
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).count()
     }
 
     pub fn get_filtered_alert(&self, index: usize) -> Option<&AlertEntry> {
-        if self.filter_text.is_empty() {
+        let pat = self.filter_text_for(Tab::Alerts);
+        if pat.is_empty() {
             return self.alert_engine.alerts.get(index);
         }
-        let pat = &self.filter_text;
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).nth(index)
     }
 
     fn matches_api_log_entry(entry: &ApiLogEntry, pat: &str) -> bool {
-        if pat.is_empty() { return true; }
-        Self::matches_filter(&entry.method, pat)
-            || Self::matches_filter(&entry.path, pat)
-            || Self::matches_filter(&entry.response_status, pat)
-            || Self::matches_filter(&entry.client, pat)
+        let terms = Self::filter_terms(pat);
+        if terms.is_empty() { return true; }
+        terms.iter().any(|term| {
+            Self::matches_filter(&entry.method, term)
+                || Self::matches_filter(&entry.path, term)
+                || Self::matches_filter(&entry.response_status, term)
+                || Self::host_matches_term(&entry.client, term)
+        })
     }
 
     /// Whether an entry should be visible given the current
@@ -1835,14 +2040,14 @@ impl App {
     /// Index 0 is the oldest buffered request — same oldest-at-top,
     /// newest-at-bottom convention as Events (self.events).
     pub fn filtered_api_log_len(&self) -> usize {
-        let pat = &self.filter_text;
+        let pat = self.filter_text_for(Tab::Api);
         self.api_requests_log.iter()
             .filter(|e| self.api_log_entry_visible(e) && Self::matches_api_log_entry(e, pat))
             .count()
     }
 
     pub fn get_filtered_api_log(&self, index: usize) -> Option<&ApiLogEntry> {
-        let pat = &self.filter_text;
+        let pat = self.filter_text_for(Tab::Api);
         self.api_requests_log.iter()
             .filter(|e| self.api_log_entry_visible(e) && Self::matches_api_log_entry(e, pat))
             .nth(index)
@@ -1894,7 +2099,7 @@ impl App {
             .map(|k| k.id.as_str())
             .collect();
         let hide = self.hide_timed_out;
-        let pat = &self.filter_text;
+        let pat = self.filter_text_for(Tab::Minions);
         let resp_count = self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
             .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
@@ -1918,7 +2123,7 @@ impl App {
             .map(|k| k.id.as_str())
             .collect();
         let hide = self.hide_timed_out;
-        let pat = &self.filter_text;
+        let pat = self.filter_text_for(Tab::Minions);
 
         let resp_count = self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
@@ -2357,7 +2562,7 @@ impl App {
                 self.return_to_minion_events = None;
                 self.return_to_sniffer = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
-                    self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
+                    self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
                     self.popup_tab = Some(self.current_tab);
                 }
             }
@@ -3790,6 +3995,18 @@ impl App {
                         .collect();
                     if !ids.is_empty() {
                         let sniffer_max = self.config.sniffer_buffer_size;
+                        // Color occurrences of the just-entered minion
+                        // target(s) within captured content (glob-resolved,
+                        // same as the Events tab's own filter terms) --
+                        // purely cosmetic, not a second filter on top of
+                        // `minion_ids`'s own broader relevance matching. See
+                        // `SnifferState::color_terms` doc for why: a
+                        // wildcard-targeted job relevant to a sniffed minion
+                        // doesn't literally contain that minion's name
+                        // anywhere in its JSON, so re-filtering display by
+                        // literal text match on these same terms would hide
+                        // legitimate, already-captured traffic.
+                        let color_terms = self.resolve_host_terms(ids.iter().map(|s| s.as_str()));
                         self.detail_popup = Some(DetailPopup::EventSniffer(
                             crate::types::SnifferState {
                                 minion_ids: ids.clone(),
@@ -3798,7 +4015,8 @@ impl App {
                                 paused: false,
                                 selected: 0,
                                 following: true,
-                                highlight_keywords: ids,
+                                color_terms,
+                                highlight_keywords: Vec::new(),
                                 highlight_input: None,
                             }
                         ));
@@ -3863,6 +4081,7 @@ impl App {
         // Local variable to defer jid_lookup agent command (avoids borrow conflict)
         let mut trigger_y_lookup: Option<String> = None;
         let mut trigger_grains_fetch: Option<String> = None;
+        let mut trigger_event_pretty_lookup: Option<(String, String)> = None;
         // Pre-compute events for MinionEvents popup to avoid borrow conflict
         let mut minion_events_cache: Option<(String, Vec<MinionActivityItem>)> = None;
         if let Some(DetailPopup::MinionEvents { ref minion_id, .. }) = self.detail_popup {
@@ -4183,11 +4402,15 @@ impl App {
                         }
                         return false;
                     }
+                    // Nav/selection/Enter/y all operate on the filtered
+                    // (displayed) view, not raw buffer indices — see
+                    // `SnifferState::filtered_indices`.
+                    let visible = state.filtered_indices();
                     match code {
                         KeyCode::Enter => {
-                            if let Some(evt) = state.buffer.get(state.selected) {
+                            if let Some(evt) = visible.get(state.selected).and_then(|&i| state.buffer.get(i)) {
                                 self.return_to_sniffer = Some(state.clone());
-                                self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
+                                self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
                                 self.popup_tab = Some(self.current_tab);
                             }
                         }
@@ -4196,28 +4419,28 @@ impl App {
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             state.selected = state.selected.saturating_sub(1);
-                            state.following = state.selected + 1 >= state.buffer.len();
+                            state.following = state.selected + 1 >= visible.len();
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
-                            let max = state.buffer.len().saturating_sub(1);
+                            let max = visible.len().saturating_sub(1);
                             state.selected = state.selected.saturating_add(1).min(max);
-                            state.following = state.selected + 1 >= state.buffer.len();
+                            state.following = state.selected + 1 >= visible.len();
                         }
                         KeyCode::PageUp => {
                             state.selected = state.selected.saturating_sub(10);
-                            state.following = state.selected + 1 >= state.buffer.len();
+                            state.following = state.selected + 1 >= visible.len();
                         }
                         KeyCode::PageDown => {
-                            let max = state.buffer.len().saturating_sub(1);
+                            let max = visible.len().saturating_sub(1);
                             state.selected = state.selected.saturating_add(10).min(max);
-                            state.following = state.selected + 1 >= state.buffer.len();
+                            state.following = state.selected + 1 >= visible.len();
                         }
                         KeyCode::Home => {
                             state.selected = 0;
-                            state.following = state.buffer.len() <= 1;
+                            state.following = visible.len() <= 1;
                         }
                         KeyCode::End => {
-                            state.selected = state.buffer.len().saturating_sub(1);
+                            state.selected = visible.len().saturating_sub(1);
                             state.following = true;
                         }
                         KeyCode::Char('p') | KeyCode::Char('P') => {
@@ -4228,7 +4451,8 @@ impl App {
                         }
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             let mut text = String::new();
-                            for (i, evt) in state.buffer.iter().enumerate() {
+                            for (i, &buf_idx) in visible.iter().enumerate() {
+                                let Some(evt) = state.buffer.get(buf_idx) else { continue };
                                 let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
                                     .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
                                     .unwrap_or_else(|| evt.ts.to_string());
@@ -4247,7 +4471,7 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::SaltEvent(ref evt, ref mut scroll_offset) => {
+                DetailPopup::SaltEvent { ref evt, scroll: ref mut scroll_offset, ref mut pretty, ref mut pretty_fetch } => {
                     // self.event_detail_scroll_max is the true viewport-aware
                     // last-scroll-position, recomputed and written back every
                     // render (see draw_event_detail) — clamping against it here
@@ -4292,11 +4516,30 @@ impl App {
                                 "Tag: {}\nTimestamp: {}\n\nData:\n{}",
                                 evt.tag,
                                 ts,
-                                serde_json::to_string_pretty(&evt.data).unwrap_or_default()
+                                event_body_as_copied_text(evt, *pretty, pretty_fetch),
                             ));
                         }
                         KeyCode::Char('Y') => {
-                            clipboard_text = Some(serde_json::to_string_pretty(&evt.data).unwrap_or_default());
+                            clipboard_text = Some(event_body_as_copied_text(evt, *pretty, pretty_fetch));
+                        }
+                        KeyCode::Char('t') | KeyCode::Char('T') => {
+                            *pretty = !*pretty;
+                            *scroll_offset = 0;
+                            // Fetch the real `salt-run jobs.lookup_jid` text once
+                            // per event (same subprocess + flags Job Detail uses
+                            // -- see `cmd_jid_lookup` in the agent) instead of
+                            // relying solely on the client-side approximation,
+                            // so pretty-view colors/formatting match this
+                            // master's actual Salt output. Only worth doing for
+                            // a job-return event, and only once (Idle).
+                            if *pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Idle) {
+                                let jid = evt.data.get("jid").and_then(|v| v.as_str());
+                                let mid = evt.data.get("id").and_then(|v| v.as_str());
+                                if let (Some(jid), Some(mid)) = (jid, mid) {
+                                    trigger_event_pretty_lookup = Some((jid.to_string(), mid.to_string()));
+                                    *pretty_fetch = crate::types::PrettyFetch::Loading;
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -4486,7 +4729,7 @@ impl App {
                             _ => None,
                         };
                         if let Some(evt) = evt_enter {
-                            self.detail_popup = Some(DetailPopup::SaltEvent(evt, 0));
+                            self.detail_popup = Some(DetailPopup::SaltEvent { evt, scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
                         }
                     }
                 }
@@ -4514,6 +4757,11 @@ impl App {
             return false;
         }
         }
+        if let Some((jid, mid)) = trigger_event_pretty_lookup {
+            let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+            self.pending_event_pretty = Some((req_id, jid, mid));
+            self.pending_event_pretty_at = Some(Instant::now());
+        }
         if let Some(jid) = trigger_y_lookup {
             let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
             self.pending_y_copy = Some((req_id, jid));
@@ -4531,8 +4779,12 @@ impl App {
                 KeyCode::Esc => {
                     self.is_filtering = false;
                     self.filter_text.clear();
-                    self.applied_filter.clear();
-                    self.filtered_events_cache.clear();
+                    if self.current_tab == Tab::Events {
+                        self.applied_filter.clear();
+                        self.filtered_events_cache.clear();
+                    } else {
+                        self.commit_tab_filter("");
+                    }
                     self.clamp_selection();
                     self.follow_events_tail_if_filtering();
                 }
@@ -4550,6 +4802,8 @@ impl App {
                         self.events_following = true;
                     } else {
                         self.event_selected = 0;
+                        let text = self.filter_text.clone();
+                        self.commit_tab_filter(&text);
                     }
                     self.clamp_selection();
                 }
@@ -4865,7 +5119,7 @@ impl App {
                 // Must match draw_minion_list's own conditions exactly (src/ui/minions.rs)
                 // -- unlike Events/Alerts/Jobs, Minions' own `visible` count is reduced
                 // by this same overhead, not just its data_start.
-                let filter_shown = self.is_filtering || !self.filter_text.is_empty() || self.hide_timed_out;
+                let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Minions).is_empty() || self.hide_timed_out;
                 let overhead = if filter_shown { 1 } else { 0 }
                     + if self.admin_mode { 1 } else { 0 };
                 let visible = inner_h.saturating_sub(overhead).saturating_sub(2).max(1);
@@ -4900,7 +5154,7 @@ impl App {
                 let selected = self.event_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                let filter_shown = self.is_filtering || !self.filter_text.is_empty();
+                let filter_shown = self.is_filtering || !self.applied_filter.is_empty();
                 let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
                 if r >= data_start {
                     let visual_idx = r - data_start;
@@ -4920,7 +5174,7 @@ impl App {
                 let selected = self.alert_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                let filter_shown = self.is_filtering || !self.filter_text.is_empty();
+                let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Alerts).is_empty();
                 let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
                 if r >= data_start {
                     let visual_idx = r - data_start;
@@ -4939,7 +5193,7 @@ impl App {
                 let selected = self.api_log_selected.min(total.saturating_sub(1));
                 let scroll = scroll_offset(selected, visible, total);
 
-                let filter_shown = self.is_filtering || !self.filter_text.is_empty();
+                let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Api).is_empty();
                 let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
                 if r >= data_start {
                     let visual_idx = r - data_start;
@@ -4987,7 +5241,7 @@ impl App {
                     let selected = self.job_selected.min(total.saturating_sub(1));
                     let scroll = scroll_offset(selected, visible, total);
 
-                    let filter_shown = self.is_filtering || !self.filter_text.is_empty();
+                    let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Jobs).is_empty();
                     let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
                     if r >= data_start {
                         let visual_idx = r - data_start;
@@ -5122,7 +5376,7 @@ impl App {
                     match item {
                         MinionActivityItem::Event(_, evt) => {
                             self.return_to_minion_events = Some((mid, item_idx));
-                            self.detail_popup = Some(DetailPopup::SaltEvent(evt.clone(), 0));
+                            self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
                         }
                         MinionActivityItem::CacheJob(job) => {
                             self.return_to_minion_events = Some((mid, item_idx));
@@ -5506,6 +5760,24 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
     })
 }
 
+/// What `y`/`Y` copy for an event's body — matches whatever `draw_event_detail`
+/// is currently rendering (raw JSON vs. the highstate-style pretty view)
+/// rather than always copying JSON regardless of the on-screen mode.
+fn event_body_as_copied_text(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate::types::PrettyFetch) -> String {
+    if pretty {
+        if let crate::types::PrettyFetch::Ready(text) = pretty_fetch {
+            return App::strip_ansi(text);
+        }
+        let lines = match crate::ui::detail_popup::job_return_wrapper(evt) {
+            Some((id, ret, retcode)) => crate::ui::detail_popup::pretty_return_lines(&id, &ret, retcode),
+            None => crate::ui::detail_popup::nested_return_lines(&evt.data, 0),
+        };
+        crate::ui::detail_popup::plain_text(&lines)
+    } else {
+        serde_json::to_string_pretty(&evt.data).unwrap_or_default()
+    }
+}
+
 pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
     match full_return {
         serde_json::Value::Object(obj) => {
@@ -5666,21 +5938,24 @@ fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
     result
 }
 
-/// Check if a MinionActivityItem matches a lowercase filter pattern.
+/// Check if a MinionActivityItem matches a lowercase filter pattern — a
+/// comma-separated list of terms is OR'd, same as every other filter in the
+/// app (see `App::filter_terms`); `pat` is already lowercased once by the
+/// caller since this runs per-item over a potentially large activity list.
 fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
-    match item {
+    pat.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).any(|term| match item {
         MinionActivityItem::Event(_, evt) => {
-            evt.tag.to_lowercase().contains(pat)
-                || evt.data.to_string().to_lowercase().contains(pat)
+            evt.tag.to_lowercase().contains(term)
+                || evt.data.to_string().to_lowercase().contains(term)
         }
         MinionActivityItem::CacheJob(job) => {
-            job.jid.to_lowercase().contains(pat)
-                || job.fun.to_lowercase().contains(pat)
+            job.jid.to_lowercase().contains(term)
+                || job.fun.to_lowercase().contains(term)
         }
         MinionActivityItem::Alert(alert) => {
-            alert.description.to_lowercase().contains(pat)
-                || alert.key.to_lowercase().contains(pat)
+            alert.description.to_lowercase().contains(term)
+                || alert.key.to_lowercase().contains(term)
         }
-    }
+    })
 }
 

@@ -350,6 +350,22 @@ pub struct SaltEvent {
     pub ts: f64,
 }
 
+/// State of fetching the real `salt-run jobs.lookup_jid --force-color
+/// --state-output=full --state-verbose=True` text for one event's pretty
+/// view — the same subprocess call and flags Job Detail already uses (see
+/// `cmd_jid_lookup` in the agent), so pretty-view colors/formatting are
+/// authoritative Salt output instead of a hand-rolled approximation that
+/// can drift from a given master's actual color scheme and doesn't respect
+/// per-master output settings.
+#[derive(Clone, Debug, Default)]
+pub enum PrettyFetch {
+    #[default]
+    Idle,
+    Loading,
+    Ready(String),
+    Failed,
+}
+
 // ─── Event sniffer state ─────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -364,9 +380,55 @@ pub struct SnifferState {
     /// arrive (tail -f style); moving selection away from the last row
     /// turns this off so live traffic doesn't yank the selection around.
     pub following: bool,
+    /// The minion-id target(s) entered when starting the sniffer (glob-
+    /// resolved to concrete minion IDs at construction, same as the Events
+    /// tab's own filter — see `App::resolve_host_terms`), used ONLY to color
+    /// their occurrences within captured content. Deliberately not a filter:
+    /// `minion_ids` above already decides what gets captured via broader
+    /// relevance matching (a wildcard-targeted job counts even though it
+    /// doesn't literally contain any minion's name), so re-filtering the
+    /// display by literal text match on these same terms would hide events
+    /// that are legitimately relevant but don't happen to mention a minion
+    /// by name in their JSON body.
+    pub color_terms: Vec<String>,
+    /// A separate, optional, user-invoked (`h`) keyword search *within*
+    /// whatever's already being sniffed — unlike `color_terms` above, this
+    /// one DOES narrow the displayed view (see `filtered_indices`), since
+    /// it's a deliberate additional search rather than the sniffer's own
+    /// baseline relevance filter.
     pub highlight_keywords: Vec<String>,
     /// When Some, the user is editing highlight keywords within the popup
     pub highlight_input: Option<String>,
+}
+
+impl SnifferState {
+    /// Indices into `buffer` (raw capture, always every event matching the
+    /// sniffer's minion-id filter) that also match at least one active
+    /// highlight keyword — the *displayed* view. With no keywords set, every
+    /// captured index is shown, same as before this existed. `selected` and
+    /// scroll math key off this filtered view's length, not `buffer.len()`,
+    /// so setting a highlight term narrows what's actually shown to what it
+    /// matched instead of merely coloring it within an otherwise-unfiltered
+    /// list — a keyword field a user reaches for expecting it to behave like
+    /// a filter (find the needle) should actually filter, not just tint it.
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        if self.highlight_keywords.is_empty() {
+            return (0..self.buffer.len()).collect();
+        }
+        self.buffer.iter().enumerate()
+            .filter(|(_, evt)| Self::event_matches_keywords(evt, &self.highlight_keywords))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub(crate) fn event_matches_keywords(evt: &SaltEvent, keywords: &[String]) -> bool {
+        let tag_lower = evt.tag.to_lowercase();
+        let body_lower = evt.data.to_string().to_lowercase();
+        keywords.iter().any(|k| {
+            let kl = k.trim().to_lowercase();
+            !kl.is_empty() && (tag_lower.contains(&kl) || body_lower.contains(&kl))
+        })
+    }
 }
 
 // ─── Job entry (live) ─────────────────────────────────────────────────────

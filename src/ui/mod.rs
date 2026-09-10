@@ -63,6 +63,91 @@ pub mod color {
             ratatui::style::Style::default().bg(BG_LIGHT)
         }
     }
+
+    // Dedicated palette for coloring filter/highlight terms (multi-host
+    // filtering, Event Sniffer keywords) — deliberately kept separate from
+    // GREEN/RED/YELLOW/ORANGE above, since those already carry pass/fail/warn
+    // meaning elsewhere in the UI and reusing them here would make a
+    // term-colored hostname look like a status indicator. Kept short and
+    // fully saturated (matching the vibrancy of GREEN/CYAN/RED elsewhere)
+    // rather than a larger set of softer tints — a term buried in a wall of
+    // dim JSON needs to jump out, not blend in; more hash collisions on a
+    // 4-color palette is a better trade than a color too weak to spot.
+    pub const TERM_PALETTE: [Color; 4] = [
+        Color::Rgb(50, 130, 255),   // vivid blue
+        Color::Rgb(255, 45, 200),   // vivid magenta
+        Color::Rgb(0, 230, 170),    // vivid teal
+        Color::Rgb(170, 80, 255),   // vivid violet
+    ];
+
+    /// Deterministic color for a filter/highlight term — same term always
+    /// gets the same color (everywhere, every session), via a simple FNV-1a
+    /// hash of the lowercased text rather than assignment order, so it
+    /// doesn't shift depending on typing order or which terms are active.
+    pub fn term_color(term: &str) -> Color {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for b in term.trim().to_lowercase().bytes() {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        TERM_PALETTE[(hash as usize) % TERM_PALETTE.len()]
+    }
+}
+
+/// Colors every occurrence of any `keywords` entry within `text`, each
+/// keyword getting its own stable `color::term_color`; overlapping matches
+/// keep the earlier (by start position) keyword's color rather than
+/// splitting further. Shared by the Event Sniffer's keyword highlighting and
+/// the Events list's filter-term highlighting so both stay visually
+/// consistent — the same term is always the same color in both places.
+pub fn highlight_keywords(text: &str, keywords: &[String]) -> Vec<Span<'static>> {
+    if keywords.is_empty() {
+        return vec![Span::styled(text.to_string(), Style::default().fg(color::TEXT))];
+    }
+    let lower_text = text.to_lowercase();
+    let mut matches: Vec<(usize, usize, Color)> = Vec::new();
+    for kw in keywords {
+        if kw.is_empty() { continue; }
+        let lower_kw = kw.to_lowercase();
+        let kw_color = color::term_color(kw);
+        let mut start = 0;
+        while let Some(pos) = lower_text[start..].find(&lower_kw) {
+            let abs_start = start + pos;
+            let abs_end = abs_start + kw.len();
+            matches.push((abs_start, abs_end, kw_color));
+            start = abs_end;
+        }
+    }
+    if matches.is_empty() {
+        return vec![Span::styled(text.to_string(), Style::default().fg(color::TEXT))];
+    }
+    matches.sort_by_key(|m| m.0);
+    let mut merged: Vec<(usize, usize, Color)> = Vec::new();
+    for m in &matches {
+        if let Some(last) = merged.last_mut() {
+            if m.0 <= last.1 {
+                last.1 = last.1.max(m.1);
+                continue;
+            }
+        }
+        merged.push(*m);
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut pos = 0;
+    for (start, end, col) in &merged {
+        if *start > pos {
+            spans.push(Span::styled(text[pos..*start].to_string(), Style::default().fg(color::TEXT)));
+        }
+        spans.push(Span::styled(
+            text[*start..*end].to_string(),
+            Style::default().fg(*col).add_modifier(Modifier::BOLD),
+        ));
+        pos = *end;
+    }
+    if pos < text.len() {
+        spans.push(Span::styled(text[pos..].to_string(), Style::default().fg(color::TEXT)));
+    }
+    spans
 }
 
 /// A `Block` with `Borders::ALL` and the title text styled in the app's
@@ -495,8 +580,8 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             }
             if app.cache_focus && !app.cache_filter_text.is_empty() {
                 spans.push(Span::styled(format!(" filtered: /{}/ ", app.cache_filter_text), Style::default().fg(color::YELLOW)));
-            } else if !app.cache_focus && !app.filter_text.is_empty() {
-                spans.push(Span::styled(format!(" filtered: /{}/ ", app.filter_text), Style::default().fg(color::YELLOW)));
+            } else if !app.cache_focus && !app.filter_text_for(Tab::Jobs).is_empty() {
+                spans.push(Span::styled(format!(" filtered: /{}/ ", app.filter_text_for(Tab::Jobs)), Style::default().fg(color::YELLOW)));
             }
         }
         _ => {
@@ -512,8 +597,13 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             if total > 0 {
                 spans.push(Span::styled(format!(" {}/{} ", cur, total), Style::default().fg(color::CYAN)));
             }
-            if !app.filter_text.is_empty() {
-                spans.push(Span::styled(format!(" filtered: /{}/ ", app.filter_text), Style::default().fg(color::YELLOW)));
+            let active_filter = match app.current_tab {
+                Tab::Events => app.applied_filter.as_str(),
+                Tab::Minions | Tab::Alerts | Tab::Api => app.filter_text_for(app.current_tab),
+                _ => "",
+            };
+            if !active_filter.is_empty() {
+                spans.push(Span::styled(format!(" filtered: /{}/ ", active_filter), Style::default().fg(color::YELLOW)));
             }
         }
     }

@@ -20,13 +20,13 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
                 draw_minion_detail(f, area, minion, ping_state, grains, *grains_scroll, app);
             }
         }
-        DetailPopup::SaltEvent(evt, scroll_offset) => {
+        DetailPopup::SaltEvent { evt, scroll, pretty, pretty_fetch } => {
             let area = centered_rect(75, 70, f.area());
             f.render_widget(Clear, area);
             let highlight = app.return_to_minion_events.as_ref().map(|(id, _)| id.as_str());
             let clipboard_at = app.clipboard_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_event_detail(f, area, evt, *scroll_offset, &mut app.event_detail_scroll_max, clipboard_at, clipboard_msg, highlight);
+            draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, clipboard_at, clipboard_msg, highlight);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, job_fun, job_tgt, job_start_epoch, minion_scroll, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
@@ -112,12 +112,13 @@ fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> 
     ])
 }
 
-fn event_detail_hints() -> Vec<(&'static str, String)> {
+fn event_detail_hints(pretty: bool) -> Vec<(&'static str, String)> {
     vec![
         ("q/Esc", "close".to_string()),
         ("\u{2191}\u{2193}", "scroll".to_string()),
         ("PgUp/PgDn", "page".to_string()),
         ("Home/End", "top/bottom".to_string()),
+        ("t", if pretty { "raw json".to_string() } else { "pretty view".to_string() }),
         ("y", "copy".to_string()),
         ("Y", "json".to_string()),
     ]
@@ -257,10 +258,21 @@ fn grain_height(val: &str) -> usize {
 /// the recursive structure (the `----------` dividers, `key:` lines,
 /// `- `/`|_` list bullets, per-branch coloring, retcode-driven red) is a
 /// line-for-line match to the original.
-fn nested_return_lines(value: &serde_json::Value, retcode: i64) -> Vec<Line<'static>> {
+pub(crate) fn nested_return_lines(value: &serde_json::Value, retcode: i64) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     nested_display(value, 0, "", retcode, &mut out);
     out
+}
+
+/// Strips styling from `nested_return_lines` output for clipboard copy — so
+/// `y`/`Y` in pretty mode copy the same text the screen shows (plain, since
+/// clipboards don't carry ratatui spans) instead of silently falling back to
+/// raw JSON regardless of which view is active.
+pub(crate) fn plain_text(lines: &[Line<'static>]) -> String {
+    lines.iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn nested_push(out: &mut Vec<Line<'static>>, indent: usize, fg: Color, prefix: &str, msg: &str, suffix: &str) {
@@ -304,7 +316,22 @@ fn nested_display(value: &serde_json::Value, indent: usize, prefix: &str, retcod
             if indent > 0 {
                 nested_push(out, indent, dict_color, "", "----------", "");
             }
-            for (k, v) in map.iter() {
+            // Salt's own highstate outputter orders a state-return dict by
+            // `__run_num__` (actual execution order), not by the state-ID
+            // string it's keyed on — this crate's serde_json doesn't enable
+            // the `preserve_order` feature, so `map.iter()` would otherwise
+            // walk the keys alphabetically and silently reorder every state
+            // result relative to real `salt-run jobs.lookup_jid` output.
+            // Re-sort explicitly whenever every value carries that field
+            // (i.e. this looks like a state-return dict); anything else
+            // (grains, arbitrary JSON) keeps the map's own order untouched.
+            let mut entries: Vec<(&String, &serde_json::Value)> = map.iter().collect();
+            let is_state_result = !entries.is_empty()
+                && entries.iter().all(|(_, v)| v.get("__run_num__").and_then(|n| n.as_i64()).is_some());
+            if is_state_result {
+                entries.sort_by_key(|(_, v)| v["__run_num__"].as_i64().unwrap_or(0));
+            }
+            for (k, v) in entries {
                 nested_push(out, indent, dict_color, prefix, k, ":");
                 nested_display(v, indent + 4, "", retcode, out);
             }
@@ -470,31 +497,175 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     render_popup(f, area, &lines, &hints, None, (more_above, more_below), 0, 0);
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
-    let mut lines = header_lines(" Event Detail ", area.width);
-    lines.push(row("Tag", evt.tag.clone(), color::CYAN));
-    lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
-    lines.push(Line::from(""));
+/// A job-return event (`salt/job/<jid>/ret/<id>`) carries the same
+/// `{id: return}` shape `salt-run jobs.lookup_jid` returns for one minion —
+/// extracting the pieces (rather than a pre-wrapped `{id: return}` object)
+/// lets the pretty view hand them straight to `pretty_return_lines`.
+pub(crate) fn job_return_wrapper(evt: &crate::types::SaltEvent) -> Option<(String, serde_json::Value, i64)> {
+    let ret = evt.data.get("return")?.clone();
+    let id = evt.data.get("id")?.as_str()?.to_string();
+    let retcode = evt.data.get("retcode").and_then(|v| v.as_i64())
+        .unwrap_or_else(|| crate::app::derive_success_retcode(&ret).0);
+    Some((id, ret, retcode))
+}
 
+/// Pretty-prints one minion's return the way real Salt renders it: a
+/// state-shaped return (every value carries `__run_num__`) goes through the
+/// dedicated highstate formatter (`highstate_lines`) — labeled ID/Function/
+/// Result/Comment/Started/Duration/Changes fields plus a Summary footer,
+/// matching actual `salt-run jobs.lookup_jid`/CLI output byte-for-byte in
+/// content if not pixel-perfect spacing. Anything else (a bool from
+/// test.ping, a dict from grains.items, arbitrary custom-event data) falls
+/// back to the generic `nested`-outputter port (`nested_return_lines`),
+/// which is the correct real-Salt behavior too — highstate formatting is
+/// specific to state-execution returns, not a universal pretty-printer.
+pub(crate) fn pretty_return_lines(minion_id: &str, value: &serde_json::Value, retcode: i64) -> Vec<Line<'static>> {
+    if let serde_json::Value::Object(map) = value {
+        if !map.is_empty() && map.values().all(|v| v.get("__run_num__").and_then(|n| n.as_i64()).is_some()) {
+            return highstate_lines(minion_id, map);
+        }
+    }
+    let mut wrapper = serde_json::Map::new();
+    wrapper.insert(minion_id.to_string(), value.clone());
+    nested_return_lines(&serde_json::Value::Object(wrapper), retcode)
+}
+
+fn hs_field(label: &str, value: &str, value_color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{:>12}: ", label), Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(value.to_string(), Style::default().fg(value_color)),
+    ])
+}
+
+fn hs_field_empty(label: &str) -> Line<'static> {
+    Line::from(Span::styled(format!("{:>12}:", label), Style::default().fg(color::TEXT_LABEL)))
+}
+
+fn hs_dashes(n: usize, color_: Color) -> Line<'static> {
+    Line::from(Span::styled("-".repeat(n), Style::default().fg(color_)))
+}
+
+/// Faithful-content port of Salt's own `highstate` outputter
+/// (`salt/output/highstate.py`) — what real `salt-run jobs.lookup_jid`/
+/// `salt '*' state.apply` show for a state-execution return, as opposed to
+/// the generic recursive-dict `nested` outputter used for everything else.
+/// Each state-chunk key is Salt's compound tag
+/// `<module>_|-<id>_|-<name>_|-<function>`; parsed to recover the fields the
+/// real CLI shows (a separate "Name:" line only appears when `name` differs
+/// from `id`, matching real behavior for aliased state declarations).
+fn highstate_lines(minion_id: &str, map: &serde_json::Map<String, serde_json::Value>) -> Vec<Line<'static>> {
+    let mut out = vec![Line::from(Span::styled(
+        format!("{}:", minion_id),
+        Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD),
+    ))];
+
+    let mut entries: Vec<(&String, &serde_json::Value)> = map.iter().collect();
+    entries.sort_by_key(|(_, v)| v["__run_num__"].as_i64().unwrap_or(0));
+
+    let mut succeeded = 0usize;
+    let mut changed = 0usize;
+    let mut failed = 0usize;
+    let mut total_duration = 0f64;
+
+    for (tag, v) in &entries {
+        out.push(hs_dashes(10, color::TEXT_DIM));
+
+        let comps: Vec<&str> = tag.split("_|-").collect();
+        let (module, id, name, function) = if comps.len() == 4 {
+            (comps[0], comps[1], comps[2], comps[3])
+        } else {
+            ("", tag.as_str(), tag.as_str(), "")
+        };
+        out.push(hs_field("ID", id, color::TEXT_HI));
+        if name != id {
+            out.push(hs_field("Name", name, color::TEXT_HI));
+        }
+        out.push(hs_field("Function", &format!("{}.{}", module, function), color::CYAN));
+
+        let result = v.get("result");
+        let (result_str, result_color) = match result {
+            Some(serde_json::Value::Bool(true)) => ("True".to_string(), color::GREEN),
+            Some(serde_json::Value::Bool(false)) => ("False".to_string(), color::RED),
+            Some(serde_json::Value::Null) | None => ("None".to_string(), color::YELLOW),
+            Some(other) => (other.to_string(), color::TEXT),
+        };
+        out.push(hs_field("Result", &result_str, result_color));
+
+        let comment = v.get("comment").and_then(|c| c.as_str()).unwrap_or("");
+        let mut comment_lines = comment.lines();
+        out.push(hs_field("Comment", comment_lines.next().unwrap_or(""), color::TEXT));
+        for cont in comment_lines {
+            out.push(Line::from(Span::styled(format!("              {}", cont), Style::default().fg(color::TEXT))));
+        }
+
+        let started = v.get("start_time").and_then(|s| s.as_str()).unwrap_or("");
+        out.push(hs_field("Started", started, color::TEXT_DIM));
+
+        let duration = v.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0);
+        out.push(hs_field("Duration", &format!("{} ms", duration), color::TEXT_DIM));
+        total_duration += duration;
+
+        let changes = v.get("changes");
+        let changes_empty = match changes {
+            Some(serde_json::Value::Object(m)) => m.is_empty(),
+            Some(serde_json::Value::Null) | None => true,
+            _ => false,
+        };
+        out.push(hs_field_empty("Changes"));
+        if !changes_empty {
+            out.extend(nested_return_lines(changes.unwrap(), 0));
+        }
+
+        match result {
+            Some(serde_json::Value::Bool(true)) => {
+                succeeded += 1;
+                if !changes_empty { changed += 1; }
+            }
+            Some(serde_json::Value::Bool(false)) => failed += 1,
+            _ => {}
+        }
+    }
+
+    out.push(Line::from(""));
+    out.push(Line::from(Span::styled(
+        format!("Summary for {}", minion_id),
+        Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD),
+    )));
+    out.push(hs_dashes(12, color::TEXT_DIM));
+    let succ_label = if changed > 0 {
+        format!("{:<11}{}  (changed={})", "Succeeded:", succeeded, changed)
+    } else {
+        format!("{:<11}{}", "Succeeded:", succeeded)
+    };
+    out.push(Line::from(Span::styled(succ_label, Style::default().fg(color::GREEN))));
+    out.push(Line::from(Span::styled(
+        format!("{:<11}{}", "Failed:", failed),
+        Style::default().fg(if failed > 0 { color::RED } else { color::TEXT }),
+    )));
+    out.push(hs_dashes(12, color::TEXT_DIM));
+    out.push(Line::from(Span::styled(
+        format!("Total states run:     {}", entries.len()),
+        Style::default().fg(color::TEXT),
+    )));
+    out.push(Line::from(Span::styled(
+        format!("Total run time: {:>8.3} ms", total_duration),
+        Style::default().fg(color::TEXT),
+    )));
+
+    out
+}
+
+/// Raw-JSON rendering of an event's body, with an optional literal
+/// substring highlighted (used for the return-to-minion-events "which item
+/// did I come from" cue) — shared by the non-pretty view and by pretty mode
+/// while the real fetch is still in flight (see `draw_event_detail`).
+fn raw_json_lines(evt: &crate::types::SaltEvent, highlight: Option<&str>) -> Vec<Line<'static>> {
     let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
-    let data_lines: Vec<&str> = json_str.lines().collect();
-    let total_data = data_lines.len();
-
-    // Clamp scroll_offset so the last line can appear at viewport bottom, and
-    // write the true bound back so the key handler can clamp Down/PageDown/End
-    // against it directly next time instead of guessing at a raw line count.
-    let viewport_h = (area.height as usize).saturating_sub(5); // borders(2) + header(3)
-    let max_scroll = total_data.saturating_sub(viewport_h);
-    *scroll_max = max_scroll;
-    let effective_scroll = scroll_offset.min(max_scroll);
-    let more_above = effective_scroll > 0;
-    let more_below = effective_scroll + viewport_h < total_data;
-
-    for line in data_lines.iter().skip(effective_scroll) {
+    json_str.lines().map(|line| {
         if let Some(h) = highlight {
             if !h.is_empty() && line.contains(h) {
                 let mut spans = Vec::new();
-                let mut remaining = *line;
+                let mut remaining = line;
                 while let Some(pos) = remaining.find(h) {
                     let before = &remaining[..pos];
                     if !before.is_empty() {
@@ -506,15 +677,71 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
                 if !remaining.is_empty() {
                     spans.push(Span::styled(remaining.to_string(), Style::default().fg(color::TEXT)));
                 }
-                lines.push(Line::from(spans));
-                continue;
+                return Line::from(spans);
             }
         }
-        lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT))));
-    }
+        Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT)))
+    }).collect()
+}
 
-    let hints = event_detail_hints();
-    let status = clipboard_status(clipboard_at, clipboard_warning);
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
+    let mut lines = header_lines(" Event Detail ", area.width);
+    lines.push(row("Tag", evt.tag.clone(), color::CYAN));
+    lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
+    lines.push(Line::from(""));
+
+    let body_lines: Vec<Line<'static>> = if pretty {
+        match (pretty_fetch, job_return_wrapper(evt)) {
+            // Real `salt-run jobs.lookup_jid` text has arrived — authoritative
+            // colors/formatting, matching Job Detail exactly.
+            (crate::types::PrettyFetch::Ready(text), _) => {
+                App::ansi_text_to_lines(text, Style::default().fg(color::TEXT))
+            }
+            // Fetch is still in flight for a job-return event: show the raw
+            // JSON rather than the client-side approximation. The
+            // approximation's colors don't exactly match the real fetched
+            // output (different palette, no master-specific output-mode
+            // awareness), so showing it first and then swapping to the real
+            // text a tick later reads as "wrong colors, then right colors" --
+            // confusing motion for no benefit when the real thing is already
+            // on its way. Raw JSON doesn't change shape once the fetch lands.
+            (crate::types::PrettyFetch::Loading, Some(_)) => raw_json_lines(evt, highlight),
+            // No fetch ever happened (no jid to look up) or it failed/timed
+            // out -- the approximation is the best available, permanently.
+            (_, Some((id, ret, retcode))) => pretty_return_lines(&id, &ret, retcode),
+            // Not a job-return event at all (no `return`/`id` fields) -- no
+            // real fetch is possible either way, so just color the raw
+            // envelope as-is.
+            (_, None) => nested_return_lines(&evt.data, 0),
+        }
+    } else {
+        raw_json_lines(evt, highlight)
+    };
+    let total_data = body_lines.len();
+
+    // Clamp scroll_offset so the last line can appear at viewport bottom, and
+    // write the true bound back so the key handler can clamp Down/PageDown/End
+    // against it directly next time instead of guessing at a raw line count.
+    let viewport_h = (area.height as usize).saturating_sub(5); // borders(2) + header(3)
+    let max_scroll = total_data.saturating_sub(viewport_h);
+    *scroll_max = max_scroll;
+    let effective_scroll = scroll_offset.min(max_scroll);
+    let more_above = effective_scroll > 0;
+    let more_below = effective_scroll + viewport_h < total_data;
+
+    lines.extend(body_lines.into_iter().skip(effective_scroll));
+
+    let hints = event_detail_hints(pretty);
+    let status = clipboard_status(clipboard_at, clipboard_warning).or_else(|| {
+        if pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Loading) {
+            Some(Line::from(Span::styled(
+                "  Fetching real salt-run output...",
+                Style::default().fg(color::YELLOW),
+            )))
+        } else {
+            None
+        }
+    });
     render_popup(f, area, &lines, &hints, status, (more_above, more_below), 0, 0);
 }
 
@@ -719,11 +946,6 @@ fn draw_job_detail(
             if !ret.formatted_text.is_empty() {
                 right_lines.extend(crate::app::App::ansi_text_to_lines(&ret.formatted_text, Style::default().fg(color::TEXT)));
             } else {
-                // Wrap as {minion_id: full_return} so this renders exactly
-                // as it would in real `salt-run jobs.lookup_jid` output,
-                // where the minion ID is itself just the top-level dict key.
-                let mut wrapper = serde_json::Map::new();
-                wrapper.insert(ret.minion_id.clone(), ret.full_return.clone());
                 // `salt-run jobs.lookup_jid` never passes an explicit `_retcode`
                 // to the nested outputter (that kwarg is a `salt`/exec-module
                 // concept, not a runner one) — it defaults to 0 in real Salt,
@@ -731,7 +953,7 @@ fn draw_job_detail(
                 // colors regardless of any individual minion's own retcode.
                 // Passing `ret.retcode` here colored failed minions red, which
                 // doesn't happen in the actual command's output.
-                right_lines.extend(nested_return_lines(&serde_json::Value::Object(wrapper), 0));
+                right_lines.extend(pretty_return_lines(&ret.minion_id, &ret.full_return, 0));
             }
         } else {
             right_lines.push(Line::from(Span::styled(
@@ -955,6 +1177,11 @@ fn draw_event_sniffer(
     };
 
     let mut lines = header_lines(&title, area.width);
+    let visible = state.filtered_indices();
+    // Coloring uses both the sniff target's own terms (always on, cosmetic
+    // only) and any additional `h` search terms (which also narrow `visible`
+    // above) — see `SnifferState::color_terms` for why these stay separate.
+    let color_terms: Vec<String> = state.color_terms.iter().chain(state.highlight_keywords.iter()).cloned().collect();
 
     // Status bar
     let (status_label, status_color) = if state.paused {
@@ -962,7 +1189,7 @@ fn draw_event_sniffer(
     } else {
         ("LIVE", color::GREEN)
     };
-    lines.push(Line::from(vec![
+    let mut status_spans = vec![
         Span::styled(
             format!("  Status: {}", status_label),
             Style::default().fg(status_color).add_modifier(Modifier::BOLD),
@@ -971,12 +1198,24 @@ fn draw_event_sniffer(
             format!("  Captured: {} / max 1000", state.buffer.len()),
             Style::default().fg(color::TEXT_DIM),
         ),
-    ]));
+    ];
+    if !state.highlight_keywords.is_empty() {
+        status_spans.push(Span::styled(
+            format!("  Shown: {} (highlight filter active)", visible.len()),
+            Style::default().fg(color::YELLOW),
+        ));
+    }
+    lines.push(Line::from(status_spans));
     lines.push(Line::from(""));
 
     if state.buffer.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No matching events yet. Waiting for new events...",
+            Style::default().fg(color::TEXT_DIM),
+        )));
+    } else if visible.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No captured events match the highlight filter.",
             Style::default().fg(color::TEXT_DIM),
         )));
     } else {
@@ -998,7 +1237,7 @@ fn draw_event_sniffer(
             Style::default().fg(Color::Rgb(35, 50, 80)),
         )));
 
-        let total = state.buffer.len();
+        let total = visible.len();
         let sel = state.selected.min(total.saturating_sub(1));
         let mut event_line_starts: Vec<usize> = Vec::with_capacity(total);
         // Popup inner width = area width minus left+right borders
@@ -1009,7 +1248,7 @@ fn draw_event_sniffer(
         let pinned_header = lines.len();
 
         for display_idx in 0..total {
-            let buf_idx = display_idx;
+            let buf_idx = visible[display_idx];
             let evt = match state.buffer.get(buf_idx) {
                 Some(e) => e,
                 None => break,
@@ -1039,13 +1278,25 @@ fn draw_event_sniffer(
                 evt.tag.clone()
             };
 
-            // Header row: # | Time | JID | Type
+            // Header row: # | Time | JID | Type — tag column highlighted the
+            // same way the Events tab list does: only when a color term
+            // actually appears in this row's tag text, so a row shown solely
+            // because it matched elsewhere (the JSON body) doesn't lose its
+            // plain CYAN in favor of an all-TEXT-colored tag that looks
+            // unstyled.
+            let padded_tag = format!("{:<jw$}", tag_disp, jw = jid_w);
+            let lower_tag = padded_tag.to_lowercase();
+            let tag_has_hit = color_terms.iter().any(|t| lower_tag.contains(&t.to_lowercase()));
             let mut header_spans = vec![
                 Span::styled(format!("  {:>nw$} ", event_num, nw = num_w - 3), Style::default().fg(color::TEXT_DIM)),
                 Span::styled(format!("{:<tw$}", t, tw = time_w), Style::default().fg(color::TEXT_DIM)),
-                Span::styled(format!("{:<jw$}", tag_disp, jw = jid_w), Style::default().fg(color::CYAN)),
-                Span::styled(format!("{:<tyw$}", etype, tyw = type_w), Style::default().fg(color::GREEN)),
             ];
+            if tag_has_hit {
+                header_spans.extend(super::highlight_keywords(&padded_tag, &color_terms));
+            } else {
+                header_spans.push(Span::styled(padded_tag, Style::default().fg(color::CYAN)));
+            }
+            header_spans.push(Span::styled(format!("{:<tyw$}", etype, tyw = type_w), Style::default().fg(color::GREEN)));
             if is_sel {
                 let hdr_w: usize = header_spans.iter().map(|s| s.content.len()).sum();
                 let pad = inner_w.saturating_sub(hdr_w);
@@ -1058,10 +1309,10 @@ fn draw_event_sniffer(
             // Full JSON body (no truncation) with keyword highlighting
             let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
             let indent = format!("{:w$}", "", w = num_w + time_w + 3);
-            if !state.highlight_keywords.is_empty() {
+            if !color_terms.is_empty() {
                 for raw_line in json_str.lines() {
                     let text = format!("{}{}", indent, raw_line);
-                    let mut spans = highlight_keywords(&text, &state.highlight_keywords);
+                    let mut spans = super::highlight_keywords(&text, &color_terms);
                     if is_sel {
                         let pad = inner_w.saturating_sub(text.len());
                         if pad > 0 {
@@ -1114,57 +1365,6 @@ fn draw_event_sniffer(
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
 
-/// Split a line of text into styled spans, highlighting all occurrences of any keyword.
-fn highlight_keywords(text: &str, keywords: &[String]) -> Vec<Span<'static>> {
-    if keywords.is_empty() {
-        return vec![Span::styled(text.to_string(), Style::default().fg(color::TEXT))];
-    }
-    let lower_text = text.to_lowercase();
-    // Collect match positions (start, end) for each keyword occurrence
-    let mut matches: Vec<(usize, usize)> = Vec::new();
-    for kw in keywords {
-        if kw.is_empty() { continue; }
-        let lower_kw = kw.to_lowercase();
-        let mut start = 0;
-        while let Some(pos) = lower_text[start..].find(&lower_kw) {
-            let abs_start = start + pos;
-            let abs_end = abs_start + kw.len();
-            matches.push((abs_start, abs_end));
-            start = abs_end;
-        }
-    }
-    if matches.is_empty() {
-        return vec![Span::styled(text.to_string(), Style::default().fg(color::TEXT))];
-    }
-    // Sort by start position and merge overlapping ranges
-    matches.sort_by_key(|m| m.0);
-    let mut merged: Vec<(usize, usize)> = Vec::new();
-    for m in &matches {
-        if let Some(last) = merged.last_mut() {
-            if m.0 <= last.1 {
-                last.1 = last.1.max(m.1);
-                continue;
-            }
-        }
-        merged.push(*m);
-    }
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut pos = 0;
-    for (start, end) in &merged {
-        if *start > pos {
-            spans.push(Span::styled(text[pos..*start].to_string(), Style::default().fg(color::TEXT)));
-        }
-        spans.push(Span::styled(
-            text[*start..*end].to_string(),
-            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
-        ));
-        pos = *end;
-    }
-    if pos < text.len() {
-        spans.push(Span::styled(text[pos..].to_string(), Style::default().fg(color::TEXT)));
-    }
-    spans
-}
 
 fn sniffer_format_ts(ts: f64) -> String {
     chrono::DateTime::from_timestamp(ts as i64, 0)
@@ -1182,9 +1382,9 @@ fn sniffer_status(
     if let Some(ref buf) = state.highlight_input {
         let cursor = if buf.len() % 2 == 0 { '|' } else { ' ' };
         let display = if buf.is_empty() {
-            String::from("  Highlight keywords (comma-separated, Enter=confirm, Esc=cancel): ")
+            String::from("  Filter keywords (comma-separated, Enter=confirm, Esc=cancel): ")
         } else {
-            format!("  Highlight keywords: {} {}", buf, cursor)
+            format!("  Filter keywords: {} {}", buf, cursor)
         };
         return Some(Line::from(Span::styled(
             display,
@@ -1201,7 +1401,7 @@ fn sniffer_hints(state: &SnifferState) -> Vec<(&'static str, String)> {
         ("PgUp/PgDn", "page".to_string()),
         ("Home/End", "top/bottom".to_string()),
         ("Enter", "detail".to_string()),
-        ("h", "highlight".to_string()),
+        ("h", "filter".to_string()),
         ("p", if state.paused { "resume".to_string() } else { "pause".to_string() }),
         ("y", "copy".to_string()),
     ]

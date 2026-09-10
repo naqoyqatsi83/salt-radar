@@ -67,6 +67,7 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
     f.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
+    let filter_terms = app.events_filter_terms();
 
     // Filter bar
     if app.is_filtering {
@@ -76,9 +77,9 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
             Span::styled(filter_text, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
-    } else if !app.filter_text.is_empty() {
+    } else if !app.applied_filter.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" /{}/ ", app.applied_filter), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
         ]));
     }
@@ -118,11 +119,25 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
                 } else {
                     evt.tag.clone()
                 };
+                let padded_tag = format!("{:<45}", tag);
 
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {}  {}", local_t, utc_t), Style::default().fg(color::TEXT_TITLE)),
-                    Span::styled(format!("  {:<45}", tag), Style::default().fg(color::CYAN)),
-                ]).style(sel_style));
+                // A row can be in the filtered set because a term matched some
+                // other field (fun, id, tgt, the whole JSON body) without the
+                // tag text itself containing it — keep the plain CYAN tag in
+                // that case instead of running it through the highlighter and
+                // getting an all-TEXT-colored tag that looks unstyled.
+                let lower_tag = padded_tag.to_lowercase();
+                let tag_has_hit = filter_terms.iter().any(|t| lower_tag.contains(&t.to_lowercase()));
+
+                let mut spans = vec![Span::styled(format!("  {}  {}", local_t, utc_t), Style::default().fg(color::TEXT_TITLE))];
+                spans.push(Span::raw("  "));
+                if tag_has_hit {
+                    spans.extend(super::highlight_keywords(&padded_tag, &filter_terms));
+                } else {
+                    spans.push(Span::styled(padded_tag, Style::default().fg(color::CYAN)));
+                }
+
+                lines.push(Line::from(spans).style(sel_style));
             }
         }
     }
