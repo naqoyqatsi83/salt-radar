@@ -1195,19 +1195,26 @@ def cmd_jid_lookup(opts, req):
         index in the original string — so a position found in the stripped
         text (used for reliably matching a bare "mid:" header even though
         `--force-color` puts escape codes right before it) can be mapped
-        back to a slice boundary in the original (still-colored) text."""
-        out_chars = []
+        back to a slice boundary in the original (still-colored) text.
+
+        Walks escape-code matches only (`finditer`), copying each run of
+        plain text between them in one slice, rather than a Python-level
+        loop doing a regex match at every single character position — for
+        a lookup spanning thousands of minions (hundreds of thousands of
+        lines) the per-character version added a real, visible delay on its
+        own before the O(n^2) bug below was even reached."""
+        out_parts = []
         pos_map = []
-        i, n = 0, len(text)
-        while i < n:
-            m = _ansi_re.match(text, i)
-            if m:
-                i = m.end()
-                continue
-            out_chars.append(text[i])
-            pos_map.append(i)
-            i += 1
-        return "".join(out_chars), pos_map
+        last = 0
+        for m in _ansi_re.finditer(text):
+            if m.start() > last:
+                out_parts.append(text[last:m.start()])
+                pos_map.extend(range(last, m.start()))
+            last = m.end()
+        if last < len(text):
+            out_parts.append(text[last:])
+            pos_map.extend(range(last, len(text)))
+        return "".join(out_parts), pos_map
 
     _stripped, _pos_map = _strip_ansi_with_map(raw_output)
 
@@ -1216,33 +1223,52 @@ def cmd_jid_lookup(opts, req):
             return len(raw_output)
         return _pos_map[stripped_pos]
 
+    # Precompute every minion's [start, end) span in the stripped text ONCE,
+    # instead of the nested "for each minion, scan past every other minion
+    # looking for the next header" this used to do — that was O(minions^2)
+    # string searches, fine for a handful of minions but effectively never
+    # finishing for a 1000+-minion job (e.g. `grains.items` fleet-wide),
+    # well after the underlying `salt-run` call itself had already returned
+    # in seconds. Finding each minion's own header is still one `.find()`
+    # per minion (O(n) calls), but the "where does this section end" part
+    # -- previously another O(n) scan per minion -- now falls out for free
+    # by sorting all discovered header positions once and taking each one's
+    # end as the next one's start.
+    if _stripped.strip():
+        # Each entry is (newline_pos, content_start, mid) -- content_start
+        # (right after "mid:") is where THIS minion's own slice begins;
+        # newline_pos (the position of the newline preceding "mid:") is what
+        # closes the PREVIOUS minion's slice. Keeping these distinct matters:
+        # the raw text between a newline and the next visible character can
+        # contain that next minion's own leading ANSI codes (`--force-color`
+        # puts them immediately before the name), and ending a slice at
+        # "next minion's content_start" instead of "next minion's newline_pos"
+        # would pull those codes into the wrong (preceding) minion's section.
+        _mid_starts = []
+        for mid_key in lookup_data:
+            mid_str = str(mid_key)
+            if _stripped.startswith(mid_str + ":"):
+                _mid_starts.append((0, 0, mid_str))
+            else:
+                pos = _stripped.find("\n" + mid_str + ":")
+                if pos != -1:
+                    _mid_starts.append((pos, pos + 1, mid_str))
+        _mid_starts.sort(key=lambda t: t[1])
+        _mid_spans = {}
+        for idx, (_newline_pos, content_start, mid_str) in enumerate(_mid_starts):
+            end = _mid_starts[idx + 1][0] if idx + 1 < len(_mid_starts) else len(_stripped)
+            _mid_spans[mid_str] = (_to_raw_pos(content_start), _to_raw_pos(end))
+    else:
+        _mid_spans = {}
+
     def _extract_section(mid):
         """Pull this minion's own section out of the raw multi-minion CLI
         text — everything from its "mid:" header up to the next minion's
         header (or EOF) — preserving the original ANSI color codes."""
-        if not _stripped.strip():
+        bounds = _mid_spans.get(mid)
+        if not bounds:
             return ""
-        marker = "\n" + mid + ":"
-        if _stripped.startswith(mid + ":"):
-            content_start = 0
-        else:
-            pos = _stripped.find(marker)
-            if pos == -1:
-                return ""
-            content_start = pos + 1
-        rest = _stripped[content_start + len(mid) + 1:]
-        next_stripped_pos = len(_stripped)
-        for other_mid in lookup_data:
-            other_mid = str(other_mid)
-            if other_mid == mid:
-                continue
-            np = rest.find("\n" + other_mid + ":")
-            if np != -1:
-                candidate = content_start + len(mid) + 1 + np
-                if candidate < next_stripped_pos:
-                    next_stripped_pos = candidate
-        raw_start = _to_raw_pos(content_start)
-        raw_end = _to_raw_pos(next_stripped_pos)
+        raw_start, raw_end = bounds
         return raw_output[raw_start:raw_end].strip()
 
     returns = []
