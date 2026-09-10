@@ -45,11 +45,6 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Clear, area);
             draw_admin_confirm(f, area);
         }
-        DetailPopup::EventSniffer(state) => {
-            let area = centered_rect(80, 85, f.area());
-            f.render_widget(Clear, area);
-            draw_event_sniffer(f, area, state, app.clipboard_at, app.high_contrast, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
-        }
         DetailPopup::MinionEvents { minion_id, selected } => {
             super::minion_events::draw_minion_events(f, f.area(), app, minion_id, *selected);
         }
@@ -62,6 +57,15 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             draw_api_request_detail(f, area, entry, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
     }
+}
+
+/// The sniffer isn't a `detail_popup` variant (see its field doc in
+/// `app.rs`) so it gets its own draw entry point instead of a match arm here.
+pub fn draw_sniffer_overlay(f: &mut Frame, app: &App) {
+    let Some(ref state) = app.sniffer else { return };
+    let area = centered_rect(80, 85, f.area());
+    f.render_widget(Clear, area);
+    draw_event_sniffer(f, area, state, app.clipboard_at, app.high_contrast, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
 }
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

@@ -312,8 +312,12 @@ pub struct App {
     pub sniffer_input_active: bool,
     pub sniffer_input_text: String,
     pub sniffer_dirty: bool,
-    /// When viewing event detail from sniffer, pressing q returns to sniffer popup
-    pub return_to_sniffer: Option<SnifferState>,
+    /// Lives outside `detail_popup` (unlike every other popup) because it's
+    /// meant to keep capturing in the background while you use other tabs
+    /// or open unrelated popups there -- it only ever displays itself while
+    /// on the Events tab, and only when no other Events-tab popup (e.g. a
+    /// SaltEvent detail opened from within it) is on top of it.
+    pub sniffer: Option<SnifferState>,
     /// When viewing event detail from MinionEvents, pressing q returns to the list
     pub return_to_minion_events: Option<(String, usize)>,
     /// When admin mode is enabled/cancelled from within the Minion Detail
@@ -463,7 +467,6 @@ pub enum DetailPopup {
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
-    EventSniffer(crate::types::SnifferState),
     ConfigEditor(ConfigEditorState),
     MinionEvents { minion_id: String, selected: usize },
     ApiRequest(ApiLogEntry),
@@ -541,7 +544,7 @@ impl App {
             sniffer_input_active: false,
             sniffer_input_text: String::new(),
             sniffer_dirty: false,
-            return_to_sniffer: None,
+            sniffer: None,
             return_to_minion_events: None,
             return_to_minion_detail: None,
             event_detail_scroll_max: 0,
@@ -1248,7 +1251,7 @@ impl App {
                     }
 
                     // Sniffer: inject matching events into sniffer buffer
-                    if let Some(DetailPopup::EventSniffer(ref mut state)) = self.detail_popup {
+                    if let Some(ref mut state) = self.sniffer {
                         if !state.paused {
                             if let Some(evt) = self.events.back() {
                                 if Self::matches_sniffer_event(evt, &state.minion_ids) {
@@ -1378,7 +1381,7 @@ impl App {
             || self.pending_y_copy.is_some()
             || self.fleet_scanning
             || self.cache_loading
-            || matches!(self.detail_popup, Some(DetailPopup::EventSniffer(ref s)) if !s.paused)
+            || self.sniffer.as_ref().is_some_and(|s| !s.paused)
             // A zmq_ping/job_ping round-trip is outstanding — without this,
             // the reply sits unread in agent_rx until the main loop's
             // event::poll(timeout) happens to expire at the next full tick,
@@ -2560,7 +2563,6 @@ impl App {
         match self.current_tab {
             Tab::Events => {
                 self.return_to_minion_events = None;
-                self.return_to_sniffer = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
                     self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
                     self.popup_tab = Some(self.current_tab);
@@ -4007,20 +4009,17 @@ impl App {
                         // literal text match on these same terms would hide
                         // legitimate, already-captured traffic.
                         let color_terms = self.resolve_host_terms(ids.iter().map(|s| s.as_str()));
-                        self.detail_popup = Some(DetailPopup::EventSniffer(
-                            crate::types::SnifferState {
-                                minion_ids: ids.clone(),
-                                buffer: std::collections::VecDeque::with_capacity(sniffer_max),
-                                max_size: sniffer_max,
-                                paused: false,
-                                selected: 0,
-                                following: true,
-                                color_terms,
-                                highlight_keywords: Vec::new(),
-                                highlight_input: None,
-                            }
-                        ));
-                        self.popup_tab = Some(self.current_tab);
+                        self.sniffer = Some(crate::types::SnifferState {
+                            minion_ids: ids.clone(),
+                            buffer: std::collections::VecDeque::with_capacity(sniffer_max),
+                            max_size: sniffer_max,
+                            paused: false,
+                            selected: 0,
+                            following: true,
+                            color_terms,
+                            highlight_keywords: Vec::new(),
+                            highlight_input: None,
+                        });
                     }
                     self.sniffer_input_active = false;
                     self.sniffer_input_text.clear();
@@ -4039,14 +4038,21 @@ impl App {
         // Detail popup gets first crack
         let mut clipboard_text: Option<String> = None;
         let had_popup = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
+        // The sniffer lives outside `detail_popup` (see its field doc) so it
+        // keeps running when you're elsewhere, but it still owns the Events
+        // tab's key input whenever it's the thing on screen there.
+        let sniffer_showing = self.current_tab == Tab::Events && self.detail_popup.is_none() && self.sniffer.is_some();
 
         // Contrast toggle and tab switching work universally (even with popups open)
         // but are muted when a text input mode is active inside the popup
-        if had_popup {
-            let popup_text_input = match &self.detail_popup {
-                Some(DetailPopup::EventSniffer(ref s)) => s.highlight_input.is_some(),
-                Some(DetailPopup::JobDetail { return_is_filtering: true, .. }) => true,
-                _ => false,
+        if had_popup || sniffer_showing {
+            let popup_text_input = if sniffer_showing {
+                self.sniffer.as_ref().is_some_and(|s| s.highlight_input.is_some())
+            } else {
+                match &self.detail_popup {
+                    Some(DetailPopup::JobDetail { return_is_filtering: true, .. }) => true,
+                    _ => false,
+                }
             };
             if !popup_text_input {
                 match code {
@@ -4095,7 +4101,7 @@ impl App {
                 minion_events_cache = Some((minion_id.clone(), items));
             }
         }
-        if self.popup_tab == Some(self.current_tab) {
+        if had_popup {
             if let Some(ref mut detail) = self.detail_popup {
             match *detail {
                 DetailPopup::JobDetail {
@@ -4379,98 +4385,6 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::EventSniffer(ref mut state) => {
-                    // Highlight keyword input mode
-                    if let Some(ref mut buf) = state.highlight_input {
-                        match code {
-                            KeyCode::Enter => {
-                                let keywords: Vec<String> = buf.split(',')
-                                    .map(|s| s.trim().to_string())
-                                    .filter(|s| !s.is_empty())
-                                    .collect();
-                                if !keywords.is_empty() {
-                                    state.highlight_keywords = keywords;
-                                }
-                                state.highlight_input = None;
-                            }
-                            KeyCode::Esc => {
-                                state.highlight_input = None;
-                            }
-                            KeyCode::Backspace => { buf.pop(); }
-                            KeyCode::Char(c) => { buf.push(c); }
-                            _ => {}
-                        }
-                        return false;
-                    }
-                    // Nav/selection/Enter/y all operate on the filtered
-                    // (displayed) view, not raw buffer indices — see
-                    // `SnifferState::filtered_indices`.
-                    let visible = state.filtered_indices();
-                    match code {
-                        KeyCode::Enter => {
-                            if let Some(evt) = visible.get(state.selected).and_then(|&i| state.buffer.get(i)) {
-                                self.return_to_sniffer = Some(state.clone());
-                                self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
-                                self.popup_tab = Some(self.current_tab);
-                            }
-                        }
-                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            self.detail_popup = None;
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            state.selected = state.selected.saturating_sub(1);
-                            state.following = state.selected + 1 >= visible.len();
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            let max = visible.len().saturating_sub(1);
-                            state.selected = state.selected.saturating_add(1).min(max);
-                            state.following = state.selected + 1 >= visible.len();
-                        }
-                        KeyCode::PageUp => {
-                            state.selected = state.selected.saturating_sub(10);
-                            state.following = state.selected + 1 >= visible.len();
-                        }
-                        KeyCode::PageDown => {
-                            let max = visible.len().saturating_sub(1);
-                            state.selected = state.selected.saturating_add(10).min(max);
-                            state.following = state.selected + 1 >= visible.len();
-                        }
-                        KeyCode::Home => {
-                            state.selected = 0;
-                            state.following = visible.len() <= 1;
-                        }
-                        KeyCode::End => {
-                            state.selected = visible.len().saturating_sub(1);
-                            state.following = true;
-                        }
-                        KeyCode::Char('p') | KeyCode::Char('P') => {
-                            state.paused = !state.paused;
-                        }
-                        KeyCode::Char('h') | KeyCode::Char('H') => {
-                            state.highlight_input = Some(state.highlight_keywords.join(", "));
-                        }
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            let mut text = String::new();
-                            for (i, &buf_idx) in visible.iter().enumerate() {
-                                let Some(evt) = state.buffer.get(buf_idx) else { continue };
-                                let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
-                                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                                    .unwrap_or_else(|| evt.ts.to_string());
-                                text.push_str(&format!(
-                                    "Event {}\nTag: {}\nTimestamp: {}\nData:\n{}\n\n",
-                                    i + 1,
-                                    evt.tag,
-                                    ts,
-                                    serde_json::to_string_pretty(&evt.data).unwrap_or_default()
-                                ));
-                            }
-                            if !text.is_empty() {
-                                clipboard_text = Some(text);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
                 DetailPopup::SaltEvent { ref evt, scroll: ref mut scroll_offset, ref mut pretty, ref mut pretty_fetch } => {
                     // self.event_detail_scroll_max is the true viewport-aware
                     // last-scroll-position, recomputed and written back every
@@ -4482,10 +4396,10 @@ impl App {
                     // presses after End.
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            if let Some(sniffer) = self.return_to_sniffer.take() {
-                                self.detail_popup = Some(DetailPopup::EventSniffer(sniffer));
-                                self.popup_tab = Some(self.current_tab);
-                            } else if let Some((mid, sel)) = self.return_to_minion_events.take() {
+                            // Sniffer, if any, isn't stashed here — it lives in
+                            // `self.sniffer` independent of `detail_popup` and
+                            // reappears on its own once this popup closes.
+                            if let Some((mid, sel)) = self.return_to_minion_events.take() {
                                 self.detail_popup = Some(DetailPopup::MinionEvents {
                                     minion_id: mid, selected: sel,
                                 });
@@ -4756,6 +4670,106 @@ impl App {
             self.clipboard_at = Some(Instant::now());
             return false;
         }
+        } else if sniffer_showing {
+            if let Some(ref mut state) = self.sniffer {
+                // Highlight keyword input mode
+                if let Some(ref mut buf) = state.highlight_input {
+                    match code {
+                        KeyCode::Enter => {
+                            let keywords: Vec<String> = buf.split(',')
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                            if !keywords.is_empty() {
+                                state.highlight_keywords = keywords;
+                            }
+                            state.highlight_input = None;
+                        }
+                        KeyCode::Esc => {
+                            state.highlight_input = None;
+                        }
+                        KeyCode::Backspace => { buf.pop(); }
+                        KeyCode::Char(c) => { buf.push(c); }
+                        _ => {}
+                    }
+                    return false;
+                }
+                // Nav/selection/Enter/y all operate on the filtered
+                // (displayed) view, not raw buffer indices — see
+                // `SnifferState::filtered_indices`.
+                let visible = state.filtered_indices();
+                match code {
+                    KeyCode::Enter => {
+                        if let Some(evt) = visible.get(state.selected).and_then(|&i| state.buffer.get(i)) {
+                            // `self.sniffer` isn't touched -- it keeps
+                            // capturing underneath and reappears on its own
+                            // once this SaltEvent popup closes.
+                            self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
+                            self.popup_tab = Some(self.current_tab);
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        self.sniffer = None;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        state.selected = state.selected.saturating_sub(1);
+                        state.following = state.selected + 1 >= visible.len();
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let max = visible.len().saturating_sub(1);
+                        state.selected = state.selected.saturating_add(1).min(max);
+                        state.following = state.selected + 1 >= visible.len();
+                    }
+                    KeyCode::PageUp => {
+                        state.selected = state.selected.saturating_sub(10);
+                        state.following = state.selected + 1 >= visible.len();
+                    }
+                    KeyCode::PageDown => {
+                        let max = visible.len().saturating_sub(1);
+                        state.selected = state.selected.saturating_add(10).min(max);
+                        state.following = state.selected + 1 >= visible.len();
+                    }
+                    KeyCode::Home => {
+                        state.selected = 0;
+                        state.following = visible.len() <= 1;
+                    }
+                    KeyCode::End => {
+                        state.selected = visible.len().saturating_sub(1);
+                        state.following = true;
+                    }
+                    KeyCode::Char('p') | KeyCode::Char('P') => {
+                        state.paused = !state.paused;
+                    }
+                    KeyCode::Char('h') | KeyCode::Char('H') => {
+                        state.highlight_input = Some(state.highlight_keywords.join(", "));
+                    }
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        let mut text = String::new();
+                        for (i, &buf_idx) in visible.iter().enumerate() {
+                            let Some(evt) = state.buffer.get(buf_idx) else { continue };
+                            let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
+                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                .unwrap_or_else(|| evt.ts.to_string());
+                            text.push_str(&format!(
+                                "Event {}\nTag: {}\nTimestamp: {}\nData:\n{}\n\n",
+                                i + 1,
+                                evt.tag,
+                                ts,
+                                serde_json::to_string_pretty(&evt.data).unwrap_or_default()
+                            ));
+                        }
+                        if !text.is_empty() {
+                            clipboard_text = Some(text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(text) = clipboard_text {
+                self.copy_to_clipboard(&text);
+                self.clipboard_at = Some(Instant::now());
+                return false;
+            }
         }
         if let Some((jid, mid)) = trigger_event_pretty_lookup {
             let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
@@ -4769,7 +4783,7 @@ impl App {
         if let Some(mid) = trigger_grains_fetch {
             self.send_agent_cmd("minion_grains", Some(serde_json::json!({"minion_id": mid})));
         }
-        if had_popup {
+        if had_popup || sniffer_showing {
             return false;
         }
 
@@ -4908,7 +4922,7 @@ impl App {
                 }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
-                if self.current_tab == Tab::Events && self.detail_popup.is_none() && !self.is_filtering {
+                if self.current_tab == Tab::Events && self.detail_popup.is_none() && self.sniffer.is_none() && !self.is_filtering {
                     self.sniffer_input_active = true;
                     self.sniffer_input_text.clear();
                 }

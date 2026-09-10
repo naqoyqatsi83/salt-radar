@@ -142,13 +142,13 @@ fn main() -> io::Result<()> {
                         }
                         MouseEventKind::Down(MouseButton::Right) => {
                             app.detail_popup = None;
+                            // A sniffer, if any, isn't stashed anywhere -- it
+                            // lives in `app.sniffer` independent of
+                            // `detail_popup` and reappears on its own.
                             if let Some((mid, sel)) = app.return_to_minion_events.take() {
                                 app.detail_popup = Some(crate::app::DetailPopup::MinionEvents {
                                     minion_id: mid, selected: sel,
                                 });
-                                app.popup_tab = Some(app.current_tab);
-                            } else if let Some(sniffer) = app.return_to_sniffer.take() {
-                                app.detail_popup = Some(crate::app::DetailPopup::EventSniffer(sniffer));
                                 app.popup_tab = Some(app.current_tab);
                             }
                             need_redraw = true;

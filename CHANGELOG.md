@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Opening any detail popup (Minion/Job/Alert/API detail, Minion Events) on another tab while the Event Sniffer was running silently discarded it, since the sniffer shared the same single popup slot as every other, tab-scoped popup. The sniffer now lives independently of that slot, so it keeps capturing and reappears untouched when you come back to Events — while other popups on other tabs open normally instead of being blocked
 - Job Detail / Event Detail pretty view could take many minutes (or effectively never finish, well past the popup's own 65s lookup timeout) to load a job with a very large number of minions — e.g. `grains.items` across 1000+ minions, ~230k lines of `salt-run jobs.lookup_jid` output — despite the underlying `salt-run` command itself returning in seconds. The agent's per-minion text-splitting (extracting each minion's own slice of the combined CLI output) scanned every *other* minion for each minion to find its section boundary — O(minions²) string searches, fine for a handful of minions but ~1,000,000 searches over a multi-megabyte string at 1000+ minions. Now computed in one pass per minion instead of one pass per minion-pair; a synthetic 1200-minion benchmark went from an estimated ~18 minutes to ~1.25 seconds with byte-identical output.
 
 ### Added

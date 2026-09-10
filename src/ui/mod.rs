@@ -322,7 +322,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // had a popup opened on it reads as permanently unfocused afterward.
     let popup_active = app.detail_popup.is_some()
         && (app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))));
-    let tab_focused = !popup_active && !app.show_help;
+    // The sniffer lives outside `detail_popup` (it keeps running when you
+    // leave Events) so it isn't covered by `popup_active` above, but it
+    // still overlays/steals focus from the Events tab whenever it's the
+    // thing on screen there (i.e. no other Events-tab popup on top of it).
+    let sniffer_active = !popup_active && app.current_tab == Tab::Events && app.sniffer.is_some();
+    let tab_focused = !popup_active && !sniffer_active && !app.show_help;
 
     match app.current_tab {
         Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[1], app),
@@ -338,6 +343,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Detail popup overlay
     if popup_active { detail_popup::draw_detail_popup(f, app); }
+    else if sniffer_active { detail_popup::draw_sniffer_overlay(f, app); }
 
     // Help overlay
     if app.show_help {
