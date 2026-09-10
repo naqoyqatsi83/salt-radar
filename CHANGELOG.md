@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Event Detail popup: `t` toggles between raw JSON and a **pretty view** for job-return events. Fetches the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output — the same subprocess call Job Detail already uses — so formatting and colors are authoritative Salt output rather than an approximation; falls back to a client-side rendering only for non-job-return events or if the fetch fails/times out. While the fetch is in flight, the raw JSON stays on screen instead of a client-side approximation, so there's no "wrong colors, then right colors a moment later" flash once the real output lands (#99)
+- Multi-term filtering (`/`) on Events/Minions/Jobs/Alerts/API: a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax rather than introducing regex. Matched terms are colored consistently — same term, same color, everywhere and every session — via a deterministic hash into a small, fully-saturated palette kept separate from the existing severity colors (green/red/yellow already mean success/fail/warn elsewhere in the UI). Applied to the Events tab list and the Event Sniffer's captured content (#100)
+- Event Sniffer: the minion ID(s)/glob entered when launching it (`n`) are now colored wherever they occur in captured content (tag and JSON body) — previously only the capture filter used them, with no corresponding highlight (#100)
+
+### Changed
+
+- Filtering on Minions/Jobs/Alerts/API is now isolated per tab — each keeps its own filter text independently, so typing a filter on one tab (e.g. a host name on Events) no longer also silently filters an unrelated tab (e.g. request method/path/status on API) until manually cleared. Events already had its own isolated filter; this fixes the four tabs that were sharing one field
+- Event Sniffer's `h` keyword field now also filters the displayed events, not just colors matches within them — narrows to only events containing at least one active keyword, consistent with what a filter box is expected to do. It's deliberately a *separate, optional* search on top of the sniffer's own minion-ID relevance filter (which stays broad — e.g. a wildcard-targeted job counts even without literally naming the minion — see Fixed below for why those two needed to stay decoupled)
+- Event Detail popup: `y`/`Y` clipboard copy now matches whichever view is currently on screen (pretty or raw) instead of always copying raw JSON regardless of the toggle state
+
 ### Fixed
 
 - Fix Events tab filtering causing progressive slowdown, sluggish tab-switching, and extended freezes on busy masters. The filtered event list is no longer re-scanned from the whole event buffer on every redraw, every keystroke, every incoming event, or even once per tick — it's now an incrementally maintained cache updated in O(1) per ingested/evicted event, with a full rebuild only when the filter itself changes (Enter/Esc). The filter is also applied on Enter instead of live per character (#98)
+- Event Detail pretty view rendered a state.apply return's states alphabetically by state ID instead of actual execution order, because this crate's `serde_json` doesn't enable the `preserve_order` feature and so silently re-sorted the raw dict's keys. States are now explicitly sorted by `__run_num__` (the same field Salt's own highstate outputter uses) whenever a dict looks like a state-return — Job Detail's raw-JSON fallback path (used when the real fetch's `formatted_text` is empty) had the same latent bug and gets the same fix, since both share the renderer
+- Event Sniffer: an early version tied the minion-ID coloring above directly to the keyword filter, which caused two bugs in sequence — coloring silently did nothing when the minion target was a glob (a glob never literally appears in rendered text to color), and, once that was fixed by seeding the filter from the minion target, wildcard-targeted jobs relevant to a sniffed minion were incorrectly hidden (their JSON doesn't literally contain that minion's name). The two concerns are now fully decoupled: minion-ID coloring is purely cosmetic and never filters, only `h` narrows the displayed view
 
 ## [0.6.2] - 2026-09-05
 

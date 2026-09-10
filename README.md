@@ -105,13 +105,17 @@ Live overview of your Salt Master with real-time sparkline panels:
 ### Events
 - Live event stream from the Salt event bus (via ZMQ)
 - Full date/time in local and UTC columns
-- Filter by tag, function, minion ID, or any JSON field
-- Event detail popup: copy to clipboard (`y` = tag/timestamp + pretty-printed data, `Y` = raw JSON data only)
-- Advanced **Event Sniffer** — filter events by minion ID substring (`n` key):
+- Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax. Matched terms are colored consistently (same term, same color, everywhere) from a small high-contrast palette, hashed from the term text
+- Event detail popup:
+  - `t` toggles between raw JSON and a **pretty view** for job-return events — the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output (same subprocess call Job Detail uses), so formatting and colors are authoritative Salt output, not an approximation. Falls back to a client-side rendering only when no live fetch is possible (non-job-return events) or after a fetch failure/timeout
+  - Copy to clipboard (`y` = tag/timestamp + body, `Y` = body only) matches whatever's currently on screen — pretty or raw
+- Advanced **Event Sniffer** (`n` key) — filter events by minion ID/glob, same syntax as the main filter:
+  - Sniffed minion IDs are colored wherever they occur in captured content (tag and JSON body), same hashed palette as the main filter
+  - `h` sets an additional keyword search *within* what's already being sniffed — unlike the minion-ID coloring above, this one also narrows the displayed list to matches
   - Pause/resume live capture (`p`)
   - Navigate events with full pretty-printed JSON body
   - Open event detail from sniffer (`Enter`), return to sniffer on close
-  - Copy all captured events to clipboard (`y`)
+  - Copy captured (and currently filtered/shown) events to clipboard (`y`)
 
 ### Jobs
 - Split panel: **Live Jobs** (left) from event bus and **Job Cache** (right) from Salt's master job cache
@@ -179,7 +183,7 @@ If DISPLAY and XAUTHORITY can't be resolved, a transient yellow hint is shown in
 ### Everywhere
 - **High-contrast selection mode** (`c`) — steel-blue background + bold, works inside popups too
 - **Clipboard integration** — tmux load-buffer + xclip via X11 forwarding. DISPLAY and XAUTHORITY are auto-resolved from the process environment or the tmux session's global environment — no manual configuration needed even when running under `sudo`
-- Filter-as-you-type with `/` on all list tabs
+- Filter-as-you-type with `/` on all list tabs — each tab keeps its own filter independently, comma-separated terms (each optionally a glob) are OR'd together, and matched terms are consistently colored
 - Keyboard-driven navigation with `?` for help
 
 ## Installation
@@ -285,7 +289,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `Enter` | Enter scroll mode (event/job detail) |
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |
-| `h` | Edit highlight keywords (sniffer) |
+| `t` | Toggle raw JSON / pretty view (event detail) |
+| `h` | Edit keyword filter (sniffer) |
 | `p` | Pause/resume (sniffer) |
 | `g` | Fetch grains for this minion (minion detail, admin mode only) |
 
