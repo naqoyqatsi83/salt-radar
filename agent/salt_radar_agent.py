@@ -1174,6 +1174,17 @@ def cmd_jid_lookup(opts, req):
                     return (1, False)
                 if isinstance(result_val, bool):
                     return (0, True)
+            elif return_val and all(
+                isinstance(v, dict) and ("result" in v or "__run_num__" in v)
+                for v in return_val.values()
+            ):
+                # state.apply-style return: a dict keyed by state ID, each
+                # value its own per-state result dict -- there's no
+                # top-level "result"/"retcode" to find above, so without
+                # this the whole job silently defaulted to "success" (rc=0)
+                # even when every state inside had result=False.
+                any_failed = any(v.get("result") is False for v in return_val.values())
+                return (1, False) if any_failed else (0, True)
             rc = return_val.get("retcode", 0)
             if not isinstance(rc, int):
                 try:

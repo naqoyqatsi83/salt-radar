@@ -5803,6 +5803,17 @@ pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
                 if result_val.is_boolean() {
                     return (0, true);
                 }
+            } else if !obj.is_empty() && obj.values().all(|v| {
+                v.as_object().is_some_and(|s| s.contains_key("result") || s.contains_key("__run_num__"))
+            }) {
+                // state.apply-style return: a dict keyed by state ID, each
+                // value its own per-state result dict -- there's no
+                // top-level `result`/`retcode` to find above, so without
+                // this the whole job silently defaulted to "success" (rc=0)
+                // even when every state inside had `result: false`.
+                let any_failed = obj.values()
+                    .any(|v| v.get("result").and_then(|r| r.as_bool()) == Some(false));
+                return if any_failed { (1, false) } else { (0, true) };
             }
             // check explicit retcode
             let rc = obj.get("retcode").and_then(|v| v.as_i64()).unwrap_or(0);

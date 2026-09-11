@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Job Detail's per-minion return list could show `OK (retcode=0)` for a minion whose state run actually failed (e.g. a `state.apply` with no matching top file, or any state with `result: false`). The retcode/success derivation only checked for a top-level `result` or `retcode` key, but a state-return is a dict keyed by state ID with each state's own `result` nested one level down — finding neither at the top level, it silently defaulted to success. Now recognized as a state-return dict and considered failed if any state inside has `result: false`. Same latent bug fixed in the agent's parallel (currently unused by the Rust client) computation of the same values
+
 ## [0.6.3-rc6] - 2026-09-10
 
 ### Added
