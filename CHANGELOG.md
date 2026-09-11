@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3-rc7] - 2026-09-11
+
 ### Added
 
 - Live Jobs list: the single "Progress" column (a bare `returned/target` count that read identically whether every minion succeeded or some of them failed) is now four spelled-out, fixed-width columns — `Tgt`/`OK`/`Fail`/`Wait` — so targeted/succeeded/failed/still-pending are each their own number, aligned top to bottom, with no mental arithmetic or symbol legend needed. Sourced from the live return event's own `success` field (the same authoritative value Salt itself sets), not re-derived client-side
