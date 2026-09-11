@@ -72,7 +72,7 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool)
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            format!("  {:<24}{:<26}{:<22}{:<8}Progress", "JID", "Fun", "Target", "Source"),
+            format!("  {:<24}{:<26}{:<22}{:<8}{:>6}{:>6}{:>6}{:>6}", "JID", "Fun", "Target", "Source", "Tgt", "OK", "Fail", "Wait"),
             Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
         )));
 
@@ -106,31 +106,24 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool)
                     Span::styled(format!("{:<22}", tgt_str), Style::default().fg(color::YELLOW)),
                     Span::styled(format!("{:<8}", source_str), Style::default().fg(if job.local { color::PURPLE } else { color::GREEN })),
                 ];
-                // Breakdown (succeeded/failed/still pending) instead of a
-                // bare returned/target count, so a job with some failures
-                // doesn't read the same as one that's fully healthy.
+                // Four spelled-out, fixed-width columns (matching the Tgt/OK/
+                // Fail/Wait header above) instead of a bare returned/target
+                // count or inline symbols -- a real sub-table needs no
+                // legend, every column lines up top to bottom regardless of
+                // how large the target count or how mixed the outcome is,
+                // and "how many were targeted" is answered directly instead
+                // of requiring the reader to add up succeeded+failed+wait.
                 if job.target_count == 0 {
-                    row.push(Span::styled("?", Style::default().fg(color::ORANGE).add_modifier(Modifier::BOLD)));
+                    row.push(Span::styled(format!("{:>24}", "?"), Style::default().fg(color::ORANGE).add_modifier(Modifier::BOLD)));
                 } else {
                     let pending = job.target_count.saturating_sub(job.returned);
-                    let mut wrote = false;
-                    if job.succeeded > 0 {
-                        row.push(Span::styled(format!("{}\u{2713}", job.succeeded), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)));
-                        wrote = true;
-                    }
-                    if job.failed > 0 {
-                        if wrote { row.push(Span::raw(" ")); }
-                        row.push(Span::styled(format!("{}\u{2717}", job.failed), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)));
-                        wrote = true;
-                    }
-                    if pending > 0 {
-                        if wrote { row.push(Span::raw(" ")); }
-                        row.push(Span::styled(format!("{}\u{2026}", pending), Style::default().fg(color::ORANGE)));
-                        wrote = true;
-                    }
-                    if !wrote {
-                        row.push(Span::styled(format!("{}/{}", job.returned, job.target_count), Style::default().fg(color::TEXT_DIM)));
-                    }
+                    let ok_style = if job.succeeded > 0 { Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD) } else { Style::default().fg(color::TEXT_DIM) };
+                    let fail_style = if job.failed > 0 { Style::default().fg(color::RED).add_modifier(Modifier::BOLD) } else { Style::default().fg(color::TEXT_DIM) };
+                    let pend_style = if pending > 0 { Style::default().fg(color::ORANGE) } else { Style::default().fg(color::TEXT_DIM) };
+                    row.push(Span::styled(format!("{:>6}", job.target_count), Style::default().fg(color::TEXT)));
+                    row.push(Span::styled(format!("{:>6}", job.succeeded), ok_style));
+                    row.push(Span::styled(format!("{:>6}", job.failed), fail_style));
+                    row.push(Span::styled(format!("{:>6}", pending), pend_style));
                 }
 
                 lines.push(Line::from(row).style(sel_style));
