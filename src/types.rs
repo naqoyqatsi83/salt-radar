@@ -440,6 +440,8 @@ pub struct JobEntry {
     pub tgt: String,
     pub target_count: usize,
     pub returned: usize,
+    pub succeeded: usize,
+    pub failed: usize,
     pub age_seconds: u64,
     pub created_epoch: f64,
     pub local: bool,

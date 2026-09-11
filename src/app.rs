@@ -5907,6 +5907,8 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             tgt,
             target_count: minions,
             returned: 0,
+            succeeded: 0,
+            failed: 0,
             age_seconds: 0,
             created_epoch: evt.ts,
             local: false,
@@ -5918,8 +5920,14 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             .and_then(|s| s.split("/ret/").next())
             .unwrap_or("");
         if jid.is_empty() { return; }
+        // The event bus's own `success` (set by Salt itself from the real
+        // return, not re-derived here) is authoritative -- unlike the
+        // best-effort reconstruction `derive_success_retcode` has to do for
+        // the cached `jobs.lookup_jid` return shown in Job Detail.
+        let success = evt.data["success"].as_bool().unwrap_or(true);
         if let Some(job) = jobs.iter_mut().find(|j| j.jid == jid) {
             job.returned += 1;
+            if success { job.succeeded += 1; } else { job.failed += 1; }
         } else {
             // Unknown JID → salt-call / local execution (no /new event was emitted)
             let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
@@ -5930,6 +5938,8 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
                 tgt,
                 target_count: 1,
                 returned: 1,
+                succeeded: if success { 1 } else { 0 },
+                failed: if success { 0 } else { 1 },
                 age_seconds: 0,
                 created_epoch: evt.ts,
                 local: true,

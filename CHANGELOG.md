@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Live Jobs list: the "Progress" column now breaks a job's returns down into succeeded/failed/still-pending counts (e.g. `2✓ 1✗`) instead of a bare `returned/target` count that read identically whether every minion succeeded or some of them failed. Sourced from the live return event's own `success` field (the same authoritative value Salt itself sets), not re-derived client-side
+
 ### Fixed
 
 - Job Detail's per-minion return list could show `OK (retcode=0)` for a minion whose state run actually failed (e.g. a `state.apply` with no matching top file, or any state with `result: false`). The retcode/success derivation only checked for a top-level `result` or `retcode` key, but a state-return is a dict keyed by state ID with each state's own `result` nested one level down — finding neither at the top level, it silently defaulted to success. Now recognized as a state-return dict and considered failed if any state inside has `result: false`. Same latent bug fixed in the agent's parallel (currently unused by the Rust client) computation of the same values

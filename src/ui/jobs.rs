@@ -95,24 +95,45 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool)
                     Style::default().bg(color::BG_DARK)
                 };
 
-                let progress = if job.target_count > 0 {
-                    format!("{}/{}", job.returned, job.target_count)
-                } else {
-                    "?".to_string()
-                };
-
                 let jid_str = if job.jid.len() > 24 { format!("{}..", &job.jid[..22]) } else { job.jid.clone() };
                 let fun_str = if job.fun.len() > 26 { format!("{}..", &job.fun[..24]) } else { job.fun.clone() };
                 let tgt_str = if job.tgt.len() > 22 { format!("{}..", &job.tgt[..20]) } else { job.tgt.clone() };
                 let source_str = if job.local { "local" } else { "master" };
 
-                lines.push(Line::from(vec![
+                let mut row = vec![
                     Span::styled(format!("  {:<24}", jid_str), Style::default().fg(color::TEXT_DIM)),
                     Span::styled(format!("{:<26}", fun_str), Style::default().fg(color::CYAN)),
                     Span::styled(format!("{:<22}", tgt_str), Style::default().fg(color::YELLOW)),
                     Span::styled(format!("{:<8}", source_str), Style::default().fg(if job.local { color::PURPLE } else { color::GREEN })),
-                    Span::styled(progress, Style::default().fg(if job.returned >= job.target_count && job.target_count > 0 { color::GREEN } else { color::ORANGE }).add_modifier(Modifier::BOLD)),
-                ]).style(sel_style));
+                ];
+                // Breakdown (succeeded/failed/still pending) instead of a
+                // bare returned/target count, so a job with some failures
+                // doesn't read the same as one that's fully healthy.
+                if job.target_count == 0 {
+                    row.push(Span::styled("?", Style::default().fg(color::ORANGE).add_modifier(Modifier::BOLD)));
+                } else {
+                    let pending = job.target_count.saturating_sub(job.returned);
+                    let mut wrote = false;
+                    if job.succeeded > 0 {
+                        row.push(Span::styled(format!("{}\u{2713}", job.succeeded), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)));
+                        wrote = true;
+                    }
+                    if job.failed > 0 {
+                        if wrote { row.push(Span::raw(" ")); }
+                        row.push(Span::styled(format!("{}\u{2717}", job.failed), Style::default().fg(color::RED).add_modifier(Modifier::BOLD)));
+                        wrote = true;
+                    }
+                    if pending > 0 {
+                        if wrote { row.push(Span::raw(" ")); }
+                        row.push(Span::styled(format!("{}\u{2026}", pending), Style::default().fg(color::ORANGE)));
+                        wrote = true;
+                    }
+                    if !wrote {
+                        row.push(Span::styled(format!("{}/{}", job.returned, job.target_count), Style::default().fg(color::TEXT_DIM)));
+                    }
+                }
+
+                lines.push(Line::from(row).style(sel_style));
             }
         }
     }
