@@ -5897,10 +5897,25 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
     if evt.tag.ends_with("/new") {
         let jid = evt.data["jid"].as_str().unwrap_or("").to_string();
         if jid.is_empty() { return; }
-        if jobs.iter().any(|j| j.jid == jid) { return; }
         let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
         let tgt = evt.data["tgt"].as_str().unwrap_or("?").to_string();
         let minions = evt.data["minions"].as_array().map(|a| a.len()).unwrap_or(0);
+        if let Some(job) = jobs.iter_mut().find(|j| j.jid == jid) {
+            // A `/ret/` for this jid was processed before this `/new` --
+            // most commonly because `/new` was the one evicted under
+            // backlog pressure (see agent::MAX_QUEUE_LEN) -- and was
+            // mistaken below for a one-off local/salt-call execution. Now
+            // that the real dispatch info is in (better late than never),
+            // correct it in place instead of leaving it stuck showing the
+            // wrong target/count for the rest of the job's life -- whatever
+            // it already recorded as returned/succeeded/failed is still
+            // valid and is kept as-is.
+            job.fun = fun;
+            job.tgt = tgt;
+            job.target_count = minions;
+            job.local = false;
+            return;
+        }
         jobs.push(JobEntry {
             jid,
             fun,
@@ -5928,6 +5943,12 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
         if let Some(job) = jobs.iter_mut().find(|j| j.jid == jid) {
             job.returned += 1;
             if success { job.succeeded += 1; } else { job.failed += 1; }
+            // Guards against ever displaying more returns than the job was
+            // supposedly targeted at (e.g. a dropped/never-received `/new`
+            // leaving `target_count` stuck at the single-minion fallback
+            // guess below) -- always widen to match reality rather than
+            // show a target count smaller than what's actually come back.
+            job.target_count = job.target_count.max(job.returned);
         } else {
             // Unknown JID → salt-call / local execution (no /new event was emitted)
             let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();

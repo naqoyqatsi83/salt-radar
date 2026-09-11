@@ -113,7 +113,20 @@ fn run_agent_once(
 
             let mut q = tx_clone.lock().unwrap();
             if q.len() >= MAX_QUEUE_LEN {
-                q.pop_front();
+                // Never let a job-start ("/new") event be the one silently
+                // dropped here -- losing it permanently mistracks that job
+                // for the rest of its life (Job tracking has no other way
+                // to learn the real target/count, so it falls back to
+                // treating the job's first-seen `/ret/` as a one-off local
+                // execution and never recovers). Every other message is
+                // either transient or has other copies close behind it (the
+                // job's own further `/ret/`s), so evict the oldest of those
+                // instead, scanning forward only in the rare case the queue
+                // is nothing but `/new` events.
+                let victim = q.iter()
+                    .position(|m| !matches!(m, AgentMessage::Event { tag, .. } if tag.ends_with("/new")))
+                    .unwrap_or(0);
+                q.remove(victim);
                 dropped_clone.fetch_add(1, Ordering::Relaxed);
             }
             q.push_back(msg);
