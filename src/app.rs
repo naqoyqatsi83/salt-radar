@@ -1619,6 +1619,20 @@ impl App {
         })
     }
 
+    /// Same matching rules as `matches_minion`, for the separate `FleetMinion`
+    /// type used by the Fleet Overview scan — lets the Minions-tab filter also
+    /// scope the OS/version/arch breakdown, not just the list.
+    pub fn matches_fleet_minion(minion: &crate::types::FleetMinion, pat: &str) -> bool {
+        let terms = Self::filter_terms(pat);
+        if terms.is_empty() { return true; }
+        terms.iter().any(|term| {
+            Self::host_matches_term(&minion.id, term)
+                || Self::matches_filter(&minion.osfinger, term)
+                || Self::matches_filter(&minion.osrelease, term)
+                || Self::matches_filter(&minion.saltversion, term)
+        })
+    }
+
     fn accepted_ids(&self) -> &HashSet<String> {
         &self.accepted_id_set
     }

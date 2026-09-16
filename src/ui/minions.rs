@@ -276,11 +276,31 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
         }
         lines.push(Line::from(""));
 
-        if !fs.minions.is_empty() {
-            let total_minions = fs.minions.len();
+        let pat = app.filter_text_for(Tab::Minions);
+        let filtered_minions: Vec<&crate::types::FleetMinion> = if pat.is_empty() {
+            fs.minions.iter().collect()
+        } else {
+            fs.minions.iter().filter(|m| crate::app::App::matches_fleet_minion(m, pat)).collect()
+        };
+
+        if !pat.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  Filtered: {} of {} minions match ", filtered_minions.len(), fs.minions.len()),
+                    Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("/{}/", pat), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            ]));
+            lines.push(Line::from(""));
+        }
+
+        if filtered_minions.is_empty() && !pat.is_empty() {
+            lines.push(Line::from(Span::styled("  No minions match this filter.", Style::default().fg(color::TEXT_DIM))));
+        } else if !filtered_minions.is_empty() {
+            let total_minions = filtered_minions.len();
 
             let mut os_counts: HashMap<&str, usize> = HashMap::new();
-            for m in &fs.minions {
+            for m in &filtered_minions {
                 let key = if m.osfinger.is_empty() {
                     if m.osrelease.is_empty() { "?" } else { m.osrelease.as_str() }
                 } else {
@@ -292,7 +312,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
             os_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
 
             let mut ver_counts: HashMap<&str, usize> = HashMap::new();
-            for m in &fs.minions {
+            for m in &filtered_minions {
                 let key = if m.saltversion.is_empty() { "?" } else { m.saltversion.as_str() };
                 *ver_counts.entry(key).or_insert(0) += 1;
             }
@@ -300,7 +320,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
             ver_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
 
             let mut arch_counts: HashMap<&str, usize> = HashMap::new();
-            for m in &fs.minions {
+            for m in &filtered_minions {
                 let key = if m.cpuarch.is_empty() { "?" } else { m.cpuarch.as_str() };
                 *arch_counts.entry(key).or_insert(0) += 1;
             }
