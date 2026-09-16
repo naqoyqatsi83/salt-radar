@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3-rc8] - 2026-09-16
+
 ### Added
 
 - Minions tab: the active list filter (`/`) can now also scope the Fleet Overview panel's OS/Salt-version/architecture breakdown to just the matching minions, instead of always aggregating the whole fleet — so filtering down to a single customer or host pattern shows that subset's distribution, with a "Filtered: N of M minions match /pattern/" label when scoped. Toggled live with `f` on the Minions tab (shown as a hint on the panel's bottom border), defaulting to on; the default is configurable via `follow_filter` under `[minions]` in `salt-radar.toml` / the config editor (#101)
