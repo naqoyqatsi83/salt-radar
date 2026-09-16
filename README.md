@@ -100,7 +100,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Freshly-active marker (`●`) next to minions that checked in recently, threshold adapts to the fleet's own median check-in age
 - Fleet overview panel: OS Distribution, Salt Version, and Architecture distribution bars
 - Detail popup with key info and connection status
-- Filter by ID, OS, or version (`/` key)
+- Filter by ID, OS, or version (`/` key) — scopes the fleet overview breakdown to the matching minions too, when "follow filter" is on (`f` to toggle, on by default; startup default configurable via `follow_filter` under `[minions]`)
 
 ### Events
 - Live event stream from the Salt event bus (via ZMQ)
@@ -261,6 +261,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Minions | `s` | Fleet scan (admin mode only) |
 | Minions | `x` | Hide/show non-responsive minions |
 | Minions | `z` | Collapse/expand timed-out minions into one row (when not hidden) |
+| Minions | `f` | Toggle whether the Fleet Overview breakdown follows the active list filter |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
 | Jobs (Cache) | `,`/`.` | Previous/next page |

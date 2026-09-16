@@ -221,7 +221,11 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
-    let block = super::titled_block(" Fleet Overview ", Style::default().fg(color::BORDER), color::BG_DARK);
+    let follow = app.config.minions_follow_filter;
+    let hints: Vec<(&str, String)> = vec![
+        ("f", format!("follow filter: {}", if follow { "on" } else { "off" })),
+    ];
+    let block = super::titled_block_hinted(" Fleet Overview ", Style::default().fg(color::BORDER), color::BG_DARK, &hints);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -276,7 +280,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
         }
         lines.push(Line::from(""));
 
-        let pat = app.filter_text_for(Tab::Minions);
+        let pat = if follow { app.filter_text_for(Tab::Minions) } else { "" };
         let filtered_minions: Vec<&crate::types::FleetMinion> = if pat.is_empty() {
             fs.minions.iter().collect()
         } else {

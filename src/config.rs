@@ -142,6 +142,11 @@ pub struct AppConfig {
     pub show_event_types: bool,
     pub show_job_pulse: bool,
     pub show_salt_api: bool,
+    /// Whether the Minions tab's Fleet Overview breakdown (OS/version/arch)
+    /// scopes itself to the active list filter, or always aggregates the
+    /// whole fleet regardless of what's filtered on the left. Toggled live
+    /// with `f` on the Minions tab; this is just the startup default.
+    pub minions_follow_filter: bool,
 }
 
 impl Default for AppConfig {
@@ -198,6 +203,7 @@ impl Default for AppConfig {
             show_event_types: true,
             show_job_pulse: true,
             show_salt_api: true,
+            minions_follow_filter: true,
         }
     }
 }
@@ -210,6 +216,7 @@ struct TomlConfig {
     alerts: Option<AlertsConfig>,
     dashboard: Option<DashboardConfig>,
     api: Option<ApiConfig>,
+    minions: Option<MinionsConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -268,6 +275,11 @@ struct ApiConfig {
     stats_auth_password: Option<String>,
     stats_auth_username_pillar_path: Option<String>,
     stats_auth_password_pillar_path: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct MinionsConfig {
+    follow_filter: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -355,7 +367,10 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          show_key_status = {}\n\
          show_event_types = {}\n\
          show_job_pulse = {}\n\
-         show_salt_api = {}\n",
+         show_salt_api = {}\n\
+         \n\
+         [minions]\n\
+         follow_filter = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -407,6 +422,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.show_event_types,
         config.show_job_pulse,
         config.show_salt_api,
+        config.minions_follow_filter,
     );
     std::fs::write(path, toml)
 }
@@ -478,6 +494,9 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = d.show_event_types { cfg.show_event_types = v; }
                 if let Some(v) = d.show_job_pulse { cfg.show_job_pulse = v; }
                 if let Some(v) = d.show_salt_api { cfg.show_salt_api = v; }
+            }
+            if let Some(m) = toml_cfg.minions {
+                if let Some(v) = m.follow_filter { cfg.minions_follow_filter = v; }
             }
         }
     }

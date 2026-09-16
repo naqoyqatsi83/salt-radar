@@ -2229,6 +2229,8 @@ impl App {
                 ConfigField { label: "show_job_pulse", label_value: on_off(cfg.show_job_pulse), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_salt_api", label_value: on_off(cfg.show_salt_api), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Order },
+                ConfigField { label: "[minions]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "follow_filter", label_value: on_off(cfg.minions_follow_filter), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -2313,6 +2315,7 @@ impl App {
             show_event_types: parse_bool("show_event_types"),
             show_job_pulse: parse_bool("show_job_pulse"),
             show_salt_api: parse_bool("show_salt_api"),
+            minions_follow_filter: parse_bool("follow_filter"),
         };
 
         crate::config::write_config(&self.config_path, &new_config)
@@ -4933,6 +4936,11 @@ impl App {
                 if self.current_tab == Tab::Minions && !self.hide_timed_out {
                     self.timed_out_collapsed = !self.timed_out_collapsed;
                     self.clamp_selection();
+                }
+            }
+            KeyCode::Char('f') | KeyCode::Char('F') => {
+                if self.current_tab == Tab::Minions {
+                    self.config.minions_follow_filter = !self.config.minions_follow_filter;
                 }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {

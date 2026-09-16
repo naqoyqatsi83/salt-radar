@@ -178,3 +178,10 @@
 # show_event_types = true
 # show_job_pulse = true
 # show_salt_api = true
+
+[minions]
+# Whether the Minions tab's Fleet Overview panel (OS/Salt-version/
+# architecture breakdown) scopes itself to the active list filter, or always
+# aggregates the whole fleet. Toggled live with 'f' on the Minions tab; this
+# is just the startup default.
+# follow_filter = true
