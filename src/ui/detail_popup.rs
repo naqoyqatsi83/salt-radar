@@ -25,20 +25,22 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Clear, area);
             let highlight = app.return_to_minion_events.as_ref().map(|(id, _)| id.as_str());
             let clipboard_at = app.clipboard_at;
+            let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, clipboard_at, clipboard_msg, highlight);
+            draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, clipboard_at, save_at, clipboard_msg, highlight);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, job_fun, job_tgt, job_start_epoch, minion_scroll, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
             f.render_widget(Clear, area);
             let clipboard_at = app.clipboard_at;
+            let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, *minion_scroll, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, clipboard_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, *minion_scroll, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
             f.render_widget(Clear, area);
-            draw_alert_detail(f, area, alert, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+            draw_alert_detail(f, area, alert, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
         DetailPopup::AdminConfirm => {
             let area = centered_rect(55, 35, f.area());
@@ -54,7 +56,7 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
         DetailPopup::ApiRequest(entry) => {
             let area = centered_rect(65, 40, f.area());
             f.render_widget(Clear, area);
-            draw_api_request_detail(f, area, entry, app.clipboard_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+            draw_api_request_detail(f, area, entry, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
     }
 }
@@ -65,7 +67,7 @@ pub fn draw_sniffer_overlay(f: &mut Frame, app: &App) {
     let Some(ref state) = app.sniffer else { return };
     let area = centered_rect(80, 85, f.area());
     f.render_widget(Clear, area);
-    draw_event_sniffer(f, area, state, app.clipboard_at, app.high_contrast, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+    draw_event_sniffer(f, area, state, app.clipboard_at, app.save_at, app.high_contrast, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
 }
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -195,10 +197,22 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
     }
 }
 
-/// "✓ Copied" / clipboard-warning transient status shared by every popup
-/// footer — `None` when neither applies, so callers can tell there's
-/// nothing to show in the status row.
-fn clipboard_status(clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) -> Option<Line<'static>> {
+/// "✓ Copied"/"✓ Saved" (whichever just happened) / clipboard-warning
+/// transient status shared by every popup footer — `None` when none of
+/// those apply, so callers can tell there's nothing to show in the status
+/// row. `save_at` is checked first since it's the rarer, more deliberate
+/// action — a save can't happen without first closing the save prompt, by
+/// which point any earlier copy's 3s window has long since expired anyway.
+fn clipboard_status(clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) -> Option<Line<'static>> {
+    let show_saved = save_at
+        .map(|t| t.elapsed().as_secs_f64() < 3.0)
+        .unwrap_or(false);
+    if show_saved {
+        return Some(Line::from(Span::styled(
+            "  \u{2713} Saved                                 ",
+            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+        )));
+    }
     let show_copied = clipboard_at
         .map(|t| t.elapsed().as_secs_f64() < 3.0)
         .unwrap_or(false);
@@ -691,7 +705,7 @@ fn raw_json_lines(evt: &crate::types::SaltEvent, highlight: Option<&str>) -> Vec
     }).collect()
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
     let mut lines = header_lines(" Event Detail ", area.width);
     lines.push(row("Tag", evt.tag.clone(), color::CYAN));
     lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
@@ -739,7 +753,7 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
     lines.extend(body_lines.into_iter().skip(effective_scroll));
 
     let hints = event_detail_hints(pretty);
-    let status = clipboard_status(clipboard_at, clipboard_warning).or_else(|| {
+    let status = clipboard_status(clipboard_at, save_at, clipboard_warning).or_else(|| {
         if pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Loading) {
             Some(Line::from(Span::styled(
                 "  Fetching real salt-run output...",
@@ -769,12 +783,13 @@ fn draw_job_detail(
     content_scroll_mode: bool,
     content_scroll_max: &mut usize,
     clipboard_at: Option<std::time::Instant>,
+    save_at: Option<std::time::Instant>,
     clipboard_warning: Option<&str>,
 ) {
     // ── Outer frame ──
     f.render_widget(Clear, area);
     let hints = job_detail_hints(return_is_filtering, panel_focus, content_scroll_mode);
-    let status = clipboard_status(clipboard_at, clipboard_warning);
+    let status = clipboard_status(clipboard_at, save_at, clipboard_warning);
     let outer_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::BORDER_HI))
@@ -1065,7 +1080,7 @@ fn job_detail_hints(filter_active: bool, right_focus: bool, scroll_mode: bool) -
     }
 }
 
-fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
+fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
     let sev_color = match alert.severity {
         crate::types::AlertSeverity::Info => color::CYAN,
         crate::types::AlertSeverity::Warn => color::YELLOW,
@@ -1092,11 +1107,11 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
 
     lines.push(Line::from(""));
     let hints: [(&str, String); 3] = [("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string())];
-    let status = clipboard_status(clipboard_at, clipboard_warning);
+    let status = clipboard_status(clipboard_at, save_at, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
 
-fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiLogEntry, clipboard_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
+fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiLogEntry, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
     let status_code = entry.response_status.split_whitespace().next().unwrap_or("?");
     let status_color = match status_code.chars().next() {
         Some('2') | Some('3') => color::GREEN,
@@ -1123,7 +1138,7 @@ fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiL
     )));
 
     let hints: [(&str, String); 3] = [("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string())];
-    let status = clipboard_status(clipboard_at, clipboard_warning);
+    let status = clipboard_status(clipboard_at, save_at, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
 
@@ -1179,6 +1194,7 @@ fn draw_event_sniffer(
     area: Rect,
     state: &SnifferState,
     clipboard_at: Option<std::time::Instant>,
+    save_at: Option<std::time::Instant>,
     high_contrast: bool,
     clipboard_warning: Option<&str>,
 ) {
@@ -1367,14 +1383,14 @@ fn draw_event_sniffer(
         let more_below = (scroll as usize) + scrollable_height < event_only_len;
 
         let hints = sniffer_hints(state);
-        let status = sniffer_status(clipboard_at, state, clipboard_warning);
+        let status = sniffer_status(clipboard_at, save_at, state, clipboard_warning);
         render_popup(f, area, &lines, &hints, status, (more_above, more_below), scroll, pinned_header);
         return;
     }
 
     lines.push(Line::from(""));
     let hints = sniffer_hints(state);
-    let status = sniffer_status(clipboard_at, state, clipboard_warning);
+    let status = sniffer_status(clipboard_at, save_at, state, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
 
@@ -1389,6 +1405,7 @@ fn sniffer_format_ts(ts: f64) -> String {
 /// the only things a static border hint can't show.
 fn sniffer_status(
     clipboard_at: Option<std::time::Instant>,
+    save_at: Option<std::time::Instant>,
     state: &SnifferState,
     clipboard_warning: Option<&str>,
 ) -> Option<Line<'static>> {
@@ -1404,7 +1421,7 @@ fn sniffer_status(
             Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
         )));
     }
-    clipboard_status(clipboard_at, clipboard_warning)
+    clipboard_status(clipboard_at, save_at, clipboard_warning)
 }
 
 fn sniffer_hints(state: &SnifferState) -> Vec<(&'static str, String)> {

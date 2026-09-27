@@ -182,6 +182,10 @@ pub struct App {
     pub last_zmq_return: HashMap<String, Instant>,
     /// Timestamp of last successful clipboard copy (for UI feedback)
     pub clipboard_at: Option<Instant>,
+    /// Timestamp of last successful save-to-file (separate from
+    /// `clipboard_at` so the popup's transient "✓ Copied"/"✓ Saved"
+    /// indicator shows the label matching what actually happened)
+    pub save_at: Option<Instant>,
     /// Transient message shown in status bar (e.g. clipboard hints)
     pub clipboard_msg: Option<(String, Instant)>,
     /// Active "save to file" prompt (the 's'/'S' counterpart of 'y'/'Y'
@@ -636,6 +640,7 @@ impl App {
             event_rate_idx: 0,
             last_zmq_return: HashMap::new(),
             clipboard_at: None,
+            save_at: None,
             clipboard_msg: None,
             save_prompt: None,
             sparkline_style: SparklineStyle::default(),
@@ -3583,10 +3588,12 @@ impl App {
                 let content = self.save_prompt.as_ref().unwrap().content.clone();
                 let result = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &content));
                 self.clipboard_msg = Some(match result {
-                    Ok(()) => (format!(" Saved to {} ", path.display()), Instant::now()),
+                    Ok(()) => {
+                        self.save_at = Some(Instant::now());
+                        (format!(" Saved to {} ", path.display()), Instant::now())
+                    }
                     Err(e) => (format!(" Save failed: {} ", e), Instant::now()),
                 });
-                self.clipboard_at = Some(Instant::now());
                 self.save_prompt = None;
             }
             _ => {}
