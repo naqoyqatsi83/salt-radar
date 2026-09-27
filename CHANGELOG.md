@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Every popup that already supports copy-to-clipboard (`y`/`Y`) now also supports saving that same content to a file (`s`/`S`) — proposes a filename from what's being saved, lets you edit it before confirming, and warns if it would overwrite an existing file. Default save directory is `~` (the launching user's home), configurable as `save_dir` under `[export]` in `salt-radar.toml` / the Config Editor (#103)
+- Job Detail: `a`/`A` on the return list save every return in the job to a single file (Salt outputter format, or one JSON object keyed by minion id) — previously `y`/`Y`/`s`/`S` only covered the currently-selected return, so a job with hundreds of targeted minions had no single-window copy/save of the full result set (#103)
+
+### Fixed
+
+- Save-to-file's in-popup confirmation showed "✓ Copied" (the clipboard indicator) instead of "✓ Saved", since both actions shared one timestamp; save now has its own (#103)
 
 ## [0.6.3-rc8] - 2026-09-16
 

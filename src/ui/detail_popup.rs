@@ -1076,6 +1076,8 @@ fn job_detail_hints(filter_active: bool, right_focus: bool, scroll_mode: bool) -
             ("Y", "json".to_string()),
             ("s", "save".to_string()),
             ("S", "save json".to_string()),
+            ("a", "save all".to_string()),
+            ("A", "save all json".to_string()),
         ]
     }
 }

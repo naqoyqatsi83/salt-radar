@@ -122,6 +122,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Job cache supports pagination (`[`/`]` adjust limit, `,`/`.` page navigation) and server-side search
 - Per-minion return navigation (j/k), scrollable output viewer (Enter)
 - Copy return output to clipboard (y = Salt outputter format, Y = raw JSON), or save it to file (s/S, same two formats)
+- Jobs with hundreds of returns aren't limited to one minion at a time: `a`/`A` save every return in the job to a single file (Salt outputter format / one JSON object keyed by minion id), from the return list
 - Job detail popup shows correct OK/FAIL status derived from return values
 - Always shows full per-state detail (`--state-output=full --state-verbose=True`), regardless of the master's own `state_output`/`state_verbose` defaults — opening the popup is an explicit request to see everything about that one job, even a "terse"/"changes" master would otherwise hide unchanged/no-op states here
 
@@ -288,6 +289,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `Y` | Copy raw JSON (job detail) |
 | `s` | Save to file |
 | `S` | Save raw JSON to file (job detail) |
+| `a` | Save every return in the job to one file (job detail) |
+| `A` | Save every return as one JSON object (job detail) |
 | `j`/`k` | Next/previous return (job detail) |
 | `PgUp`/`PgDn` | Jump 10 returns |
 | `Home`/`End` | First/last return (job detail) |

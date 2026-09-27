@@ -2941,6 +2941,36 @@ impl App {
         format!("{}:\n{}", minion_id, fmt_val(value, 4))
     }
 
+    /// Every return in a job lookup, concatenated (Salt outputter format,
+    /// same per-return text `y`/`s` use) — for jobs with too many targeted
+    /// minions to review one at a time via the left panel.
+    fn format_all_returns_console(jid: &str, l: &crate::types::JidLookup) -> String {
+        let mut out = format!(
+            "JID: {}\nFunction: {}\nTarget: {}\n{} returns\n\n",
+            jid, l.fun, l.tgt, l.returns.len(),
+        );
+        for ret in &l.returns {
+            out.push_str(&"=".repeat(60));
+            out.push('\n');
+            if !ret.formatted_text.is_empty() {
+                out.push_str(&Self::strip_ansi(&ret.formatted_text));
+            } else {
+                out.push_str(&Self::format_return_as_console(&ret.minion_id, &ret.full_return));
+            }
+            out.push_str("\n\n");
+        }
+        out
+    }
+
+    /// Every return in a job lookup as a single JSON object keyed by minion
+    /// id — the `A` (all, JSON) counterpart of `format_all_returns_console`.
+    fn format_all_returns_json(l: &crate::types::JidLookup) -> String {
+        let map: serde_json::Map<String, serde_json::Value> = l.returns.iter()
+            .map(|r| (r.minion_id.clone(), r.full_return.clone()))
+            .collect();
+        serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or_default()
+    }
+
     fn tmux_socket_path() -> Option<String> {
         // Check TMUX env var first: "tmux/0" -> socket_dir = /tmp/tmux-<client_pid>
         // TMUX format: "/tmp/tmux-1000/default,0" -> parse out the socket path
@@ -4556,6 +4586,22 @@ impl App {
                                     let json = serde_json::to_string_pretty(&l.returns[idx].full_return)
                                         .unwrap_or_else(|_| l.returns[idx].summary.clone());
                                     save_text = Some((json, format!("job-{}-{}", jid, l.returns[idx].minion_id)));
+                                }
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            if let Some(ref l) = lookup {
+                                if !l.returns.is_empty() {
+                                    let text = Self::format_all_returns_console(jid, l);
+                                    save_text = Some((text, format!("job-{}-all", jid)));
+                                }
+                            }
+                        }
+                        KeyCode::Char('A') => {
+                            if let Some(ref l) = lookup {
+                                if !l.returns.is_empty() {
+                                    let text = Self::format_all_returns_json(l);
+                                    save_text = Some((text, format!("job-{}-all", jid)));
                                 }
                             }
                         }
