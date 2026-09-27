@@ -478,6 +478,37 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
 // ─── Key hints ─────────────────────────────────────────────────────────────
 
 fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
+    if let Some(ref prompt) = app.save_prompt {
+        let cursor = if prompt.filename.len() % 2 == 0 { '|' } else { ' ' };
+        let dir = app.resolved_save_dir();
+        let exists = !prompt.filename.trim().is_empty() && dir.join(&prompt.filename).exists();
+        let k1 = key::render("Esc", "Cancel");
+        let k2 = key::render("Enter", if exists && !prompt.confirm_overwrite { "Confirm overwrite" } else { "Save" });
+        let mut all_spans: Vec<Span<'static>> = Vec::new();
+        all_spans.extend(k1);
+        all_spans.extend(k2);
+        all_spans.push(Span::styled(
+            format!("  save to {}/: {}{}", dir.display(), prompt.filename, cursor),
+            Style::default()
+                .fg(if exists { color::RED } else { color::YELLOW })
+                .add_modifier(Modifier::BOLD),
+        ));
+        if exists {
+            all_spans.push(Span::styled(
+                if prompt.confirm_overwrite {
+                    "  \u{26a0} file exists -- Enter again to overwrite"
+                } else {
+                    "  \u{26a0} file already exists"
+                },
+                Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
+            ));
+        }
+        let paragraph = Paragraph::new(Line::from(all_spans))
+            .style(Style::default().bg(color::BG_LIGHT));
+        f.render_widget(paragraph, area);
+        return;
+    }
+
     if app.sniffer_input_active {
         let cursor = if app.sniffer_input_text.len() % 2 == 0 { '|' } else { ' ' };
         let k1 = key::render("Esc", "Cancel");

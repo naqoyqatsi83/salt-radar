@@ -115,13 +115,13 @@ Live overview of your Salt Master with real-time sparkline panels:
   - Pause/resume live capture (`p`)
   - Navigate events with full pretty-printed JSON body
   - Open event detail from sniffer (`Enter`), return to sniffer on close
-  - Copy captured (and currently filtered/shown) events to clipboard (`y`)
+  - Copy captured (and currently filtered/shown) events to clipboard (`y`), or save them to file (`s`)
 
 ### Jobs
 - Split panel: **Live Jobs** (left) from event bus and **Job Cache** (right) from Salt's master job cache
 - Job cache supports pagination (`[`/`]` adjust limit, `,`/`.` page navigation) and server-side search
 - Per-minion return navigation (j/k), scrollable output viewer (Enter)
-- Copy return output to clipboard (y = Salt outputter format, Y = raw JSON)
+- Copy return output to clipboard (y = Salt outputter format, Y = raw JSON), or save it to file (s/S, same two formats)
 - Job detail popup shows correct OK/FAIL status derived from return values
 - Always shows full per-state detail (`--state-output=full --state-verbose=True`), regardless of the master's own `state_output`/`state_verbose` defaults — opening the popup is an explicit request to see everything about that one job, even a "terse"/"changes" master would otherwise hide unchanged/no-op states here
 
@@ -170,7 +170,9 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 - `graph_order` opens as a reorderable list instead of free text — `↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts — since hand-typing a comma-separated list makes it easy to typo or drop a panel
 - `Save & Restart` writes the TOML file and applies the new config immediately, no process restart needed
 
-### Clipboard
+### Clipboard and save-to-file
+
+Every popup with copy-to-clipboard (`y` / `Y`) also supports saving the same content to a file (`s` / `S`) — the app proposes a filename from what's being saved, lets you edit it, and warns before overwriting an existing file. Default save directory is `~` (the launching user's home), configurable as `save_dir` under `[export]` (or live, in the Config Editor).
 
 Copy-to-clipboard (`y` / `Y`) uses two methods:
 
@@ -284,6 +286,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 |-----|--------|
 | `y` | Copy to clipboard |
 | `Y` | Copy raw JSON (job detail) |
+| `s` | Save to file |
+| `S` | Save raw JSON to file (job detail) |
 | `j`/`k` | Next/previous return (job detail) |
 | `PgUp`/`PgDn` | Jump 10 returns |
 | `Home`/`End` | First/last return (job detail) |

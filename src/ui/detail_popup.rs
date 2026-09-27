@@ -125,6 +125,8 @@ fn event_detail_hints(pretty: bool) -> Vec<(&'static str, String)> {
         ("t", if pretty { "raw json".to_string() } else { "pretty view".to_string() }),
         ("y", "copy".to_string()),
         ("Y", "json".to_string()),
+        ("s", "save".to_string()),
+        ("S", "save json".to_string()),
     ]
 }
 
@@ -489,6 +491,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
         vec![
             ("Esc/q", "close".to_string()),
             ("y", "copy".to_string()),
+            ("s", "save".to_string()),
             ("g", "fetch grains".to_string()),
             ("\u{2191}\u{2193}", "scroll grains".to_string()),
             ("PgUp/PgDn", "page".to_string()),
@@ -496,7 +499,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
             ("a", "admin off".to_string()),
         ]
     } else {
-        vec![("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("a", "admin mode for grains".to_string())]
+        vec![("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string()), ("a", "admin mode for grains".to_string())]
     };
     render_popup(f, area, &lines, &hints, None, (more_above, more_below), 0, 0);
 }
@@ -1030,6 +1033,8 @@ fn job_detail_hints(filter_active: bool, right_focus: bool, scroll_mode: bool) -
                 ("Home/End", "top/bottom".to_string()),
                 ("y", "copy".to_string()),
                 ("Y", "json".to_string()),
+                ("s", "save".to_string()),
+                ("S", "save json".to_string()),
             ]
         } else {
             vec![
@@ -1040,6 +1045,8 @@ fn job_detail_hints(filter_active: bool, right_focus: bool, scroll_mode: bool) -
                 ("Home/End", "top/bottom".to_string()),
                 ("y", "copy".to_string()),
                 ("Y", "json".to_string()),
+                ("s", "save".to_string()),
+                ("S", "save json".to_string()),
             ]
         }
     } else {
@@ -1052,6 +1059,8 @@ fn job_detail_hints(filter_active: bool, right_focus: bool, scroll_mode: bool) -
             ("/", "filter".to_string()),
             ("y", "copy".to_string()),
             ("Y", "json".to_string()),
+            ("s", "save".to_string()),
+            ("S", "save json".to_string()),
         ]
     }
 }
@@ -1082,7 +1091,7 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
     }
 
     lines.push(Line::from(""));
-    let hints: [(&str, String); 2] = [("Esc/q", "close".to_string()), ("y", "copy".to_string())];
+    let hints: [(&str, String); 3] = [("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string())];
     let status = clipboard_status(clipboard_at, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
@@ -1113,7 +1122,7 @@ fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiL
         Style::default().fg(color::TEXT_DIM),
     )));
 
-    let hints: [(&str, String); 2] = [("Esc/q", "close".to_string()), ("y", "copy".to_string())];
+    let hints: [(&str, String); 3] = [("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string())];
     let status = clipboard_status(clipboard_at, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
@@ -1408,6 +1417,7 @@ fn sniffer_hints(state: &SnifferState) -> Vec<(&'static str, String)> {
         ("h", "filter".to_string()),
         ("p", if state.paused { "resume".to_string() } else { "pause".to_string() }),
         ("y", "copy".to_string()),
+        ("s", "save".to_string()),
     ]
 }
 

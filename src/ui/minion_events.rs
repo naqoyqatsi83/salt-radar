@@ -67,6 +67,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
             ("Enter", "detail".to_string()),
             ("/", "filter".to_string()),
             ("y", "copy".to_string()),
+            ("s", "save".to_string()),
         ]
     };
     let block = Block::default()

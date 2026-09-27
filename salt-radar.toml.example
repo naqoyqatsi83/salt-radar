@@ -185,3 +185,12 @@
 # aggregates the whole fleet. Toggled live with 'f' on the Minions tab; this
 # is just the startup default.
 # follow_filter = true
+
+[export]
+# Default directory the 's'/'S' ("save to file") action writes into, from
+# any popup that also supports 'y'/'Y' (clipboard copy). '~' and '~/...'
+# are expanded against $HOME at save time. The save prompt proposes a
+# filename based on what's being saved and lets you edit it before
+# confirming; it also warns if that filename already exists in this
+# directory before you overwrite it.
+# save_dir = "~"

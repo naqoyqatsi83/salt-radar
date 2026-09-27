@@ -147,6 +147,12 @@ pub struct AppConfig {
     /// whole fleet regardless of what's filtered on the left. Toggled live
     /// with `f` on the Minions tab; this is just the startup default.
     pub minions_follow_filter: bool,
+    /// Default directory `s`/`S` ("save to file") writes into, from any
+    /// popup that supports it. `~` (or `~/...`) is expanded against $HOME
+    /// at save time, not at load time, so changing $HOME between launches
+    /// (or editing this value live in the Config Editor) takes effect
+    /// immediately.
+    pub save_dir: String,
 }
 
 impl Default for AppConfig {
@@ -204,6 +210,7 @@ impl Default for AppConfig {
             show_job_pulse: true,
             show_salt_api: true,
             minions_follow_filter: true,
+            save_dir: "~".into(),
         }
     }
 }
@@ -217,6 +224,7 @@ struct TomlConfig {
     dashboard: Option<DashboardConfig>,
     api: Option<ApiConfig>,
     minions: Option<MinionsConfig>,
+    export: Option<ExportConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -280,6 +288,11 @@ struct ApiConfig {
 #[derive(serde::Deserialize)]
 struct MinionsConfig {
     follow_filter: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct ExportConfig {
+    save_dir: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -370,7 +383,10 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          show_salt_api = {}\n\
          \n\
          [minions]\n\
-         follow_filter = {}\n",
+         follow_filter = {}\n\
+         \n\
+         [export]\n\
+         save_dir = {:?}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -423,6 +439,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.show_job_pulse,
         config.show_salt_api,
         config.minions_follow_filter,
+        config.save_dir,
     );
     std::fs::write(path, toml)
 }
@@ -497,6 +514,9 @@ pub fn load_config(path: &Path) -> AppConfig {
             }
             if let Some(m) = toml_cfg.minions {
                 if let Some(v) = m.follow_filter { cfg.minions_follow_filter = v; }
+            }
+            if let Some(e) = toml_cfg.export {
+                if let Some(v) = e.save_dir { cfg.save_dir = v; }
             }
         }
     }

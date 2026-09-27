@@ -184,6 +184,9 @@ pub struct App {
     pub clipboard_at: Option<Instant>,
     /// Transient message shown in status bar (e.g. clipboard hints)
     pub clipboard_msg: Option<(String, Instant)>,
+    /// Active "save to file" prompt (the 's'/'S' counterpart of 'y'/'Y'
+    /// clipboard copy), if one is open. Global overlay, like ConfigEditor.
+    pub save_prompt: Option<SaveFilePrompt>,
     pub sparkline_style: SparklineStyle,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
@@ -421,6 +424,20 @@ pub struct ConfigField {
     pub kind: ConfigFieldKind,
 }
 
+/// State for the 's'/'S' "save to file" prompt — proposes a filename (based
+/// on whatever content is about to be saved), lets the user edit it, and
+/// requires a second Enter to overwrite if that name already exists in the
+/// target directory (see `confirm_overwrite`).
+#[derive(Clone, Debug)]
+pub struct SaveFilePrompt {
+    pub filename: String,
+    pub content: String,
+    /// Set once the user has already been warned the target file exists
+    /// and pressed Enter again to proceed. Reset by any further edit to
+    /// `filename`, so a changed name is re-checked from scratch.
+    pub confirm_overwrite: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct ConfigEditorState {
     pub fields: Vec<ConfigField>,
@@ -620,6 +637,7 @@ impl App {
             last_zmq_return: HashMap::new(),
             clipboard_at: None,
             clipboard_msg: None,
+            save_prompt: None,
             sparkline_style: SparklineStyle::default(),
             needs_terminal_clear: false,
             needs_restart: false,
@@ -2231,6 +2249,8 @@ impl App {
                 ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Order },
                 ConfigField { label: "[minions]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "follow_filter", label_value: on_off(cfg.minions_follow_filter), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "[export]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "save_dir", label_value: cfg.save_dir.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -2316,6 +2336,10 @@ impl App {
             show_job_pulse: parse_bool("show_job_pulse"),
             show_salt_api: parse_bool("show_salt_api"),
             minions_follow_filter: parse_bool("follow_filter"),
+            save_dir: {
+                let v = vals.get("save_dir").unwrap_or(&"~").trim();
+                if v.is_empty() { "~".to_string() } else { v.to_string() }
+            },
         };
 
         crate::config::write_config(&self.config_path, &new_config)
@@ -3479,6 +3503,97 @@ impl App {
         self.needs_terminal_clear = true;
     }
 
+    /// `config.save_dir` with `~`/`~/...` expanded against $HOME at call
+    /// time (not cached), so editing it live in the Config Editor or
+    /// changing $HOME between launches takes effect immediately.
+    pub fn resolved_save_dir(&self) -> std::path::PathBuf {
+        let raw = self.config.save_dir.trim();
+        let raw = if raw.is_empty() { "~" } else { raw };
+        let home = || std::env::var_os("HOME").map(std::path::PathBuf::from);
+        if raw == "~" {
+            return home().unwrap_or_else(|| std::path::PathBuf::from("/root"));
+        }
+        if let Some(rest) = raw.strip_prefix("~/") {
+            if let Some(h) = home() {
+                return h.join(rest);
+            }
+        }
+        std::path::PathBuf::from(raw)
+    }
+
+    /// Opens the "save to file" prompt (the 's'/'S' counterpart of 'y'/'Y'
+    /// clipboard copy) with `content` and a filename proposed from
+    /// `name_hint`, which the user can edit before confirming.
+    pub fn open_save_prompt(&mut self, content: String, name_hint: &str) {
+        self.save_prompt = Some(SaveFilePrompt {
+            filename: Self::propose_save_filename(name_hint),
+            content,
+            confirm_overwrite: false,
+        });
+    }
+
+    /// Turns a free-form hint (e.g. a job id, minion id, event tag) into a
+    /// filesystem-safe proposed filename with a timestamp, so repeated
+    /// saves of similar content don't silently collide.
+    fn propose_save_filename(hint: &str) -> String {
+        let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let clean: String = hint
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' })
+            .collect();
+        let clean = clean.trim_matches('-');
+        let clean = if clean.is_empty() { "salt-radar" } else { clean };
+        format!("{}-{}.txt", clean, ts)
+    }
+
+    /// Key handling for the active `save_prompt` overlay — text entry for
+    /// the filename, Esc to cancel, Enter to confirm (a second Enter if the
+    /// target path already exists, since `confirm_overwrite` starts false
+    /// and any further edit resets it).
+    pub fn handle_save_prompt_key(&mut self, code: crossterm::event::KeyCode) -> bool {
+        use crossterm::event::KeyCode;
+        let dir = self.resolved_save_dir();
+        match code {
+            KeyCode::Esc => {
+                self.save_prompt = None;
+            }
+            KeyCode::Backspace => {
+                if let Some(ref mut prompt) = self.save_prompt {
+                    prompt.filename.pop();
+                    prompt.confirm_overwrite = false;
+                }
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                if let Some(ref mut prompt) = self.save_prompt {
+                    prompt.filename.push(c);
+                    prompt.confirm_overwrite = false;
+                }
+            }
+            KeyCode::Enter => {
+                let filename_empty = self.save_prompt.as_ref().is_none_or(|p| p.filename.trim().is_empty());
+                if filename_empty {
+                    return false;
+                }
+                let path = dir.join(&self.save_prompt.as_ref().unwrap().filename);
+                let already_confirmed = self.save_prompt.as_ref().unwrap().confirm_overwrite;
+                if path.exists() && !already_confirmed {
+                    self.save_prompt.as_mut().unwrap().confirm_overwrite = true;
+                    return false;
+                }
+                let content = self.save_prompt.as_ref().unwrap().content.clone();
+                let result = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &content));
+                self.clipboard_msg = Some(match result {
+                    Ok(()) => (format!(" Saved to {} ", path.display()), Instant::now()),
+                    Err(e) => (format!(" Save failed: {} ", e), Instant::now()),
+                });
+                self.clipboard_at = Some(Instant::now());
+                self.save_prompt = None;
+            }
+            _ => {}
+        }
+        false
+    }
+
     fn current_user() -> String {
         std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "root".to_string())
     }
@@ -3999,6 +4114,11 @@ impl App {
             return self.handle_config_editor_key(code);
         }
 
+        // Save-to-file prompt is a global overlay too, same reasoning
+        if self.save_prompt.is_some() {
+            return self.handle_save_prompt_key(code);
+        }
+
         // Sniffer input mode (text entry before launching, only on Events tab)
         if self.sniffer_input_active && self.current_tab == Tab::Events {
             match code {
@@ -4054,6 +4174,8 @@ impl App {
 
         // Detail popup gets first crack
         let mut clipboard_text: Option<String> = None;
+        // Sibling of clipboard_text for 's'/'S' ("save to file"): (content, filename hint)
+        let mut save_text: Option<(String, String)> = None;
         let had_popup = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
         // The sniffer lives outside `detail_popup` (see its field doc) so it
         // keeps running when you're elsewhere, but it still owns the Events
@@ -4250,9 +4372,33 @@ impl App {
                                 }
                                 trigger_y_lookup = Some(jid.clone());
                             }
+                            KeyCode::Char('s') => {
+                                if let Some(ref l) = lookup {
+                                    let idx = selected_return.unwrap_or(0);
+                                    if idx < l.returns.len() {
+                                        let ret = &l.returns[idx];
+                                        let text = if !ret.formatted_text.is_empty() {
+                                            Self::strip_ansi(&ret.formatted_text)
+                                        } else {
+                                            Self::format_return_as_console(&ret.minion_id, &ret.full_return)
+                                        };
+                                        save_text = Some((text, format!("job-{}-{}", jid, ret.minion_id)));
+                                    }
+                                }
+                            }
+                            KeyCode::Char('S') => {
+                                if let Some(ref l) = lookup {
+                                    let idx = selected_return.unwrap_or(0);
+                                    if idx < l.returns.len() {
+                                        let json = serde_json::to_string_pretty(&l.returns[idx].full_return)
+                                            .unwrap_or_else(|_| l.returns[idx].summary.clone());
+                                        save_text = Some((json, format!("job-{}-{}", jid, l.returns[idx].minion_id)));
+                                    }
+                                }
+                            }
                             _ => {}
                         }
-                        // Don't return false — let clipboard_text flow through
+                        // Don't return false — let clipboard_text/save_text flow through
                     } else {
                     // Left panel (return list) focused
                     match code {
@@ -4382,6 +4528,30 @@ impl App {
                             }
                             trigger_y_lookup = Some(jid.clone());
                         }
+                        KeyCode::Char('s') => {
+                            if let Some(ref l) = lookup {
+                                let idx = selected_return.unwrap_or(0);
+                                if idx < l.returns.len() {
+                                    let ret = &l.returns[idx];
+                                    let text = if !ret.formatted_text.is_empty() {
+                                        Self::strip_ansi(&ret.formatted_text)
+                                    } else {
+                                        Self::format_return_as_console(&ret.minion_id, &ret.full_return)
+                                    };
+                                    save_text = Some((text, format!("job-{}-{}", jid, ret.minion_id)));
+                                }
+                            }
+                        }
+                        KeyCode::Char('S') => {
+                            if let Some(ref l) = lookup {
+                                let idx = selected_return.unwrap_or(0);
+                                if idx < l.returns.len() {
+                                    let json = serde_json::to_string_pretty(&l.returns[idx].full_return)
+                                        .unwrap_or_else(|_| l.returns[idx].summary.clone());
+                                    save_text = Some((json, format!("job-{}-{}", jid, l.returns[idx].minion_id)));
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -4453,6 +4623,24 @@ impl App {
                         KeyCode::Char('Y') => {
                             clipboard_text = Some(event_body_as_copied_text(evt, *pretty, pretty_fetch));
                         }
+                        KeyCode::Char('s') => {
+                            let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
+                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                .unwrap_or_else(|| evt.ts.to_string());
+                            let text = format!(
+                                "Tag: {}\nTimestamp: {}\n\nData:\n{}",
+                                evt.tag,
+                                ts,
+                                event_body_as_copied_text(evt, *pretty, pretty_fetch),
+                            );
+                            save_text = Some((text, format!("event-{}", evt.tag)));
+                        }
+                        KeyCode::Char('S') => {
+                            save_text = Some((
+                                event_body_as_copied_text(evt, *pretty, pretty_fetch),
+                                format!("event-{}", evt.tag),
+                            ));
+                        }
                         KeyCode::Char('t') | KeyCode::Char('T') => {
                             *pretty = !*pretty;
                             *scroll_offset = 0;
@@ -4502,6 +4690,22 @@ impl App {
                             }
                             clipboard_text = Some(text);
                         }
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            let mut text = format!(
+                                "Alert: {}\nSeverity: {}\nRule: {}\n{}\n",
+                                alert.key,
+                                alert.severity.label(),
+                                alert.rule,
+                                alert.description,
+                            );
+                            if !alert.details.is_empty() {
+                                text.push_str("\nDetails:\n");
+                                for d in &alert.details {
+                                    text.push_str(&format!("  {}\n", d));
+                                }
+                            }
+                            save_text = Some((text, format!("alert-{}", alert.key)));
+                        }
                         _ => {}
                     }
                 }
@@ -4544,6 +4748,9 @@ impl App {
                         }
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             clipboard_text = Some(mid.clone());
+                        }
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            save_text = Some((mid.clone(), format!("minion-{}", mid)));
                         }
                         _ => {}
                     }
@@ -4657,6 +4864,28 @@ impl App {
                                 }
                                 None
                             }
+                            KeyCode::Char('s') | KeyCode::Char('S') => {
+                                if let Some(item) = items.get(*selected) {
+                                    match item {
+                                        MinionActivityItem::Event(_, evt) => {
+                                            let text = serde_json::to_string_pretty(&evt.data)
+                                                .unwrap_or_else(|_| evt.tag.clone());
+                                            save_text = Some((text, format!("event-{}", evt.tag)));
+                                        }
+                                        MinionActivityItem::CacheJob(job) => {
+                                            let text = format!("{} {} {} {}",
+                                                job.jid, job.fun, job.tgt, job.start_time);
+                                            save_text = Some((text, format!("job-{}-{}", job.jid, minion_id)));
+                                        }
+                                        MinionActivityItem::Alert(alert) => {
+                                            let text = format!("[{}] {}: {}",
+                                                alert.severity.label(), alert.rule, alert.description);
+                                            save_text = Some((text, format!("alert-{}", alert.key)));
+                                        }
+                                    }
+                                }
+                                None
+                            }
                             _ => None,
                         };
                         if let Some(evt) = evt_enter {
@@ -4676,6 +4905,14 @@ impl App {
                                 entry.response_status, entry.processing_time_secs,
                             ));
                         }
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            let text = format!(
+                                "{}\nClient: {}\nStatus: {}\nProcessing time: {:.3}s",
+                                entry.raw_request_line, entry.client,
+                                entry.response_status, entry.processing_time_secs,
+                            );
+                            save_text = Some((text, format!("api-request-{}", entry.client)));
+                        }
                         _ => {}
                     }
                 }
@@ -4685,6 +4922,10 @@ impl App {
         if let Some(text) = clipboard_text {
             self.copy_to_clipboard(&text);
             self.clipboard_at = Some(Instant::now());
+            return false;
+        }
+        if let Some((content, hint)) = save_text {
+            self.open_save_prompt(content, &hint);
             return false;
         }
         } else if sniffer_showing {
@@ -4779,12 +5020,35 @@ impl App {
                             clipboard_text = Some(text);
                         }
                     }
+                    KeyCode::Char('s') | KeyCode::Char('S') => {
+                        let mut text = String::new();
+                        for (i, &buf_idx) in visible.iter().enumerate() {
+                            let Some(evt) = state.buffer.get(buf_idx) else { continue };
+                            let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
+                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                .unwrap_or_else(|| evt.ts.to_string());
+                            text.push_str(&format!(
+                                "Event {}\nTag: {}\nTimestamp: {}\nData:\n{}\n\n",
+                                i + 1,
+                                evt.tag,
+                                ts,
+                                serde_json::to_string_pretty(&evt.data).unwrap_or_default()
+                            ));
+                        }
+                        if !text.is_empty() {
+                            save_text = Some((text, format!("sniffer-{}", state.minion_ids.join("-"))));
+                        }
+                    }
                     _ => {}
                 }
             }
             if let Some(text) = clipboard_text {
                 self.copy_to_clipboard(&text);
                 self.clipboard_at = Some(Instant::now());
+                return false;
+            }
+            if let Some((content, hint)) = save_text {
+                self.open_save_prompt(content, &hint);
                 return false;
             }
         }
