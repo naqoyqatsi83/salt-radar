@@ -1463,40 +1463,81 @@ def cmd_fleet_scan(opts, req):
     })
 
 
-def _fast_local_job_walk(opts, on_progress):
-    """Read the local_cache job directory ourselves, one job at a time, via
-    Salt's own (private) local_cache returner helpers — rather than the
-    atomic `salt-run jobs.list_jobs` call, which only returns once it has
-    already read the entire cache with no visibility into how far along it
-    is. `on_progress(count)` is invoked periodically as jobs are read, so a
-    slow cache (tens of thousands of jobs) can show live progress instead
-    of an opaque multi-second freeze.
+# Job-cache summaries already read from disk, keyed by the job's
+# (top, final) directory pair under `<cachedir>/jobs/`. A busy master's cache
+# holds tens of thousands of jobs, and unpickling every `.load.p` again for
+# each search/page/refresh is what made the Job Cache panel re-load from
+# scratch every time -- only directories not seen before are read now.
+_JOB_INDEX = {}
+_JOB_INDEX_LOCK = threading.Lock()
 
-    Only correct for the `local_cache` job-cache backend — callers must
+
+def _fast_local_job_walk(opts, on_progress):
+    """Read the local_cache job directory ourselves via Salt's own (private)
+    local_cache layout -- rather than the atomic `salt-run jobs.list_jobs`
+    call, which only returns once it has read the entire cache with no
+    visibility into how far along it is. `on_progress(count)` is invoked
+    periodically as jobs are read, so a slow first read (tens of thousands
+    of jobs) shows live progress instead of an opaque freeze.
+
+    Incremental across calls: directory listings are cheap, so every call
+    re-lists the cache, reads `.load.p` only for job directories missing
+    from `_JOB_INDEX`, and forgets directories Salt has since expired
+    (`keep_jobs_seconds`). Jobs whose `.load.p` isn't written yet or can't
+    be read are left out of the index so the next call retries them.
+
+    Only correct for the `local_cache` job-cache backend -- callers must
     check `master_job_cache`/`ext_job_cache` first and fall back to the
     slower salt-run-based path for any other backend (redis, mysql, etcd).
-    Reaches into `local_cache`'s private `_walk_through`/`_job_dir`, so any
+    Reaches into `local_cache`'s private `_job_dir`/`LOAD_P`, so any
     failure (e.g. a future Salt version renaming them) raises and the
     caller falls back to the safe path rather than surfacing a broken cache
     view.
     """
+    import salt.payload
     import salt.returners.local_cache as local_cache_mod
     import salt.utils.jid as jid_mod
 
     # These modules normally get `__opts__` injected by Salt's loader when
     # loaded as a returner plugin; called directly like this, it has to be
-    # set by hand before `_job_dir()`/`_walk_through()` (which read it) work.
+    # set by hand before `_job_dir()` (which reads it) works.
     local_cache_mod.__opts__ = opts
+    job_dir = local_cache_mod._job_dir()
 
-    jobs = {}
-    count = 0
-    for jid, job, _t_path, _final in local_cache_mod._walk_through(local_cache_mod._job_dir()):
-        jobs[jid] = jid_mod.format_jid_instance(jid, job)
-        count += 1
-        if count % 250 == 0:
-            on_progress(count)
-    on_progress(count)
-    return jobs
+    # Serialized so a search typed while the first read is still running
+    # waits for it and then reuses it, instead of starting a second full read.
+    with _JOB_INDEX_LOCK:
+        seen = set()
+        new = 0
+        for top in os.listdir(job_dir):
+            t_path = os.path.join(job_dir, top)
+            try:
+                finals = os.listdir(t_path)
+            except OSError:
+                continue
+            for final in finals:
+                key = (top, final)
+                seen.add(key)
+                if key in _JOB_INDEX:
+                    continue
+                try:
+                    with open(os.path.join(t_path, final, local_cache_mod.LOAD_P), "rb") as rfh:
+                        job = salt.payload.load(rfh)
+                except Exception:
+                    continue
+                if not job or "jid" not in job:
+                    continue
+                jid = job["jid"]
+                info = jid_mod.format_jid_instance(jid, job)
+                info.pop("Metadata", None)
+                _JOB_INDEX[key] = (jid, info)
+                new += 1
+                if new % 250 == 0:
+                    on_progress(len(_JOB_INDEX))
+        for key in [k for k in _JOB_INDEX if k not in seen]:
+            del _JOB_INDEX[key]
+        on_progress(len(_JOB_INDEX))
+        return dict(_JOB_INDEX.values())
 
 
 def cmd_jobs_list(opts, req):

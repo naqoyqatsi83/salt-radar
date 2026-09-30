@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix Job Cache re-reading the whole master job cache on every search, page, limit change and refresh: the agent now keeps an in-memory index of jobs it has already read and on each request only reads jobs that are new since the last one (and forgets jobs Salt has expired), so only the first load pays the full cost. Concurrent requests share one read, and a reply to an older Job Cache request can no longer overwrite the results of a newer search (`local_cache` job-cache backend only)
+
 ## [0.6.3-rc11] - 2026-09-30
 
 ### Added

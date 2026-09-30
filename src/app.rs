@@ -377,6 +377,10 @@ pub struct App {
     pub cache_max_results: usize,
     pub cache_offset: usize,
     pub cache_loading_at: Option<Instant>,
+    /// Request id of the latest `jobs_list` sent. Replies to anything older
+    /// are dropped, so a slow unfiltered load finishing after a search was
+    /// typed can't overwrite that search's results.
+    cache_request_id: u64,
     /// Live count of jobs read so far during a `jobs_list` fetch, from the
     /// agent's incremental progress messages — `None` until the first one
     /// arrives (or if the agent fell back to the non-incremental path).
@@ -605,6 +609,7 @@ impl App {
             cache_load_error: None,
             cache_total_count: 0,
             cache_max_results: 500,
+            cache_request_id: 0,
             cache_offset: 0,
             cache_loading_at: None,
             cache_load_progress: None,
@@ -1026,7 +1031,7 @@ impl App {
                                 self.fleet_scan_completed = true;
                             }
                         }
-                        "jobs_list" => {
+                        "jobs_list" if id == self.cache_request_id => {
                             self.cache_loading_at = None;
                             self.cache_load_progress = None;
                             if ok {
@@ -4175,7 +4180,7 @@ impl App {
         self.cache_loaded = false;
         self.cache_load_error = None;
         self.cache_load_progress = None;
-        self.send_agent_cmd("jobs_list", Some(extra));
+        self.cache_request_id = self.send_agent_cmd("jobs_list", Some(extra));
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> bool {
