@@ -194,3 +194,9 @@
 # confirming; it also warns if that filename already exists in this
 # directory before you overwrite it.
 # save_dir = "~"
+
+[jobs]
+# How long (seconds) a Job Detail lookup (salt-run jobs.lookup_jid) may run
+# before it is reported as timed out. Jobs with thousands of returns (e.g.
+# grains.items across a large fleet) can take a minute or more to read back.
+# lookup_timeout_secs = 300

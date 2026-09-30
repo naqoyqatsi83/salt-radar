@@ -872,7 +872,16 @@ fn draw_job_detail(
     let mut left_lines: Vec<Line<'static>> = Vec::new();
     if let Some(ref l) = lookup {
         let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
-        if l.returns.is_empty() {
+        if l.returns.is_empty() && !l.error.is_empty() {
+            left_lines.push(Line::from(Span::styled(
+                "  Lookup failed:",
+                Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
+            )));
+            left_lines.push(Line::from(Span::styled(
+                format!("  {}", l.error),
+                Style::default().fg(color::RED),
+            )));
+        } else if l.returns.is_empty() {
             left_lines.push(Line::from(Span::styled(
                 "  No returns yet.",
                 Style::default().fg(color::TEXT_DIM),

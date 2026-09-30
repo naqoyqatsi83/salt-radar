@@ -1118,11 +1118,12 @@ def cmd_jid_lookup(opts, req):
       `{"outputter": ..., "data": ...}` unwrap as above before it can be
       iterated per-minion).
 
-    This is a real 2x subprocess cost for one lookup, but each command now
-    dispatches on its own thread (see `dispatch`), so it no longer blocks
-    any other command while it runs — `subprocess_secs`/`postprocess_secs`
-    are still returned so the Rust side can show the breakdown in the
-    popup header.
+    Both run concurrently, so a lookup costs the slower of the two rather
+    than their sum -- on a 4000-minion `grains.items` job each one alone can
+    take 20s+. The colored run is best-effort: if it fails or misses the
+    deadline, the popup falls back to rendering `full_return` itself.
+    `subprocess_secs`/`postprocess_secs` are returned so the Rust side can
+    show the breakdown in the popup header.
     """
     jid = req.get("jid", "")
     if not jid:
@@ -1130,10 +1131,28 @@ def cmd_jid_lookup(opts, req):
         return
 
     import json as json_mod
+    import subprocess as sp
+
+    timeout = req.get("timeout") or 300
+    outputs = {}
+    errors = {}
+
+    def _lookup(key, args):
+        try:
+            cp = sp.run(args, capture_output=True, text=True, timeout=timeout)
+            if cp.returncode == 0 and cp.stdout.strip():
+                outputs[key] = cp.stdout
+            else:
+                lines = (cp.stderr or "").strip().splitlines()
+                errors[key] = lines[-1] if lines else "salt-run exited with code {}".format(cp.returncode)
+        except sp.TimeoutExpired:
+            errors[key] = "salt-run jobs.lookup_jid timed out after {}s".format(timeout)
+        except Exception as exc:
+            errors[key] = str(exc)
 
     t0 = time.time()
-    raw_output = _run_salt_cmd(
-        [
+    threads = [
+        threading.Thread(target=_lookup, args=("raw", [
             "salt-run", "jobs.lookup_jid", jid, "--force-color",
             # Always show full state detail regardless of the master's
             # configured state_output/state_verbose -- a "terse"/"changes"
@@ -1141,16 +1160,24 @@ def cmd_jid_lookup(opts, req):
             # from this popup even though the user explicitly opened it to
             # see everything about this one job.
             "--state-output=full", "--state-verbose=True",
-        ],
-        timeout=60,
-    ) or ""
-    json_output = _run_salt_cmd(
-        ["salt-run", "jobs.lookup_jid", jid, "--out=json"],
-        timeout=60,
-    )
+        ]), daemon=True),
+        threading.Thread(target=_lookup, args=("json", [
+            "salt-run", "jobs.lookup_jid", jid, "--out=json",
+        ]), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     t1 = time.time()
+    raw_output = outputs.get("raw", "")
+    json_output = outputs.get("json")
     if not json_output:
-        result(req["id"], "jid_lookup", ok=False, data={"found": False})
+        result(req["id"], "jid_lookup", ok=False, data={
+            "found": False,
+            "error": errors.get("json", "salt-run returned no output"),
+            "subprocess_secs": round(t1 - t0, 2),
+        })
         return
 
     try:
@@ -1234,17 +1261,11 @@ def cmd_jid_lookup(opts, req):
             return len(raw_output)
         return _pos_map[stripped_pos]
 
-    # Precompute every minion's [start, end) span in the stripped text ONCE,
-    # instead of the nested "for each minion, scan past every other minion
-    # looking for the next header" this used to do — that was O(minions^2)
-    # string searches, fine for a handful of minions but effectively never
-    # finishing for a 1000+-minion job (e.g. `grains.items` fleet-wide),
-    # well after the underlying `salt-run` call itself had already returned
-    # in seconds. Finding each minion's own header is still one `.find()`
-    # per minion (O(n) calls), but the "where does this section end" part
-    # -- previously another O(n) scan per minion -- now falls out for free
-    # by sorting all discovered header positions once and taking each one's
-    # end as the next one's start.
+    # Precompute every minion's [start, end) span in the stripped text in a
+    # single regex pass over column-0 "mid:" header lines. A `.find()` per
+    # minion is O(minions x text) -- for a 4000-minion `grains.items` job
+    # (tens of MB of output) that alone could outlast the lookup timeout.
+    # Each section's end is simply the next header's start.
     if _stripped.strip():
         # Each entry is (newline_pos, content_start, mid) -- content_start
         # (right after "mid:") is where THIS minion's own slice begins;
@@ -1255,16 +1276,14 @@ def cmd_jid_lookup(opts, req):
         # puts them immediately before the name), and ending a slice at
         # "next minion's content_start" instead of "next minion's newline_pos"
         # would pull those codes into the wrong (preceding) minion's section.
+        _mids = {str(k) for k in lookup_data}
         _mid_starts = []
-        for mid_key in lookup_data:
-            mid_str = str(mid_key)
-            if _stripped.startswith(mid_str + ":"):
-                _mid_starts.append((0, 0, mid_str))
-            else:
-                pos = _stripped.find("\n" + mid_str + ":")
-                if pos != -1:
-                    _mid_starts.append((pos, pos + 1, mid_str))
-        _mid_starts.sort(key=lambda t: t[1])
+        for m in re.finditer(r"^(\S[^\n]*?):[ \t]*$", _stripped, re.M):
+            mid_str = m.group(1)
+            if mid_str in _mids:
+                _mids.discard(mid_str)
+                start = m.start()
+                _mid_starts.append((max(start - 1, 0), start, mid_str))
         _mid_spans = {}
         for idx, (_newline_pos, content_start, mid_str) in enumerate(_mid_starts):
             end = _mid_starts[idx + 1][0] if idx + 1 < len(_mid_starts) else len(_stripped)
@@ -1287,10 +1306,8 @@ def cmd_jid_lookup(opts, req):
         mid = str(mid)
         retcode, success = _derive_retcode_and_success(ret_val)
 
-        try:
-            clean_return = json_mod.loads(json_mod.dumps(ret_val, default=str))
-        except Exception:
-            clean_return = str(ret_val)
+        # Already plain JSON types -- it came straight from json.loads above.
+        clean_return = ret_val
 
         summary = json_mod.dumps(clean_return, default=str)[:200]
 

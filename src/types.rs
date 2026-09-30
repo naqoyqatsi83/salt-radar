@@ -477,6 +477,24 @@ pub struct JidLookup {
     /// through the agent's stderr log.
     pub subprocess_secs: f64,
     pub postprocess_secs: f64,
+    /// Why the lookup failed (salt-run error, timeout), shown in place of
+    /// the return list instead of a misleading "No returns yet."
+    pub error: String,
+}
+
+impl JidLookup {
+    pub fn failed(error: String) -> Self {
+        Self {
+            found: false,
+            fun: String::new(),
+            tgt: String::new(),
+            start_time: String::new(),
+            returns: Vec::new(),
+            subprocess_secs: 0.0,
+            postprocess_secs: 0.0,
+            error,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `lookup_timeout_secs` under a new `[jobs]` section in `salt-radar.toml` / the Config Editor (default 300s) to bound how long a Job Detail lookup may run, replacing the hard-coded 60s agent / 65s UI limits
+
+### Fixed
+
+- Fix Job Detail failing to load huge jobs (e.g. `grains.items` across 4000 minions): run the colored and JSON `salt-run jobs.lookup_jid` calls concurrently instead of back to back, keep the JSON result even when the colored rendering misses the deadline, split the colored output into per-minion sections in one pass instead of one full-text search per minion, and show why a lookup failed in the popup instead of "No returns yet." or silently closing it
+
 ## [0.6.3-rc10] - 2026-09-30
 
 ### Fixed

@@ -1340,6 +1340,11 @@ impl App {
         }
     }
 
+    fn send_jid_lookup(&mut self, jid: &str) -> u64 {
+        let timeout = self.config.lookup_timeout_secs;
+        self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": jid, "timeout": timeout})))
+    }
+
     fn reindex_minions(&mut self) {
         self.minion_index = self.minion_info
             .iter()
@@ -1381,14 +1386,22 @@ impl App {
     pub fn fast_poll(&mut self) -> bool {
         self.drain_agent_messages();
 
-        // Timeout for stuck jid_lookup (agent subprocess may hang)
+        // Timeout for stuck jid_lookup (agent subprocess may hang). The
+        // agent enforces lookup_timeout_secs on salt-run itself; the slack
+        // covers shipping and parsing a result that can be tens of MB.
+        let lookup_deadline = self.config.lookup_timeout_secs + 30;
         if self.pending_jid_lookup.is_some() {
             if let Some(started) = self.pending_jid_lookup_at {
-                if started.elapsed().as_secs() > 65 {
+                if started.elapsed().as_secs() > lookup_deadline {
                     self.pending_jid_lookup = None;
                     self.pending_jid_lookup_at = None;
-                    self.return_to_minion_events = None;
-                    self.detail_popup = None;
+                    if let Some(DetailPopup::JobDetail { ref mut lookup, .. }) = self.detail_popup {
+                        *lookup = Some(JidLookup::failed(format!(
+                            "No answer from salt-run jobs.lookup_jid within {}s", lookup_deadline)));
+                    } else {
+                        self.return_to_minion_events = None;
+                        self.detail_popup = None;
+                    }
                 }
             }
         }
@@ -1398,7 +1411,7 @@ impl App {
         // (unlike Job Detail) there's already a usable render without it.
         if self.pending_event_pretty.is_some() {
             if let Some(started) = self.pending_event_pretty_at {
-                if started.elapsed().as_secs() > 65 {
+                if started.elapsed().as_secs() > lookup_deadline {
                     self.pending_event_pretty = None;
                     self.pending_event_pretty_at = None;
                     if let Some(DetailPopup::SaltEvent { ref mut pretty_fetch, .. }) = self.detail_popup {
@@ -2276,6 +2289,8 @@ impl App {
                 ConfigField { label: "follow_filter", label_value: on_off(cfg.minions_follow_filter), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[export]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "save_dir", label_value: cfg.save_dir.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "[jobs]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "lookup_timeout_secs", label_value: cfg.lookup_timeout_secs.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -2365,6 +2380,7 @@ impl App {
                 let v = vals.get("save_dir").unwrap_or(&"~").trim();
                 if v.is_empty() { "~".to_string() } else { v.to_string() }
             },
+            lookup_timeout_secs: parse_u64("lookup_timeout_secs")?.max(1),
         };
 
         crate::config::write_config(&self.config_path, &new_config)
@@ -2642,7 +2658,7 @@ impl App {
                         None => (String::new(), String::new(), String::new(), 0.0, false),
                     };
                     if exists {
-                        let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                        let req_id = self.send_jid_lookup(&jid);
                         self.pending_jid_lookup = Some((req_id, jid.clone()));
                         self.pending_jid_lookup_at = Some(Instant::now());
                         self.detail_popup = Some(DetailPopup::JobDetail {
@@ -2672,7 +2688,7 @@ impl App {
                         }
                     };
                     if exists {
-                        let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                        let req_id = self.send_jid_lookup(&jid);
                         self.pending_jid_lookup = Some((req_id, jid.clone()));
                         self.pending_jid_lookup_at = Some(Instant::now());
                         self.detail_popup = Some(DetailPopup::JobDetail {
@@ -4900,7 +4916,7 @@ impl App {
                                     MinionActivityItem::Event(_, evt) => Some(evt.clone()),
                                     MinionActivityItem::CacheJob(job) => {
                                         let jid = job.jid.clone();
-                                        let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                                        let req_id = self.send_jid_lookup(&jid);
                                         self.pending_jid_lookup = Some((req_id, jid.clone()));
                                         self.pending_jid_lookup_at = Some(Instant::now());
                                         self.detail_popup = Some(DetailPopup::JobDetail {
@@ -5134,12 +5150,12 @@ impl App {
             }
         }
         if let Some((jid, mid)) = trigger_event_pretty_lookup {
-            let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+            let req_id = self.send_jid_lookup(&jid);
             self.pending_event_pretty = Some((req_id, jid, mid));
             self.pending_event_pretty_at = Some(Instant::now());
         }
         if let Some(jid) = trigger_y_lookup {
-            let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+            let req_id = self.send_jid_lookup(&jid);
             self.pending_y_copy = Some((req_id, jid));
         }
         if let Some(mid) = trigger_grains_fetch {
@@ -5762,7 +5778,7 @@ impl App {
                         MinionActivityItem::CacheJob(job) => {
                             self.return_to_minion_events = Some((mid, item_idx));
                             let jid = job.jid.clone();
-                            let req_id = self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": &jid})));
+                            let req_id = self.send_jid_lookup(&jid);
                             self.pending_jid_lookup = Some((req_id, jid.clone()));
                             self.pending_jid_lookup_at = Some(Instant::now());
                             self.detail_popup = Some(DetailPopup::JobDetail {
@@ -6138,6 +6154,7 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
         returns,
         subprocess_secs: 0.0,
         postprocess_secs: 0.0,
+        error: String::new(),
     })
 }
 
@@ -6215,6 +6232,7 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
         returns: Vec::new(),
         subprocess_secs: data["subprocess_secs"].as_f64().unwrap_or(0.0),
         postprocess_secs: data["postprocess_secs"].as_f64().unwrap_or(0.0),
+        error: data["error"].as_str().unwrap_or("").to_string(),
     };
     if let Some(arr) = data["returns"].as_array() {
         for entry in arr {

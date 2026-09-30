@@ -153,6 +153,11 @@ pub struct AppConfig {
     /// (or editing this value live in the Config Editor) takes effect
     /// immediately.
     pub save_dir: String,
+    /// How long (seconds) a Job Detail lookup (`salt-run jobs.lookup_jid`)
+    /// may run before it's reported as timed out. Huge jobs (e.g.
+    /// `grains.items` across thousands of minions) legitimately take tens of
+    /// seconds or more to read back from the job cache.
+    pub lookup_timeout_secs: u64,
 }
 
 impl Default for AppConfig {
@@ -211,6 +216,7 @@ impl Default for AppConfig {
             show_salt_api: true,
             minions_follow_filter: true,
             save_dir: "~".into(),
+            lookup_timeout_secs: 300,
         }
     }
 }
@@ -225,6 +231,7 @@ struct TomlConfig {
     api: Option<ApiConfig>,
     minions: Option<MinionsConfig>,
     export: Option<ExportConfig>,
+    jobs: Option<JobsConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -293,6 +300,11 @@ struct MinionsConfig {
 #[derive(serde::Deserialize)]
 struct ExportConfig {
     save_dir: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct JobsConfig {
+    lookup_timeout_secs: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -386,7 +398,10 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          follow_filter = {}\n\
          \n\
          [export]\n\
-         save_dir = {:?}\n",
+         save_dir = {:?}\n\
+         \n\
+         [jobs]\n\
+         lookup_timeout_secs = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -440,6 +455,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.show_salt_api,
         config.minions_follow_filter,
         config.save_dir,
+        config.lookup_timeout_secs,
     );
     std::fs::write(path, toml)
 }
@@ -517,6 +533,9 @@ pub fn load_config(path: &Path) -> AppConfig {
             }
             if let Some(e) = toml_cfg.export {
                 if let Some(v) = e.save_dir { cfg.save_dir = v; }
+            }
+            if let Some(j) = toml_cfg.jobs {
+                if let Some(v) = j.lookup_timeout_secs { cfg.lookup_timeout_secs = v.max(1); }
             }
         }
     }
