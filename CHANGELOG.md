@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3-rc10] - 2026-09-30
+
 ### Fixed
 
 - Fix TUI lag on busy masters (hundreds of events/sec): index live jobs by JID instead of scanning the whole job table on every job event, stop deep-cloning every event just to count it and the last 500 events on every alert tick, keep the minion index between drains instead of rebuilding it each time, release the agent queue lock before processing a batch, handle all queued keypresses before one redraw instead of redrawing per key, resync the sniffer's following selection once per batch, and filter the Live Jobs list once per frame instead of once per row (#104)
