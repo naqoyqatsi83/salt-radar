@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3-rc11] - 2026-09-30
+
 ### Added
 
 - Add `lookup_timeout_secs` under a new `[jobs]` section in `salt-radar.toml` / the Config Editor (default 300s) to bound how long a Job Detail lookup may run, replacing the hard-coded 60s agent / 65s UI limits
