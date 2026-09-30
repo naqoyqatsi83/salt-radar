@@ -45,7 +45,7 @@ impl AlertEngine {
         keys: &[KeyInfo],
         services: &[ServiceHealth],
         sys: &SystemInfo,
-        events: &[SaltEvent],
+        events: &[&SaltEvent],
         stale_minion_secs: u64,
         pending_key_secs: u64,
         disk_usage_pct: f64,

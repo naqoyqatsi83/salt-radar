@@ -30,7 +30,9 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool)
         Style::default().fg(color::BORDER)
     };
 
-    let total = app.filtered_jobs_len();
+    // Filtered once per frame, not once per visible row (#104).
+    let filtered = app.filtered_jobs();
+    let total = filtered.len();
     let selected = app.job_selected.min(total.saturating_sub(1));
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
@@ -83,10 +85,7 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool)
             )));
         } else {
             for idx in scroll..(scroll + visible).min(total) {
-                let job = match app.get_filtered_job(idx) {
-                    Some(j) => j,
-                    None => break,
-                };
+                let job = filtered[idx];
 
                 let is_selected = idx == selected;
                 let sel_style = if is_selected {

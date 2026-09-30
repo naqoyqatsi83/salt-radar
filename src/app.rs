@@ -68,10 +68,14 @@ pub struct App {
     // Set whenever minion_info is mutated; the per-tick sort in update()
     // only runs when this is set, then clears it.
     minion_info_dirty: bool,
+    /// Minion ID -> position in `minion_info`; rebuilt via `reindex_minions`
+    /// whenever `minion_info` is replaced, reordered or shrunk, instead of on
+    /// every drain (#104).
+    minion_index: HashMap<String, usize>,
 
     // Events buffer
     pub events: VecDeque<SaltEvent>,
-    pub events_since_last_tick: Vec<SaltEvent>,
+    pub events_since_last_tick: u64,
     pub event_breakdown: EventBreakdown,
     pub events_per_sec: f64,
     /// Incrementally maintained subset of `events` matching `applied_filter`.
@@ -83,6 +87,10 @@ pub struct App {
 
     // Live jobs
     pub jobs: Vec<JobEntry>,
+    /// JID -> position in `jobs`. A busy master can hold tens of thousands
+    /// of live jobs (60 min retention) and send hundreds of `/ret/` events a
+    /// second, so a linear JID scan per event starved the UI thread (#104).
+    jobs_index: HashMap<String, usize>,
 
     // Alerts
     pub alert_engine: AlertEngine,
@@ -545,14 +553,16 @@ impl App {
 
             minion_info: Vec::new(),
             minion_info_dirty: false,
+            minion_index: HashMap::new(),
 
             events: VecDeque::with_capacity(event_buffer_size),
-            events_since_last_tick: Vec::new(),
+            events_since_last_tick: 0,
             event_breakdown: EventBreakdown::default(),
             events_per_sec: 0.0,
             filtered_events_cache: VecDeque::new(),
 
             jobs: Vec::new(),
+            jobs_index: HashMap::new(),
 
             alert_engine: AlertEngine::new(),
 
@@ -705,20 +715,17 @@ impl App {
     /// Processes at most MAX_PER_DRAIN messages to prevent runaway when
     /// the event arrival rate exceeds the processing rate.
     pub fn drain_agent_messages(&mut self) {
-        let mut q = self.agent_rx.lock().unwrap();
-        let mut y_copy_json: Option<String> = None;
-        let mut processed = 0;
         const MAX_PER_DRAIN: usize = 200;
-        // Index by minion ID to avoid an O(n) Vec scan per minion/event in
-        // this batch. Rebuilt whenever minion_info is structurally replaced
-        // (see the "minion_cache_list" arm below).
-        let mut minion_index: HashMap<String, usize> = self.minion_info
-            .iter()
-            .enumerate()
-            .map(|(i, m)| (m.id.clone(), i))
-            .collect();
-        while let Some(msg) = q.pop_front() {
-            processed += 1;
+        // Take the batch and release the lock before processing it, so the
+        // reader thread never stalls behind UI-side work.
+        let batch: Vec<AgentMessage> = {
+            let mut q = self.agent_rx.lock().unwrap();
+            let n = q.len().min(MAX_PER_DRAIN);
+            q.drain(..n).collect()
+        };
+        let mut y_copy_json: Option<String> = None;
+        let mut sniffer_tail_moved = false;
+        for msg in batch {
             match msg {
                 AgentMessage::Result { id, cmd, ok, data } => {
                     self.agent.connected = true;
@@ -739,7 +746,7 @@ impl App {
                                     minion.key_status = Some(KeyStatus::Accepted);
                                 }
                                 // Preserve enriched fields from event processing
-                                if let Some(&i) = minion_index.get(&minion.id) {
+                                if let Some(&i) = self.minion_index.get(&minion.id) {
                                     let existing = &self.minion_info[i];
                                     if !existing.osfinger.is_empty() { minion.osfinger.clone_from(&existing.osfinger); }
                                     if !existing.osrelease.is_empty() { minion.osrelease.clone_from(&existing.osrelease); }
@@ -770,12 +777,9 @@ impl App {
                             // Roster changed shape — reindex, and drop pulse-tracking
                             // entries for minions no longer in the roster so
                             // last_zmq_return doesn't grow unbounded on churn.
-                            minion_index = self.minion_info
-                                .iter()
-                                .enumerate()
-                                .map(|(i, m)| (m.id.clone(), i))
-                                .collect();
-                            self.last_zmq_return.retain(|id, _| minion_index.contains_key(id));
+                            self.reindex_minions();
+                            let index = &self.minion_index;
+                            self.last_zmq_return.retain(|id, _| index.contains_key(id));
                         }
                         "list_keys" => {
                             if ok {
@@ -1164,7 +1168,7 @@ impl App {
                                 self.last_activity_at = Instant::now();
                                 // Update last_seen for this minion from return events
                                 let ts_epoch = ts as u64;
-                                let minion_pos = minion_index.get(mid).copied();
+                                let minion_pos = self.minion_index.get(mid).copied();
                                 if let Some(i) = minion_pos {
                                     let info = &mut self.minion_info[i];
                                     if ts_epoch > info.last_seen_epoch {
@@ -1241,7 +1245,7 @@ impl App {
                         }
                     }
                     let evt = SaltEvent { tag, data, ts };
-                    self.events_since_last_tick.push(evt.clone());
+                    self.events_since_last_tick += 1;
                     let events_evicted = self.events.len() >= self.config.event_buffer_size;
                     let evicted_evt = if events_evicted { self.events.pop_front() } else { None };
                     // O(1) amortized: checks only the one event coming in and
@@ -1270,7 +1274,7 @@ impl App {
 
                     // Track live jobs from events
                     if let Some(evt) = self.events.back() {
-                        track_job_from_event(&mut self.jobs, evt);
+                        track_job_from_event(&mut self.jobs, &mut self.jobs_index, evt);
                     }
 
                     // Sniffer: inject matching events into sniffer buffer
@@ -1293,9 +1297,14 @@ impl App {
                                     state.buffer.push_back(evt.clone());
                                     let new_visible = state.highlight_keywords.is_empty()
                                         || crate::types::SnifferState::event_matches_keywords(evt, &state.highlight_keywords);
-                                    if new_visible || evicted_visible {
-                                        let visible_len = state.filtered_indices().len();
-                                        Self::advance_tail_selection(&mut state.selected, state.following, evicted_visible, visible_len);
+                                    // The visible length is an O(buffer) keyword
+                                    // re-scan, so a following selection is
+                                    // resynced once after the batch instead of
+                                    // per captured event.
+                                    if state.following {
+                                        sniffer_tail_moved |= new_visible || evicted_visible;
+                                    } else if evicted_visible {
+                                        state.selected = state.selected.saturating_sub(1);
                                     }
                                     self.sniffer_dirty = true;
                                 }
@@ -1313,7 +1322,12 @@ impl App {
                     }
                 }
             }
-            if processed >= MAX_PER_DRAIN { break; }
+        }
+        if sniffer_tail_moved {
+            if let Some(ref mut state) = self.sniffer {
+                let visible_len = state.filtered_indices().len();
+                Self::advance_tail_selection(&mut state.selected, state.following, false, visible_len);
+            }
         }
         if let Some(json) = y_copy_json {
             // Store in a temp file for clipboard
@@ -1324,6 +1338,14 @@ impl App {
             ));
             self.clipboard_at = Some(std::time::Instant::now());
         }
+    }
+
+    fn reindex_minions(&mut self) {
+        self.minion_index = self.minion_info
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.id.clone(), i))
+            .collect();
     }
 
     /// Send a command to the agent, returns the request id.
@@ -1779,9 +1801,7 @@ impl App {
     /// pushing `new_evt` and (if `evicted` is set) popping it off the front.
     ///
     /// Takes its fields individually (rather than `&mut self`) so callers
-    /// already holding an unrelated borrow through `self` -- e.g.
-    /// `drain_agent_messages`' `self.agent_rx.lock()` guard -- can still call
-    /// it; a `&mut self` method here would conflict with that guard.
+    /// already holding an unrelated borrow through `self` can still call it.
     fn sync_filtered_events_cache(
         cache: &mut VecDeque<SaltEvent>,
         pat: &str,
@@ -2021,6 +2041,15 @@ impl App {
         self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).count()
     }
 
+    pub fn filtered_jobs(&self) -> Vec<&JobEntry> {
+        let pat = self.filter_text_for(Tab::Jobs);
+        if pat.is_empty() {
+            return self.jobs.iter().collect();
+        }
+        let known = self.accepted_ids();
+        self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).collect()
+    }
+
     pub fn get_filtered_job(&self, index: usize) -> Option<&JobEntry> {
         let pat = self.filter_text_for(Tab::Jobs);
         if pat.is_empty() {
@@ -2124,20 +2153,14 @@ impl App {
     }
 
     pub fn pulse_minions_count(&self) -> usize {
-        let accepted: HashSet<&str> = self.keys.iter()
-            .filter(|k| k.status == KeyStatus::Accepted)
-            .map(|k| k.id.as_str())
-            .collect();
+        let accepted = &self.accepted_id_set;
         self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
             .count()
     }
 
     pub fn filtered_minions_len(&self) -> usize {
-        let accepted: HashSet<&str> = self.keys.iter()
-            .filter(|k| k.status == KeyStatus::Accepted)
-            .map(|k| k.id.as_str())
-            .collect();
+        let accepted = &self.accepted_id_set;
         let hide = self.hide_timed_out;
         let pat = self.filter_text_for(Tab::Minions);
         let resp_count = self.minion_info.iter()
@@ -2158,10 +2181,7 @@ impl App {
     }
 
     pub fn get_filtered_minion(&self, index: usize) -> Option<&MinionInfo> {
-        let accepted: HashSet<&str> = self.keys.iter()
-            .filter(|k| k.status == KeyStatus::Accepted)
-            .map(|k| k.id.as_str())
-            .collect();
+        let accepted = &self.accepted_id_set;
         let hide = self.hide_timed_out;
         let pat = self.filter_text_for(Tab::Minions);
 
@@ -3852,6 +3872,7 @@ impl App {
                     .then(a.id.cmp(&b.id))
             });
             self.minion_info_dirty = false;
+            self.reindex_minions();
         }
 
         // Refresh collectors at interval, not every tick
@@ -3927,8 +3948,8 @@ impl App {
             // Header radar animation cycle
             self.header_radar_frame = (self.header_radar_frame + 1) % 4;
         }
-        self.events_last_sec_count += self.events_since_last_tick.len() as u64;
-        self.events_since_last_tick.clear();
+        self.events_last_sec_count += self.events_since_last_tick;
+        self.events_since_last_tick = 0;
 
 
         // Compute network transfer rates from cumulative byte counters
@@ -4009,7 +4030,7 @@ impl App {
         }
 
         // Alert engine checks
-        let recent_events: Vec<SaltEvent> = self.events.iter().rev().take(500).cloned().collect();
+        let recent_events: Vec<&SaltEvent> = self.events.iter().rev().take(500).collect();
         let worker_busy_pct = self.worker_busy_pct();
         self.alert_engine.tick(
             &self.minion_info,
@@ -4078,6 +4099,9 @@ impl App {
                 if self.job_outcome_window.len() > JOB_STATS_WINDOW { self.job_outcome_window.pop_front(); }
             }
         }
+        if kept_jobs.len() != self.jobs_index.len() {
+            self.jobs_index = kept_jobs.iter().enumerate().map(|(i, j)| (j.jid.clone(), i)).collect();
+        }
         self.jobs = kept_jobs;
 
         // Auto-load job cache when first viewing Jobs tab
@@ -4114,7 +4138,11 @@ impl App {
                 .filter(|k| k.status == KeyStatus::Accepted)
                 .map(|k| k.id.as_str())
                 .collect();
+            let before = self.minion_info.len();
             self.minion_info.retain(|m| accepted.contains(m.id.as_str()));
+            if self.minion_info.len() != before {
+                self.reindex_minions();
+            }
         }
     }
 
@@ -6232,14 +6260,14 @@ fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
     result
 }
 
-fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
+fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, usize>, evt: &SaltEvent) {
     if evt.tag.ends_with("/new") {
         let jid = evt.data["jid"].as_str().unwrap_or("").to_string();
         if jid.is_empty() { return; }
         let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
         let tgt = evt.data["tgt"].as_str().unwrap_or("?").to_string();
         let minions = evt.data["minions"].as_array().map(|a| a.len()).unwrap_or(0);
-        if let Some(job) = jobs.iter_mut().find(|j| j.jid == jid) {
+        if let Some(job) = index.get(&jid).map(|&i| &mut jobs[i]) {
             // A `/ret/` for this jid was processed before this `/new` --
             // most commonly because `/new` was the one evicted under
             // backlog pressure (see agent::MAX_QUEUE_LEN) -- and was
@@ -6255,6 +6283,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             job.local = false;
             return;
         }
+        index.insert(jid.clone(), jobs.len());
         jobs.push(JobEntry {
             jid,
             fun,
@@ -6279,7 +6308,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
         // best-effort reconstruction `derive_success_retcode` has to do for
         // the cached `jobs.lookup_jid` return shown in Job Detail.
         let success = evt.data["success"].as_bool().unwrap_or(true);
-        if let Some(job) = jobs.iter_mut().find(|j| j.jid == jid) {
+        if let Some(job) = index.get(jid).map(|&i| &mut jobs[i]) {
             job.returned += 1;
             if success { job.succeeded += 1; } else { job.failed += 1; }
             // Guards against ever displaying more returns than the job was
@@ -6292,6 +6321,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, evt: &SaltEvent) {
             // Unknown JID → salt-call / local execution (no /new event was emitted)
             let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
             let tgt = evt.data["id"].as_str().unwrap_or("?").to_string();
+            index.insert(jid.to_string(), jobs.len());
             jobs.push(JobEntry {
                 jid: jid.to_string(),
                 fun,

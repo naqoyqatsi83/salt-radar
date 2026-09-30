@@ -45,6 +45,8 @@ fn disable_mouse_capture() -> io::Result<()> {
     io::stdout().flush()
 }
 
+const MAX_INPUT_EVENTS_PER_FRAME: usize = 64;
+
 fn main() -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
@@ -67,7 +69,7 @@ fn main() -> io::Result<()> {
     let mut last_tab = app.current_tab;
     let mut need_redraw = true;
 
-    loop {
+    'main: loop {
         if need_redraw {
             if app.needs_terminal_clear {
                 terminal.clear()?;
@@ -92,71 +94,84 @@ fn main() -> io::Result<()> {
             remaining
         };
 
+        // Handle every input event already queued before redrawing: under a
+        // busy event bus each redraw and drain is expensive, so paying for
+        // one per key-repeat made input lag pile up (#104).
         if event::poll(timeout)? {
-            match event::read()? {
-                Event::Key(key) => {
-                    if key.kind == KeyEventKind::Press {
-                        if key.modifiers.contains(KeyModifiers::CONTROL)
-                            && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C'))
-                        {
-                            break;
+            let mut handled = 0;
+            loop {
+                match event::read()? {
+                    Event::Key(key) => {
+                        if key.kind == KeyEventKind::Press {
+                            if key.modifiers.contains(KeyModifiers::CONTROL)
+                                && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C'))
+                            {
+                                break 'main;
+                            }
+                            // Ctrl+H = ^H = backspace for terminals that send ^H instead of DEL
+                            let code = if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('h') {
+                                KeyCode::Backspace
+                            } else {
+                                key.code
+                            };
+                            if app.handle_key(code) {
+                                break 'main;
+                            }
+                            need_redraw = true;
                         }
-                        // Ctrl+H = ^H = backspace for terminals that send ^H instead of DEL
-                        let code = if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('h') {
-                            KeyCode::Backspace
-                        } else {
-                            key.code
-                        };
-                        if app.handle_key(code) {
-                            break;
-                        }
+                    }
+                    Event::Resize(_, _) => {
                         need_redraw = true;
                     }
-                }
-                Event::Resize(_, _) => {
-                    need_redraw = true;
-                }
-                Event::Mouse(mouse) if app.mouse_enabled => {
-                    match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            if app.handle_key(KeyCode::Up) { break; }
-                            need_redraw = true;
-                        }
-                        MouseEventKind::ScrollDown => {
-                            if app.handle_key(KeyCode::Down) { break; }
-                            need_redraw = true;
-                        }
-                        MouseEventKind::ScrollLeft => {
-                            if app.handle_key(KeyCode::Left) { break; }
-                            need_redraw = true;
-                        }
-                        MouseEventKind::ScrollRight => {
-                            if app.handle_key(KeyCode::Right) { break; }
-                            need_redraw = true;
-                        }
-                        MouseEventKind::Down(MouseButton::Left) => {
-                            if app.handle_mouse_click(mouse.column, mouse.row, app.last_frame_size) {
+                    Event::Mouse(mouse) if app.mouse_enabled => {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                if app.handle_key(KeyCode::Up) { break 'main; }
+                                need_redraw = true;
+                            }
+                            MouseEventKind::ScrollDown => {
+                                if app.handle_key(KeyCode::Down) { break 'main; }
+                                need_redraw = true;
+                            }
+                            MouseEventKind::ScrollLeft => {
+                                if app.handle_key(KeyCode::Left) { break 'main; }
+                                need_redraw = true;
+                            }
+                            MouseEventKind::ScrollRight => {
+                                if app.handle_key(KeyCode::Right) { break 'main; }
+                                need_redraw = true;
+                            }
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                if app.handle_mouse_click(mouse.column, mouse.row, app.last_frame_size) {
+                                    break 'main;
+                                }
+                                need_redraw = true;
+                                // Click hit-testing reads the last drawn
+                                // layout, so redraw before the next one.
                                 break;
                             }
-                            need_redraw = true;
-                        }
-                        MouseEventKind::Down(MouseButton::Right) => {
-                            app.detail_popup = None;
-                            // A sniffer, if any, isn't stashed anywhere -- it
-                            // lives in `app.sniffer` independent of
-                            // `detail_popup` and reappears on its own.
-                            if let Some((mid, sel)) = app.return_to_minion_events.take() {
-                                app.detail_popup = Some(crate::app::DetailPopup::MinionEvents {
-                                    minion_id: mid, selected: sel,
-                                });
-                                app.popup_tab = Some(app.current_tab);
+                            MouseEventKind::Down(MouseButton::Right) => {
+                                app.detail_popup = None;
+                                // A sniffer, if any, isn't stashed anywhere -- it
+                                // lives in `app.sniffer` independent of
+                                // `detail_popup` and reappears on its own.
+                                if let Some((mid, sel)) = app.return_to_minion_events.take() {
+                                    app.detail_popup = Some(crate::app::DetailPopup::MinionEvents {
+                                        minion_id: mid, selected: sel,
+                                    });
+                                    app.popup_tab = Some(app.current_tab);
+                                }
+                                need_redraw = true;
                             }
-                            need_redraw = true;
+                            _ => {}
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
-                _ => {}
+                handled += 1;
+                if handled >= MAX_INPUT_EVENTS_PER_FRAME || !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
         }
 
