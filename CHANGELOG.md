@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3-rc13] - 2026-10-07
+
 ### Added
 
 - Add an Args column to Live Jobs and Job Cache showing what each job was run with — the requested formula for `state.apply`/`state.sls` (e.g. `apache.install`), `highstate` when none was named, a dimmed `(test)` marker for `test=True` runs, and the arguments of any other function (e.g. `uptime` for `cmd.run`); the `/` filter on both tables also matches it
