@@ -107,6 +107,18 @@ pub struct MinionInfo {
     pub timed_out: bool,
 }
 
+impl MinionInfo {
+    pub fn os_label(&self) -> String {
+        if !self.osfinger.is_empty() {
+            self.osfinger.clone()
+        } else if !self.osrelease.is_empty() {
+            format!("{} {}", self.os, self.osrelease)
+        } else {
+            self.os.clone()
+        }
+    }
+}
+
 // ─── Process info ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -446,6 +458,8 @@ pub struct JobEntry {
     pub created_epoch: f64,
     pub local: bool,
     pub finalized: bool,
+    pub args: String,
+    pub test_run: bool,
 }
 
 // ─── Cache job entry (from agent jobs.list_jobs) ──────────────────────────
@@ -459,7 +473,297 @@ pub struct CacheJobEntry {
     pub user: String,
     pub start_time: String,
     pub start_epoch: f64,
-    pub arguments: Vec<String>,
+    pub args: String,
+    pub test_run: bool,
+}
+
+const STATE_APPLY_FUNS: &[&str] = &["state.apply", "state.sls", "state.highstate", "state.top"];
+
+/// Renders a job's raw Salt `arg` list (positional values plus an optional
+/// `{"__kwarg__": true, ...}` dict) for the Args column. For state runs this
+/// is the requested SLS list, or "highstate" when none was named; `test=True`
+/// is returned as a flag instead of text so it can be styled as a marker.
+/// Must stay in sync with `_format_job_args` in the agent, which renders the
+/// Job Cache side so it can be searched and sorted on the master.
+pub fn format_job_args(fun: &str, arg: &serde_json::Value) -> (String, bool) {
+    fn text(v: &serde_json::Value) -> String {
+        match v {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Array(items) => items.iter().map(text).collect::<Vec<_>>().join(","),
+            other => other.to_string(),
+        }
+    }
+    let mut positional: Vec<String> = Vec::new();
+    let mut kwargs: Vec<(&str, &serde_json::Value)> = Vec::new();
+    let mut test_run = false;
+    for v in arg.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        match v.as_object() {
+            Some(obj) if obj.get("__kwarg__").and_then(|k| k.as_bool()) == Some(true) => {
+                for (k, val) in obj {
+                    if k == "test" {
+                        test_run = val.as_bool().unwrap_or_else(|| val.as_str().is_some_and(|s| s.eq_ignore_ascii_case("true")));
+                    } else if !k.starts_with("__") {
+                        kwargs.push((k, val));
+                    }
+                }
+            }
+            _ => positional.push(text(v)),
+        }
+    }
+    if STATE_APPLY_FUNS.contains(&fun) {
+        if let Some(pos) = kwargs.iter().position(|(k, _)| *k == "mods") {
+            positional.insert(0, text(kwargs.remove(pos).1));
+        }
+        if positional.is_empty() && fun != "state.sls" {
+            positional.push("highstate".to_string());
+        }
+    }
+    let mut parts = positional;
+    parts.extend(kwargs.into_iter().map(|(k, v)| format!("{}={}", k, text(v))));
+    (parts.join(" "), test_run)
+}
+
+// ─── Table columns ────────────────────────────────────────────────────────
+
+/// The list tables whose columns can be chosen, reordered and (except
+/// Events) sorted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TableId {
+    LiveJobs,
+    JobCache,
+    Minions,
+    Events,
+    Alerts,
+    ApiLog,
+}
+
+impl TableId {
+    /// Every column key valid for this table, in canonical order.
+    pub fn all_columns(self) -> &'static [&'static str] {
+        match self {
+            Self::LiveJobs => &["jid", "fun", "args", "target", "source", "tgt", "ok", "fail", "wait", "started"],
+            Self::JobCache => &["jid", "user", "started", "target", "fun", "args"],
+            Self::Minions => &["id", "key", "os", "salt", "arch", "seen"],
+            Self::Events => &["local", "utc", "tag", "minion"],
+            Self::Alerts => &["severity", "rule", "description", "since", "count"],
+            Self::ApiLog => &["age", "method", "client", "path", "status", "time"],
+        }
+    }
+
+    pub fn default_columns(self) -> &'static str {
+        match self {
+            Self::LiveJobs => "jid,fun,args,target,source,tgt,ok,fail,wait",
+            Self::JobCache => "jid,user,started,target,fun,args",
+            Self::Minions => "id,key,os,salt",
+            Self::Events => "local,utc,tag",
+            Self::Alerts => "severity,rule,description",
+            Self::ApiLog => "age,method,client,path,status,time",
+        }
+    }
+
+    /// The config key (and Config Editor label) holding this table's columns.
+    pub fn config_key(self) -> &'static str {
+        match self {
+            Self::LiveJobs => "live_columns",
+            Self::JobCache => "cache_columns",
+            Self::Minions => "minion_columns",
+            Self::Events => "event_columns",
+            Self::Alerts => "alert_columns",
+            Self::ApiLog => "request_columns",
+        }
+    }
+
+    /// Events is a live tail that follows the newest event; reordering it
+    /// would fight that, so it only gets column choice.
+    pub fn sortable(self) -> bool {
+        self != Self::Events
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Column {
+    Jid,
+    Fun,
+    Args,
+    Target,
+    Source,
+    Targeted,
+    Ok,
+    Fail,
+    Wait,
+    User,
+    Started,
+    MinionId,
+    KeyStatus,
+    Os,
+    SaltVersion,
+    Arch,
+    LastSeen,
+    Local,
+    Utc,
+    Tag,
+    EventMinion,
+    Severity,
+    Rule,
+    Description,
+    Since,
+    Count,
+    Age,
+    Method,
+    Client,
+    Path,
+    Status,
+    Time,
+}
+
+const COLUMN_KEYS: &[(&str, Column)] = &[
+    ("jid", Column::Jid),
+    ("fun", Column::Fun),
+    ("args", Column::Args),
+    ("target", Column::Target),
+    ("source", Column::Source),
+    ("tgt", Column::Targeted),
+    ("ok", Column::Ok),
+    ("fail", Column::Fail),
+    ("wait", Column::Wait),
+    ("user", Column::User),
+    ("started", Column::Started),
+    ("id", Column::MinionId),
+    ("key", Column::KeyStatus),
+    ("os", Column::Os),
+    ("salt", Column::SaltVersion),
+    ("arch", Column::Arch),
+    ("seen", Column::LastSeen),
+    ("local", Column::Local),
+    ("utc", Column::Utc),
+    ("tag", Column::Tag),
+    ("minion", Column::EventMinion),
+    ("severity", Column::Severity),
+    ("rule", Column::Rule),
+    ("description", Column::Description),
+    ("since", Column::Since),
+    ("count", Column::Count),
+    ("age", Column::Age),
+    ("method", Column::Method),
+    ("client", Column::Client),
+    ("path", Column::Path),
+    ("status", Column::Status),
+    ("time", Column::Time),
+];
+
+impl Column {
+    pub fn from_key(key: &str) -> Option<Self> {
+        COLUMN_KEYS.iter().find(|(k, _)| *k == key).map(|(_, c)| *c)
+    }
+
+    pub fn key(self) -> &'static str {
+        COLUMN_KEYS.iter().find(|(_, c)| *c == self).map(|(k, _)| *k).unwrap_or("")
+    }
+
+    pub fn header(self) -> &'static str {
+        match self {
+            Self::Jid => "JID",
+            Self::Fun => "Fun",
+            Self::Args => "Args",
+            Self::Target => "Target",
+            Self::Source => "Source",
+            Self::Targeted => "Tgt",
+            Self::Ok => "OK",
+            Self::Fail => "Fail",
+            Self::Wait => "Wait",
+            Self::User => "User",
+            Self::Started => "Started",
+            Self::MinionId => "ID",
+            Self::KeyStatus => "Key",
+            Self::Os => "OS",
+            Self::SaltVersion => "Salt",
+            Self::Arch => "Arch",
+            Self::LastSeen => "Seen",
+            Self::Local => "Local",
+            Self::Utc => "UTC",
+            Self::Tag => "Tag",
+            Self::EventMinion => "Minion",
+            Self::Severity => "Severity",
+            Self::Rule => "Rule",
+            Self::Description => "Description",
+            Self::Since => "Since",
+            Self::Count => "Count",
+            Self::Age => "Age",
+            Self::Method => "Method",
+            Self::Client => "Client",
+            Self::Path => "Path",
+            Self::Status => "Status",
+            Self::Time => "Time",
+        }
+    }
+
+    /// Cell width including the one-space gap that follows it.
+    pub fn width(self) -> usize {
+        match self {
+            Self::Fun | Self::Args | Self::Os => 24,
+            Self::Jid | Self::Target | Self::Client | Self::Path | Self::Local | Self::Utc
+                | Self::MinionId | Self::EventMinion | Self::Started => 21,
+            Self::Source | Self::Method | Self::Time => 8,
+            Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count => 6,
+            Self::User => 13,
+            Self::KeyStatus | Self::Severity | Self::Arch => 10,
+            Self::LastSeen | Self::Since => 13,
+            Self::SaltVersion => 12,
+            Self::Tag | Self::Description => 46,
+            Self::Rule => 23,
+            Self::Status => 19,
+            Self::Age => 17,
+        }
+    }
+
+    /// Narrowest a free-text column may be squeezed to when the panel can't
+    /// fit every shown column at full width; `None` for fixed-format columns
+    /// (JIDs, timestamps, counts) that would be unreadable truncated.
+    pub fn min_width(self) -> Option<usize> {
+        match self {
+            Self::Fun | Self::Args | Self::Tag | Self::Description => Some(12),
+            Self::Target | Self::Rule | Self::Os | Self::MinionId | Self::EventMinion | Self::Client | Self::Path => Some(10),
+            Self::User | Self::Status | Self::SaltVersion => Some(6),
+            _ => None,
+        }
+    }
+
+    pub fn right_aligned(self) -> bool {
+        matches!(self, Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count | Self::Time)
+    }
+
+    /// Parses a comma-separated column list from the config, keeping only
+    /// keys valid for `table` and dropping duplicates. Falls back to the
+    /// table's defaults if nothing usable is left, so a table can never end
+    /// up with no columns at all.
+    pub fn parse_list(value: &str, table: TableId) -> Vec<Self> {
+        let parse = |s: &str| {
+            let mut cols: Vec<Self> = Vec::new();
+            for key in s.split(',').map(str::trim) {
+                if let Some(col) = Self::from_key(key).filter(|c| table.all_columns().contains(&c.key())) {
+                    if !cols.contains(&col) { cols.push(col); }
+                }
+            }
+            cols
+        };
+        let cols = parse(value);
+        if cols.is_empty() { parse(table.default_columns()) } else { cols }
+    }
+}
+
+/// Active sort of a table: column and whether it's descending. No entry on
+/// the App side means the table's natural order.
+pub type SortSpec = (Column, bool);
+
+/// Screen span of one rendered column header, recorded each frame so a
+/// header click hit-tests against what was actually drawn.
+#[derive(Clone, Copy, Debug)]
+pub struct HeaderHit {
+    pub y: u16,
+    pub x0: u16,
+    pub x1: u16,
+    pub col: Column,
+    pub table: TableId,
 }
 
 // ─── JID lookup result ────────────────────────────────────────────────────

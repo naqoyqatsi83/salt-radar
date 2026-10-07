@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an Args column to Live Jobs and Job Cache showing what each job was run with — the requested formula for `state.apply`/`state.sls` (e.g. `apache.install`), `highstate` when none was named, a dimmed `(test)` marker for `test=True` runs, and the arguments of any other function (e.g. `uptime` for `cmd.run`); the `/` filter on both tables also matches it
+- Add column sorting to the Minions, Live Jobs, Job Cache, Alerts and API request log tables: click a column header (or `o` to step through columns, `O` to reverse) to cycle ascending, descending and the default order; the Job Cache is sorted by the agent across the whole cache before paging, not just the page on screen, Minions keep timed-out minions in their own section, and Salt versions sort numerically (3006.10 after 3006.9)
+- Add per-table column choice and order for Minions, Events, Live Jobs, Job Cache, Alerts and the API request log — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their `salt-radar.toml` sections, editable with `v` on the table or in the Config Editor (`+`/`-` to move, `Space` to show/hide) — with new optional columns: Live Jobs Started, Minions Arch and Seen, Events Minion, Alerts Since and Count
+
+### Changed
+
+- Shrink a table's free-text columns to share the space when its panel is too narrow to fit every column, instead of cutting off the rightmost ones, and give spare width to the widest text column (e.g. Description, Tag, Args) rather than leaving it empty
+
+### Fixed
+
+- Fix the Target column being blank (Job Cache) or `?` (Live Jobs) for list-targeted (`-L`) jobs
+- Fix Config Editor changes being silently lost: closing it with unsaved changes now asks first (Esc/q again discards), the title shows when there are unsaved changes, and `s` saves from anywhere in the editor instead of only from the Save button at the bottom
+- Fix quitting salt-radar overwriting `salt-radar.toml` with its whole in-memory config, which discarded anything saved to the file while it ran (by hand or from another instance); quitting now only merges in the hotkey toggles changed during the session (F4–F8 graphs, Minions `f`, API `x`)
+
 ## [0.6.3-rc12] - 2026-09-30
 
 ### Fixed

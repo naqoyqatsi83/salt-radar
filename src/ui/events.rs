@@ -5,8 +5,10 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::types::{Column, HeaderHit, TableId};
 
 use super::color;
+use super::table::{column_widths, header_line, pad};
 
 fn format_time_local(ts: f64) -> String {
     if ts < 1.0 {
@@ -26,7 +28,7 @@ fn format_time_utc(ts: f64) -> String {
         .unwrap_or_else(|| "\u{2014}".to_string())
 }
 
-pub fn draw_events(f: &mut Frame, area: Rect, app: &App, focused: bool) {
+pub fn draw_events(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -37,30 +39,31 @@ pub fn draw_events(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     // default 10000) event buffer.
     let filtered = app.filtered_events();
 
-    draw_event_list(f, cols[0], app, focused, &filtered);
+    draw_event_list(f, cols[0], app, focused, &filtered, hits);
     draw_event_preview(f, cols[1], app, &filtered);
 }
 
-fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered: &[&crate::types::SaltEvent]) {
+fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered: &[&crate::types::SaltEvent], hits: &mut Vec<HeaderHit>) {
     let total = filtered.len();
     let selected = app.event_selected.min(total.saturating_sub(1));
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
 
-    let hints: &[(&str, String)] = &[
+    let mut hints: Vec<(&str, String)> = vec![
         ("/", "filter".to_string()),
         ("Enter", "detail".to_string()),
         ("PgUp/PgDn", "page".to_string()),
         ("Home/End", "top/bottom".to_string()),
         ("n", "sniffer".to_string()),
     ];
+    hints.extend(super::table::hints(TableId::Events));
     let block = super::list_block_hinted(
         format!(" Events ({}/{}) ", app.events.len(), app.config.event_buffer_size),
         Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
         color::BG_DARK,
         has_more_above,
         has_more_below,
-        hints,
+        &hints,
     );
 
     let inner = block.inner(area);
@@ -90,10 +93,9 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
             Style::default().fg(color::TEXT_DIM),
         )));
     } else {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {:<19}  {:<19}", "Local", "UTC"), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {:<45}", "Tag"), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        ]));
+        let cols = app.columns(TableId::Events);
+        let widths = column_widths(&cols, (inner.width as usize).saturating_sub(2));
+        lines.push(header_line(TableId::Events, &cols, &widths, None, inner.x, inner.y + lines.len() as u16, hits));
 
         if total == 0 {
             lines.push(Line::from(Span::styled(
@@ -111,30 +113,29 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
                     Style::default().bg(color::BG_DARK)
                 };
 
-                let local_t = format_time_local(evt.ts);
-                let utc_t = format_time_utc(evt.ts);
-
-                let tag = if evt.tag.len() > 45 {
-                    format!("{}..", &evt.tag[..43])
-                } else {
-                    evt.tag.clone()
-                };
-                let padded_tag = format!("{:<45}", tag);
-
-                // A row can be in the filtered set because a term matched some
-                // other field (fun, id, tgt, the whole JSON body) without the
-                // tag text itself containing it — keep the plain CYAN tag in
-                // that case instead of running it through the highlighter and
-                // getting an all-TEXT-colored tag that looks unstyled.
-                let lower_tag = padded_tag.to_lowercase();
-                let tag_has_hit = filter_terms.iter().any(|t| lower_tag.contains(&t.to_lowercase()));
-
-                let mut spans = vec![Span::styled(format!("  {}  {}", local_t, utc_t), Style::default().fg(color::TEXT_TITLE))];
-                spans.push(Span::raw("  "));
-                if tag_has_hit {
-                    spans.extend(super::highlight_keywords(&padded_tag, &filter_terms));
-                } else {
-                    spans.push(Span::styled(padded_tag, Style::default().fg(color::CYAN)));
+                let mut spans = vec![Span::raw("  ")];
+                for (&col, &w) in cols.iter().zip(&widths) {
+                    let (text, fg) = match col {
+                        Column::Local => (format_time_local(evt.ts), color::TEXT_TITLE),
+                        Column::Utc => (format_time_utc(evt.ts), color::TEXT_TITLE),
+                        Column::Tag => (evt.tag.clone(), color::CYAN),
+                        Column::EventMinion => (evt.data["id"].as_str().unwrap_or("").to_string(), color::YELLOW),
+                        _ => (String::new(), color::TEXT),
+                    };
+                    let padded = pad(&text, w, false);
+                    // A row can be in the filtered set because a term matched
+                    // some other field (fun, tgt, the whole JSON body) without
+                    // this cell's text containing it — keep its plain color in
+                    // that case instead of running it through the highlighter
+                    // and getting an all-TEXT-colored cell that looks unstyled.
+                    let lower = padded.to_lowercase();
+                    let has_hit = matches!(col, Column::Tag | Column::EventMinion)
+                        && filter_terms.iter().any(|t| lower.contains(&t.to_lowercase()));
+                    if has_hit {
+                        spans.extend(super::highlight_keywords(&padded, &filter_terms));
+                    } else {
+                        spans.push(Span::styled(padded, Style::default().fg(fg)));
+                    }
                 }
 
                 lines.push(Line::from(spans).style(sel_style));

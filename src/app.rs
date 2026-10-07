@@ -33,6 +33,9 @@ pub struct ServiceTrend {
 pub struct App {
     // Config
     pub config: AppConfig,
+    /// `config` as last loaded from or saved to disk — what the live
+    /// hotkey toggles (F4-F8, `f`, `x`) are diffed against on exit.
+    persisted_config: AppConfig,
     /// Where `config` was loaded from and gets saved back to — see
     /// `config::resolve_config_path`.
     pub config_path: std::path::PathBuf,
@@ -370,6 +373,11 @@ pub struct App {
     pub cache_server_filter: String,
     pub cache_is_filtering: bool,
     pub cache_focus: bool,
+    /// Session-only column sort per table; a table with no entry shows its
+    /// natural order. The Job Cache is sorted by the agent across the whole
+    /// job cache, not just the page on screen.
+    pub table_sorts: HashMap<TableId, SortSpec>,
+    pub header_hits: Vec<HeaderHit>,
     pub cache_loading: bool,
     pub cache_loaded: bool,
     pub cache_load_error: Option<String>,
@@ -422,7 +430,26 @@ pub enum ConfigFieldKind {
     /// the raw comma-separated string where a typo or dropped token is easy
     /// to make and hard to notice.
     Order,
+    /// Like `Order`, over a subset of a fixed set of keys: the value lists
+    /// the shown items in order, and every key it leaves out is hidden.
+    /// `Space` toggles an item between shown and hidden.
+    Columns(&'static [&'static str]),
     SaveButton,
+}
+
+/// The Columns editor's full item list: shown items in their configured
+/// order, then the hidden ones in their canonical order.
+pub fn column_editor_items(value: &str, all: &[&'static str]) -> (Vec<&'static str>, usize) {
+    let mut items: Vec<&'static str> = Vec::new();
+    for key in value.split(',') {
+        if let Some(k) = all.iter().find(|a| **a == key.trim()) {
+            if !items.contains(k) { items.push(k); }
+        }
+    }
+    let shown = items.len();
+    let hidden: Vec<&'static str> = all.iter().filter(|a| !items.contains(a)).copied().collect();
+    items.extend(hidden);
+    (items, shown)
 }
 
 pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
@@ -431,6 +458,17 @@ pub const API_STATS_AUTH_MODES: &[&str] = &["none", "plaintext", "pillar"];
 
 fn on_off(b: bool) -> String {
     if b { "on" } else { "off" }.to_string()
+}
+
+/// Orders dotted version strings numerically part by part, so "3006.10"
+/// sorts after "3006.9" instead of before it.
+fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let key = |s: &str| s.split('.').map(|p| (p.parse::<u64>().unwrap_or(u64::MAX), p.to_string())).collect::<Vec<_>>();
+    key(a).cmp(&key(b))
+}
+
+fn column_keys(cols: &[Column]) -> String {
+    cols.iter().map(|c| c.key()).collect::<Vec<_>>().join(",")
 }
 
 #[derive(Clone, Debug)]
@@ -463,6 +501,20 @@ pub struct ConfigEditorState {
     /// Cursor position within the option list while editing a `Choice` field
     pub choice_idx: usize,
     pub save_error: Option<String>,
+    /// Opened from a table's `v` shortcut straight into one Columns field:
+    /// confirming saves the config and closes, cancelling just closes.
+    pub quick: bool,
+    /// Every field's value as of opening, to tell whether there's anything
+    /// unsaved to warn about before closing.
+    pub original: Vec<String>,
+    /// Set by a first Esc/q with unsaved changes; a second one discards.
+    pub confirm_discard: bool,
+}
+
+impl ConfigEditorState {
+    pub fn dirty(&self) -> bool {
+        self.fields.iter().zip(&self.original).any(|(f, o)| f.label_value != *o)
+    }
 }
 
 /// A single item in the unified per-minion activity view.
@@ -533,6 +585,7 @@ impl App {
         });
 
         Self {
+            persisted_config: config.clone(),
             config,
             config_path,
             current_tab: Tab::Dashboard,
@@ -604,6 +657,8 @@ impl App {
             cache_server_filter: String::new(),
             cache_is_filtering: false,
             cache_focus: false,
+            table_sorts: HashMap::new(),
+            header_hits: Vec::new(),
             cache_loading: false,
             cache_loaded: false,
             cache_load_error: None,
@@ -1035,7 +1090,10 @@ impl App {
                             self.cache_loading_at = None;
                             self.cache_load_progress = None;
                             if ok {
-                                self.jobs_cache = parse_cache_jobs(&data);
+                                // Every sort change sends a fresh request, so the
+                                // reply to the latest one was made with the sort
+                                // still in effect.
+                                self.jobs_cache = parse_cache_jobs(&data, self.sort_of(TableId::JobCache).is_none());
                                 self.cache_total_count = data["total_count"].as_u64().unwrap_or(0) as usize;
                                 self.cache_loaded = true;
                                 self.cache_load_error = None;
@@ -1650,6 +1708,7 @@ impl App {
     fn matches_job_term(job: &JobEntry, term: &str, known_minions: &HashSet<String>) -> bool {
         if Self::matches_filter(&job.jid, term)
             || Self::matches_filter(&job.fun, term)
+            || Self::matches_filter(&job.args, term)
             || Self::host_matches_term(&job.tgt, term)
         {
             return true;
@@ -2059,22 +2118,110 @@ impl App {
         self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).count()
     }
 
+    /// Live Jobs in display order: filtered, then sorted.
     pub fn filtered_jobs(&self) -> Vec<&JobEntry> {
         let pat = self.filter_text_for(Tab::Jobs);
-        if pat.is_empty() {
-            return self.jobs.iter().collect();
+        let mut jobs: Vec<&JobEntry> = if pat.is_empty() {
+            self.jobs.iter().collect()
+        } else {
+            let known = self.accepted_ids();
+            self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).collect()
+        };
+        if let Some((col, desc)) = self.sort_of(TableId::LiveJobs) {
+            jobs.sort_by(|a, b| {
+                let ord = match col {
+                    Column::Jid => a.jid.cmp(&b.jid),
+                    Column::Fun => a.fun.cmp(&b.fun),
+                    Column::Args => a.args.cmp(&b.args).then(a.test_run.cmp(&b.test_run)),
+                    Column::Target => a.tgt.cmp(&b.tgt),
+                    Column::Source => a.local.cmp(&b.local),
+                    Column::Targeted => a.target_count.cmp(&b.target_count),
+                    Column::Ok => a.succeeded.cmp(&b.succeeded),
+                    Column::Fail => a.failed.cmp(&b.failed),
+                    Column::Wait => a.target_count.saturating_sub(a.returned).cmp(&b.target_count.saturating_sub(b.returned)),
+                    _ => a.created_epoch.total_cmp(&b.created_epoch),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
         }
-        let known = self.accepted_ids();
-        self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).collect()
+        jobs
     }
 
     pub fn get_filtered_job(&self, index: usize) -> Option<&JobEntry> {
-        let pat = self.filter_text_for(Tab::Jobs);
-        if pat.is_empty() {
-            return self.jobs.get(index);
+        self.filtered_jobs().get(index).copied()
+    }
+
+    pub fn columns(&self, table: TableId) -> Vec<Column> {
+        Column::parse_list(self.config.columns_for(table), table)
+    }
+
+    pub fn sort_of(&self, table: TableId) -> Option<SortSpec> {
+        self.table_sorts.get(&table).copied()
+    }
+
+    /// The configurable table the keyboard is on, if any.
+    fn current_table(&self) -> Option<TableId> {
+        match self.current_tab {
+            Tab::Jobs if self.cache_focus => Some(TableId::JobCache),
+            Tab::Jobs => Some(TableId::LiveJobs),
+            Tab::Minions => Some(TableId::Minions),
+            Tab::Events => Some(TableId::Events),
+            Tab::Alerts => Some(TableId::Alerts),
+            Tab::Api => Some(TableId::ApiLog),
+            Tab::Dashboard | Tab::Pulse => None,
         }
-        let known = self.accepted_ids();
-        self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).nth(index)
+    }
+
+    /// Header click: ascending, then descending, then back to natural order.
+    fn click_sort(sort: Option<SortSpec>, col: Column) -> Option<SortSpec> {
+        match sort {
+            Some((c, false)) if c == col => Some((col, true)),
+            Some((c, true)) if c == col => None,
+            _ => Some((col, false)),
+        }
+    }
+
+    /// `o`: step the sort to the next shown column (ascending), and past the
+    /// last one back to natural order.
+    fn next_sort(sort: Option<SortSpec>, cols: &[Column]) -> Option<SortSpec> {
+        let next = match sort.and_then(|(c, _)| cols.iter().position(|x| *x == c)) {
+            Some(i) => cols.get(i + 1),
+            None => cols.first(),
+        };
+        next.map(|c| (*c, false))
+    }
+
+    fn set_sort(&mut self, table: TableId, sort: Option<SortSpec>) {
+        if !table.sortable() || self.sort_of(table) == sort { return; }
+        match sort {
+            Some(s) => { self.table_sorts.insert(table, s); }
+            None => { self.table_sorts.remove(&table); }
+        }
+        match table {
+            TableId::JobCache => {
+                self.cache_selected = 0;
+                let ft = self.cache_server_filter.clone();
+                self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, true);
+            }
+            TableId::LiveJobs => self.job_selected = 0,
+            TableId::Minions => self.minion_selected = 0,
+            TableId::Alerts => self.alert_selected = 0,
+            TableId::ApiLog => self.api_log_selected = 0,
+            TableId::Events => {}
+        }
+    }
+
+    fn open_columns_picker(&mut self, table: TableId) {
+        self.open_config_editor();
+        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+            if let Some(idx) = s.fields.iter().position(|f| f.label == table.config_key()) {
+                s.selected = idx;
+                s.input = s.fields[idx].label_value.clone();
+                s.choice_idx = 0;
+                s.editing = true;
+                s.quick = true;
+            }
+        }
     }
 
     // ── Cache job filter helpers ─────────────────────────────────────────
@@ -2097,12 +2244,35 @@ impl App {
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).count()
     }
 
-    pub fn get_filtered_alert(&self, index: usize) -> Option<&AlertEntry> {
+    /// Alerts in display order: filtered, then sorted.
+    pub fn filtered_alerts(&self) -> Vec<&AlertEntry> {
         let pat = self.filter_text_for(Tab::Alerts);
-        if pat.is_empty() {
-            return self.alert_engine.alerts.get(index);
+        let mut alerts: Vec<&AlertEntry> = self.alert_engine.alerts.iter()
+            .filter(|a| pat.is_empty() || Self::matches_alert(a, pat))
+            .collect();
+        if let Some((col, desc)) = self.sort_of(TableId::Alerts) {
+            let rank = |s: AlertSeverity| match s {
+                AlertSeverity::Info => 0,
+                AlertSeverity::Warn => 1,
+                AlertSeverity::Crit => 2,
+            };
+            alerts.sort_by(|a, b| {
+                let ord = match col {
+                    Column::Severity => rank(a.severity).cmp(&rank(b.severity)),
+                    Column::Rule => a.rule.cmp(b.rule),
+                    Column::Description => a.description.cmp(&b.description),
+                    // Shortest-active first, matching the Since column's text.
+                    Column::Since => b.active_since.cmp(&a.active_since),
+                    _ => a.count.cmp(&b.count),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
         }
-        self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).nth(index)
+        alerts
+    }
+
+    pub fn get_filtered_alert(&self, index: usize) -> Option<&AlertEntry> {
+        self.filtered_alerts().get(index).copied()
     }
 
     fn matches_api_log_entry(entry: &ApiLogEntry, pat: &str) -> bool {
@@ -2133,11 +2303,31 @@ impl App {
             .count()
     }
 
-    pub fn get_filtered_api_log(&self, index: usize) -> Option<&ApiLogEntry> {
+    /// API request log in display order: filtered, then sorted.
+    pub fn filtered_api_log(&self) -> Vec<&ApiLogEntry> {
         let pat = self.filter_text_for(Tab::Api);
-        self.api_requests_log.iter()
+        let mut entries: Vec<&ApiLogEntry> = self.api_requests_log.iter()
             .filter(|e| self.api_log_entry_visible(e) && Self::matches_api_log_entry(e, pat))
-            .nth(index)
+            .collect();
+        if let Some((col, desc)) = self.sort_of(TableId::ApiLog) {
+            entries.sort_by(|a, b| {
+                let ord = match col {
+                    // Youngest first, matching the Age column's text.
+                    Column::Age => b.received_at.cmp(&a.received_at),
+                    Column::Method => a.method.cmp(&b.method),
+                    Column::Client => a.client.cmp(&b.client),
+                    Column::Path => a.path.cmp(&b.path),
+                    Column::Status => a.response_status.cmp(&b.response_status),
+                    _ => a.processing_time_secs.total_cmp(&b.processing_time_secs),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
+        }
+        entries
+    }
+
+    pub fn get_filtered_api_log(&self, index: usize) -> Option<&ApiLogEntry> {
+        self.filtered_api_log().get(index).copied()
     }
 
     /// Per-endpoint (method+path) breakdown of the captured request log:
@@ -2198,34 +2388,77 @@ impl App {
         }
     }
 
-    pub fn get_filtered_minion(&self, index: usize) -> Option<&MinionInfo> {
+    /// Minions list rows in display order: responsive minions, then (unless
+    /// hidden) the collapsible "Timed out" section header as `None` and,
+    /// unless collapsed, the timed-out minions — each group sorted on its own
+    /// so a sort never mixes timed-out minions in with responsive ones.
+    pub fn minion_rows(&self) -> Vec<Option<&MinionInfo>> {
         let accepted = &self.accepted_id_set;
-        let hide = self.hide_timed_out;
         let pat = self.filter_text_for(Tab::Minions);
-
-        let resp_count = self.minion_info.iter()
+        let (mut live, mut timed_out): (Vec<&MinionInfo>, Vec<&MinionInfo>) = self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
             .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
-            .filter(|m| !m.timed_out)
-            .count();
-
-        if index < resp_count {
-            return self.minion_info.iter()
-                .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-                .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
-                .filter(|m| !m.timed_out)
-                .nth(index);
+            .partition(|m| !m.timed_out);
+        if let Some((col, desc)) = self.sort_of(TableId::Minions) {
+            let keys = self.key_status_map();
+            let key_rank = |m: &MinionInfo| match keys.get(m.id.as_str()).copied().or(m.key_status) {
+                Some(KeyStatus::Accepted) => 0,
+                Some(KeyStatus::Pending) => 1,
+                Some(KeyStatus::Rejected) => 2,
+                Some(KeyStatus::Denied) => 3,
+                None => 4,
+            };
+            let cmp = |a: &&MinionInfo, b: &&MinionInfo| {
+                let ord = match col {
+                    Column::KeyStatus => key_rank(a).cmp(&key_rank(b)),
+                    Column::Os => a.os_label().cmp(&b.os_label()),
+                    Column::SaltVersion => version_cmp(&a.salt_version, &b.salt_version),
+                    Column::Arch => a.cpuarch.cmp(&b.cpuarch),
+                    // Most recently seen first, matching the Seen column's text.
+                    Column::LastSeen => b.last_seen_epoch.cmp(&a.last_seen_epoch),
+                    _ => a.id.cmp(&b.id),
+                };
+                if desc { ord.reverse() } else { ord }
+            };
+            live.sort_by(cmp);
+            timed_out.sort_by(cmp);
         }
+        let mut rows: Vec<Option<&MinionInfo>> = live.into_iter().map(Some).collect();
+        if !self.hide_timed_out && !timed_out.is_empty() {
+            rows.push(None);
+            if !self.timed_out_collapsed {
+                rows.extend(timed_out.into_iter().map(Some));
+            }
+        }
+        rows
+    }
 
-        if hide { return None; }
+    pub fn get_filtered_minion(&self, index: usize) -> Option<&MinionInfo> {
+        self.minion_rows().get(index).copied().flatten()
+    }
 
-        // index == resp_count is the collapsible section header (not a minion)
-        let to_idx = index.wrapping_sub(resp_count).wrapping_sub(1);
+    /// Timed-out minions matching the list filter, whether or not their
+    /// section is collapsed — the count its header shows.
+    pub fn filtered_timed_out_count(&self) -> usize {
+        let accepted = &self.accepted_id_set;
+        let pat = self.filter_text_for(Tab::Minions);
         self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
             .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
             .filter(|m| m.timed_out)
-            .nth(to_idx)
+            .count()
+    }
+
+    pub fn key_status_map(&self) -> HashMap<&str, KeyStatus> {
+        self.keys.iter().map(|k| (k.id.as_str(), k.status)).collect()
+    }
+
+    fn columns_field(&self, table: TableId) -> ConfigField {
+        ConfigField {
+            label: table.config_key(),
+            label_value: column_keys(&self.columns(table)),
+            kind: ConfigFieldKind::Columns(table.all_columns()),
+        }
     }
 
     fn open_config_editor(&mut self) {
@@ -2244,6 +2477,7 @@ impl App {
                 ConfigField { label: "[events]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "buffer_size", label_value: cfg.event_buffer_size.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "sniffer_buffer_size", label_value: cfg.sniffer_buffer_size.to_string(), kind: ConfigFieldKind::U64 },
+                self.columns_field(TableId::Events),
                 ConfigField { label: "[alerts]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "stale_minion_secs", label_value: cfg.stale_minion_secs.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "pending_key_secs", label_value: cfg.pending_key_secs.to_string(), kind: ConfigFieldKind::U64 },
@@ -2265,6 +2499,7 @@ impl App {
                 ConfigField { label: "service_mem_pct_threshold_api", label_value: cfg.service_mem_pct_threshold_api.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_abs_threshold_syndic_mb", label_value: cfg.service_mem_abs_threshold_syndic_mb.to_string(), kind: ConfigFieldKind::F64 },
                 ConfigField { label: "service_mem_pct_threshold_syndic", label_value: cfg.service_mem_pct_threshold_syndic.to_string(), kind: ConfigFieldKind::F64 },
+                self.columns_field(TableId::Alerts),
                 ConfigField { label: "[api]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "stats_window", label_value: cfg.api_stats_window.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "log_cap", label_value: cfg.api_log_cap.to_string(), kind: ConfigFieldKind::U64 },
@@ -2276,6 +2511,7 @@ impl App {
                 ConfigField { label: "stats_auth_password", label_value: cfg.api_stats_auth_password.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "stats_auth_username_pillar_path", label_value: cfg.api_stats_auth_username_pillar_path.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "stats_auth_password_pillar_path", label_value: cfg.api_stats_auth_password_pillar_path.clone(), kind: ConfigFieldKind::Str },
+                self.columns_field(TableId::ApiLog),
                 ConfigField { label: "[dashboard]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "zmq_latency_source", label_value: cfg.zmq_latency_source.clone(), kind: ConfigFieldKind::Choice(ZMQ_LATENCY_SOURCES) },
                 ConfigField { label: "show_zmq_graph", label_value: on_off(cfg.show_zmq_graph), kind: ConfigFieldKind::Choice(ON_OFF) },
@@ -2292,10 +2528,13 @@ impl App {
                 ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Order },
                 ConfigField { label: "[minions]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "follow_filter", label_value: on_off(cfg.minions_follow_filter), kind: ConfigFieldKind::Choice(ON_OFF) },
+                self.columns_field(TableId::Minions),
                 ConfigField { label: "[export]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "save_dir", label_value: cfg.save_dir.clone(), kind: ConfigFieldKind::Str },
                 ConfigField { label: "[jobs]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "lookup_timeout_secs", label_value: cfg.lookup_timeout_secs.to_string(), kind: ConfigFieldKind::U64 },
+                self.columns_field(TableId::LiveJobs),
+                self.columns_field(TableId::JobCache),
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -2303,7 +2542,13 @@ impl App {
             input: String::new(),
             choice_idx: 0,
             save_error: None,
+            quick: false,
+            original: Vec::new(),
+            confirm_discard: false,
         }));
+        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+            s.original = s.fields.iter().map(|f| f.label_value.clone()).collect();
+        }
         self.popup_tab = None; // global — works from any tab
     }
 
@@ -2316,7 +2561,7 @@ impl App {
         let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         for f in fields {
             match f.kind {
-                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order => {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order | ConfigFieldKind::Columns(_) => {
                     vals.insert(f.label, f.label_value.as_str());
                 }
                 _ => {}
@@ -2327,6 +2572,7 @@ impl App {
         let parse_usize = |key| vals.get(key).and_then(|v| v.parse::<usize>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
         let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
         let parse_bool = |key| vals.get(key) == Some(&"on");
+        let columns = |key, table: TableId| vals.get(key).copied().unwrap_or(table.default_columns()).to_string();
 
         let new_config = AppConfig {
             agent_path: vals.get("agent_path").unwrap_or(&"").to_string(),
@@ -2386,11 +2632,27 @@ impl App {
                 if v.is_empty() { "~".to_string() } else { v.to_string() }
             },
             lookup_timeout_secs: parse_u64("lookup_timeout_secs")?.max(1),
+            jobs_live_columns: columns("live_columns", TableId::LiveJobs),
+            jobs_cache_columns: columns("cache_columns", TableId::JobCache),
+            minion_columns: columns("minion_columns", TableId::Minions),
+            event_columns: columns("event_columns", TableId::Events),
+            alert_columns: columns("alert_columns", TableId::Alerts),
+            api_request_columns: columns("request_columns", TableId::ApiLog),
         };
 
         crate::config::write_config(&self.config_path, &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
+        self.persisted_config = new_config.clone();
         self.config = new_config;
+        // A sort on a column that was just hidden would keep reordering the
+        // table with no header showing why.
+        let stale: Vec<TableId> = self.table_sorts.iter()
+            .filter(|(t, (c, _))| !self.columns(**t).contains(c))
+            .map(|(t, _)| *t)
+            .collect();
+        for table in stale {
+            self.set_sort(table, None);
+        }
         // A changed zmq_latency_source (or any save) shouldn't leave a stale
         // figure — or sparkline history in different units — from a
         // previously active source mislabeled under a new one.
@@ -2429,6 +2691,70 @@ impl App {
                             s.editing = false;
                         }
                         _ => {}
+                    }
+                    return false;
+                }
+                if let Some(ConfigFieldKind::Columns(all)) = s.fields.get(s.selected).map(|f| f.kind) {
+                    let mut finish: Option<bool> = None;
+                    if let Some(field) = s.fields.get_mut(s.selected) {
+                        let (mut items, shown) = column_editor_items(&field.label_value, all);
+                        let i = s.choice_idx.min(items.len().saturating_sub(1));
+                        match code {
+                            KeyCode::Up | KeyCode::Char('k') => s.choice_idx = i.saturating_sub(1),
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if i + 1 < items.len() { s.choice_idx = i + 1; }
+                            }
+                            KeyCode::Char('+') | KeyCode::Char('=') if i > 0 && i < shown => {
+                                items.swap(i, i - 1);
+                                field.label_value = items[..shown].join(",");
+                                s.choice_idx = i - 1;
+                            }
+                            KeyCode::Char('-') | KeyCode::Char('_') if i + 1 < shown => {
+                                items.swap(i, i + 1);
+                                field.label_value = items[..shown].join(",");
+                                s.choice_idx = i + 1;
+                            }
+                            KeyCode::Char(' ') => {
+                                let key = items[i];
+                                let mut visible = items[..shown].to_vec();
+                                if i < shown {
+                                    if shown > 1 { visible.remove(i); }
+                                } else {
+                                    visible.push(key);
+                                }
+                                field.label_value = visible.join(",");
+                                let (items, _) = column_editor_items(&field.label_value, all);
+                                s.choice_idx = items.iter().position(|k| *k == key).unwrap_or(0);
+                            }
+                            KeyCode::Enter => finish = Some(true),
+                            KeyCode::Esc => {
+                                field.label_value = s.input.clone();
+                                finish = Some(false);
+                            }
+                            _ => {}
+                        }
+                    }
+                    let quick = s.quick;
+                    match finish {
+                        Some(true) if quick => match self.save_config_from_editor() {
+                            Ok(()) => {
+                                self.detail_popup = None;
+                                self.clipboard_msg = Some((" Columns saved ".into(), std::time::Instant::now()));
+                            }
+                            Err(e) => {
+                                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                                    s.save_error = Some(e);
+                                }
+                            }
+                        },
+                        Some(false) if quick => self.detail_popup = None,
+                        Some(_) => {
+                            if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                                s.editing = false;
+                                s.input.clear();
+                            }
+                        }
+                        None => {}
                     }
                     return false;
                 }
@@ -2586,7 +2912,7 @@ impl App {
                     Some(DetailPopup::ConfigEditor(ref s)) => {
                         match s.fields.get(s.selected).map(|f| &f.kind) {
                             Some(ConfigFieldKind::SaveButton) => Some("save"),
-                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) | Some(ConfigFieldKind::Order) => {
+                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) | Some(ConfigFieldKind::Order) | Some(ConfigFieldKind::Columns(_)) => {
                                 Some("edit")
                             }
                             _ => None,
@@ -2595,19 +2921,7 @@ impl App {
                     _ => None,
                 };
                 match action {
-                    Some("save") => {
-                        match self.save_config_from_editor() {
-                            Ok(()) => {
-                                self.detail_popup = None;
-                                self.clipboard_msg = Some((" Config saved ".into(), std::time::Instant::now()));
-                            }
-                            Err(e) => {
-                                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
-                                    s.save_error = Some(e);
-                                }
-                            }
-                        }
-                    }
+                    Some("save") => self.save_editor_and_close(),
                     Some("edit") => {
                         let field_info = match self.detail_popup {
                             Some(DetailPopup::ConfigEditor(ref s)) => {
@@ -2619,7 +2933,7 @@ impl App {
                             if let Some((val, kind)) = field_info {
                                 if let ConfigFieldKind::Choice(options) = kind {
                                     s.choice_idx = options.iter().position(|o| *o == val).unwrap_or(0);
-                                } else if let ConfigFieldKind::Order = kind {
+                                } else if let ConfigFieldKind::Order | ConfigFieldKind::Columns(_) = kind {
                                     // s.input snapshots the pre-edit order so Esc can restore it —
                                     // +/- mutate field.label_value live so the list re-renders in
                                     // its new order immediately, not just on confirm.
@@ -2635,7 +2949,16 @@ impl App {
                     _ => {}
                 }
             }
+            KeyCode::Char('s') | KeyCode::Char('S') => self.save_editor_and_close(),
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                // Closing used to drop edits silently — easy to lose them by
+                // confirming a field and expecting that alone to apply it.
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    if s.dirty() && !s.confirm_discard {
+                        s.confirm_discard = true;
+                        return false;
+                    }
+                }
                 self.detail_popup = None;
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -2643,7 +2966,26 @@ impl App {
             }
             _ => {}
         }
+        if !matches!(code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')) {
+            if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                s.confirm_discard = false;
+            }
+        }
         false
+    }
+
+    fn save_editor_and_close(&mut self) {
+        match self.save_config_from_editor() {
+            Ok(()) => {
+                self.detail_popup = None;
+                self.clipboard_msg = Some((" Config saved ".into(), std::time::Instant::now()));
+            }
+            Err(e) => {
+                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    s.save_error = Some(e);
+                }
+            }
+        }
     }
 
     fn open_detail(&mut self) {
@@ -3742,10 +4084,26 @@ impl App {
         let _ = std::fs::remove_file(&self.clip_log_path);
         let _ = std::fs::remove_file(&self.clip_debug_path);
 
-        // Persist the current dashboard graph layout (F4-F8 toggles) so it
-        // survives a restart instead of reverting to whatever was last
-        // saved through the Config Editor.
-        let _ = crate::config::write_config(&self.config_path, &self.config);
+        // Persist the session's hotkey toggles (F4-F8 graphs, Minions `f`,
+        // API `x`) so they survive a restart — merged into the file as it is
+        // now instead of writing back the whole in-memory config, which
+        // clobbered anything saved to the file (by hand, or from another
+        // salt-radar instance) while this one was running.
+        let mut on_disk = load_config(&self.config_path);
+        let (cur, base) = (&self.config, &self.persisted_config);
+        let mut changed = false;
+        macro_rules! keep_toggled {
+            ($($field:ident),*) => {$(
+                if cur.$field != base.$field {
+                    on_disk.$field = cur.$field;
+                    changed = true;
+                }
+            )*};
+        }
+        keep_toggled!(show_cpu_graph, show_mem_graph, show_zmq_graph, show_events_graph, show_activity_graph, minions_follow_filter, api_hide_stats_polls);
+        if changed {
+            let _ = crate::config::write_config(&self.config_path, &on_disk);
+        }
     }
 
     fn process_fleet_returns(&mut self) {
@@ -4174,6 +4532,10 @@ impl App {
         let mut extra = serde_json::json!({"max_results": self.cache_max_results, "offset": self.cache_offset});
         if let Some(f) = filter {
             extra["filter_text"] = serde_json::Value::String(f.to_string());
+        }
+        if let Some((col, desc)) = self.sort_of(TableId::JobCache) {
+            extra["sort_key"] = serde_json::Value::String(col.key().to_string());
+            extra["sort_desc"] = serde_json::Value::Bool(desc);
         }
         self.cache_loading = true;
         self.cache_loading_at = Some(Instant::now());
@@ -5363,6 +5725,24 @@ impl App {
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
                 }
             }
+            KeyCode::Char('o') => {
+                if let Some(table) = self.current_table() {
+                    let next = Self::next_sort(self.sort_of(table), &self.columns(table));
+                    self.set_sort(table, next);
+                }
+            }
+            KeyCode::Char('O') => {
+                if let Some(table) = self.current_table() {
+                    if let Some((col, desc)) = self.sort_of(table) {
+                        self.set_sort(table, Some((col, !desc)));
+                    }
+                }
+            }
+            KeyCode::Char('v') | KeyCode::Char('V') => {
+                if let Some(table) = self.current_table() {
+                    self.open_columns_picker(table);
+                }
+            }
             KeyCode::Char('?') | KeyCode::F(1) => {
                 self.show_help = true;
             }
@@ -5506,6 +5886,17 @@ impl App {
         // content area starts at row 3, status bar is the last row (h-1).
         let r = row as usize;
         if r < 3 || r >= h.saturating_sub(1) {
+            return false;
+        }
+
+        if let Some(hit) = self.header_hits.iter().find(|h| h.y == row && col >= h.x0 && col < h.x1).copied() {
+            match hit.table {
+                TableId::LiveJobs => self.cache_focus = false,
+                TableId::JobCache => self.cache_focus = true,
+                _ => {}
+            }
+            self.set_sort(hit.table, Self::click_sort(self.sort_of(hit.table), hit.col));
+            self.last_click_at = None;
             return false;
         }
 
@@ -6258,10 +6649,12 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     result
 }
 
-/// Sorted oldest-first (ascending `start_epoch`) so the Job Cache panel
-/// displays newest-at-bottom, matching Live Jobs' convention — regardless
-/// of whatever order the agent's `jobs.list_jobs` call happened to return.
-fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
+/// With `natural_order`, sorted oldest-first (ascending `start_epoch`) so
+/// the Job Cache panel displays newest-at-bottom, matching Live Jobs'
+/// convention — regardless of whatever order the agent's `jobs.list_jobs`
+/// call happened to return. Otherwise the agent already applied the user's
+/// column sort across the whole cache, and its order is kept as-is.
+fn parse_cache_jobs(data: &serde_json::Value, natural_order: bool) -> Vec<CacheJobEntry> {
     let mut result = Vec::new();
     if let Some(arr) = data["jobs"].as_array() {
         for entry in arr {
@@ -6273,13 +6666,14 @@ fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
                 user: entry["user"].as_str().unwrap_or("").to_string(),
                 start_time: entry["start_time"].as_str().unwrap_or("").to_string(),
                 start_epoch: entry["start_epoch"].as_f64().unwrap_or(0.0),
-                arguments: entry["arguments"].as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                    .unwrap_or_default(),
+                args: entry["args"].as_str().unwrap_or("").to_string(),
+                test_run: entry["test_run"].as_bool().unwrap_or(false),
             });
         }
     }
-    result.sort_by(|a, b| a.start_epoch.total_cmp(&b.start_epoch));
+    if natural_order {
+        result.sort_by(|a, b| a.start_epoch.total_cmp(&b.start_epoch));
+    }
     result
 }
 
@@ -6288,8 +6682,13 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
         let jid = evt.data["jid"].as_str().unwrap_or("").to_string();
         if jid.is_empty() { return; }
         let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
-        let tgt = evt.data["tgt"].as_str().unwrap_or("?").to_string();
+        let tgt = match &evt.data["tgt"] {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Array(ids) => ids.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","),
+            _ => "?".to_string(),
+        };
         let minions = evt.data["minions"].as_array().map(|a| a.len()).unwrap_or(0);
+        let (args, test_run) = format_job_args(&fun, &evt.data["arg"]);
         if let Some(job) = index.get(&jid).map(|&i| &mut jobs[i]) {
             // A `/ret/` for this jid was processed before this `/new` --
             // most commonly because `/new` was the one evicted under
@@ -6304,6 +6703,8 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             job.tgt = tgt;
             job.target_count = minions;
             job.local = false;
+            job.args = args;
+            job.test_run = test_run;
             return;
         }
         index.insert(jid.clone(), jobs.len());
@@ -6319,6 +6720,8 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             created_epoch: evt.ts,
             local: false,
             finalized: false,
+            args,
+            test_run,
         });
     } else if evt.tag.contains("/ret/") {
         let jid = evt.tag
@@ -6344,6 +6747,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             // Unknown JID → salt-call / local execution (no /new event was emitted)
             let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
             let tgt = evt.data["id"].as_str().unwrap_or("?").to_string();
+            let (args, test_run) = format_job_args(&fun, &evt.data["fun_args"]);
             index.insert(jid.to_string(), jobs.len());
             jobs.push(JobEntry {
                 jid: jid.to_string(),
@@ -6357,6 +6761,8 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
                 created_epoch: evt.ts,
                 local: true,
                 finalized: false,
+                args,
+                test_run,
             });
         }
     }

@@ -96,7 +96,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Every panel above the sparklines — Host Resources, Services, Minion Key Status, Event Types, Job Pulse, salt-api — can be individually hidden via `show_host_resources`/`show_services`/`show_key_status`/`show_event_types`/`show_job_pulse`/`show_salt_api` in the Config Editor (`F3`), same on/off toggle as the sparkline panels' `show_*_graph`; hiding one of Services/Minion Key Status/Event Types reflows the remaining columns in that row to fill the freed width instead of leaving a gap
 
 ### Minions
-- Scrollable minion list with dynamic column widths (ID, OS, Salt Version, Arch)
+- Scrollable minion list: ID, key status, OS, Salt version, plus optional Arch and Seen (time since last check-in) columns; sorting keeps timed-out minions in their own section
 - Freshly-active marker (`●`) next to minions that checked in recently, threshold adapts to the fleet's own median check-in age
 - Fleet overview panel: OS Distribution, Salt Version, and Architecture distribution bars
 - Detail popup with key info and connection status
@@ -104,7 +104,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 
 ### Events
 - Live event stream from the Salt event bus (via ZMQ)
-- Full date/time in local and UTC columns
+- Full date/time in local and UTC columns, plus an optional Minion column (the event's minion ID)
 - Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax. Matched terms are colored consistently (same term, same color, everywhere) from a small high-contrast palette, hashed from the term text
 - Event detail popup:
   - `t` toggles between raw JSON and a **pretty view** for job-return events — the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output (same subprocess call Job Detail uses), so formatting and colors are authoritative Salt output, not an approximation. Falls back to a client-side rendering only when no live fetch is possible (non-job-return events) or after a fetch failure/timeout
@@ -120,6 +120,8 @@ Live overview of your Salt Master with real-time sparkline panels:
 ### Jobs
 - Split panel: **Live Jobs** (left) from event bus and **Job Cache** (right) from Salt's master job cache
 - Job cache supports pagination (`[`/`]` adjust limit, `,`/`.` page navigation) and server-side search
+- **Args** column shows what a job was run with: for `state.apply`/`state.sls` the requested formula (e.g. `apache.install`), `highstate` when none was named, and a dimmed `(test)` marker for `test=True` dry runs; for other functions their arguments (e.g. `uptime` for `cmd.run`). The `/` filter matches it too
+- Sortable and configurable columns (see [Columns and sorting](#columns-and-sorting)) — the Job Cache is sorted across the whole cache by the agent, not just the page on screen
 - Per-minion return navigation (j/k), scrollable output viewer (Enter)
 - Copy return output to clipboard (y = Salt outputter format, Y = raw JSON), or save it to file (s/S, same two formats)
 - Jobs with hundreds of returns aren't limited to one minion at a time: `a`/`A` save every return in the job to a single file (Salt outputter format / one JSON object keyed by minion id), from the return list
@@ -165,11 +167,18 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 - Toggle with `a` (danger-zone confirmation dialog required)
 - **Fleet scan** (`s`): runs `grains.items` on all minions via Salt LocalClient, populates OS/Salt Version/Arch data
 
+### Columns and sorting
+- The Minions, Events, Jobs (both tables), Alerts and API request log tables let you choose which columns are shown and in what order: `v` opens a picker for the focused table (`+`/`-` move a column, `Space` shows/hides it, `Enter` saves), also editable in the Config Editor — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their sections of `salt-radar.toml`
+- Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order. Sorting lasts for the session
+- Optional columns beyond the defaults: Live Jobs Started, Minions Arch/Seen, Events Minion, Alerts Since/Count
+- When a panel is too narrow for every column, the text columns shrink together instead of cutting off the rightmost ones
+
 ### Config Editor
 - `F3` opens an in-app editor for every setting in `salt-radar.toml`, grouped by section
 - Free-text fields edit inline; fields with a fixed set of valid values (e.g. `zmq_latency_source`) open an inline picker — arrow keys to move, `Enter` to confirm
 - `graph_order` opens as a reorderable list instead of free text — `↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts — since hand-typing a comma-separated list makes it easy to typo or drop a panel
-- `Save & Restart` writes the TOML file and applies the new config immediately, no process restart needed
+- The `*_columns` settings open the same way, plus `Space` to show/hide a column (hidden columns are listed unchecked below the shown ones)
+- `Save & Restart` (or `s` from anywhere in the editor) writes the TOML file and applies the new config immediately, no process restart needed. Confirming a field with `Enter` only stages it — the title shows `● unsaved changes` until saved, and closing with unsaved changes asks first (`Esc`/`q` again discards)
 
 ### Clipboard and save-to-file
 
@@ -265,6 +274,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Minions | `x` | Hide/show non-responsive minions |
 | Minions | `z` | Collapse/expand timed-out minions into one row (when not hidden) |
 | Minions | `f` | Toggle whether the Fleet Overview breakdown follows the active list filter |
+| Minions, Jobs, Alerts, API | `o` / `O` | Sort by the next column / reverse the sort (also: click a column header) |
+| Minions, Events, Jobs, Alerts, API | `v` | Choose which columns the focused table shows, and their order |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
 | Jobs (Cache) | `,`/`.` | Previous/next page |
@@ -280,6 +291,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `↑`/`↓` | Move between fields |
 | `Enter` | Edit field / open picker (fixed-option fields) / confirm picker selection |
 | `Esc` | Cancel edit or close the picker without changing the value |
+| `s` | Save all changes and apply them |
 
 ### Popups
 

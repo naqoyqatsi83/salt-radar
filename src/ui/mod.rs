@@ -6,6 +6,7 @@ mod alerts_view;
 mod pulse;
 mod minion_events;
 mod api_view;
+mod table;
 
 pub mod config_editor;
 pub mod detail_popup;
@@ -329,15 +330,17 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let sniffer_active = !popup_active && app.current_tab == Tab::Events && app.sniffer.is_some();
     let tab_focused = !popup_active && !sniffer_active && !app.show_help;
 
+    let mut hits = Vec::new();
     match app.current_tab {
         Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[1], app),
-        Tab::Minions => minions::draw_minions(f, main_layout[1], app, tab_focused),
-        Tab::Events => events::draw_events(f, main_layout[1], app, tab_focused),
-        Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app, tab_focused),
-        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused),
+        Tab::Minions => minions::draw_minions(f, main_layout[1], app, tab_focused, &mut hits),
+        Tab::Events => events::draw_events(f, main_layout[1], app, tab_focused, &mut hits),
+        Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app, tab_focused, &mut hits),
+        Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
-        Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused),
+        Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused, &mut hits),
     }
+    app.header_hits = hits;
 
     draw_key_hints(f, main_layout[2], app);
 
@@ -752,6 +755,14 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  x", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
             Span::styled("  Hide/show non-responsive minions (Minions tab)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  o/O", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Sort by next column / reverse sort (list tables; or click a header)", Style::default().fg(color::TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  v", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled("  Choose and reorder the focused table's columns", Style::default().fg(color::TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  \u{2191}\u{2193}\u{2190}\u{2192}", Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),

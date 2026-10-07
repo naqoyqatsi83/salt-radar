@@ -20,9 +20,16 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         .unwrap_or_else(|_| app.config_path.clone())
         .display()
         .to_string();
-    let editing_order = state.editing
-        && matches!(state.fields.get(state.selected).map(|f| f.kind), Some(ConfigFieldKind::Order));
-    let hints: Vec<(&str, String)> = if editing_order {
+    let editing_kind = if state.editing { state.fields.get(state.selected).map(|f| f.kind) } else { None };
+    let hints: Vec<(&str, String)> = if let Some(ConfigFieldKind::Columns(_)) = editing_kind {
+        vec![
+            ("Esc", "cancel".to_string()),
+            ("\u{2191}\u{2193}", "select".to_string()),
+            ("+/-", "move column".to_string()),
+            ("Space", "show/hide".to_string()),
+            ("Enter", if state.quick { "save" } else { "confirm" }.to_string()),
+        ]
+    } else if let Some(ConfigFieldKind::Order) = editing_kind {
         vec![
             ("Esc", "cancel".to_string()),
             ("\u{2191}\u{2193}", "select".to_string()),
@@ -36,9 +43,11 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             ("PgUp/PgDn", "page".to_string()),
             ("Home/End", "top/bottom".to_string()),
             ("Enter", "edit".to_string()),
+            ("s", "save".to_string()),
         ]
     };
-    let block = super::titled_block(" Config Editor ", Style::default().fg(color::BORDER_HI), color::BG_DARK)
+    let title = if state.dirty() { " Config Editor \u{25CF} unsaved changes " } else { " Config Editor " };
+    let block = super::titled_block(title, Style::default().fg(color::BORDER_HI), color::BG_DARK)
         .title_bottom(super::border_hints(&hints, color::BORDER_HI).left_aligned())
         .title_bottom(super::border_info(format!("saved to: {}", config_path), color::BORDER_HI).right_aligned());
     let inner = block.inner(area);
@@ -114,6 +123,38 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     }
                 }
             }
+            ConfigFieldKind::Columns(all) => {
+                let is_sel = field_idx == state.selected;
+                let editing = is_sel && state.editing;
+                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+
+                if is_sel { sel_line = lines.len(); }
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {:<label_w$}", field.label, label_w = label_w),
+                        sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                    ),
+                    Span::styled(
+                        field.label_value.clone(),
+                        sel_style.fg(if editing { color::YELLOW } else { color::TEXT }),
+                    ),
+                ]));
+                if editing {
+                    let (items, shown) = crate::app::column_editor_items(&field.label_value, all);
+                    for (i, item) in items.iter().enumerate() {
+                        let item_sel = i == state.choice_idx;
+                        let item_style = if item_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                        let marker = if item_sel { "\u{25B8} " } else { "  " };
+                        let check = if i < shown { "[x]" } else { "[ ]" };
+                        let fg = if item_sel { color::YELLOW } else if i < shown { color::TEXT } else { color::TEXT_DIM };
+                        if item_sel { sel_line = lines.len(); }
+                        lines.push(Line::from(Span::styled(
+                            format!("      {}{} {}", marker, check, item),
+                            item_style.fg(fg).add_modifier(if item_sel { Modifier::BOLD } else { Modifier::empty() }),
+                        )));
+                    }
+                }
+            }
             ConfigFieldKind::Order => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
@@ -167,6 +208,15 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 ]));
             }
         }
+    }
+
+    if state.confirm_discard {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Unsaved changes \u{2014} 's' to save, Esc/q again to discard them",
+            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+        )));
+        sel_line = lines.len() - 1;
     }
 
     if let Some(ref err) = state.save_error {

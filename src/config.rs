@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::types::TableId;
+
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
 /// directory wins if present (lets you keep a per-directory config, and
 /// preserves behavior for anyone already relying on the old cwd-only
@@ -158,6 +160,28 @@ pub struct AppConfig {
     /// `grains.items` across thousands of minions) legitimately take tens of
     /// seconds or more to read back from the job cache.
     pub lookup_timeout_secs: u64,
+    /// Which columns each list table shows, and in what order, as comma-
+    /// separated column keys (see types::TableId::all_columns). Any valid
+    /// key left out is hidden.
+    pub jobs_live_columns: String,
+    pub jobs_cache_columns: String,
+    pub minion_columns: String,
+    pub event_columns: String,
+    pub alert_columns: String,
+    pub api_request_columns: String,
+}
+
+impl AppConfig {
+    pub fn columns_for(&self, table: TableId) -> &str {
+        match table {
+            TableId::LiveJobs => &self.jobs_live_columns,
+            TableId::JobCache => &self.jobs_cache_columns,
+            TableId::Minions => &self.minion_columns,
+            TableId::Events => &self.event_columns,
+            TableId::Alerts => &self.alert_columns,
+            TableId::ApiLog => &self.api_request_columns,
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -217,6 +241,12 @@ impl Default for AppConfig {
             minions_follow_filter: true,
             save_dir: "~".into(),
             lookup_timeout_secs: 300,
+            jobs_live_columns: TableId::LiveJobs.default_columns().into(),
+            jobs_cache_columns: TableId::JobCache.default_columns().into(),
+            minion_columns: TableId::Minions.default_columns().into(),
+            event_columns: TableId::Events.default_columns().into(),
+            alert_columns: TableId::Alerts.default_columns().into(),
+            api_request_columns: TableId::ApiLog.default_columns().into(),
         }
     }
 }
@@ -252,6 +282,7 @@ struct RefreshConfig {
 struct EventsConfig {
     buffer_size: Option<usize>,
     sniffer_buffer_size: Option<usize>,
+    event_columns: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -276,6 +307,7 @@ struct AlertsConfig {
     service_mem_pct_threshold_api: Option<f64>,
     service_mem_abs_threshold_syndic_mb: Option<f64>,
     service_mem_pct_threshold_syndic: Option<f64>,
+    alert_columns: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -290,11 +322,13 @@ struct ApiConfig {
     stats_auth_password: Option<String>,
     stats_auth_username_pillar_path: Option<String>,
     stats_auth_password_pillar_path: Option<String>,
+    request_columns: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 struct MinionsConfig {
     follow_filter: Option<bool>,
+    minion_columns: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -305,6 +339,8 @@ struct ExportConfig {
 #[derive(serde::Deserialize)]
 struct JobsConfig {
     lookup_timeout_secs: Option<u64>,
+    live_columns: Option<String>,
+    cache_columns: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -344,6 +380,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          [events]\n\
          buffer_size = {}\n\
          sniffer_buffer_size = {}\n\
+         event_columns = {:?}\n\
          \n\
          [alerts]\n\
          stale_minion_secs = {}\n\
@@ -366,6 +403,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          service_mem_pct_threshold_api = {}\n\
          service_mem_abs_threshold_syndic_mb = {}\n\
          service_mem_pct_threshold_syndic = {}\n\
+         alert_columns = {:?}\n\
          \n\
          [api]\n\
          stats_window = {}\n\
@@ -378,6 +416,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          stats_auth_password = {:?}\n\
          stats_auth_username_pillar_path = {:?}\n\
          stats_auth_password_pillar_path = {:?}\n\
+         request_columns = {:?}\n\
          \n\
          [dashboard]\n\
          zmq_latency_source = {:?}\n\
@@ -396,12 +435,15 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          \n\
          [minions]\n\
          follow_filter = {}\n\
+         minion_columns = {:?}\n\
          \n\
          [export]\n\
          save_dir = {:?}\n\
          \n\
          [jobs]\n\
-         lookup_timeout_secs = {}\n",
+         lookup_timeout_secs = {}\n\
+         live_columns = {:?}\n\
+         cache_columns = {:?}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -410,6 +452,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.config_secs,
         config.event_buffer_size,
         config.sniffer_buffer_size,
+        config.event_columns,
         config.stale_minion_secs,
         config.pending_key_secs,
         config.job_straggler_secs,
@@ -430,6 +473,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.service_mem_pct_threshold_api,
         config.service_mem_abs_threshold_syndic_mb,
         config.service_mem_pct_threshold_syndic,
+        config.alert_columns,
         config.api_stats_window,
         config.api_log_cap,
         config.api_log_max_age_secs,
@@ -440,6 +484,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.api_stats_auth_password,
         config.api_stats_auth_username_pillar_path,
         config.api_stats_auth_password_pillar_path,
+        config.api_request_columns,
         config.zmq_latency_source,
         config.show_zmq_graph,
         config.show_events_graph,
@@ -454,8 +499,11 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.show_job_pulse,
         config.show_salt_api,
         config.minions_follow_filter,
+        config.minion_columns,
         config.save_dir,
         config.lookup_timeout_secs,
+        config.jobs_live_columns,
+        config.jobs_cache_columns,
     );
     std::fs::write(path, toml)
 }
@@ -478,6 +526,7 @@ pub fn load_config(path: &Path) -> AppConfig {
             if let Some(e) = toml_cfg.events {
                 if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
                 if let Some(v) = e.sniffer_buffer_size { cfg.sniffer_buffer_size = v; }
+                if let Some(v) = e.event_columns { cfg.event_columns = v; }
             }
             if let Some(a) = toml_cfg.alerts {
                 if let Some(v) = a.stale_minion_secs { cfg.stale_minion_secs = v; }
@@ -500,6 +549,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.service_mem_pct_threshold_api { cfg.service_mem_pct_threshold_api = v; }
                 if let Some(v) = a.service_mem_abs_threshold_syndic_mb { cfg.service_mem_abs_threshold_syndic_mb = v; }
                 if let Some(v) = a.service_mem_pct_threshold_syndic { cfg.service_mem_pct_threshold_syndic = v; }
+                if let Some(v) = a.alert_columns { cfg.alert_columns = v; }
             }
             if let Some(a) = toml_cfg.api {
                 if let Some(v) = a.stats_window { cfg.api_stats_window = v; }
@@ -512,6 +562,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.stats_auth_password { cfg.api_stats_auth_password = v; }
                 if let Some(v) = a.stats_auth_username_pillar_path { cfg.api_stats_auth_username_pillar_path = v; }
                 if let Some(v) = a.stats_auth_password_pillar_path { cfg.api_stats_auth_password_pillar_path = v; }
+                if let Some(v) = a.request_columns { cfg.api_request_columns = v; }
             }
             if let Some(d) = toml_cfg.dashboard {
                 if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
@@ -530,12 +581,15 @@ pub fn load_config(path: &Path) -> AppConfig {
             }
             if let Some(m) = toml_cfg.minions {
                 if let Some(v) = m.follow_filter { cfg.minions_follow_filter = v; }
+                if let Some(v) = m.minion_columns { cfg.minion_columns = v; }
             }
             if let Some(e) = toml_cfg.export {
                 if let Some(v) = e.save_dir { cfg.save_dir = v; }
             }
             if let Some(j) = toml_cfg.jobs {
                 if let Some(v) = j.lookup_timeout_secs { cfg.lookup_timeout_secs = v.max(1); }
+                if let Some(v) = j.live_columns { cfg.jobs_live_columns = v; }
+                if let Some(v) = j.cache_columns { cfg.jobs_cache_columns = v; }
             }
         }
     }

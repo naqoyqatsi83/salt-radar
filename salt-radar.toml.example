@@ -34,6 +34,11 @@
 # Maximum number of events to keep in the Event Sniffer's own buffer
 # sniffer_buffer_size = 1000
 
+# Which Events list columns are shown, and in what order (comma-separated;
+# any key left out is hidden). Keys: local, utc, tag, minion. Also editable
+# with 'v' on the Events tab. Events can't be sorted -- it's a live tail.
+# event_columns = "local,utc,tag"
+
 [alerts]
 # Seconds after which a minion is considered "stale" (not seen)
 # stale_minion_secs = 3600
@@ -93,6 +98,10 @@
 # see [api] below and the Dashboard section in README.
 # api_auth_latency_warn_secs = 3.0
 
+# Which Alerts columns are shown, and in what order. Keys: severity, rule,
+# description, since, count. Also editable with 'v' on the Alerts tab.
+# alert_columns = "severity,rule,description"
+
 [api]
 # Rolling window (in observed requests) backing the salt-api panel's error
 # rate and POST /login p50/p95 latency figures
@@ -146,6 +155,10 @@
 # stats_auth_username_pillar_path = ""
 # stats_auth_password_pillar_path = ""
 
+# Which API request log columns are shown, and in what order. Keys: age,
+# method, client, path, status, time. Also editable with 'v' on the API tab.
+# request_columns = "age,method,client,path,status,time"
+
 [dashboard]
 # Source for the Dashboard ZMQ panel's latency figure:
 #   "agent_ipc"    - local Rust<->Python agent round-trip (a liveness check,
@@ -186,6 +199,10 @@
 # is just the startup default.
 # follow_filter = true
 
+# Which Minions list columns are shown, and in what order. Keys: id, key,
+# os, salt, arch, seen. Also editable with 'v' on the Minions tab.
+# minion_columns = "id,key,os,salt"
+
 [export]
 # Default directory the 's'/'S' ("save to file") action writes into, from
 # any popup that also supports 'y'/'Y' (clipboard copy). '~' and '~/...'
@@ -200,3 +217,11 @@
 # before it is reported as timed out. Jobs with thousands of returns (e.g.
 # grains.items across a large fleet) can take a minute or more to read back.
 # lookup_timeout_secs = 300
+
+# Which columns the Live Jobs / Job Cache tables show, and in what order, as
+# comma-separated column keys -- any key left out is hidden. Also editable
+# with 'v' on the Jobs tab.
+#   live_columns:  jid, fun, args, target, source, tgt, ok, fail, wait, started
+#   cache_columns: jid, user, started, target, fun, args
+# live_columns = "jid,fun,args,target,source,tgt,ok,fail,wait"
+# cache_columns = "jid,user,started,target,fun,args"

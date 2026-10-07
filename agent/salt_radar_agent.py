@@ -1463,6 +1463,59 @@ def cmd_fleet_scan(opts, req):
     })
 
 
+_STATE_APPLY_FUNS = ("state.apply", "state.sls", "state.highstate", "state.top")
+
+
+def _format_job_args(fun, args):
+    """Mirror of `format_job_args` in src/types.rs: renders a job's raw Salt
+    `arg` list for the Args column -- for state runs the requested SLS list
+    (or "highstate" when none was named), with `test=True` returned as a
+    separate flag. Done here for the Job Cache so the server-side search and
+    sort see the same text the TUI shows. Keys are walked sorted to match
+    serde_json's (BTreeMap) object order on the Rust side.
+    """
+    def text(v):
+        if isinstance(v, str):
+            return v
+        if isinstance(v, (list, tuple)):
+            return ",".join(text(i) for i in v)
+        return json.dumps(v, separators=(",", ":"), sort_keys=True, default=str)
+
+    positional, kwargs, test_run = [], [], False
+    for v in args if isinstance(args, list) else []:
+        if isinstance(v, dict) and v.get("__kwarg__") is True:
+            for k in sorted(v):
+                val = v[k]
+                if k == "test":
+                    test_run = val is True or (isinstance(val, str) and val.lower() == "true")
+                elif not k.startswith("__"):
+                    kwargs.append((k, val))
+        else:
+            positional.append(text(v))
+    if fun in _STATE_APPLY_FUNS:
+        for i, (k, val) in enumerate(kwargs):
+            if k == "mods":
+                positional.insert(0, text(val))
+                del kwargs[i]
+                break
+        if not positional and fun != "state.sls":
+            positional.append("highstate")
+    parts = positional + ["{}={}".format(k, text(val)) for k, val in kwargs]
+    return " ".join(parts), test_run
+
+
+# str() since py3 can't order a None (e.g. a cache entry missing its user)
+# against a str.
+_JOB_SORT_KEYS = {
+    "jid": lambda j: j["jid"],
+    "user": lambda j: str(j["user"]),
+    "started": lambda j: j["start_epoch"],
+    "target": lambda j: str(j["tgt"]),
+    "fun": lambda j: str(j["fun"]),
+    "args": lambda j: (j["args"], j["test_run"]),
+}
+
+
 # Job-cache summaries already read from disk, keyed by the job's
 # (top, final) directory pair under `<cachedir>/jobs/`. A busy master's cache
 # holds tens of thousands of jobs, and unpickling every `.load.p` again for
@@ -1551,9 +1604,12 @@ def cmd_jobs_list(opts, req):
     other backend, or if the fast path fails for any reason.
 
     Optional request fields:
-      - filter_text (str): search across jid/fun/tgt/user on the full cache
+      - filter_text (str): search across jid/fun/tgt/user/args on the full cache
       - max_results (int): max items to return (default 500)
-      - offset (int): skip N newest entries (for pagination)
+      - offset (int): skip N entries in sort order (for pagination)
+      - sort_key (str): jid/user/started/target/fun/args -- sort the full
+        cache by this column before paging (default: newest first)
+      - sort_desc (bool): reverse sort_key's order
     """
     import json as json_mod
 
@@ -1591,6 +1647,8 @@ def cmd_jobs_list(opts, req):
             continue
         fun = info.get("Function", info.get("fun", ""))
         tgt = info.get("Target", info.get("tgt", ""))
+        if isinstance(tgt, (list, tuple)):
+            tgt = ",".join(str(t) for t in tgt)
         tgt_type = info.get("Target-type", info.get("tgt_type", "glob"))
         user = info.get("User", info.get("user", ""))
         # Use JID-derived epoch as primary — the JID always encodes the master
@@ -1602,13 +1660,12 @@ def cmd_jobs_list(opts, req):
             stamp = info.get("StartTime", info.get("start_time", info.get("_stamp", "")))
             start_epoch = _parse_stamp(stamp)
 
-        args_raw = info.get("Arguments", info.get("arg", []))
-        args_list = args_raw if isinstance(args_raw, list) else []
+        args, test_run = _format_job_args(fun, info.get("Arguments", info.get("arg", [])))
 
         # Apply filter across full cache (server-side search)
         if filter_text:
             ft = filter_text.lower()
-            fields_to_search = [str(jid).lower(), str(fun).lower(), str(tgt).lower(), str(user).lower()]
+            fields_to_search = [str(jid).lower(), str(fun).lower(), str(tgt).lower(), str(user).lower(), args.lower()]
             if not any(ft in f for f in fields_to_search):
                 continue
         jobs.append({
@@ -1619,11 +1676,15 @@ def cmd_jobs_list(opts, req):
             "user": user,
             "start_time": str(stamp),
             "start_epoch": start_epoch,
-            "arguments": args_list,
+            "args": args,
+            "test_run": test_run,
         })
 
     total_matching = len(jobs)
     jobs.sort(key=lambda j: j["start_epoch"], reverse=True)
+    sort_key = _JOB_SORT_KEYS.get(req.get("sort_key", ""))
+    if sort_key:
+        jobs.sort(key=sort_key, reverse=bool(req.get("sort_desc")))
     jobs = jobs[offset:]
     jobs = jobs[:max_results]
 
