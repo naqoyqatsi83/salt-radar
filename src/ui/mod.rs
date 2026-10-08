@@ -345,14 +345,35 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_key_hints(f, main_layout[2], app);
 
     // Detail popup overlay
+    if popup_active || sniffer_active { dim_background(f); }
     if popup_active { detail_popup::draw_detail_popup(f, app); }
     else if sniffer_active { detail_popup::draw_sniffer_overlay(f, app); }
 
     // Help overlay
     if app.show_help {
+        dim_background(f);
         let help_area = detail_popup::centered_rect(60, 65, f.area());
         f.render_widget(Clear, help_area);
         draw_help_overlay(f, help_area);
+    }
+}
+
+/// Darkens everything already drawn so the popup rendered next stands out.
+/// Called once per overlay layer, so a nested popup darkens the one beneath
+/// it as well. RGB colors are scaled toward black; terminal-default and
+/// palette colors can't be scaled (their real value depends on the
+/// terminal's theme), so their foreground falls back to `Modifier::DIM`.
+fn dim_background(f: &mut Frame) {
+    const FACTOR: u16 = 60;
+    let scale = |c: u8| (c as u16 * FACTOR / 100) as u8;
+    for cell in f.buffer_mut().content.iter_mut() {
+        match cell.fg {
+            Color::Rgb(r, g, b) => { cell.fg = Color::Rgb(scale(r), scale(g), scale(b)); }
+            _ => { cell.modifier.insert(Modifier::DIM); }
+        }
+        if let Color::Rgb(r, g, b) = cell.bg {
+            cell.bg = Color::Rgb(scale(r), scale(g), scale(b));
+        }
     }
 }
 

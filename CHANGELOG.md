@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dim the screen behind any open popup (detail views, Event Sniffer, Config Editor, admin confirm, help) so the popup stands out; a popup opened on top of another dims the one beneath it too, and the screen returns to normal when it closes (#111)
+
+
 ## [0.6.3-rc13] - 2026-10-07
 
 ### Added
