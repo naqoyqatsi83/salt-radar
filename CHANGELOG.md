@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-08
+
+First stable release since 0.6.2. Besides the changes below, it includes everything from the 0.6.3 release candidates that follow: configurable and sortable table columns with a new Args column, save-to-file from every popup, the Event Detail pretty view, multi-term per-tab filtering, much faster Job Cache and Job Detail on large masters, and many fixes.
+
 ### Added
 
 - Add btop++-style color themes: `color_theme` in a new `[ui]` section of `salt-radar.toml` picks the built-in `Default` or a `*.theme` file from `/usr/share/salt-radar/themes/` or `~/.config/salt-radar/themes/` (or a path to one), `theme_background = false` keeps the terminal's own background, and the Config Editor previews each theme live while picking; `salt-radar.theme.example` documents every key (#114)
