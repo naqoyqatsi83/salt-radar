@@ -1509,7 +1509,7 @@ def _format_job_args(fun, args):
 _JOB_SORT_KEYS = {
     "jid": lambda j: j["jid"],
     "user": lambda j: str(j["user"]),
-    "started": lambda j: j["start_epoch"],
+    "started": lambda j: (j["start_epoch"], j["jid"]),
     "target": lambda j: str(j["tgt"]),
     "fun": lambda j: str(j["fun"]),
     "args": lambda j: (j["args"], j["test_run"]),
@@ -1681,7 +1681,9 @@ def cmd_jobs_list(opts, req):
         })
 
     total_matching = len(jobs)
-    jobs.sort(key=lambda j: j["start_epoch"], reverse=True)
+    # start_epoch only has whole-second precision; the JID breaks ties so
+    # jobs started within the same second still come out newest first.
+    jobs.sort(key=lambda j: (j["start_epoch"], j["jid"]), reverse=True)
     sort_key = _JOB_SORT_KEYS.get(req.get("sort_key", ""))
     if sort_key:
         jobs.sort(key=sort_key, reverse=bool(req.get("sort_desc")))

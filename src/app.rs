@@ -1090,10 +1090,7 @@ impl App {
                             self.cache_loading_at = None;
                             self.cache_load_progress = None;
                             if ok {
-                                // Every sort change sends a fresh request, so the
-                                // reply to the latest one was made with the sort
-                                // still in effect.
-                                self.jobs_cache = parse_cache_jobs(&data, self.sort_of(TableId::JobCache).is_none());
+                                self.jobs_cache = parse_cache_jobs(&data);
                                 self.cache_total_count = data["total_count"].as_u64().unwrap_or(0) as usize;
                                 self.cache_loaded = true;
                                 self.cache_load_error = None;
@@ -2117,7 +2114,9 @@ impl App {
         self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).count()
     }
 
-    /// Live Jobs in display order: filtered, then sorted.
+    /// Live Jobs in display order: filtered, then sorted. Unsorted, they
+    /// run oldest to newest by JID (tail-style, like Events) rather than in
+    /// event-arrival order, which a late or reordered `/new` can scramble.
     pub fn filtered_jobs(&self) -> Vec<&JobEntry> {
         let pat = self.filter_text_for(Tab::Jobs);
         let mut jobs: Vec<&JobEntry> = if pat.is_empty() {
@@ -2126,6 +2125,7 @@ impl App {
             let known = self.accepted_ids();
             self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).collect()
         };
+        jobs.sort_by(|a, b| a.jid.cmp(&b.jid));
         if let Some((col, desc)) = self.sort_of(TableId::LiveJobs) {
             jobs.sort_by(|a, b| {
                 let ord = match col {
@@ -6589,7 +6589,7 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
 /// convention — regardless of whatever order the agent's `jobs.list_jobs`
 /// call happened to return. Otherwise the agent already applied the user's
 /// column sort across the whole cache, and its order is kept as-is.
-fn parse_cache_jobs(data: &serde_json::Value, natural_order: bool) -> Vec<CacheJobEntry> {
+fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
     let mut result = Vec::new();
     if let Some(arr) = data["jobs"].as_array() {
         for entry in arr {
@@ -6605,9 +6605,6 @@ fn parse_cache_jobs(data: &serde_json::Value, natural_order: bool) -> Vec<CacheJ
                 test_run: entry["test_run"].as_bool().unwrap_or(false),
             });
         }
-    }
-    if natural_order {
-        result.sort_by(|a, b| a.start_epoch.total_cmp(&b.start_epoch));
     }
     result
 }
