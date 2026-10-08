@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.70%2B-orange?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/rust-1.88%2B-orange?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/platform-Linux-1793D1?style=for-the-badge&logo=linux&logoColor=white" alt="Linux">
   <img src="https://img.shields.io/badge/TUI-ratatui-blue?style=for-the-badge" alt="Ratatui">
   <img src="https://img.shields.io/badge/Salt-monitoring-00E272?style=for-the-badge&logo=saltproject&logoColor=white" alt="Salt">
@@ -70,6 +70,18 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 
 </td>
 </tr>
+<tr><td colspan="2">
+
+**Job Detail** — every minion's return for one job, side by side with its full Salt output; the screen behind any popup is dimmed
+<img src="docs/screenshots/job-detail.png" alt="Job Detail popup">
+
+</td></tr>
+<tr><td colspan="2">
+
+**Themes** — btop++-style color themes, including ports of all of btop's own; shown here: Default, Nord, Dracula, Gruvbox Light, Tokyo Night, Solarized Dark
+<img src="docs/screenshots/themes.png" alt="Theme gallery">
+
+</td></tr>
 </table>
 
 ## Features
@@ -122,6 +134,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Job cache supports pagination (`[`/`]` adjust limit, `,`/`.` page navigation) and server-side search
 - **Args** column shows what a job was run with: for `state.apply`/`state.sls` the requested formula (e.g. `apache.install`), `highstate` when none was named, and a dimmed `(test)` marker for `test=True` dry runs; for other functions their arguments (e.g. `uptime` for `cmd.run`). The `/` filter matches it too
 - Sortable and configurable columns (see [Columns and sorting](#columns-and-sorting)) — the Job Cache is sorted across the whole cache by the agent, not just the page on screen
+- Default order (no sort column picked): Live Jobs run oldest to newest by JID, tail-style like Events; the Job Cache lists newest first
 - Per-minion return navigation (j/k), scrollable output viewer (Enter)
 - Copy return output to clipboard (y = Salt outputter format, Y = raw JSON), or save it to file (s/S, same two formats)
 - Jobs with hundreds of returns aren't limited to one minion at a time: `a`/`A` save every return in the job to a single file (Salt outputter format / one JSON object keyed by minion id), from the return list
@@ -169,13 +182,14 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 
 ### Columns and sorting
 - The Minions, Events, Jobs (both tables), Alerts and API request log tables let you choose which columns are shown and in what order: `v` opens a picker for the focused table (`+`/`-` move a column, `Space` shows/hides it, `Enter` saves), also editable in the Config Editor — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their sections of `salt-radar.toml`
-- Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order. Sorting lasts for the session
+- Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order). Sorting lasts for the session
 - Optional columns beyond the defaults: Live Jobs Started, Minions Arch/Seen, Events Minion, Alerts Since/Count
 - When a panel is too narrow for every column, the text columns shrink together instead of cutting off the rightmost ones
 
 ### Config Editor
 - `F3` opens an in-app editor for every setting in `salt-radar.toml`, grouped by section
 - Free-text fields edit inline; fields with a fixed set of valid values (e.g. `zmq_latency_source`) open an inline picker — arrow keys to move, `Enter` to confirm
+- `color_theme` opens a picker of every theme found (see [Themes](#themes)) and previews each one live as you move through the list; `Esc`, or closing without saving, puts the saved theme back
 - `graph_order` opens as a reorderable list instead of free text — `↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts — since hand-typing a comma-separated list makes it easy to typo or drop a panel
 - The `*_columns` settings open the same way, plus `Space` to show/hide a column (hidden columns are listed unchecked below the shown ones)
 - `Save & Restart` (or `s` from anywhere in the editor) writes the TOML file and applies the new config immediately, no process restart needed. Confirming a field with `Enter` only stages it — the title shows `● unsaved changes` until saved, and closing with unsaved changes asks first (`Esc`/`q` again discards)
@@ -204,6 +218,16 @@ If DISPLAY and XAUTHORITY can't be resolved, a transient yellow hint is shown in
 - A Salt Master (reads `/etc/salt/master`, connects to the Salt event bus)
 - Python 3 with the `salt` package installed
 - **Optional — clipboard:** `xclip` (for X11 clipboard integration). Not required when using tmux with `set -g set-clipboard on` and a terminal that supports OSC 52 (MobaXterm, iTerm2, etc.)
+
+### From a release package
+
+Each [GitHub release](https://github.com/naqoyqatsi83/salt-radar/releases) has a `.deb` with a statically linked binary, so it runs on any amd64 Debian/Ubuntu master regardless of its glibc version:
+
+```bash
+sudo apt install ./salt-radar_0.7.0_amd64.deb
+```
+
+It installs `/usr/bin/salt-radar`, the Python agent at `/usr/share/salt-radar/salt_radar_agent.py`, and the bundled themes in `/usr/share/salt-radar/themes/` — the built-in config defaults already point at these, so no config file is needed to start.
 
 ### From source
 
@@ -320,19 +344,29 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 ## How It Works
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                   salt-radar (Rust TUI)                   │
-├─────────┬─────────┬─────────┬─────────┬─────────┬─────────┤
-│   Dash  │ Minions │  Events │   Jobs  │  Alerts │  Pulse  │
-├───────────────────────────────────────────────────────────┤
-│          Python Agent (ZMQ, client, fleet scan)           │
-├───────────────────────────────────────────────────────────┤
-│          Rust: /proc, systemctl, ZMQ, clipboard           │
-│           Salt Master: ZMQ bus, PKI, job cache            │
-└───────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                       salt-radar (Rust TUI)                        │
+├─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬────────┤
+│Dashboard│ Minions │  Events │   Jobs  │  Alerts │   API   │ Pulse  │
+├─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴────────┤
+│ detail popups · Config Editor · themes · alert engine              │
+│ collectors: /proc · systemctl · /proc/net/tcp · PKI key dir        │
+└───────────────┬─────────────────────────────────┴──────────────────┘
+                │ commands                        ▲ results, events
+                │ (stdin)                         │ (stdout)
+                │                                 │
+┌───────────────▼─────────────────────────────────┴──────────────────┐
+│              Python agent (runs on Salt's own Python)              │
+│ event bus subscriber · LocalClient / runners · fleet scan          │
+│ job cache reader · jobs.lookup_jid · salt-api /stats poller        │
+└──────────────────────────────────┬─────────────────────────────────┘
+                                   │
+┌──────────────────────────────────▼─────────────────────────────────┐
+│        Salt Master: event bus · job cache · PKI · salt-api         │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
-The Rust TUI spawns a Python agent subprocess and communicates via NDJSON over a file-based command queue. The agent subscribes to the Salt event bus (ZMQ) and dispatches commands to Salt's client/runners. Meanwhile, the Rust side collects OS-level data directly from `/proc` and `systemctl` for the dashboard panels.
+The Rust TUI spawns a Python agent subprocess and talks to it in NDJSON: commands go to the agent's stdin, results and Salt events come back on its stdout. The agent runs on Salt's own Python, subscribes to the master's local event bus, and calls Salt's LocalClient and runners (job lookups, the job cache, fleet scans) — plus salt-api's `/stats` endpoint for the API tab. Meanwhile, the Rust side collects host data itself: processes and memory from `/proc`, services from `systemctl`, ZMQ connection counts from `/proc/net/tcp`, and minion keys straight from the PKI directory.
 
 All data stays local — no external dependencies, no database, no HTTP server.
 
@@ -378,7 +412,7 @@ src/
 ├── main.rs              # Terminal setup, event loop, tick scheduling
 ├── app.rs               # Application state, key handling, clipboard
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
-├── config.rs            # TOML config loading
+├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management
 ├── alerts/              # Alert engine (14 rules: staleness, keys, services, memory, disk, jobs, auth, api)
 ├── collectors/          # OS-level data collection
@@ -396,11 +430,14 @@ src/
     ├── alerts_view.rs   # Alerts tab
     ├── api_view.rs      # API tab
     ├── pulse.rs         # Pulse tab
+    ├── table.rs         # Shared table layout: column widths, headers, sort markers
     ├── minion_events.rs # Per-minion event/return history popup
     ├── config_editor.rs # In-app config editor (F3)
     └── detail_popup.rs  # All other popup windows (minion, event, job, sniffer, etc.)
 agent/
 └── salt_radar_agent.py  # Python agent: Salt client, event subscriber, fleet scan
+themes/                  # Bundled color themes (ports of btop++'s), installed to /usr/share/salt-radar/themes
+salt-radar.theme.example # The Default theme with every key documented
 ```
 
 ## License
