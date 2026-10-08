@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Ship the bundled themes in the `.rpm` and `.tar.gz` release packages too — v0.7.0 only included them in the `.deb` (#114)
+
 ## [0.7.0] - 2026-10-08
 
 First stable release since 0.6.2. Besides the changes below, it includes everything from the 0.6.3 release candidates that follow: configurable and sortable table columns with a new Args column, save-to-file from every popup, the Event Detail pretty view, multi-term per-tab filtering, much faster Job Cache and Job Detail on large masters, and many fixes.

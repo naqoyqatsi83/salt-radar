@@ -221,13 +221,14 @@ If DISPLAY and XAUTHORITY can't be resolved, a transient yellow hint is shown in
 
 ### From a release package
 
-Each [GitHub release](https://github.com/naqoyqatsi83/salt-radar/releases) has a `.deb` with a statically linked binary, so it runs on any amd64 Debian/Ubuntu master regardless of its glibc version:
+Each [GitHub release](https://github.com/naqoyqatsi83/salt-radar/releases) has a `.deb`, an `.rpm` and a `.tar.gz`, all with the same statically linked binary, so it runs on any x86_64 master regardless of its glibc version:
 
 ```bash
-sudo apt install ./salt-radar_0.7.0_amd64.deb
+sudo apt install ./salt-radar_<version>_amd64.deb      # Debian/Ubuntu
+sudo dnf install ./salt-radar-<version>-1.x86_64.rpm   # RHEL/Rocky/Fedora/SUSE (or rpm -i)
 ```
 
-It installs `/usr/bin/salt-radar`, the Python agent at `/usr/share/salt-radar/salt_radar_agent.py`, and the bundled themes in `/usr/share/salt-radar/themes/` — the built-in config defaults already point at these, so no config file is needed to start.
+The packages install `/usr/bin/salt-radar`, the Python agent at `/usr/share/salt-radar/salt_radar_agent.py`, and the bundled themes in `/usr/share/salt-radar/themes/` — the built-in config defaults already point at these, so no config file is needed to start. The `.tar.gz` holds the same three pieces for a manual install; put its `themes/` files in `/usr/share/salt-radar/themes/` or `~/.config/salt-radar/themes/`.
 
 ### From source
 
