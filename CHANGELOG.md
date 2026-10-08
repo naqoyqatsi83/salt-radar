@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-08
+
+### Added
+
+- Add `zmq_latency_ceiling_ms` under `[dashboard]` (also in the Config Editor): the latency that counts as "bad" at the top of the ZMQ graph, defaulting per `zmq_latency_source` — 100 ms for the agent round-trip, 1 s for `test.ping`, 500 ms for `master_stats`
+- Add `gradient_start`/`gradient_mid`/`gradient_high`/`gradient_end` theme keys for the level colors below; the bundled btop theme ports take them from each btop theme's own CPU gradient
+
+### Changed
+
+- Color the CPU, Memory and ZMQ graphs btop-style by level: each row by its height on the graph's fixed scale, blending green → yellow → amber → red toward the top, instead of painting the whole graph one color that flipped with the latest value (ZMQ) or never changed (CPU, Memory); the headline figures and Host Resources meters use the same smooth gradient instead of hard thresholds, so a value hovering near a boundary no longer flickers between colors
+- Draw the ZMQ graph on a fixed log scale up to `zmq_latency_ceiling_ms` instead of scaling it to its own recent peak, so bar heights — and their colors — mean the same thing over time
+
 ### Fixed
 
 - Ship the bundled themes in the `.rpm` and `.tar.gz` release packages too — v0.7.0 only included them in the `.deb` (#114)
