@@ -146,6 +146,10 @@ pub struct App {
     /// selection out from under them, and turns back on once they navigate
     /// back down to the tail (or press End).
     pub events_following: bool,
+    /// Same tail-follow as `events_following`, for Live Jobs: while the
+    /// cursor is on the newest job it moves to each new one as it arrives.
+    /// Only in the default (unsorted, oldest-to-newest) order.
+    pub jobs_following: bool,
     pub job_selected: usize,
     pub alert_selected: usize,
     pub minion_selected: usize,
@@ -704,6 +708,7 @@ impl App {
 
             event_selected: 0,
             events_following: true,
+            jobs_following: true,
             job_selected: 0,
             alert_selected: 0,
             minion_selected: 0,
@@ -1528,8 +1533,11 @@ impl App {
     fn clamp_selection(&mut self) {
         self.event_selected = self.event_selected
             .min(self.filtered_events_len().saturating_sub(1));
-        self.job_selected = self.job_selected
-            .min(self.filtered_jobs_len().saturating_sub(1));
+        self.job_selected = if self.jobs_following && self.sort_of(TableId::LiveJobs).is_none() {
+            self.filtered_jobs_len().saturating_sub(1)
+        } else {
+            self.job_selected.min(self.filtered_jobs_len().saturating_sub(1))
+        };
         self.cache_selected = self.cache_selected
             .min(self.filtered_cache_len().saturating_sub(1));
         self.alert_selected = self.alert_selected
@@ -6035,6 +6043,7 @@ impl App {
                         let visual_idx = r - data_start;
                         if visual_idx < visible {
                             self.job_selected = (scroll + visual_idx).min(total - 1);
+                            self.jobs_following = self.job_selected + 1 >= total;
                             self.clamp_selection();
                         }
                     }
@@ -6249,6 +6258,7 @@ impl App {
                     self.cache_selected = self.cache_selected.saturating_sub(1);
                 } else {
                     self.job_selected = self.job_selected.saturating_sub(1);
+                    self.jobs_following = self.job_selected + 1 >= self.filtered_jobs_len();
                 }
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
@@ -6273,6 +6283,7 @@ impl App {
                     self.cache_selected += 1;
                 } else {
                     self.job_selected += 1;
+                    self.jobs_following = self.job_selected + 1 >= self.filtered_jobs_len();
                 }
             }
             Tab::Alerts => self.alert_selected += 1,
@@ -6297,6 +6308,7 @@ impl App {
                     self.cache_selected = 0;
                 } else {
                     self.job_selected = 0;
+                    self.jobs_following = self.filtered_jobs_len() <= 1;
                 }
             }
             Tab::Alerts => self.alert_selected = 0,
@@ -6318,6 +6330,7 @@ impl App {
                     self.cache_selected = self.filtered_cache_len().saturating_sub(1);
                 } else {
                     self.job_selected = self.filtered_jobs_len().saturating_sub(1);
+                    self.jobs_following = true;
                 }
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
