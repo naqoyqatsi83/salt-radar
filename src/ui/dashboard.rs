@@ -371,12 +371,16 @@ fn pct_color(pct: f64) -> Color {
     color::gradient(pct / 100.0)
 }
 
+fn mem_color(pct: f64) -> Color {
+    color::mem_gradient(pct / 100.0)
+}
+
 /// How a sparkline is colored: one fixed color, or btop-style by level —
 /// each row by its height on the graph's fixed 0–100 scale, so a bar's top
 /// shows how high it reached and history never recolors as new values come in.
 enum GraphColor {
     Solid(Color),
-    ByLevel,
+    ByLevel(fn(f64) -> Color),
 }
 
 /// Position of a latency on the ZMQ graph's log scale, 0.0..=1.0, with
@@ -389,6 +393,10 @@ fn latency_level(ms: f64, ceiling: f64) -> f64 {
 
 fn pct_gauge_style(pct: f64) -> Style {
     Style::default().fg(pct_color(pct)).bg(color::meter_bg())
+}
+
+fn mem_gauge_style(pct: f64) -> Style {
+    Style::default().fg(mem_color(pct)).bg(color::meter_bg())
 }
 
 // ── Minion Key Status ───────────────────────────────────────────────────────
@@ -542,7 +550,7 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         None => "  Workers --".to_string(),
     };
     let gauge = Gauge::default()
-        .gauge_style(pct_gauge_style(mem_pct))
+        .gauge_style(mem_gauge_style(mem_pct))
         .percent((mem_pct.round() as u16).min(100))
         .label(format!(
             "Salt RSS {} MB ({} proc)  {} minions{}",
@@ -716,7 +724,7 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     let mem_total_mb = mem_total_kb / 1024;
     let mem_used_mb = (mem_total_kb.saturating_sub(mem_avail_kb)) / 1024;
     let mem_gauge = Gauge::default()
-        .gauge_style(pct_gauge_style(mem_pct))
+        .gauge_style(mem_gauge_style(mem_pct))
         .percent((mem_pct.round() as u16).min(100))
         .label(format!(
             "Mem: {} MB / {} MB ({:.0}%)  Cache disk: {:.0}%  PKI disk: {:.0}%",
@@ -837,7 +845,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
             (latency_level(ordered_lat[start + i], ceiling) * 100.0).round() as u64
         })
         .collect();
-    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel, app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel(color::gradient), app.sparkline_style);
 }
 
 // ── Event Type Breakdown ────────────────────────────────────────────────────
@@ -1082,7 +1090,7 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel, app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel(color::gradient), app.sparkline_style);
 }
 
 fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
@@ -1101,7 +1109,7 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
     let title = if area.width >= 70 {
         Line::from(vec![
             Span::styled(" Memory ", Style::default().fg(color::title())),
-            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(mem_color(current_pct)).add_modifier(Modifier::BOLD)),
             Span::styled("pk:", Style::default().fg(color::label_fg())),
             Span::styled(format!("{:.0}% ", peak_pct), Style::default().fg(color::inactive_fg())),
             Span::styled("avg:", Style::default().fg(color::label_fg())),
@@ -1112,14 +1120,14 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
     } else if area.width >= 40 {
         Line::from(vec![
             Span::styled(" Memory ", Style::default().fg(color::title())),
-            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(mem_color(current_pct)).add_modifier(Modifier::BOLD)),
             Span::styled("pk:", Style::default().fg(color::label_fg())),
             Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::inactive_fg())),
         ])
     } else {
         Line::from(vec![
             Span::styled(" Memory ", Style::default().fg(color::title())),
-            Span::styled(format!("{:.0}%", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:.0}%", current_pct), Style::default().fg(mem_color(current_pct)).add_modifier(Modifier::BOLD)),
         ])
     };
 
@@ -1132,7 +1140,7 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel, app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel(color::mem_gradient), app.sparkline_style);
 }
 
 // ── Job Pulse ────────────────────────────────────────────────────────────────
@@ -1336,7 +1344,7 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
 fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], fill: GraphColor, mode: SparklineStyle) {
     let style = Style::default().fg(match fill {
         GraphColor::Solid(c) => c,
-        GraphColor::ByLevel => color::gradient(0.0),
+        GraphColor::ByLevel(level_color) => level_color(0.0),
     });
     match mode {
         SparklineStyle::Bars => {
@@ -1388,12 +1396,12 @@ fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], fill: GraphColor, m
             f.render_widget(Paragraph::new(lines), area);
         }
     }
-    if let GraphColor::ByLevel = fill {
+    if let GraphColor::ByLevel(level_color) = fill {
         let rows = area.height.max(1);
         for row in 0..area.height {
             let from_bottom = rows - 1 - row;
             let level = if rows > 1 { from_bottom as f64 / (rows - 1) as f64 } else { 0.0 };
-            let fg = color::gradient(level);
+            let fg = level_color(level);
             for x in area.left()..area.right() {
                 if let Some(cell) = f.buffer_mut().cell_mut((x, area.y + row)) {
                     if cell.symbol() != " " {

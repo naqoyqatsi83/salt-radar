@@ -97,6 +97,16 @@ theme[gradient_high]="#ff8c3c"
 
 theme[gradient_end]="#ff5050"
 
+# The Memory graph's own level gradient (and the memory meters), same stops
+# as above -- kept separate so memory can stay calm (blue) until it fills up.
+theme[mem_gradient_start]="#50c8ff"
+
+theme[mem_gradient_mid]="#6496ff"
+
+theme[mem_gradient_high]="#ffa03c"
+
+theme[mem_gradient_end]="#ff5050"
+
 # Pulse tab: minion returned within the last few seconds
 theme[pulse_fresh]="#78ff78"
 

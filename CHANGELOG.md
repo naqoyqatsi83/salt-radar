@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-08
+
+### Added
+
+- Add `mem_gradient_start`/`mem_gradient_mid`/`mem_gradient_high`/`mem_gradient_end` theme keys: the Memory graph, its headline figure and the Host Resources and Services memory meters get their own level gradient — cyan → blue → amber → red by default, so memory reads blue again while it's calm; the bundled btop ports take it from btop's own memory (`used_*`) gradient (#115)
+
+### Changed
+
+- Finish a fleet scan as soon as every expected minion has answered, instead of always waiting out its 60-second timeout (which still marks minions that never answer as timed out) (#116)
+- Keep the Live Jobs cursor on the newest job as new jobs arrive, like the Events tab: moving it elsewhere stops following and `End` resumes it; with a sort column active the cursor stays put (#117)
+
 ## [0.7.1] - 2026-10-08
 
 ### Added

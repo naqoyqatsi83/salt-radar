@@ -146,6 +146,10 @@ pub struct App {
     /// selection out from under them, and turns back on once they navigate
     /// back down to the tail (or press End).
     pub events_following: bool,
+    /// Same tail-follow as `events_following`, for Live Jobs: while the
+    /// cursor is on the newest job it moves to each new one as it arrives.
+    /// Only in the default (unsorted, oldest-to-newest) order.
+    pub jobs_following: bool,
     pub job_selected: usize,
     pub alert_selected: usize,
     pub minion_selected: usize,
@@ -704,6 +708,7 @@ impl App {
 
             event_selected: 0,
             events_following: true,
+            jobs_following: true,
             job_selected: 0,
             alert_selected: 0,
             minion_selected: 0,
@@ -1528,8 +1533,11 @@ impl App {
     fn clamp_selection(&mut self) {
         self.event_selected = self.event_selected
             .min(self.filtered_events_len().saturating_sub(1));
-        self.job_selected = self.job_selected
-            .min(self.filtered_jobs_len().saturating_sub(1));
+        self.job_selected = if self.jobs_following && self.sort_of(TableId::LiveJobs).is_none() {
+            self.filtered_jobs_len().saturating_sub(1)
+        } else {
+            self.job_selected.min(self.filtered_jobs_len().saturating_sub(1))
+        };
         self.cache_selected = self.cache_selected
             .min(self.filtered_cache_len().saturating_sub(1));
         self.alert_selected = self.alert_selected
@@ -4214,6 +4222,30 @@ impl App {
                 self.fleet_scan_expected.retain(|e| *e != mid);
             }
         }
+        if self.fleet_scanning && self.fleet_scan_all_responded() {
+            self.finish_fleet_scan();
+        }
+    }
+
+    /// Every minion the scan is waiting on has answered: all accepted keys,
+    /// or — when the key list isn't available — the agent's own expected
+    /// list, which shrinks as answers arrive.
+    fn fleet_scan_all_responded(&self) -> bool {
+        let mut accepted = self.keys.iter().filter(|k| k.status == KeyStatus::Accepted).peekable();
+        if accepted.peek().is_some() {
+            accepted.all(|k| self.fleet_scan_responded.contains(&k.id))
+        } else {
+            !self.fleet_scan_responded.is_empty() && self.fleet_scan_expected.is_empty()
+        }
+    }
+
+    fn finish_fleet_scan(&mut self) {
+        self.fleet_scan_jid = None;
+        self.fleet_scan_responded.clear();
+        self.fleet_scan_expected.clear();
+        self.fleet_scan_started_at = None;
+        self.fleet_scanning = false;
+        self.fleet_scan_completed = true;
     }
 
     /// Called every tick (1s)
@@ -4276,12 +4308,7 @@ impl App {
                             }
                         }
                     }
-                    self.fleet_scan_jid = None;
-                    self.fleet_scan_responded.clear();
-                    self.fleet_scan_expected.clear();
-                    self.fleet_scan_started_at = None;
-                    self.fleet_scanning = false;
-                    self.fleet_scan_completed = true;
+                    self.finish_fleet_scan();
                 }
             }
         }
@@ -6016,6 +6043,7 @@ impl App {
                         let visual_idx = r - data_start;
                         if visual_idx < visible {
                             self.job_selected = (scroll + visual_idx).min(total - 1);
+                            self.jobs_following = self.job_selected + 1 >= total;
                             self.clamp_selection();
                         }
                     }
@@ -6230,6 +6258,7 @@ impl App {
                     self.cache_selected = self.cache_selected.saturating_sub(1);
                 } else {
                     self.job_selected = self.job_selected.saturating_sub(1);
+                    self.jobs_following = self.job_selected + 1 >= self.filtered_jobs_len();
                 }
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
@@ -6254,6 +6283,7 @@ impl App {
                     self.cache_selected += 1;
                 } else {
                     self.job_selected += 1;
+                    self.jobs_following = self.job_selected + 1 >= self.filtered_jobs_len();
                 }
             }
             Tab::Alerts => self.alert_selected += 1,
@@ -6278,6 +6308,7 @@ impl App {
                     self.cache_selected = 0;
                 } else {
                     self.job_selected = 0;
+                    self.jobs_following = self.filtered_jobs_len() <= 1;
                 }
             }
             Tab::Alerts => self.alert_selected = 0,
@@ -6299,6 +6330,7 @@ impl App {
                     self.cache_selected = self.filtered_cache_len().saturating_sub(1);
                 } else {
                     self.job_selected = self.filtered_jobs_len().saturating_sub(1);
+                    self.jobs_following = true;
                 }
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
