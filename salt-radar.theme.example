@@ -86,6 +86,17 @@ theme[red]="#ff5050"
 # Accent
 theme[purple]="#b478ff"
 
+# Level gradient for the CPU, Memory and ZMQ graphs and the Host Resources
+# meters: start = idle (0%), mid = 50%, high = 75%, end = maxed out (100%).
+# Graph rows are colored by their height, blending smoothly between these.
+theme[gradient_start]="#50c878"
+
+theme[gradient_mid]="#ffc850"
+
+theme[gradient_high]="#ff8c3c"
+
+theme[gradient_end]="#ff5050"
+
 # Pulse tab: minion returned within the last few seconds
 theme[pulse_fresh]="#78ff78"
 

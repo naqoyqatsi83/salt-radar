@@ -79,6 +79,10 @@ pub mod color {
         orange: 255, 180, 80;
         red: 255, 80, 80;
         purple: 180, 120, 255;
+        gradient_start: 80, 200, 120;
+        gradient_mid: 255, 200, 80;
+        gradient_high: 255, 140, 60;
+        gradient_end: 255, 80, 80;
         pulse_fresh: 120, 255, 120;
         pulse_aging: 255, 165, 0;
         tab_active_bg: 30, 42, 70;
@@ -97,6 +101,25 @@ pub mod color {
 
     pub fn set_theme(theme: Theme) {
         THEME.with(|t| t.set(theme));
+    }
+
+    /// Color for a level `t` in 0.0..=1.0 (0 = idle, 1 = maxed out), blended
+    /// smoothly across the theme's gradient_* stops — green, yellow at half,
+    /// amber at three quarters, red at the top — so a value hovering near a
+    /// boundary shifts shade slightly instead of flipping between colors.
+    pub fn gradient(t: f64) -> Color {
+        let stops = [(0.0, gradient_start()), (0.5, gradient_mid()), (0.75, gradient_high()), (1.0, gradient_end())];
+        let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 };
+        let i = stops.iter().rposition(|(at, _)| *at <= t).unwrap_or(0).min(stops.len() - 2);
+        let ((a_at, a), (b_at, b)) = (stops[i], stops[i + 1]);
+        let f = (t - a_at) / (b_at - a_at);
+        match (a, b) {
+            (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+                let mix = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * f).round() as u8;
+                Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
+            }
+            _ => if f < 0.5 { a } else { b },
+        }
     }
 
     pub fn select_bg() -> Style {

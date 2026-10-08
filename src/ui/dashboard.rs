@@ -368,9 +368,23 @@ pub(super) fn format_duration(secs: u64) -> String {
 }
 
 fn pct_color(pct: f64) -> Color {
-    if pct > 80.0 { color::orange() }
-    else if pct > 55.0 { color::yellow() }
-    else { color::green() }
+    color::gradient(pct / 100.0)
+}
+
+/// How a sparkline is colored: one fixed color, or btop-style by level —
+/// each row by its height on the graph's fixed 0–100 scale, so a bar's top
+/// shows how high it reached and history never recolors as new values come in.
+enum GraphColor {
+    Solid(Color),
+    ByLevel,
+}
+
+/// Position of a latency on the ZMQ graph's log scale, 0.0..=1.0, with
+/// `ceiling` at the top — log so a healthy few-ms figure still shows instead
+/// of hugging the floor next to the ceiling (1 ms ≈ 15%, 10 ms ≈ 50% of a
+/// 100 ms scale).
+fn latency_level(ms: f64, ceiling: f64) -> f64 {
+    ((1.0 + ms.max(0.0)).ln() / (1.0 + ceiling.max(1.0)).ln()).clamp(0.0, 1.0)
 }
 
 fn pct_gauge_style(pct: f64) -> Style {
@@ -749,15 +763,8 @@ pub(super) fn format_uptime(secs: u64) -> String {
 
 fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let lat = app.zmq_latency_ms;
-    let lat_color = if !app.zmq_latency_seen {
-        color::inactive_fg()
-    } else if lat < 10.0 {
-        color::green()
-    } else if lat < 50.0 {
-        color::yellow()
-    } else {
-        color::orange()
-    };
+    let ceiling = app.config.zmq_latency_ceiling();
+    let lat_color = if app.zmq_latency_seen { color::gradient(latency_level(lat, ceiling)) } else { color::inactive_fg() };
 
     let peak_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max);
 
@@ -788,7 +795,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("{} ", lat_display), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
             Span::styled("pk:", Style::default().fg(color::label_fg())),
             Span::styled(format!("{} ", peak_label), Style::default().fg(color::inactive_fg())),
-            Span::styled(format!("({}) ", source_label), Style::default().fg(color::label_fg())),
+            Span::styled(format!("({}, scale {:.0}ms) ", source_label, ceiling), Style::default().fg(color::label_fg())),
             Span::styled(format!(":{} pub {}/{} ", pub_port, pub_established, pub_total), Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
             Span::styled(format!(":{} ret {}/{}", ret_port, ret_established, ret_total), Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
         ];
@@ -818,7 +825,6 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let max_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
     let lat_idx = app.zmq_latency_idx;
     let ordered_lat: Vec<f64> = (0..2000)
         .map(|i| app.zmq_latency_history[(lat_idx + i) % 2000])
@@ -828,11 +834,10 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let start = ordered_lat.len().saturating_sub(points);
     let spark_data: Vec<u64> = (0..points)
         .map(|i| {
-            let v = ordered_lat[start + i];
-            (v / max_lat * 100.0) as u64
+            (latency_level(ordered_lat[start + i], ceiling) * 100.0).round() as u64
         })
         .collect();
-    render_sparkline(f, inner, &spark_data, Style::default().fg(lat_color), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel, app.sparkline_style);
 }
 
 // ── Event Type Breakdown ────────────────────────────────────────────────────
@@ -952,7 +957,7 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    render_sparkline(f, inner, &spark_data, Style::default().fg(color::cyan()), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::Solid(color::cyan()), app.sparkline_style);
 }
 
 // ── Minion Activity Matrix ───────────────────────────────────────────────────
@@ -1023,7 +1028,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    render_sparkline(f, inner, &spark_data, Style::default().fg(color::green()), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::Solid(color::green()), app.sparkline_style);
 }
 
 // ── CPU / Memory history ────────────────────────────────────────────────────
@@ -1077,7 +1082,7 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner, &spark_data, Style::default().fg(color::green()), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel, app.sparkline_style);
 }
 
 fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
@@ -1127,7 +1132,7 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner, &spark_data, Style::default().fg(color::cyan()), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel, app.sparkline_style);
 }
 
 // ── Job Pulse ────────────────────────────────────────────────────────────────
@@ -1328,7 +1333,11 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
 
 // ─── Shared sparkline renderer (bars or braille dots) ─────────────────────
 
-fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], style: Style, mode: SparklineStyle) {
+fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], fill: GraphColor, mode: SparklineStyle) {
+    let style = Style::default().fg(match fill {
+        GraphColor::Solid(c) => c,
+        GraphColor::ByLevel => color::gradient(0.0),
+    });
     match mode {
         SparklineStyle::Bars => {
             // Every caller already normalizes its data into a fixed 0-100
@@ -1377,6 +1386,21 @@ fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], style: Style, mode:
                 lines.push(Line::from(Span::styled(line, style)));
             }
             f.render_widget(Paragraph::new(lines), area);
+        }
+    }
+    if let GraphColor::ByLevel = fill {
+        let rows = area.height.max(1);
+        for row in 0..area.height {
+            let from_bottom = rows - 1 - row;
+            let level = if rows > 1 { from_bottom as f64 / (rows - 1) as f64 } else { 0.0 };
+            let fg = color::gradient(level);
+            for x in area.left()..area.right() {
+                if let Some(cell) = f.buffer_mut().cell_mut((x, area.y + row)) {
+                    if cell.symbol() != " " {
+                        cell.set_fg(fg);
+                    }
+                }
+            }
         }
     }
 }
