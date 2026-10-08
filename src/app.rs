@@ -277,7 +277,8 @@ pub struct App {
 
     /// PID-based temp paths to avoid conflicts between users/instances
     pid: u32,
-    cmd_path: String,
+    /// NDJSON command lines for the agent thread to forward to the agent.
+    agent_cmd_tx: std::sync::mpsc::Sender<String>,
     copy_path: String,
     clip_log_path: String,
     clip_debug_path: String,
@@ -399,8 +400,11 @@ pub struct App {
 
 #[derive(Clone, Debug)]
 pub enum AgentMessage {
-    Result { id: u64, cmd: String, ok: bool, data: serde_json::Value },
-    Event { tag: String, data: serde_json::Value, ts: f64 },
+    /// `received` is when the reader thread got the line, so round-trip
+    /// timings don't include however long it then waited in the queue for
+    /// the main loop to drain it.
+    Result { id: u64, cmd: String, ok: bool, data: serde_json::Value, received: Instant },
+    Event { tag: String, data: serde_json::Value, ts: f64, received: Instant },
     Error { id: Option<u64>, message: String },
     /// Incremental progress for a long-running command (currently just
     /// `jobs_list`'s live job-cache walk) — arrives zero or more times
@@ -584,7 +588,6 @@ impl App {
         let pid = std::process::id();
 
         // PID-based temp paths to avoid conflicts between multiple users or instances
-        let cmd_path = format!("/tmp/.salt-radar-cmd-{}", pid);
         let copy_path = format!("/tmp/.salt-radar-copy-{}.txt", pid);
         let clip_log_path = format!("/tmp/.salt-radar-clip-{}.log", pid);
         let clip_debug_path = format!("/tmp/.salt-radar-clip-debug-{}.log", pid);
@@ -595,9 +598,9 @@ impl App {
         let agent_path = config.agent_path.clone();
         let python_bin = config.python_bin.clone();
         let master_config = config.master_config.clone();
-        let cmd_path_agent = cmd_path.clone();
+        let (agent_cmd_tx, agent_cmd_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            crate::agent::agent_main(rx, dropped, &agent_path, &python_bin, &master_config, &cmd_path_agent);
+            crate::agent::agent_main(rx, dropped, &agent_path, &python_bin, &master_config, agent_cmd_rx);
         });
 
         Self {
@@ -780,7 +783,7 @@ impl App {
             prev_cpu_time: None,
 
             pid,
-            cmd_path,
+            agent_cmd_tx,
             copy_path,
             clip_log_path,
             clip_debug_path,
@@ -803,7 +806,7 @@ impl App {
         let mut sniffer_tail_moved = false;
         for msg in batch {
             match msg {
-                AgentMessage::Result { id, cmd, ok, data } => {
+                AgentMessage::Result { id, cmd, ok, data, received } => {
                     self.agent.connected = true;
                     self.agent.last_error = None;
                     let is_jid_lookup = cmd == "jid_lookup";
@@ -1013,7 +1016,7 @@ impl App {
                         }
                         "zmq_ping" => {
                             if let Some(sent) = self.zmq_ping_sent_at {
-                                let elapsed_ms = sent.elapsed().as_secs_f64() * 1000.0;
+                                let elapsed_ms = received.saturating_duration_since(sent).as_secs_f64() * 1000.0;
                                 self.zmq_latency_ms = elapsed_ms;
                                 self.zmq_latency_seen = true;
                                 self.zmq_latency_history[self.zmq_latency_idx] = elapsed_ms;
@@ -1181,7 +1184,7 @@ impl App {
                         }
                     }
                 }
-                AgentMessage::Event { tag, data, ts } => {
+                AgentMessage::Event { tag, data, ts, received } => {
                     // Track event breakdown
                     self.event_breakdown.record(&tag);
                     if tag.starts_with("salt/auth") {
@@ -1219,7 +1222,7 @@ impl App {
                     // return over the actual event bus/ZMQ transport.
                     if let Some((ref pending_jid, sent_at)) = self.job_ping_pending {
                         if !pending_jid.is_empty() && tag.starts_with("salt/job/") && tag.contains(pending_jid.as_str()) && tag.contains("/ret/") {
-                            let elapsed_ms = sent_at.elapsed().as_secs_f64() * 1000.0;
+                            let elapsed_ms = received.saturating_duration_since(sent_at).as_secs_f64() * 1000.0;
                             self.zmq_latency_ms = elapsed_ms;
                             self.zmq_latency_seen = true;
                             self.zmq_latency_history[self.zmq_latency_idx] = elapsed_ms;
@@ -1444,16 +1447,7 @@ impl App {
                 }
             }
         }
-        let payload = serde_json::to_string(&req).unwrap() + "\n";
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .write(true)
-            .open(&self.cmd_path)
-            .and_then(|f| {
-                let mut f = std::io::LineWriter::new(f);
-                f.write_all(payload.as_bytes())
-            });
+        let _ = self.agent_cmd_tx.send(serde_json::to_string(&req).unwrap() + "\n");
         id
     }
 
@@ -2693,6 +2687,7 @@ impl App {
 
         crate::config::write_config(&self.config_path, &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
+        let latency_source_changed = new_config.zmq_latency_source != self.config.zmq_latency_source;
         self.persisted_config = new_config.clone();
         self.config = new_config;
         // A sort on a column that was just hidden would keep reordering the
@@ -2704,15 +2699,17 @@ impl App {
         for table in stale {
             self.set_sort(table, None);
         }
-        // A changed zmq_latency_source (or any save) shouldn't leave a stale
-        // figure — or sparkline history in different units — from a
-        // previously active source mislabeled under a new one.
-        self.zmq_latency_ms = 0.0;
-        self.zmq_latency_seen = false;
-        self.zmq_latency_history = [0.0; 2000];
-        self.zmq_latency_idx = 0;
-        self.zmq_ping_sent_at = None;
-        self.job_ping_pending = None;
+        // A changed zmq_latency_source shouldn't leave a stale figure — or
+        // sparkline history in different units — from the previous source
+        // mislabeled under the new one. Any other save keeps the history.
+        if latency_source_changed {
+            self.zmq_latency_ms = 0.0;
+            self.zmq_latency_seen = false;
+            self.zmq_latency_history = [0.0; 2000];
+            self.zmq_latency_idx = 0;
+            self.zmq_ping_sent_at = None;
+            self.job_ping_pending = None;
+        }
         Ok(())
     }
 
@@ -4125,7 +4122,6 @@ impl App {
 
     /// Clean up per-instance temp files. Called on exit.
     pub fn cleanup(&self) {
-        let _ = std::fs::remove_file(&self.cmd_path);
         let _ = std::fs::remove_file(&self.copy_path);
         let _ = std::fs::remove_file(&self.clip_log_path);
         let _ = std::fs::remove_file(&self.clip_debug_path);

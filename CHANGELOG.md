@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fix the Dashboard ZMQ latency (`agent_ipc`) reading a flat ~100ms no matter how fast the agent answered: commands reached the agent through a temp file polled every 100ms, and replies were timed when the main loop next woke up rather than when they arrived; commands now go straight to the agent and replies are timed on receipt, so the figure is the real round trip (typically a few ms). This also stops commands appended while the file was being emptied from being silently lost, and saving the Config Editor no longer wipes the ZMQ graph unless `zmq_latency_source` changed
 - Fix the default (unsorted) order of the job tables: Job Cache now lists newest first (it re-sorted the agent's newest-first page oldest-first), Live Jobs runs oldest to newest by JID instead of event-arrival order, and jobs started within the same second — including under the Job Cache `Started` sort — are ordered by JID instead of coming out in disk-read order (#110)
 - Fix the Job Detail Returns list scrolling on `PgUp`/`PgDn`/`Home`/`End` when it already fits on screen (`End` pushed the last return to the top and the rest out of view); it now only scrolls as far as needed to keep the selection visible, those keys skip rows hidden by the return filter, and the Minion detail grains pane no longer leaves dead `↑` presses after `End` (#113)
 
