@@ -12,12 +12,13 @@ use super::color;
 pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
     let Some(ref detail) = app.detail_popup else { return };
 
+    let mut grains_scroll_max = None;
     match detail {
         DetailPopup::Minion(minion_id, ping_state, grains, grains_scroll) => {
             let area = centered_rect(80, 70, f.area());
             f.render_widget(Clear, area);
             if let Some(minion) = app.minion_info.iter().find(|m| m.id == *minion_id) {
-                draw_minion_detail(f, area, minion, ping_state, grains, *grains_scroll, app);
+                grains_scroll_max = Some(draw_minion_detail(f, area, minion, ping_state, grains, *grains_scroll, app));
             }
         }
         DetailPopup::SaltEvent { evt, scroll, pretty, pretty_fetch } => {
@@ -29,13 +30,13 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
             draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, clipboard_at, save_at, clipboard_msg, highlight);
         }
-        DetailPopup::JobDetail { jid, lookup, selected_return, job_fun, job_tgt, job_start_epoch, minion_scroll, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
+        DetailPopup::JobDetail { jid, lookup, selected_return, job_fun, job_tgt, job_start_epoch, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
             f.render_widget(Clear, area);
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, *minion_scroll, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, clipboard_at, save_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -58,6 +59,11 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Clear, area);
             draw_api_request_detail(f, area, entry, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
+    }
+    // Clamp the stored offset to what's actually scrollable so keys pressed
+    // past the end (End, repeated PgDn) don't leave dead presses behind.
+    if let (Some(max), Some(DetailPopup::Minion(_, _, _, grains_scroll))) = (grains_scroll_max, app.detail_popup.as_mut()) {
+        *grains_scroll = (*grains_scroll).min(max);
     }
 }
 
@@ -359,7 +365,7 @@ fn nested_display(value: &serde_json::Value, indent: usize, prefix: &str, retcod
     }
 }
 
-fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo, ping_state: &PingState, grains: &Option<Vec<(String, String)>>, grains_scroll: usize, app: &App) {
+fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo, ping_state: &PingState, grains: &Option<Vec<(String, String)>>, grains_scroll: usize, app: &App) -> usize {
     let mut lines = header_lines(" Minion Detail ", area.width);
     lines.push(row("ID", minion.id.clone(), color::CYAN));
 
@@ -425,6 +431,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     ]));
 
     let mut more_above = false;
+    let mut max_scroll = 0usize;
     let mut more_below = false;
     match grains {
         None => {
@@ -457,7 +464,6 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
                 // space below it (and further scrolling has nowhere to go).
                 let used = lines.len();
                 let avail = (area.height as usize).saturating_sub(used).saturating_sub(2); // borders(2)
-                let mut max_scroll = 0usize;
                 let mut budget = avail;
                 for (i, (_, val)) in pairs.iter().enumerate().rev() {
                     let h = grain_height(val);
@@ -516,6 +522,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
         vec![("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string()), ("a", "admin mode for grains".to_string())]
     };
     render_popup(f, area, &lines, &hints, None, (more_above, more_below), 0, 0);
+    max_scroll
 }
 
 /// A job-return event (`salt/job/<jid>/ret/<id>`) carries the same
@@ -775,7 +782,6 @@ fn draw_job_detail(
     job_fun: &str,
     job_tgt: &str,
     job_start_epoch: f64,
-    minion_scroll: usize,
     return_filter: &str,
     return_is_filtering: bool,
     panel_focus: bool,
@@ -904,14 +910,10 @@ fn draw_job_detail(
                 ]));
             }
         }
-        // Compute position of sel within the filtered view for scroll
-        let left_list_h = left_inner.height as usize;
-        let left_scroll = if minion_scroll > 0 { minion_scroll as u16 } else { 0 };
-        let (sel_vis_idx, is_filtered) = if return_filter.is_empty() || return_is_filtering {
-            (sel, false)
+        let sel_vis_idx = if return_filter.is_empty() || return_is_filtering {
+            sel
         } else {
-            let vis = l.returns.iter().take(sel + 1).filter(|ret| ret.minion_id.contains(return_filter)).count().saturating_sub(1);
-            (vis, true)
+            l.returns.iter().take(sel + 1).filter(|ret| ret.minion_id.contains(return_filter)).count().saturating_sub(1)
         };
         if left_lines.is_empty() {
             left_lines.push(Line::from(Span::styled(
@@ -919,18 +921,12 @@ fn draw_job_detail(
                 Style::default().fg(color::TEXT_DIM),
             )));
         }
-        let left_scroll_adj = if sel_vis_idx > left_list_h.saturating_sub(2) {
-            (sel_vis_idx.saturating_sub(left_list_h.saturating_sub(2))) as u16
-        } else if is_filtered {
-            // Filter confirmed: minion_scroll is an unfiltered index, not valid for
-            // the filtered left_lines. The selected item is already visible, so start at 0.
-            0
-        } else {
-            left_scroll.min(left_lines.len().saturating_sub(1) as u16)
-        };
+        // The filter bar overlays the panel's last row while typing.
+        let left_list_h = (left_inner.height as usize).saturating_sub(return_is_filtering as usize);
+        let (left_scroll, _, _) = super::scroll_window(sel_vis_idx, left_list_h, left_lines.len());
         f.render_widget(
             Paragraph::new(left_lines)
-                .scroll((left_scroll_adj, 0))
+                .scroll((left_scroll as u16, 0))
                 .style(Style::default().bg(color::BG_POPUP)),
             left_inner,
         );

@@ -549,7 +549,7 @@ impl MinionActivityItem {
 pub enum DetailPopup {
     Minion(String, PingState, Option<Vec<(String, String)>>, usize),
     SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch },
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, minion_scroll: usize, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
     ConfigEditor(ConfigEditorState),
@@ -1118,13 +1118,12 @@ impl App {
                                         *lookup = Some(jid_data.clone());
                                     }
                                     // Snap to first filter match if filter was committed before data arrived
-                                    if let Some(DetailPopup::JobDetail { ref return_filter, ref mut selected_return, ref mut minion_scroll, ref lookup, .. }) = self.detail_popup {
+                                    if let Some(DetailPopup::JobDetail { ref return_filter, ref mut selected_return, ref lookup, .. }) = self.detail_popup {
                                         if !return_filter.is_empty() {
                                             if let Some(ref l) = lookup {
                                                 let first = l.returns.iter().position(|ret| ret.minion_id.contains(return_filter));
                                                 if let Some(idx) = first {
                                                     *selected_return = Some(idx);
-                                                    *minion_scroll = idx.saturating_sub(4);
                                                 }
                                             }
                                         }
@@ -3015,7 +3014,6 @@ impl App {
                             job_fun: fun,
                             job_tgt: tgt,
                             job_start_epoch: start_epoch,
-                            minion_scroll: 0,
                             return_filter: String::new(),
                             return_is_filtering: false,
                             panel_focus: false,
@@ -3045,7 +3043,6 @@ impl App {
                             job_fun: fun,
                             job_tgt: tgt,
                             job_start_epoch: start_epoch,
-                            minion_scroll: 0,
                             return_filter: String::new(),
                             return_is_filtering: false,
                             panel_focus: false,
@@ -4693,7 +4690,6 @@ impl App {
             match *detail {
                 DetailPopup::JobDetail {
                     ref mut selected_return,
-                    ref mut minion_scroll,
                     ref mut return_filter,
                     ref mut return_is_filtering,
                     ref mut panel_focus,
@@ -4721,14 +4717,12 @@ impl App {
                                             .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
                                         if let Some(idx) = next {
                                             *selected_return = Some(idx);
-                                            *minion_scroll = idx.saturating_sub(4);
                                         } else {
                                             // Try backward from current position
                                             let prev = (0..cur).rev()
                                                 .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
                                             if let Some(idx) = prev {
                                                 *selected_return = Some(idx);
-                                                *minion_scroll = idx.saturating_sub(4);
                                             }
                                         }
                                     }
@@ -4870,82 +4864,25 @@ impl App {
                             *return_is_filtering = true;
                             return_filter.clear();
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
+                        KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j')
+                        | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => {
                             if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let pat = &*return_filter;
+                                let visible: Vec<usize> = (0..l.returns.len())
+                                    .filter(|&i| return_filter.is_empty() || l.returns[i].minion_id.contains(&*return_filter))
+                                    .collect();
+                                if !visible.is_empty() {
                                     let cur = selected_return.unwrap_or(0);
-                                    if cur > 0 {
-                                        let mut new_sel = cur.saturating_sub(1);
-                                        loop {
-                                            if pat.is_empty() || l.returns[new_sel].minion_id.contains(pat) { break; }
-                                            if new_sel == 0 { break; }
-                                            new_sel -= 1;
-                                        }
-                                        *selected_return = Some(new_sel);
-                                        if *minion_scroll > 0 && *minion_scroll >= new_sel {
-                                            *minion_scroll = new_sel;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let pat = &*return_filter;
-                                    let cur = selected_return.unwrap_or(0) + 1;
-                                    if cur < l.returns.len() {
-                                        let mut new_sel = cur;
-                                        while new_sel < l.returns.len() {
-                                            if pat.is_empty() || l.returns[new_sel].minion_id.contains(pat) { break; }
-                                            new_sel += 1;
-                                        }
-                                        if new_sel < l.returns.len() {
-                                            *selected_return = Some(new_sel);
-                                            if *minion_scroll + 8 < new_sel {
-                                                *minion_scroll = new_sel.saturating_sub(4);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::PageUp => {
-                            if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let cur = selected_return.unwrap_or(0);
-                                    *selected_return = Some(cur.saturating_sub(10));
-                                    if *minion_scroll >= selected_return.unwrap_or(0) {
-                                        *minion_scroll = selected_return.unwrap_or(0).saturating_sub(4);
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::PageDown => {
-                            if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let cur = selected_return.unwrap_or(0) + 10;
-                                    *selected_return = Some(cur.min(l.returns.len().saturating_sub(1)));
-                                    if *minion_scroll + 8 < selected_return.unwrap_or(0) {
-                                        *minion_scroll = selected_return.unwrap_or(0).saturating_sub(4);
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::Home => {
-                            if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    *selected_return = Some(0);
-                                    *minion_scroll = 0;
-                                }
-                            }
-                        }
-                        KeyCode::End => {
-                            if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    *selected_return = Some(l.returns.len().saturating_sub(1));
-                                    *minion_scroll = l.returns.len().saturating_sub(1);
+                                    let pos = visible.iter().position(|&i| i >= cur).unwrap_or(visible.len() - 1);
+                                    let last = visible.len() - 1;
+                                    let new_pos = match code {
+                                        KeyCode::Up | KeyCode::Char('k') => pos.saturating_sub(1),
+                                        KeyCode::Down | KeyCode::Char('j') => (pos + 1).min(last),
+                                        KeyCode::PageUp => pos.saturating_sub(10),
+                                        KeyCode::PageDown => (pos + 10).min(last),
+                                        KeyCode::Home => 0,
+                                        _ => last,
+                                    };
+                                    *selected_return = Some(visible[new_pos]);
                                 }
                             }
                         }
@@ -5293,7 +5230,6 @@ impl App {
                                             job_fun: job.fun.clone(),
                                             job_tgt: job.tgt.clone(),
                                             job_start_epoch: job.start_epoch,
-                                            minion_scroll: 0,
                                             return_filter: String::new(),
                                             return_is_filtering: false,
                                             panel_focus: false,
@@ -6184,7 +6120,6 @@ impl App {
                                 job_fun: job.fun.clone(),
                                 job_tgt: job.tgt.clone(),
                                 job_start_epoch: job.start_epoch,
-                                minion_scroll: 0,
                                 return_filter: String::new(),
                                 return_is_filtering: false,
                                 panel_focus: false,

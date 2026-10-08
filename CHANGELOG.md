@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dim the screen behind any open popup (detail views, Event Sniffer, Config Editor, admin confirm, help) so the popup stands out; a popup opened on top of another dims the one beneath it too, and the screen returns to normal when it closes (#111)
 
+### Fixed
+
+- Fix the Job Detail Returns list scrolling on `PgUp`/`PgDn`/`Home`/`End` when it already fits on screen (`End` pushed the last return to the top and the rest out of view); it now only scrolls as far as needed to keep the selection visible, those keys skip rows hidden by the return filter, and the Minion detail grains pane no longer leaves dead `↑` presses after `End` (#113)
 
 ## [0.6.3-rc13] - 2026-10-07
 
