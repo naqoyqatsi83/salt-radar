@@ -83,6 +83,10 @@ pub mod color {
         gradient_mid: 255, 200, 80;
         gradient_high: 255, 140, 60;
         gradient_end: 255, 80, 80;
+        mem_gradient_start: 80, 200, 255;
+        mem_gradient_mid: 100, 150, 255;
+        mem_gradient_high: 255, 160, 60;
+        mem_gradient_end: 255, 80, 80;
         pulse_fresh: 120, 255, 120;
         pulse_aging: 255, 165, 0;
         tab_active_bg: 30, 42, 70;
@@ -108,7 +112,17 @@ pub mod color {
     /// amber at three quarters, red at the top — so a value hovering near a
     /// boundary shifts shade slightly instead of flipping between colors.
     pub fn gradient(t: f64) -> Color {
-        let stops = [(0.0, gradient_start()), (0.5, gradient_mid()), (0.75, gradient_high()), (1.0, gradient_end())];
+        blend([gradient_start(), gradient_mid(), gradient_high(), gradient_end()], t)
+    }
+
+    /// `gradient`, but over the mem_gradient_* stops — memory keeps its own
+    /// calm (blue by default) low end, as btop's memory meters do.
+    pub fn mem_gradient(t: f64) -> Color {
+        blend([mem_gradient_start(), mem_gradient_mid(), mem_gradient_high(), mem_gradient_end()], t)
+    }
+
+    fn blend(colors: [Color; 4], t: f64) -> Color {
+        let stops = [(0.0, colors[0]), (0.5, colors[1]), (0.75, colors[2]), (1.0, colors[3])];
         let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 };
         let i = stops.iter().rposition(|(at, _)| *at <= t).unwrap_or(0).min(stops.len() - 2);
         let ((a_at, a), (b_at, b)) = (stops[i], stops[i + 1]);
