@@ -10,7 +10,7 @@
 
 <p align="center">
   <b>A non-intrusive, read-only TUI for monitoring a Salt Master</b><br>
-  Built with <a href="https://github.com/ratatui-org/ratatui">ratatui</a> + <a href="https://github.com/crossterm-rs/crossterm">crossterm</a>
+  Built with <a href="https://github.com/ratatui/ratatui">ratatui</a> + <a href="https://github.com/crossterm-rs/crossterm">crossterm</a>
 </p>
 
 <br>
@@ -92,9 +92,10 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Host Resources** — CPU load, memory usage, disk usage (cache + PKI)
 - **Services** — All `salt-*.service` units auto-discovered via systemctl, with active state, memory, uptime, a rolling 24h restart/flap count (`Flp`), and a memory-growth trend arrow (`T`)
 - **Minion Key Status** — Accepted / Denied / Unaccepted / Rejected key counts, plus new-pending-keys-per-minute
-- **ZMQ** — established connection counts per port (pub/ret/api), plus a latency sparkline whose source is configurable (`zmq_latency_source`): a local agent liveness ping (default), a real `test.ping` round-trip over the event bus, or Salt's own `master_stats` instrumentation
+- **ZMQ** — established connection counts per port (pub/ret/api), plus a latency sparkline whose source is configurable (`zmq_latency_source`): a local agent round-trip (default), a real `test.ping` round-trip over the event bus, or Salt's own `master_stats` instrumentation. The graph uses a log scale up to `zmq_latency_ceiling_ms` — the latency that counts as "bad", drawn red at the top — defaulting per source (100 ms for the agent round-trip, 1 s for `test.ping`, 500 ms for `master_stats`)
 - **Event Rate** — Events/sec sparkline with peak and total counters
 - **Minion Activity** — Job return rate sparkline with last-active minion tracking
+- **Level colors** — the CPU, Memory and ZMQ graphs are colored btop-style by height: each row by how high it sits on the graph's fixed scale, blending green → yellow → amber → red toward the top, so a bar's color shows how high it reached and the history never recolors. Their headline figures (and the Host Resources meters) use the same smooth gradient instead of hard thresholds, so a value hovering near a boundary doesn't flicker between colors
 - **CPU / Memory** — utilization-history sparklines, toggle alongside the other three sparkline panels via `show_*_graph`; stacking order of all five panels is configurable via `graph_order` — in the Config Editor (`F3`, edited as a reorderable list: `↑↓` to select, `+`/`-` to move) or by hand in `salt-radar.toml`
 - **Job Pulse** — Active jobs with progress bars, rolling success rate, stuck-job count, and p50/p95 completion latency. Shares a row with salt-api (side by side) when both are shown, since neither needs the terminal's full width; Job Pulse alone takes the full row when salt-api isn't shown
 - **salt-api** — shown only when a `salt-api` process is detected; request rate, error rate, `POST /login` p50/p95 latency, in-flight/total request counts, and the most recent request per worker thread (path, status, timing). Needs `rest_cherrypy: {collect_stats: True}` in the master config, plus one of two ways to access the `/stats` endpoint that serves this data — salt-radar polls `GET /stats`, salt-api's own built-in in-memory request-stats endpoint (CherryPy's `cpstats`), which records the request line, client, status and timing entirely in process memory. This is a different mechanism from Salt's `log_level`/access logging: nothing is ever written to disk, and the request *line* it records never includes the body — so credentials sent in a POST body (e.g. `/login`) are never captured. Request rate is a real recent figure (computed by salt-radar from the delta between polls); error rate and login latency are also tracked by salt-radar itself, since cpstats only exposes a lifetime-average rate and a live per-thread snapshot, not cumulative error/latency counters of its own.
@@ -440,6 +441,16 @@ agent/
 themes/                  # Bundled color themes (ports of btop++'s), installed to /usr/share/salt-radar/themes
 salt-radar.theme.example # The Default theme with every key documented
 ```
+
+## Acknowledgements
+
+salt-radar stands on the shoulders of other people's work:
+
+- **[btop++](https://github.com/aristocratos/btop)** by Jakob P. Liljenberg ([aristocratos](https://github.com/aristocratos)) — a huge thank-you for the inspiration and for such great work. A lot of salt-radar's look and feel comes straight from btop: shortcut hints living in the panel borders, braille sparklines, graphs colored by level, and the whole theme system — the `.theme` file format is btop's, and the bundled themes are ports of btop's own (Apache-2.0). If you like salt-radar, go give btop a star.
+- **The theme authors** — every bundled theme is a port of a btop theme and keeps its original author's credit at the top of the file, and most of them carry a well-known color scheme by its own designers (Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Everforest, Kanagawa, Flexoki and more).
+- **[psnet](https://github.com/psmux/psnet)** — salt-radar's original dark palette, its ratatui TUI style, and its `/proc` / `/proc/net/tcp` collection approach were modeled on psnet.
+- **[ratatui](https://github.com/ratatui/ratatui)** and **[crossterm](https://github.com/crossterm-rs/crossterm)**, which do the heavy lifting of drawing to the terminal, plus serde, serde_json, toml, chrono, base64 and libc.
+- **[Salt](https://github.com/saltstack/salt)** itself — the Python agent uses nothing beyond Python's standard library and Salt's own client APIs.
 
 ## License
 
