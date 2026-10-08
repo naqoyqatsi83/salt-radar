@@ -47,9 +47,9 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         ]
     };
     let title = if state.dirty() { " Config Editor \u{25CF} unsaved changes " } else { " Config Editor " };
-    let block = super::titled_block(title, Style::default().fg(color::BORDER_HI), color::BG_DARK)
-        .title_bottom(super::border_hints(&hints, color::BORDER_HI).left_aligned())
-        .title_bottom(super::border_info(format!("saved to: {}", config_path), color::BORDER_HI).right_aligned());
+    let block = super::titled_block(title, Style::default().fg(color::border_focus()), color::main_bg())
+        .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned())
+        .title_bottom(super::border_info(format!("saved to: {}", config_path), color::border_focus()).right_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -74,51 +74,53 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     format!("  {}", field.label),
-                    Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
+                    Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD),
                 )));
             }
             ConfigFieldKind::SaveButton => {
                 let is_sel = field_idx == state.selected;
-                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
                 lines.push(Line::from(""));
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(
                     Span::styled(
                         format!("  \u{25B8} Save & Restart"),
-                        Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD),
+                        Style::default().fg(color::green()).add_modifier(Modifier::BOLD),
                     ),
                 ).style(sel_style));
                 if is_sel {
                     lines.push(Line::from(Span::styled(
                         "    'Enter' to save and restart",
-                        Style::default().fg(color::TEXT_DIM),
+                        Style::default().fg(color::inactive_fg()),
                     )));
                 }
             }
-            ConfigFieldKind::Choice(options) => {
+            ConfigFieldKind::Choice(_) | ConfigFieldKind::Theme => {
+                let options = state.options(field.kind).unwrap_or_default();
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
-                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
 
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {:<label_w$}", field.label, label_w = label_w),
-                        sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                        sel_style.fg(if is_sel { color::main_fg() } else { color::label_fg() }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
                     ),
                     Span::styled(
                         field.label_value.clone(),
-                        sel_style.fg(if editing { color::YELLOW } else { color::TEXT }),
+                        sel_style.fg(if editing { color::yellow() } else { color::main_fg() }),
                     ),
                 ]));
                 if editing {
                     for (i, opt) in options.iter().enumerate() {
                         let opt_sel = i == state.choice_idx;
-                        let opt_style = if opt_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
+                        if opt_sel { sel_line = lines.len(); }
+                        let opt_style = if opt_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
                         let marker = if opt_sel { "\u{25B8} " } else { "  " };
                         lines.push(Line::from(Span::styled(
                             format!("      {}{}", marker, opt),
-                            opt_style.fg(if opt_sel { color::YELLOW } else { color::TEXT_DIM }).add_modifier(if opt_sel { Modifier::BOLD } else { Modifier::empty() }),
+                            opt_style.fg(if opt_sel { color::yellow() } else { color::inactive_fg() }).add_modifier(if opt_sel { Modifier::BOLD } else { Modifier::empty() }),
                         )));
                     }
                 }
@@ -126,27 +128,27 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             ConfigFieldKind::Columns(all) => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
-                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
 
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {:<label_w$}", field.label, label_w = label_w),
-                        sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                        sel_style.fg(if is_sel { color::main_fg() } else { color::label_fg() }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
                     ),
                     Span::styled(
                         field.label_value.clone(),
-                        sel_style.fg(if editing { color::YELLOW } else { color::TEXT }),
+                        sel_style.fg(if editing { color::yellow() } else { color::main_fg() }),
                     ),
                 ]));
                 if editing {
                     let (items, shown) = crate::app::column_editor_items(&field.label_value, all);
                     for (i, item) in items.iter().enumerate() {
                         let item_sel = i == state.choice_idx;
-                        let item_style = if item_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
+                        let item_style = if item_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
                         let marker = if item_sel { "\u{25B8} " } else { "  " };
                         let check = if i < shown { "[x]" } else { "[ ]" };
-                        let fg = if item_sel { color::YELLOW } else if i < shown { color::TEXT } else { color::TEXT_DIM };
+                        let fg = if item_sel { color::yellow() } else if i < shown { color::main_fg() } else { color::inactive_fg() };
                         if item_sel { sel_line = lines.len(); }
                         lines.push(Line::from(Span::styled(
                             format!("      {}{} {}", marker, check, item),
@@ -158,27 +160,27 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             ConfigFieldKind::Order => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
-                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
 
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {:<label_w$}", field.label, label_w = label_w),
-                        sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                        sel_style.fg(if is_sel { color::main_fg() } else { color::label_fg() }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
                     ),
                     Span::styled(
                         field.label_value.clone(),
-                        sel_style.fg(if editing { color::YELLOW } else { color::TEXT }),
+                        sel_style.fg(if editing { color::yellow() } else { color::main_fg() }),
                     ),
                 ]));
                 if editing {
                     for (i, item) in field.label_value.split(',').enumerate() {
                         let item_sel = i == state.choice_idx;
-                        let item_style = if item_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
+                        let item_style = if item_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
                         let marker = if item_sel { "\u{25B8} " } else { "  " };
                         lines.push(Line::from(Span::styled(
                             format!("      {}{}", marker, item),
-                            item_style.fg(if item_sel { color::YELLOW } else { color::TEXT_DIM }).add_modifier(if item_sel { Modifier::BOLD } else { Modifier::empty() }),
+                            item_style.fg(if item_sel { color::yellow() } else { color::inactive_fg() }).add_modifier(if item_sel { Modifier::BOLD } else { Modifier::empty() }),
                         )));
                     }
                 }
@@ -186,7 +188,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             _ => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
-                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
 
                 let display_val = if editing {
                     let cursor = if state.input.len() % 2 == 0 { "\u{2588}" } else { " " };
@@ -199,11 +201,11 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {:<label_w$}", field.label, label_w = label_w),
-                        sel_style.fg(if is_sel { color::TEXT } else { color::TEXT_LABEL }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                        sel_style.fg(if is_sel { color::main_fg() } else { color::label_fg() }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
                     ),
                     Span::styled(
                         display_val,
-                        sel_style.fg(if editing { color::YELLOW } else { color::TEXT }),
+                        sel_style.fg(if editing { color::yellow() } else { color::main_fg() }),
                     ),
                 ]));
             }
@@ -214,7 +216,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  Unsaved changes \u{2014} 's' to save, Esc/q again to discard them",
-            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         )));
         sel_line = lines.len() - 1;
     }
@@ -222,7 +224,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
     if let Some(ref err) = state.save_error {
         lines.push(Line::from(Span::styled(
             format!("  Error: {}", err),
-            Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
         )));
     }
 
@@ -230,7 +232,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
     let (scroll, _, _) = super::scroll_window(sel_line, visible, lines.len());
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)).scroll((scroll as u16, 0)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())).scroll((scroll as u16, 0)),
         inner,
     );
 }

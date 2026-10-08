@@ -104,9 +104,9 @@ fn draw_no_graphs_hint(f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "  No graphs enabled — toggle show_*_graph in Config Editor ('F3')",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )))
-        .style(Style::default().bg(color::BG_DARK)),
+        .style(Style::default().bg(color::main_bg())),
         area,
     );
 }
@@ -321,14 +321,14 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
 fn make_block_line(title: Line<'static>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER))
-        .title(Line::from(super::bracket_title(title.spans, color::BORDER)))
-        .style(Style::default().bg(color::BG_DARK))
+        .border_style(Style::default().fg(color::border()))
+        .title(Line::from(super::bracket_title(title.spans, color::border())))
+        .style(Style::default().bg(color::main_bg()))
 }
 
 fn make_block_line_hinted(title: Line<'static>, hints: &[(&str, String)]) -> Block<'static> {
     let block = make_block_line(title);
-    if hints.is_empty() { block } else { block.title_bottom(super::border_hints(hints, color::BORDER).left_aligned()) }
+    if hints.is_empty() { block } else { block.title_bottom(super::border_hints(hints, color::border()).left_aligned()) }
 }
 
 /// Each sparkline panel's own hide toggle (its existing F-key), plus the
@@ -368,13 +368,13 @@ pub(super) fn format_duration(secs: u64) -> String {
 }
 
 fn pct_color(pct: f64) -> Color {
-    if pct > 80.0 { color::ORANGE }
-    else if pct > 55.0 { color::YELLOW }
-    else { color::GREEN }
+    if pct > 80.0 { color::orange() }
+    else if pct > 55.0 { color::yellow() }
+    else { color::green() }
 }
 
 fn pct_gauge_style(pct: f64) -> Style {
-    Style::default().fg(pct_color(pct)).bg(color::BG_MID)
+    Style::default().fg(pct_color(pct)).bg(color::meter_bg())
 }
 
 // ── Minion Key Status ───────────────────────────────────────────────────────
@@ -387,10 +387,10 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
 
     let churn = app.pending_key_churn_per_min();
     let title = Line::from(vec![
-        Span::styled(" Minion Key Status ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(" Minion Key Status ", Style::default().fg(color::title())),
         Span::styled(
             format!("new pending:{}/min", churn),
-            Style::default().fg(if churn > 0 { color::YELLOW } else { color::TEXT_DIM }),
+            Style::default().fg(if churn > 0 { color::yellow() } else { color::inactive_fg() }),
         ),
     ]);
     let block = make_block_line(title);
@@ -398,17 +398,17 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     let cols: [(u16, &str, usize, Color); 4] = [
-        (1, "Accepted", accepted, color::GREEN),
-        (2, "Denied", denied, if denied > 0 { color::RED } else { color::TEXT_DIM }),
-        (3, "Unaccepted", pending, if pending > 0 { color::YELLOW } else { color::TEXT_DIM }),
-        (4, "Rejected", rejected, if rejected > 0 { color::RED } else { color::TEXT_DIM }),
+        (1, "Accepted", accepted, color::green()),
+        (2, "Denied", denied, if denied > 0 { color::red() } else { color::inactive_fg() }),
+        (3, "Unaccepted", pending, if pending > 0 { color::yellow() } else { color::inactive_fg() }),
+        (4, "Rejected", rejected, if rejected > 0 { color::red() } else { color::inactive_fg() }),
     ];
 
     let mut lines = Vec::new();
     for (n, label, count, fg) in &cols {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", n), Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:<15}", *label), Style::default().fg(color::TEXT)),
+            Span::styled(format!("  {} ", n), Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:<15}", *label), Style::default().fg(color::main_fg())),
             Span::styled(format!("{}", count), Style::default().fg(*fg).add_modifier(Modifier::BOLD)),
         ]));
     }
@@ -418,15 +418,15 @@ fn draw_key_status(f: &mut Frame, area: Rect, app: &App) {
     if total_keys > 0 {
         lines.push(Line::from(Span::styled(
             "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string(),
-            Style::default().fg(color::BORDER),
+            Style::default().fg(color::border()),
         )));
         lines.push(Line::from(vec![
-            Span::styled("    Total keys  ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{}", total_keys), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+            Span::styled("    Total keys  ", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{}", total_keys), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
         ]));
     }
 
-    f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)), inner);
+    f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::main_bg())), inner);
 }
 
 // ── Processes & Services ─────────────────────────────────────────────────────
@@ -492,9 +492,9 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
 
     let proc_count = salt_processes.count();
 
-    let mem_gauge_fg = if mem_pct > 80.0 { color::ORANGE } else if mem_pct > 55.0 { color::YELLOW } else { color::GREEN };
+    let mem_gauge_fg = if mem_pct > 80.0 { color::orange() } else if mem_pct > 55.0 { color::yellow() } else { color::green() };
     let title = Line::from(vec![
-        Span::styled(" Services ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(" Services ", Style::default().fg(color::title())),
         Span::styled(format!("Mem: {:.0}% ", mem_pct), Style::default().fg(mem_gauge_fg)),
     ]);
     let block = make_block_line(title);
@@ -510,10 +510,10 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     let mut proc_spans: Vec<Span<'static>> = vec![];
     for (label, rss_kb, count) in &proc_groups {
         let color = match label.as_str() {
-            "API" => color::PURPLE,
-            "Master" => color::GREEN,
-            "Worker" => color::CYAN,
-            _ => color::TEXT,
+            "API" => color::purple(),
+            "Master" => color::green(),
+            "Worker" => color::cyan(),
+            _ => color::main_fg(),
         };
         proc_spans.push(Span::styled(proc_group_text(label, *rss_kb, *count), Style::default().fg(color)));
     }
@@ -538,18 +538,18 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     let mut service_lines: Vec<Line<'static>> = vec![];
 
     service_lines.push(Line::from(vec![
-        Span::styled("Unit                    ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled("Status", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(" State      ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(" Flp", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(" Memory   ", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(" T", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(" Uptime", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+        Span::styled("Unit                    ", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+        Span::styled("Status", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+        Span::styled(" State      ", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+        Span::styled(" Flp", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+        Span::styled(" Memory   ", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+        Span::styled(" T", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+        Span::styled(" Uptime", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
     ]));
 
     for service in &app.services {
         let status_icon = if service.active { "\u{25cf}" } else { "\u{25cb}" };
-        let status_color = if service.active { color::GREEN } else { color::RED };
+        let status_color = if service.active { color::green() } else { color::red() };
 
         // Combined string is right-aligned as a whole (rather than padding
         // just the number to a 3-digit budget) so multi-GB services don't
@@ -590,32 +590,32 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         let flap_count = app.service_restart_count_24h(&service.unit);
         let flap_text = if flap_count > 0 { flap_count.to_string() } else { "-".to_string() };
         let flap_color = if flap_count as u64 >= app.config.service_flap_threshold_24h {
-            color::RED
+            color::red()
         } else if flap_count > 0 {
-            color::YELLOW
+            color::yellow()
         } else {
-            color::TEXT_DIM
+            color::inactive_fg()
         };
 
         // Memory growth trend indicator, from a rolling linear-regression slope.
         let (trend_char, trend_color) = match app.service_memory_growth(&service.unit) {
             Some((rate_mb_per_hour, still_growing)) if still_growing && rate_mb_per_hour > app.config.service_mem_growth_mb_per_hour => {
-                ("\u{2191}", color::RED) // sustained leak-rate growth
+                ("\u{2191}", color::red()) // sustained leak-rate growth
             }
-            Some((rate_mb_per_hour, _)) if rate_mb_per_hour > 1.0 => ("\u{2197}", color::YELLOW), // mild growth
-            Some((rate_mb_per_hour, _)) if rate_mb_per_hour < -1.0 => ("\u{2193}", color::GREEN), // shrinking
-            Some(_) => ("\u{2192}", color::TEXT_DIM), // flat
-            None => ("\u{00b7}", color::TEXT_DIM), // not enough samples yet
+            Some((rate_mb_per_hour, _)) if rate_mb_per_hour > 1.0 => ("\u{2197}", color::yellow()), // mild growth
+            Some((rate_mb_per_hour, _)) if rate_mb_per_hour < -1.0 => ("\u{2193}", color::green()), // shrinking
+            Some(_) => ("\u{2192}", color::inactive_fg()), // flat
+            None => ("\u{00b7}", color::inactive_fg()), // not enough samples yet
         };
 
         service_lines.push(Line::from(vec![
-            Span::styled(format!("{:<24}", unit_display), Style::default().fg(color::CYAN)),
+            Span::styled(format!("{:<24}", unit_display), Style::default().fg(color::cyan())),
             Span::styled(format!("{:>6}", status_icon), Style::default().fg(status_color)),
-            Span::styled(format!(" {:<11}", state_display), Style::default().fg(color::TEXT)),
+            Span::styled(format!(" {:<11}", state_display), Style::default().fg(color::main_fg())),
             Span::styled(format!(" {:>3}", flap_text), Style::default().fg(flap_color)),
-            Span::styled(format!(" {:>8} ", memory_text), Style::default().fg(color::YELLOW)),
+            Span::styled(format!(" {:>8} ", memory_text), Style::default().fg(color::yellow())),
             Span::styled(format!(" {}", trend_char), Style::default().fg(trend_color)),
-            Span::styled(format!(" {}", uptime_text), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" {}", uptime_text), Style::default().fg(color::inactive_fg())),
         ]));
     }
 
@@ -624,12 +624,12 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(
         Paragraph::new(Line::from(proc_spans))
             .wrap(Wrap { trim: false })
-            .style(Style::default().bg(color::BG_DARK)),
+            .style(Style::default().bg(color::main_bg())),
         inner_layout[1],
     );
 
     f.render_widget(
-        Paragraph::new(service_lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(service_lines).style(Style::default().bg(color::main_bg())),
         inner_layout[2],
     );
 }
@@ -675,10 +675,10 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     );
 
     let title = Line::from(vec![
-        Span::styled(" Host Resources ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(" Host Resources ", Style::default().fg(color::title())),
         Span::styled(
             format!("Load: {:.1}/{:.1}/{:.1}  Mem: {:.0}%  {}", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15, mem_pct, net_rate_str),
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         ),
     ]);
     let block = make_block_line(title);
@@ -716,9 +716,9 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     let net_rx_total = app.system_info.network_rx_bytes;
     let net_tx_total = app.system_info.network_tx_bytes;
     let net_activity_pct = ((net_rx_rate + net_tx_rate) / 1_000_000_000.0 * 100.0).min(100.0) as u16;
-    let net_color = if net_rx_rate + net_tx_rate > 1_000_000.0 { color::CYAN } else { color::TEXT_DIM };
+    let net_color = if net_rx_rate + net_tx_rate > 1_000_000.0 { color::cyan() } else { color::inactive_fg() };
     let net_gauge = Gauge::default()
-        .gauge_style(Style::default().fg(net_color).bg(color::BG_MID))
+        .gauge_style(Style::default().fg(net_color).bg(color::meter_bg()))
         .percent(net_activity_pct)
         .label(format!(
             "\u{25bc} {}  \u{25b2} {}  (total: {} / {})",
@@ -750,13 +750,13 @@ pub(super) fn format_uptime(secs: u64) -> String {
 fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     let lat = app.zmq_latency_ms;
     let lat_color = if !app.zmq_latency_seen {
-        color::TEXT_DIM
+        color::inactive_fg()
     } else if lat < 10.0 {
-        color::GREEN
+        color::green()
     } else if lat < 50.0 {
-        color::YELLOW
+        color::yellow()
     } else {
-        color::ORANGE
+        color::orange()
     };
 
     let peak_lat = app.zmq_latency_history.iter().cloned().fold(0.0_f64, f64::max);
@@ -783,33 +783,33 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
     // Build title — richer detail as the panel grows wide enough to fit it.
     let title = if area.width >= 90 {
         let mut spans = vec![
-            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
+            Span::styled(" ZMQ ", Style::default().fg(color::title())),
+            Span::styled("\u{25bc} ", Style::default().fg(color::cyan())),
             Span::styled(format!("{} ", lat_display), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
-            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{} ", peak_label), Style::default().fg(color::TEXT_DIM)),
-            Span::styled(format!("({}) ", source_label), Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!(":{} pub {}/{} ", pub_port, pub_established, pub_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(":{} ret {}/{}", ret_port, ret_established, ret_total), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{} ", peak_label), Style::default().fg(color::inactive_fg())),
+            Span::styled(format!("({}) ", source_label), Style::default().fg(color::label_fg())),
+            Span::styled(format!(":{} pub {}/{} ", pub_port, pub_established, pub_total), Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(":{} ret {}/{}", ret_port, ret_established, ret_total), Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
         ];
         if api_port > 0 {
             let api_estab = app.zmq_connections.iter().filter(|c| c.local_port == api_port && c.state == "ESTABLISHED").count();
             let api_total = app.zmq_connections.iter().filter(|c| c.local_port == api_port).count();
-            spans.push(Span::styled(format!(" :{} api {}/{}", api_port, api_estab, api_total), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(format!(" :{} api {}/{}", api_port, api_estab, api_total), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)));
         }
         Line::from(spans)
     } else if area.width >= 40 {
         Line::from(vec![
-            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
+            Span::styled(" ZMQ ", Style::default().fg(color::title())),
+            Span::styled("\u{25bc} ", Style::default().fg(color::cyan())),
             Span::styled(format!("{} ", lat_display), Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
-            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(peak_label, Style::default().fg(color::TEXT_DIM)),
+            Span::styled("pk:", Style::default().fg(color::label_fg())),
+            Span::styled(peak_label, Style::default().fg(color::inactive_fg())),
         ])
     } else {
         Line::from(vec![
-            Span::styled(" ZMQ ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25bc} ", Style::default().fg(color::CYAN)),
+            Span::styled(" ZMQ ", Style::default().fg(color::title())),
+            Span::styled("\u{25bc} ", Style::default().fg(color::cyan())),
             Span::styled(lat_display, Style::default().fg(lat_color).add_modifier(Modifier::BOLD)),
         ])
     };
@@ -839,8 +839,8 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
     let title = Line::from(vec![
-        Span::styled(" Event Types ", Style::default().fg(color::TEXT_TITLE)),
-        Span::styled(format!("auth: {:.1}/s", app.current_auth_rate), Style::default().fg(color::TEXT_DIM)),
+        Span::styled(" Event Types ", Style::default().fg(color::title())),
+        Span::styled(format!("auth: {:.1}/s", app.current_auth_rate), Style::default().fg(color::inactive_fg())),
     ]);
     let block = make_block_line(title);
     let inner = block.inner(area);
@@ -848,12 +848,12 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
 
     let bd = &app.event_breakdown;
     let cats = [
-        ("Auth",  bd.auth,  color::YELLOW),
-        ("Job",   bd.job_return, color::CYAN),
-        ("Start", bd.start, color::GREEN),
-        ("Beacon", bd.beacon, color::PURPLE),
-        ("Refresh", bd.refresh, color::ORANGE),
-        ("Other", bd.other, color::TEXT_DIM),
+        ("Auth",  bd.auth,  color::yellow()),
+        ("Job",   bd.job_return, color::cyan()),
+        ("Start", bd.start, color::green()),
+        ("Beacon", bd.beacon, color::purple()),
+        ("Refresh", bd.refresh, color::orange()),
+        ("Other", bd.other, color::inactive_fg()),
     ];
     let max_count = cats.iter().map(|(_, c, _)| *c).max().unwrap_or(1).max(1);
     // Sized to the widest count actually present (min 5, matching the old
@@ -872,19 +872,19 @@ fn draw_event_breakdown(f: &mut Frame, area: Rect, app: &App) {
             let bar = "\u{2588}".repeat(bar_len);
             let spans = vec![
                 Span::styled(format!(" {:<7}", label), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{:>width$} ", count, width = count_width), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("{:>width$} ", count, width = count_width), Style::default().fg(color::inactive_fg())),
                 Span::styled(bar, Style::default().fg(*color)),
             ];
             lines.push(Line::from(spans));
         }
     } else {
         lines.push(Line::from(vec![
-            Span::styled(" waiting for events...", Style::default().fg(color::TEXT_DIM)),
+            Span::styled(" waiting for events...", Style::default().fg(color::inactive_fg())),
         ]));
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }
@@ -898,38 +898,38 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("{}s ago", app.secs_since_last_event)
     };
-    let last_color = if app.secs_since_last_event < 5 { color::GREEN }
-        else if app.secs_since_last_event < 30 { color::YELLOW }
-        else { color::ORANGE };
+    let last_color = if app.secs_since_last_event < 5 { color::green() }
+        else if app.secs_since_last_event < 30 { color::yellow() }
+        else { color::orange() };
 
     // Build title — richer detail as the panel grows wide enough to fit it.
     let title = if area.width >= 70 {
         Line::from(vec![
-            Span::styled(" Events ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25b6} ", Style::default().fg(color::CYAN)),
-            Span::styled(format!("{:.1}/s ", app.events_per_sec), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.1}/s ", peak_rate), Style::default().fg(color::TEXT_DIM)),
-            Span::styled("tot:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{} ", app.events_total), Style::default().fg(color::TEXT_DIM)),
-            Span::styled("last:", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled(" Events ", Style::default().fg(color::title())),
+            Span::styled("\u{25b6} ", Style::default().fg(color::cyan())),
+            Span::styled(format!("{:.1}/s ", app.events_per_sec), Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:.1}/s ", peak_rate), Style::default().fg(color::inactive_fg())),
+            Span::styled("tot:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{} ", app.events_total), Style::default().fg(color::inactive_fg())),
+            Span::styled("last:", Style::default().fg(color::label_fg())),
             Span::styled(last_seen, Style::default().fg(last_color)),
         ])
     } else if area.width >= 40 {
         Line::from(vec![
-            Span::styled(" Events ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25b6} ", Style::default().fg(color::CYAN)),
-            Span::styled(format!("{:.1}/s ", app.events_per_sec), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.1}/s ", peak_rate), Style::default().fg(color::TEXT_DIM)),
-            Span::styled("tot: ", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{}", app.events_total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(" Events ", Style::default().fg(color::title())),
+            Span::styled("\u{25b6} ", Style::default().fg(color::cyan())),
+            Span::styled(format!("{:.1}/s ", app.events_per_sec), Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
+            Span::styled("pk:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:.1}/s ", peak_rate), Style::default().fg(color::inactive_fg())),
+            Span::styled("tot: ", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{}", app.events_total), Style::default().fg(color::inactive_fg())),
         ])
     } else {
         Line::from(vec![
-            Span::styled(" Events ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25b6} ", Style::default().fg(color::CYAN)),
-            Span::styled(format!("{:.1}/s", app.events_per_sec), Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled(" Events ", Style::default().fg(color::title())),
+            Span::styled("\u{25b6} ", Style::default().fg(color::cyan())),
+            Span::styled(format!("{:.1}/s", app.events_per_sec), Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
         ])
     };
 
@@ -952,7 +952,7 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    render_sparkline(f, inner, &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, Style::default().fg(color::cyan()), app.sparkline_style);
 }
 
 // ── Minion Activity Matrix ───────────────────────────────────────────────────
@@ -960,7 +960,7 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
 fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
     let elapsed = app.last_activity_at.elapsed().as_secs();
     let current_rate = app.current_sec_returns;
-    let rate_color = if current_rate > 0 { color::GREEN } else { color::TEXT_DIM };
+    let rate_color = if current_rate > 0 { color::green() } else { color::inactive_fg() };
 
     let mut total_returns: u64 = 0;
     for v in &app.activity_matrix { total_returns += v; }
@@ -975,13 +975,13 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
             format!("\u{2190} {} \u{2192} {} ({}m ago)", app.last_activity_minion, app.last_activity_fun, elapsed / 60)
         };
         Line::from(vec![
-            Span::styled(" Minions ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25c9} ", Style::default().fg(color::GREEN)),
+            Span::styled(" Minions ", Style::default().fg(color::title())),
+            Span::styled("\u{25c9} ", Style::default().fg(color::green())),
             Span::styled(format!("{}/s ", current_rate), Style::default().fg(rate_color).add_modifier(Modifier::BOLD)),
-            Span::styled("last: ", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{} ", last_str), Style::default().fg(color::TEXT_DIM)),
-            Span::styled("total:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{}", total_returns), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("last: ", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{} ", last_str), Style::default().fg(color::inactive_fg())),
+            Span::styled("total:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{}", total_returns), Style::default().fg(color::inactive_fg())),
         ])
     } else if area.width >= 40 {
         let last_str = if app.last_activity_minion.is_empty() {
@@ -990,16 +990,16 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
             format!("{}", app.last_activity_minion)
         };
         Line::from(vec![
-            Span::styled(" Minions ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25c9} ", Style::default().fg(color::GREEN)),
+            Span::styled(" Minions ", Style::default().fg(color::title())),
+            Span::styled("\u{25c9} ", Style::default().fg(color::green())),
             Span::styled(format!("{}/s ", current_rate), Style::default().fg(rate_color).add_modifier(Modifier::BOLD)),
-            Span::styled("last: ", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(last_str, Style::default().fg(color::TEXT_DIM)),
+            Span::styled("last: ", Style::default().fg(color::label_fg())),
+            Span::styled(last_str, Style::default().fg(color::inactive_fg())),
         ])
     } else {
         Line::from(vec![
-            Span::styled(" Minions ", Style::default().fg(color::TEXT_TITLE)),
-            Span::styled("\u{25c9} ", Style::default().fg(color::GREEN)),
+            Span::styled(" Minions ", Style::default().fg(color::title())),
+            Span::styled("\u{25c9} ", Style::default().fg(color::green())),
             Span::styled(format!("{}/s", current_rate), Style::default().fg(rate_color).add_modifier(Modifier::BOLD)),
         ])
     };
@@ -1023,7 +1023,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    render_sparkline(f, inner, &spark_data, Style::default().fg(color::GREEN), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, Style::default().fg(color::green()), app.sparkline_style);
 }
 
 // ── CPU / Memory history ────────────────────────────────────────────────────
@@ -1045,25 +1045,25 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
 
     let title = if area.width >= 70 {
         Line::from(vec![
-            Span::styled(" CPU ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(" CPU ", Style::default().fg(color::title())),
             Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
-            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.0}% ", peak_pct), Style::default().fg(color::TEXT_DIM)),
-            Span::styled("avg:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.0}% ", avg_pct), Style::default().fg(color::TEXT_DIM)),
-            Span::styled("load:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.1}/{:.1}/{:.1}", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("pk:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:.0}% ", peak_pct), Style::default().fg(color::inactive_fg())),
+            Span::styled("avg:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:.0}% ", avg_pct), Style::default().fg(color::inactive_fg())),
+            Span::styled("load:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:.1}/{:.1}/{:.1}", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15), Style::default().fg(color::inactive_fg())),
         ])
     } else if area.width >= 40 {
         Line::from(vec![
-            Span::styled(" CPU ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(" CPU ", Style::default().fg(color::title())),
             Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
-            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("pk:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::inactive_fg())),
         ])
     } else {
         Line::from(vec![
-            Span::styled(" CPU ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(" CPU ", Style::default().fg(color::title())),
             Span::styled(format!("{:.0}%", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
         ])
     };
@@ -1077,7 +1077,7 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner, &spark_data, Style::default().fg(color::GREEN), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, Style::default().fg(color::green()), app.sparkline_style);
 }
 
 fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
@@ -1095,25 +1095,25 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
 
     let title = if area.width >= 70 {
         Line::from(vec![
-            Span::styled(" Memory ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(" Memory ", Style::default().fg(color::title())),
             Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
-            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.0}% ", peak_pct), Style::default().fg(color::TEXT_DIM)),
-            Span::styled("avg:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.0}% ", avg_pct), Style::default().fg(color::TEXT_DIM)),
-            Span::styled("used:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{} MB / {} MB", mem_used_mb, mem_total_mb), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("pk:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:.0}% ", peak_pct), Style::default().fg(color::inactive_fg())),
+            Span::styled("avg:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:.0}% ", avg_pct), Style::default().fg(color::inactive_fg())),
+            Span::styled("used:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{} MB / {} MB", mem_used_mb, mem_total_mb), Style::default().fg(color::inactive_fg())),
         ])
     } else if area.width >= 40 {
         Line::from(vec![
-            Span::styled(" Memory ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(" Memory ", Style::default().fg(color::title())),
             Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
-            Span::styled("pk:", Style::default().fg(color::TEXT_LABEL)),
-            Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::TEXT_DIM)),
+            Span::styled("pk:", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::inactive_fg())),
         ])
     } else {
         Line::from(vec![
-            Span::styled(" Memory ", Style::default().fg(color::TEXT_TITLE)),
+            Span::styled(" Memory ", Style::default().fg(color::title())),
             Span::styled(format!("{:.0}%", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
         ])
     };
@@ -1127,7 +1127,7 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner, &spark_data, Style::default().fg(color::CYAN), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, Style::default().fg(color::cyan()), app.sparkline_style);
 }
 
 // ── Job Pulse ────────────────────────────────────────────────────────────────
@@ -1136,8 +1136,8 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
     let active_count = app.jobs.len();
 
     let title = Line::from(vec![
-        Span::styled(" Job Pulse ", Style::default().fg(color::TEXT_TITLE)),
-        Span::styled(format!("Active: {}", active_count), Style::default().fg(if active_count > 0 { color::CYAN } else { color::TEXT_DIM })),
+        Span::styled(" Job Pulse ", Style::default().fg(color::title())),
+        Span::styled(format!("Active: {}", active_count), Style::default().fg(if active_count > 0 { color::cyan() } else { color::inactive_fg() })),
     ]);
     let block = make_block_line(title);
     let inner = block.inner(area);
@@ -1149,23 +1149,23 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
     let partial = app.job_partial_pct().map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into());
 
     let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
-        Span::styled("  success:", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(success, Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled(" stuck:", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(stuck.to_string(), Style::default().fg(if stuck > 0 { color::ORANGE } else { color::TEXT_DIM }).add_modifier(Modifier::BOLD)),
-        Span::styled(" p50/p95:", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(format!("{:.1}s/{:.1}s", p50, p95), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled(" partial:", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(partial, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
+        Span::styled("  success:", Style::default().fg(color::label_fg())),
+        Span::styled(success, Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
+        Span::styled(" stuck:", Style::default().fg(color::label_fg())),
+        Span::styled(stuck.to_string(), Style::default().fg(if stuck > 0 { color::orange() } else { color::inactive_fg() }).add_modifier(Modifier::BOLD)),
+        Span::styled(" p50/p95:", Style::default().fg(color::label_fg())),
+        Span::styled(format!("{:.1}s/{:.1}s", p50, p95), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+        Span::styled(" partial:", Style::default().fg(color::label_fg())),
+        Span::styled(partial, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
     ])];
 
     if app.jobs.is_empty() {
         lines.push(Line::from(Span::styled(
             "  no active jobs",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
         f.render_widget(
-            Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+            Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
             inner,
         );
         return;
@@ -1188,9 +1188,9 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
             format!("{}?", job.returned)
         };
         let color = if job.target_count > 0 && job.returned >= job.target_count {
-            color::GREEN
+            color::green()
         } else {
-            color::YELLOW
+            color::yellow()
         };
 
         let fun_short = if job.fun.len() > 35 {
@@ -1200,13 +1200,13 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", fun_short), Style::default().fg(color::CYAN)),
+            Span::styled(format!("  {} ", fun_short), Style::default().fg(color::cyan())),
             Span::styled(progress, Style::default().fg(color).add_modifier(Modifier::BOLD)),
         ]));
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }
@@ -1223,15 +1223,15 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
     let stats = &app.api_stats;
 
     let title = Line::from(vec![
-        Span::styled(" salt-api ", Style::default().fg(color::TEXT_TITLE)),
+        Span::styled(" salt-api ", Style::default().fg(color::title())),
         if stats.reachable {
             // Recent rate (App::api_requests_per_sec_recent), not cpstats'
             // own Requests/Second -- that's a lifetime average since salt-api
             // started, which barely moves once uptime is more than a few
             // minutes and would make this look frozen on a long-running server.
-            Span::styled(format!("{:.1} req/s", app.api_requests_per_sec_recent), Style::default().fg(color::CYAN))
+            Span::styled(format!("{:.1} req/s", app.api_requests_per_sec_recent), Style::default().fg(color::cyan()))
         } else {
-            Span::styled("stats unavailable", Style::default().fg(color::TEXT_DIM))
+            Span::styled("stats unavailable", Style::default().fg(color::inactive_fg()))
         },
     ]);
     let block = make_block_line(title);
@@ -1250,8 +1250,8 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
             )
         };
         f.render_widget(
-            Paragraph::new(vec![Line::from(Span::styled(hint, Style::default().fg(color::TEXT_DIM)))])
-                .style(Style::default().bg(color::BG_DARK))
+            Paragraph::new(vec![Line::from(Span::styled(hint, Style::default().fg(color::inactive_fg())))])
+                .style(Style::default().bg(color::main_bg()))
                 .wrap(Wrap { trim: true }),
             inner,
         );
@@ -1261,33 +1261,33 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
     let err_pct = app.api_error_pct();
     let err_str = err_pct.map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into());
     let err_color = match err_pct {
-        Some(p) if p >= 10.0 => color::RED,
-        Some(p) if p > 0.0 => color::YELLOW,
-        Some(_) => color::GREEN,
-        None => color::TEXT_DIM,
+        Some(p) if p >= 10.0 => color::red(),
+        Some(p) if p > 0.0 => color::yellow(),
+        Some(_) => color::green(),
+        None => color::inactive_fg(),
     };
     let login_p95 = app.api_login_latency_p50_p95().map(|(_, p95)| p95);
     let login_str = login_p95.map(|s| format!("{:.2}s", s)).unwrap_or_else(|| "--".into());
     let login_color = match login_p95 {
-        Some(s) if s >= 3.0 => color::RED,
-        Some(s) if s >= 1.0 => color::YELLOW,
-        Some(_) => color::GREEN,
-        None => color::TEXT_DIM,
+        Some(s) if s >= 3.0 => color::red(),
+        Some(s) if s >= 1.0 => color::yellow(),
+        Some(_) => color::green(),
+        None => color::inactive_fg(),
     };
 
     let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
-        Span::styled("  current:", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(stats.current_requests.to_string(), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled(" total:", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(stats.total_requests.to_string(), Style::default().fg(color::TEXT_DIM)),
-        Span::styled(" errors:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled("  current:", Style::default().fg(color::label_fg())),
+        Span::styled(stats.current_requests.to_string(), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+        Span::styled(" total:", Style::default().fg(color::label_fg())),
+        Span::styled(stats.total_requests.to_string(), Style::default().fg(color::inactive_fg())),
+        Span::styled(" errors:", Style::default().fg(color::label_fg())),
         Span::styled(err_str, Style::default().fg(err_color).add_modifier(Modifier::BOLD)),
-        Span::styled(" login p95:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(" login p95:", Style::default().fg(color::label_fg())),
         Span::styled(login_str, Style::default().fg(login_color).add_modifier(Modifier::BOLD)),
-        Span::styled(" in/out:", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(" in/out:", Style::default().fg(color::label_fg())),
         Span::styled(
             format!("{} / {}", format_bytes(stats.bytes_read_per_sec), format_bytes(stats.bytes_written_per_sec)),
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         ),
     ])];
 
@@ -1299,13 +1299,13 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
         .collect();
     recent.sort_by(|a, b| b.processing_time_secs.partial_cmp(&a.processing_time_secs).unwrap_or(std::cmp::Ordering::Equal));
     if recent.is_empty() {
-        lines.push(Line::from(Span::styled("  no requests yet", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("  no requests yet", Style::default().fg(color::inactive_fg()))));
     } else {
         for rec in recent.iter().take(3) {
             let status_color = match rec.response_status.split_whitespace().next() {
-                Some(s) if s.starts_with('2') => color::GREEN,
-                Some(s) if s.starts_with('4') || s.starts_with('5') => color::RED,
-                _ => color::TEXT_DIM,
+                Some(s) if s.starts_with('2') => color::green(),
+                Some(s) if s.starts_with('4') || s.starts_with('5') => color::red(),
+                _ => color::inactive_fg(),
             };
             let line_short = if rec.request_line.len() > 40 {
                 format!("{}..", &rec.request_line[..38])
@@ -1313,15 +1313,15 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
                 rec.request_line.clone()
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("  {:<42}", line_short), Style::default().fg(color::CYAN)),
+                Span::styled(format!("  {:<42}", line_short), Style::default().fg(color::cyan())),
                 Span::styled(format!("{:<4}", rec.response_status), Style::default().fg(status_color)),
-                Span::styled(format!(" {:.2}s", rec.processing_time_secs), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!(" {:.2}s", rec.processing_time_secs), Style::default().fg(color::inactive_fg())),
             ]));
         }
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }

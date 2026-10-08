@@ -15,13 +15,13 @@ fn alert_cells(alert: &AlertEntry, col: Column, w: usize) -> Vec<Span<'static>> 
     let span = match col {
         Column::Severity => {
             let sev_color = match alert.severity {
-                crate::types::AlertSeverity::Info => color::CYAN,
-                crate::types::AlertSeverity::Warn => color::YELLOW,
-                crate::types::AlertSeverity::Crit => color::RED,
+                crate::types::AlertSeverity::Info => color::cyan(),
+                crate::types::AlertSeverity::Warn => color::yellow(),
+                crate::types::AlertSeverity::Crit => color::red(),
             };
             cell(alert.severity.label(), w, right, Style::default().fg(sev_color).add_modifier(Modifier::BOLD))
         }
-        Column::Rule => cell(alert.rule, w, right, Style::default().fg(color::CYAN)),
+        Column::Rule => cell(alert.rule, w, right, Style::default().fg(color::cyan())),
         Column::Description => {
             let detail_count = if alert.details.is_empty() {
                 String::new()
@@ -30,12 +30,12 @@ fn alert_cells(alert: &AlertEntry, col: Column, w: usize) -> Vec<Span<'static>> 
             };
             return cell_with_suffix(
                 &alert.description, &detail_count, w,
-                Style::default().fg(color::TEXT),
-                Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+                Style::default().fg(color::main_fg()),
+                Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
             );
         }
-        Column::Since => cell(&super::dashboard::format_duration(alert.active_since.elapsed().as_secs()), w, right, Style::default().fg(color::TEXT_DIM)),
-        Column::Count => cell(&alert.count.to_string(), w, right, Style::default().fg(color::TEXT)),
+        Column::Since => cell(&super::dashboard::format_duration(alert.active_since.elapsed().as_secs()), w, right, Style::default().fg(color::inactive_fg())),
+        Column::Count => cell(&alert.count.to_string(), w, right, Style::default().fg(color::main_fg())),
         _ => cell("", w, right, Style::default()),
     };
     vec![span]
@@ -58,8 +58,8 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &m
     hints.extend(super::table::hints(TableId::Alerts));
     let block = super::list_block_hinted(
         format!(" Alerts ({}) ", app.alert_engine.active_count()),
-        Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
-        color::BG_DARK,
+        Style::default().fg(if focused { color::border_focus() } else { color::border() }),
+        color::main_bg(),
         has_more_above,
         has_more_below,
         &hints,
@@ -75,20 +75,20 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &m
         let cursor = if app.filter_text.len() % 2 == 0 { '|' } else { ' ' };
         let filter_text = format!(" /{} {}", app.filter_text, cursor);
         lines.push(Line::from(vec![
-            Span::styled(filter_text, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(filter_text, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     } else if !app.filter_text_for(Tab::Alerts).is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.filter_text_for(Tab::Alerts)), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" /{}/ ", app.filter_text_for(Tab::Alerts)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     }
 
     if app.alert_engine.alerts.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No active alerts. Everything looks healthy.",
-            Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::green()).add_modifier(Modifier::BOLD),
         )));
     } else {
         let cols = app.columns(TableId::Alerts);
@@ -98,7 +98,7 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &m
         if total == 0 {
             lines.push(Line::from(Span::styled(
                 "  No alerts match the filter.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )));
         } else {
             for (idx, alert) in filtered.iter().enumerate().skip(scroll).take(visible) {
@@ -107,13 +107,13 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &m
                     row.extend(alert_cells(alert, col, w));
                 }
                 let line = Line::from(row);
-                lines.push(if idx == selected { color::selected_row(line, app.cursor_bg()) } else { line });
+                lines.push(if idx == selected { color::selected_row(line) } else { line });
             }
         }
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }

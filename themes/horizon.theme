@@ -1,0 +1,42 @@
+# salt-radar port of btop++'s horizon.theme
+# (https://github.com/aristocratos/btop, Apache-2.0)
+#
+# All graphs and meters can be gradients
+# For single color graphs leave "mid" and "end" variable empty.
+# Use "start" and "end" variables for two color gradient
+# Use "start", "mid" and "end" for three color gradient
+
+theme[main_bg]="#1c1e26"
+theme[meter_bg]="#20242b"
+theme[bar_bg]="#2b2d34"
+theme[popup_bg]="#23252c"
+theme[selected_bg]="#282b37"
+theme[border]="#3c4246"
+theme[border_focus]="#b877db"
+theme[div_line]="#3c4246"
+theme[main_fg]="#f8f8f2"
+theme[inactive_fg]="#666b6c"
+theme[label_fg]="#666b6c"
+theme[title]="#f8f8f2"
+theme[hi_fg]="#f8f8f2"
+theme[header_fg]="#dbbee8"
+theme[subtitle_fg]="#f8f8f2"
+theme[version_fg]="#5a96d2"
+theme[hint_fg]="#666b6c"
+theme[badge_bg]="#6a574f"
+theme[green]="#27d796"
+theme[cyan]="#25b2bc"
+theme[yellow]="#ffc850"
+theme[orange]="#fac29a"
+theme[red]="#e95678"
+theme[purple]="#b877db"
+theme[pulse_fresh]="#78ff78"
+theme[pulse_aging]="#fac29a"
+theme[tab_active_bg]="#232630"
+theme[tab_active_fg]="#b877db"
+theme[tab_inactive_fg]="#666b6c"
+theme[tab_separator]="#3c4246"
+theme[highlight_1]="#3282ff"
+theme[highlight_2]="#ff2dc8"
+theme[highlight_3]="#27d796"
+theme[highlight_4]="#b877db"

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use ratatui::style::Color;
 
 use crate::types::TableId;
+use crate::ui::color::Theme;
 
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
 /// directory wins if present (lets you keep a per-directory config, and
@@ -17,13 +18,99 @@ pub fn resolve_config_path() -> PathBuf {
         return cwd_path;
     }
 
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-
-    match config_home {
-        Some(dir) => dir.join("salt-radar").join("salt-radar.toml"),
+    match user_config_dir() {
+        Some(dir) => dir.join("salt-radar.toml"),
         None => cwd_path,
+    }
+}
+
+/// `$XDG_CONFIG_HOME/salt-radar`, falling back to `~/.config/salt-radar`.
+fn user_config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|dir| dir.join("salt-radar"))
+}
+
+pub const DEFAULT_THEME: &str = "Default";
+
+/// Where `*.theme` files are looked up, lowest priority first: the
+/// packaged themes, then the user's own (which win on a name clash).
+fn theme_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("/usr/share/salt-radar/themes")];
+    dirs.extend(user_config_dir().map(|d| d.join("themes")));
+    dirs
+}
+
+/// Names selectable as `color_theme`: the built-in `Default`, then every
+/// `*.theme` file found in `theme_dirs`, by file stem.
+pub fn theme_names() -> Vec<String> {
+    let mut names: Vec<String> = theme_dirs().iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension()? != "theme" { return None; }
+            Some(path.file_stem()?.to_string_lossy().into_owned())
+        })
+        .filter(|name| name != DEFAULT_THEME)
+        .collect();
+    names.sort();
+    names.dedup();
+    names.insert(0, DEFAULT_THEME.to_string());
+    names
+}
+
+/// Resolves `color_theme` — a theme name from `theme_names`, or a path to a
+/// `.theme` file — onto the built-in default; keys the file doesn't set (or
+/// sets to something unparseable) keep their default color, and an unknown
+/// theme is just the default.
+pub fn load_theme(name: &str) -> Theme {
+    let mut theme = Theme::DEFAULT;
+    if name == DEFAULT_THEME { return theme; }
+    let path = if name.contains('/') || name.ends_with(".theme") {
+        Some(PathBuf::from(name))
+    } else {
+        theme_dirs().into_iter().rev()
+            .map(|dir| dir.join(format!("{}.theme", name)))
+            .find(|p| p.is_file())
+    };
+    let Some(data) = path.and_then(|p| std::fs::read_to_string(p).ok()) else { return theme };
+    for line in data.lines() {
+        let Some((key, value)) = parse_theme_line(line) else { continue };
+        if let (Some(slot), Some(color)) = (theme.slot(key), parse_theme_color(value)) {
+            *slot = color;
+        }
+    }
+    theme
+}
+
+/// `theme[key]="value"` (btop's format); anything else is skipped.
+fn parse_theme_line(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim().strip_prefix("theme[")?;
+    let (key, rest) = rest.split_once(']')?;
+    let value = rest.trim_start().strip_prefix('=')?.trim();
+    Some((key.trim(), value.trim_matches('"')))
+}
+
+/// `#RRGGBB`, `#RR` (a gray level), or decimal `R G B`; empty means the
+/// terminal's own default color.
+fn parse_theme_color(value: &str) -> Option<Color> {
+    let value = value.trim();
+    if value.is_empty() { return Some(Color::Reset); }
+    if let Some(hex) = value.strip_prefix('#') {
+        if !hex.is_ascii() { return None; }
+        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+        return match hex.len() {
+            2 => byte(0).map(|v| Color::Rgb(v, v, v)),
+            6 => Some(Color::Rgb(byte(0)?, byte(2)?, byte(4)?)),
+            _ => None,
+        };
+    }
+    let rgb: Vec<u8> = value.split_whitespace().map(|v| v.parse().ok()).collect::<Option<_>>()?;
+    match rgb[..] {
+        [r, g, b] => Some(Color::Rgb(r, g, b)),
+        _ => None,
     }
 }
 
@@ -171,10 +258,11 @@ pub struct AppConfig {
     pub event_columns: String,
     pub alert_columns: String,
     pub api_request_columns: String,
-    /// Background of the selected (cursor) row in every table and list;
-    /// `cursor_color_hi` replaces it while high-contrast mode (`c`) is on.
-    pub cursor_color: Color,
-    pub cursor_color_hi: Color,
+    /// Theme name (see `theme_names`) or path to a `.theme` file.
+    pub color_theme: String,
+    /// When false, the theme's screen backgrounds are left to the
+    /// terminal (transparent); popups and the cursor keep theirs.
+    pub theme_background: bool,
 }
 
 impl AppConfig {
@@ -253,8 +341,8 @@ impl Default for AppConfig {
             event_columns: TableId::Events.default_columns().into(),
             alert_columns: TableId::Alerts.default_columns().into(),
             api_request_columns: TableId::ApiLog.default_columns().into(),
-            cursor_color: Color::Rgb(34, 54, 96),
-            cursor_color_hi: Color::Rgb(52, 84, 148),
+            color_theme: DEFAULT_THEME.into(),
+            theme_background: true,
         }
     }
 }
@@ -354,23 +442,8 @@ struct JobsConfig {
 
 #[derive(serde::Deserialize)]
 struct UiConfig {
-    cursor_color: Option<String>,
-    cursor_color_hi: Option<String>,
-}
-
-/// Parses a `#rrggbb` (or bare `rrggbb`) hex color.
-pub fn parse_hex_color(s: &str) -> Option<Color> {
-    let hex = s.trim().trim_start_matches('#');
-    if hex.len() != 6 || !hex.is_ascii() { return None; }
-    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
-    Some(Color::Rgb(byte(0)?, byte(2)?, byte(4)?))
-}
-
-pub fn hex_color(c: Color) -> String {
-    match c {
-        Color::Rgb(r, g, b) => format!("#{:02x}{:02x}{:02x}", r, g, b),
-        other => other.to_string(),
-    }
+    color_theme: Option<String>,
+    theme_background: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -476,8 +549,8 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          cache_columns = {:?}\n\
          \n\
          [ui]\n\
-         cursor_color = {:?}\n\
-         cursor_color_hi = {:?}\n",
+         color_theme = {:?}\n\
+         theme_background = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -538,8 +611,8 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.lookup_timeout_secs,
         config.jobs_live_columns,
         config.jobs_cache_columns,
-        hex_color(config.cursor_color),
-        hex_color(config.cursor_color_hi),
+        config.color_theme,
+        config.theme_background,
     );
     std::fs::write(path, toml)
 }
@@ -628,8 +701,8 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = j.cache_columns { cfg.jobs_cache_columns = v; }
             }
             if let Some(u) = toml_cfg.ui {
-                if let Some(v) = u.cursor_color.as_deref().and_then(parse_hex_color) { cfg.cursor_color = v; }
-                if let Some(v) = u.cursor_color_hi.as_deref().and_then(parse_hex_color) { cfg.cursor_color_hi = v; }
+                if let Some(v) = u.color_theme { cfg.color_theme = v; }
+                if let Some(v) = u.theme_background { cfg.theme_background = v; }
             }
         }
     }

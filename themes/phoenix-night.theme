@@ -1,0 +1,44 @@
+# salt-radar port of btop++'s phoenix-night.theme
+# (https://github.com/aristocratos/btop, Apache-2.0)
+#
+# Theme: Phoenix Night
+# By: Firehawke
+# A combination of:
+# Base theme colors from Pascal Jaeger's tokyo-night
+# Graph theme colors from Pete Allebone's HotPurpleTrafficLight
+# ...basically, I wanted most of Tokyo Night with a significantly more visible graph bar coloration.
+
+theme[main_bg]="#1a1b26"
+theme[meter_bg]="#2f3349"
+theme[bar_bg]="#272731"
+theme[popup_bg]="#1f202b"
+theme[selected_bg]="#414868"
+theme[border]="#565f89"
+theme[border_focus]="#565f89"
+theme[div_line]="#565f89"
+theme[main_fg]="#cfc9c2"
+theme[inactive_fg]="#626a8f"
+theme[label_fg]="#626a8f"
+theme[title]="#cfc9c2"
+theme[hi_fg]="#cfc9c2"
+theme[header_fg]="#9999a8"
+theme[subtitle_fg]="#9294a6"
+theme[version_fg]="#7dcfff"
+theme[hint_fg]="#626a8f"
+theme[badge_bg]="#6a472b"
+theme[green]="#00ff00"
+theme[cyan]="#7dcfff"
+theme[yellow]="#ffc850"
+theme[orange]="#ff9933"
+theme[red]="#ff0000"
+theme[purple]="#b478ff"
+theme[pulse_fresh]="#78ff78"
+theme[pulse_aging]="#ff9933"
+theme[tab_active_bg]="#31364e"
+theme[tab_active_fg]="#7dcfff"
+theme[tab_inactive_fg]="#626a8f"
+theme[tab_separator]="#565f89"
+theme[highlight_1]="#676d86"
+theme[highlight_2]="#ff2dc8"
+theme[highlight_3]="#00e6aa"
+theme[highlight_4]="#aa50ff"

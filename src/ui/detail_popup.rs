@@ -34,10 +34,9 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let area = centered_rect(85, 85, f.area());
             f.render_widget(Clear, area);
             let clipboard_at = app.clipboard_at;
-            let cursor_bg = app.cursor_bg();
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, clipboard_at, save_at, clipboard_msg, cursor_bg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -74,7 +73,7 @@ pub fn draw_sniffer_overlay(f: &mut Frame, app: &App) {
     let Some(ref state) = app.sniffer else { return };
     let area = centered_rect(80, 85, f.area());
     f.render_widget(Clear, area);
-    draw_event_sniffer(f, area, state, app.clipboard_at, app.save_at, app.cursor_bg(), app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+    draw_event_sniffer(f, area, state, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
 }
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -104,12 +103,12 @@ fn header_lines(title: &str, area_width: u16) -> Vec<Line<'static>> {
         Line::from(Span::styled(
             format!("  {}", title),
             Style::default()
-                .fg(color::TEXT_TITLE)
+                .fg(color::title())
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
             format!("  {}", rule),
-            Style::default().fg(Color::Rgb(35, 50, 80)),
+            Style::default().fg(color::div_line()),
         )),
         Line::from(""),
     ]
@@ -119,7 +118,7 @@ fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> 
     Line::from(vec![
         Span::styled(
             format!("  {:<20}", label),
-            Style::default().fg(color::TEXT_LABEL),
+            Style::default().fg(color::label_fg()),
         ),
         Span::styled(value, Style::default().fg(value_color).add_modifier(Modifier::BOLD)),
     ])
@@ -154,16 +153,16 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
     f.render_widget(Clear, area);
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER_HI))
-        .style(Style::default().bg(color::BG_POPUP));
+        .border_style(Style::default().fg(color::border_focus()))
+        .style(Style::default().bg(color::popup_bg()));
     if more.0 {
-        block = block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::BORDER_HI))).right_aligned());
+        block = block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::border_focus()))).right_aligned());
     }
     if !hints.is_empty() {
-        block = block.title_bottom(super::border_hints(hints, color::BORDER_HI).left_aligned());
+        block = block.title_bottom(super::border_hints(hints, color::border_focus()).left_aligned());
     }
     if more.1 {
-        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::BORDER_HI))).right_aligned());
+        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::border_focus()))).right_aligned());
     }
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -174,7 +173,7 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
         f.render_widget(
-            Paragraph::new(status_line).style(Style::default().bg(color::BG_POPUP)),
+            Paragraph::new(status_line).style(Style::default().bg(color::popup_bg())),
             chunks[1],
         );
         chunks[0]
@@ -185,7 +184,7 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
     let pinned_header = pinned_header.min(lines.len());
     if pinned_header == 0 {
         f.render_widget(
-            Paragraph::new(lines.to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::BG_POPUP)),
+            Paragraph::new(lines.to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::popup_bg())),
             body_area,
         );
     } else {
@@ -194,11 +193,11 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
             .constraints([Constraint::Length(pinned_header as u16), Constraint::Min(0)])
             .split(body_area);
         f.render_widget(
-            Paragraph::new(lines[..pinned_header].to_vec()).style(Style::default().bg(color::BG_POPUP)),
+            Paragraph::new(lines[..pinned_header].to_vec()).style(Style::default().bg(color::popup_bg())),
             split[0],
         );
         f.render_widget(
-            Paragraph::new(lines[pinned_header..].to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::BG_POPUP)),
+            Paragraph::new(lines[pinned_header..].to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::popup_bg())),
             split[1],
         );
     }
@@ -217,7 +216,7 @@ fn clipboard_status(clipboard_at: Option<std::time::Instant>, save_at: Option<st
     if show_saved {
         return Some(Line::from(Span::styled(
             "  \u{2713} Saved                                 ",
-            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+            Style::default().fg(super::color::green()).add_modifier(Modifier::BOLD),
         )));
     }
     let show_copied = clipboard_at
@@ -226,13 +225,13 @@ fn clipboard_status(clipboard_at: Option<std::time::Instant>, save_at: Option<st
     if show_copied {
         return Some(Line::from(Span::styled(
             "  \u{2713} Copied                                ",
-            Style::default().fg(super::color::GREEN).add_modifier(Modifier::BOLD),
+            Style::default().fg(super::color::green()).add_modifier(Modifier::BOLD),
         )));
     }
     if let Some(warn) = clipboard_warning {
         return Some(Line::from(Span::styled(
             format!("  \u{26a0} {}", warn),
-            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
+            Style::default().fg(super::color::yellow()).add_modifier(Modifier::BOLD),
         )));
     }
     None
@@ -246,19 +245,19 @@ fn clipboard_status(clipboard_at: Option<std::time::Instant>, save_at: Option<st
 fn grain_value_style(line: &str) -> Style {
     let trimmed = line.trim().trim_end_matches(',');
     if trimmed == "true" {
-        Style::default().fg(color::GREEN)
+        Style::default().fg(color::green())
     } else if trimmed == "false" {
-        Style::default().fg(color::RED)
+        Style::default().fg(color::red())
     } else if trimmed == "null" {
-        Style::default().fg(color::TEXT_DIM)
+        Style::default().fg(color::inactive_fg())
     } else if matches!(trimmed, "[" | "]" | "{" | "}" | "[]" | "{}") {
-        Style::default().fg(color::TEXT_DIM)
+        Style::default().fg(color::inactive_fg())
     } else if trimmed.starts_with('"') {
-        Style::default().fg(color::TEXT)
+        Style::default().fg(color::main_fg())
     } else if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
-        Style::default().fg(color::YELLOW)
+        Style::default().fg(color::yellow())
     } else {
-        Style::default().fg(color::TEXT)
+        Style::default().fg(color::main_fg())
     }
 }
 
@@ -306,27 +305,27 @@ fn nested_push(out: &mut Vec<Line<'static>>, indent: usize, fg: Color, prefix: &
     let pad = " ".repeat(indent);
     let mut spans = vec![Span::styled(format!("{}{}{}", pad, prefix, msg), Style::default().fg(fg))];
     if !suffix.is_empty() {
-        spans.push(Span::styled(suffix.to_string(), Style::default().fg(color::TEXT)));
+        spans.push(Span::styled(suffix.to_string(), Style::default().fg(color::main_fg())));
     }
     out.push(Line::from(spans));
 }
 
 fn nested_display(value: &serde_json::Value, indent: usize, prefix: &str, retcode: i64, out: &mut Vec<Line<'static>>) {
     match value {
-        serde_json::Value::Null => nested_push(out, indent, color::YELLOW, prefix, "None", ""),
-        serde_json::Value::Bool(b) => nested_push(out, indent, color::YELLOW, prefix, if *b { "True" } else { "False" }, ""),
-        serde_json::Value::Number(n) => nested_push(out, indent, color::YELLOW, prefix, &n.to_string(), ""),
+        serde_json::Value::Null => nested_push(out, indent, color::yellow(), prefix, "None", ""),
+        serde_json::Value::Bool(b) => nested_push(out, indent, color::yellow(), prefix, if *b { "True" } else { "False" }, ""),
+        serde_json::Value::Number(n) => nested_push(out, indent, color::yellow(), prefix, &n.to_string(), ""),
         serde_json::Value::String(s) => {
             if !s.is_empty() {
                 let cont_prefix = " ".repeat(prefix.chars().count());
                 for (i, line) in s.lines().enumerate() {
                     let p: &str = if i == 0 { prefix } else { &cont_prefix };
-                    nested_push(out, indent, color::GREEN, p, line, "");
+                    nested_push(out, indent, color::green(), p, line, "");
                 }
             }
         }
         serde_json::Value::Array(arr) => {
-            let list_color = if retcode != 0 { color::RED } else { color::GREEN };
+            let list_color = if retcode != 0 { color::red() } else { color::green() };
             for item in arr {
                 match item {
                     serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
@@ -339,7 +338,7 @@ fn nested_display(value: &serde_json::Value, indent: usize, prefix: &str, retcod
             }
         }
         serde_json::Value::Object(map) => {
-            let dict_color = if retcode != 0 { color::RED } else { color::CYAN };
+            let dict_color = if retcode != 0 { color::red() } else { color::cyan() };
             if indent > 0 {
                 nested_push(out, indent, dict_color, "", "----------", "");
             }
@@ -368,7 +367,7 @@ fn nested_display(value: &serde_json::Value, indent: usize, prefix: &str, retcod
 
 fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo, ping_state: &PingState, grains: &Option<Vec<(String, String)>>, grains_scroll: usize, app: &App) -> usize {
     let mut lines = header_lines(" Minion Detail ", area.width);
-    lines.push(row("ID", minion.id.clone(), color::CYAN));
+    lines.push(row("ID", minion.id.clone(), color::cyan()));
 
     let key_status_text = match minion.key_status {
         Some(KeyStatus::Accepted) => "accepted".to_string(),
@@ -378,10 +377,10 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
         None => "unknown".to_string(),
     };
     let key_status_color = match minion.key_status {
-        Some(KeyStatus::Accepted) => color::GREEN,
-        Some(KeyStatus::Pending) => color::YELLOW,
-        Some(KeyStatus::Rejected) | Some(KeyStatus::Denied) => color::RED,
-        None => color::TEXT_DIM,
+        Some(KeyStatus::Accepted) => color::green(),
+        Some(KeyStatus::Pending) => color::yellow(),
+        Some(KeyStatus::Rejected) | Some(KeyStatus::Denied) => color::red(),
+        None => color::inactive_fg(),
     };
     lines.push(row("Key Status", key_status_text, key_status_color));
 
@@ -389,17 +388,17 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     let (connected_text, connected_color) = match *ping_state {
         PingState::Idle => (
             "Admin mode required (press 'a')".to_string(),
-            color::TEXT_DIM,
+            color::inactive_fg(),
         ),
         PingState::Pinging(started) => {
             if started.elapsed().as_secs() > 15 {
-                ("test.ping timed out".to_string(), color::RED)
+                ("test.ping timed out".to_string(), color::red())
             } else {
-                ("test.ping in progress...".to_string(), color::YELLOW)
+                ("test.ping in progress...".to_string(), color::yellow())
             }
         },
-        PingState::Result(true) => ("connected".to_string(), color::GREEN),
-        PingState::Result(false) => ("disconnected".to_string(), color::RED),
+        PingState::Result(true) => ("connected".to_string(), color::green()),
+        PingState::Result(false) => ("disconnected".to_string(), color::red()),
     };
     lines.push(row("Connection", connected_text, connected_color));
 
@@ -411,24 +410,24 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     } else {
         minion.os.clone()
     };
-    lines.push(row("OS", os_display, color::GREEN));
+    lines.push(row("OS", os_display, color::green()));
     if !minion.osfinger.is_empty() && !minion.osrelease.is_empty() {
-        lines.push(row("OS Release", minion.osrelease.clone(), color::TEXT));
+        lines.push(row("OS Release", minion.osrelease.clone(), color::main_fg()));
     }
 
     // Grains information
-    lines.push(row("Salt Version", minion.salt_version.clone(), color::YELLOW));
-    lines.push(row("CPU Arch", minion.cpuarch.clone(), color::TEXT));
+    lines.push(row("Salt Version", minion.salt_version.clone(), color::yellow()));
+    lines.push(row("CPU Arch", minion.cpuarch.clone(), color::main_fg()));
 
     // Last seen information
-    lines.push(row("Last Seen", format_epoch(minion.last_seen_epoch), color::TEXT_DIM));
+    lines.push(row("Last Seen", format_epoch(minion.last_seen_epoch), color::inactive_fg()));
 
     // ── Grains section ────────────────────────────────────────────────────
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("  \u{2500}\u{2500}\u{2500}\u{2500} ", Style::default().fg(Color::Rgb(35, 50, 80))),
-        Span::styled("Full Grains", Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {}", "\u{2500}".repeat((area.width as usize).saturating_sub(21))), Style::default().fg(Color::Rgb(35, 50, 80))),
+        Span::styled("  \u{2500}\u{2500}\u{2500}\u{2500} ", Style::default().fg(color::div_line())),
+        Span::styled("Full Grains", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {}", "\u{2500}".repeat((area.width as usize).saturating_sub(21))), Style::default().fg(color::div_line())),
     ]));
 
     let mut more_above = false;
@@ -439,12 +438,12 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
             if app.admin_mode {
                 lines.push(Line::from(Span::styled(
                     "  Press 'g' to retrieve full grains from this minion",
-                    Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+                    Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
                 )));
             } else {
                 lines.push(Line::from(Span::styled(
                     "  Admin mode required to fetch grains (press 'a')",
-                    Style::default().fg(color::TEXT_DIM),
+                    Style::default().fg(color::inactive_fg()),
                 )));
             }
         }
@@ -452,7 +451,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
             if pairs.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "  Loading grains...",
-                    Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+                    Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
                 )));
             } else {
                 // Compute available height for grains. Scroll is by grain
@@ -485,7 +484,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
                     if val.contains('\n') {
                         lines.push(Line::from(Span::styled(
                             format!("  {}:", key),
-                            Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
+                            Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD),
                         )));
                         rendered += 1;
                         for l in std::iter::once(first).chain(val_lines) {
@@ -495,7 +494,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
                         }
                     } else {
                         lines.push(Line::from(vec![
-                            Span::styled(format!("  {}: ", key), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("  {}: ", key), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
                             Span::styled(first.to_string(), grain_value_style(first)),
                         ]));
                         rendered += 1;
@@ -561,13 +560,13 @@ pub(crate) fn pretty_return_lines(minion_id: &str, value: &serde_json::Value, re
 
 fn hs_field(label: &str, value: &str, value_color: Color) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{:>12}: ", label), Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("{:>12}: ", label), Style::default().fg(color::label_fg())),
         Span::styled(value.to_string(), Style::default().fg(value_color)),
     ])
 }
 
 fn hs_field_empty(label: &str) -> Line<'static> {
-    Line::from(Span::styled(format!("{:>12}:", label), Style::default().fg(color::TEXT_LABEL)))
+    Line::from(Span::styled(format!("{:>12}:", label), Style::default().fg(color::label_fg())))
 }
 
 fn hs_dashes(n: usize, color_: Color) -> Line<'static> {
@@ -585,7 +584,7 @@ fn hs_dashes(n: usize, color_: Color) -> Line<'static> {
 fn highstate_lines(minion_id: &str, map: &serde_json::Map<String, serde_json::Value>) -> Vec<Line<'static>> {
     let mut out = vec![Line::from(Span::styled(
         format!("{}:", minion_id),
-        Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD),
+        Style::default().fg(color::title()).add_modifier(Modifier::BOLD),
     ))];
 
     let mut entries: Vec<(&String, &serde_json::Value)> = map.iter().collect();
@@ -597,7 +596,7 @@ fn highstate_lines(minion_id: &str, map: &serde_json::Map<String, serde_json::Va
     let mut total_duration = 0f64;
 
     for (tag, v) in &entries {
-        out.push(hs_dashes(10, color::TEXT_DIM));
+        out.push(hs_dashes(10, color::inactive_fg()));
 
         let comps: Vec<&str> = tag.split("_|-").collect();
         let (module, id, name, function) = if comps.len() == 4 {
@@ -605,33 +604,33 @@ fn highstate_lines(minion_id: &str, map: &serde_json::Map<String, serde_json::Va
         } else {
             ("", tag.as_str(), tag.as_str(), "")
         };
-        out.push(hs_field("ID", id, color::TEXT_HI));
+        out.push(hs_field("ID", id, color::hi_fg()));
         if name != id {
-            out.push(hs_field("Name", name, color::TEXT_HI));
+            out.push(hs_field("Name", name, color::hi_fg()));
         }
-        out.push(hs_field("Function", &format!("{}.{}", module, function), color::CYAN));
+        out.push(hs_field("Function", &format!("{}.{}", module, function), color::cyan()));
 
         let result = v.get("result");
         let (result_str, result_color) = match result {
-            Some(serde_json::Value::Bool(true)) => ("True".to_string(), color::GREEN),
-            Some(serde_json::Value::Bool(false)) => ("False".to_string(), color::RED),
-            Some(serde_json::Value::Null) | None => ("None".to_string(), color::YELLOW),
-            Some(other) => (other.to_string(), color::TEXT),
+            Some(serde_json::Value::Bool(true)) => ("True".to_string(), color::green()),
+            Some(serde_json::Value::Bool(false)) => ("False".to_string(), color::red()),
+            Some(serde_json::Value::Null) | None => ("None".to_string(), color::yellow()),
+            Some(other) => (other.to_string(), color::main_fg()),
         };
         out.push(hs_field("Result", &result_str, result_color));
 
         let comment = v.get("comment").and_then(|c| c.as_str()).unwrap_or("");
         let mut comment_lines = comment.lines();
-        out.push(hs_field("Comment", comment_lines.next().unwrap_or(""), color::TEXT));
+        out.push(hs_field("Comment", comment_lines.next().unwrap_or(""), color::main_fg()));
         for cont in comment_lines {
-            out.push(Line::from(Span::styled(format!("              {}", cont), Style::default().fg(color::TEXT))));
+            out.push(Line::from(Span::styled(format!("              {}", cont), Style::default().fg(color::main_fg()))));
         }
 
         let started = v.get("start_time").and_then(|s| s.as_str()).unwrap_or("");
-        out.push(hs_field("Started", started, color::TEXT_DIM));
+        out.push(hs_field("Started", started, color::inactive_fg()));
 
         let duration = v.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0);
-        out.push(hs_field("Duration", &format!("{} ms", duration), color::TEXT_DIM));
+        out.push(hs_field("Duration", &format!("{} ms", duration), color::inactive_fg()));
         total_duration += duration;
 
         let changes = v.get("changes");
@@ -658,27 +657,27 @@ fn highstate_lines(minion_id: &str, map: &serde_json::Map<String, serde_json::Va
     out.push(Line::from(""));
     out.push(Line::from(Span::styled(
         format!("Summary for {}", minion_id),
-        Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD),
+        Style::default().fg(color::title()).add_modifier(Modifier::BOLD),
     )));
-    out.push(hs_dashes(12, color::TEXT_DIM));
+    out.push(hs_dashes(12, color::inactive_fg()));
     let succ_label = if changed > 0 {
         format!("{:<11}{}  (changed={})", "Succeeded:", succeeded, changed)
     } else {
         format!("{:<11}{}", "Succeeded:", succeeded)
     };
-    out.push(Line::from(Span::styled(succ_label, Style::default().fg(color::GREEN))));
+    out.push(Line::from(Span::styled(succ_label, Style::default().fg(color::green()))));
     out.push(Line::from(Span::styled(
         format!("{:<11}{}", "Failed:", failed),
-        Style::default().fg(if failed > 0 { color::RED } else { color::TEXT }),
+        Style::default().fg(if failed > 0 { color::red() } else { color::main_fg() }),
     )));
-    out.push(hs_dashes(12, color::TEXT_DIM));
+    out.push(hs_dashes(12, color::inactive_fg()));
     out.push(Line::from(Span::styled(
         format!("Total states run:     {}", entries.len()),
-        Style::default().fg(color::TEXT),
+        Style::default().fg(color::main_fg()),
     )));
     out.push(Line::from(Span::styled(
         format!("Total run time: {:>8.3} ms", total_duration),
-        Style::default().fg(color::TEXT),
+        Style::default().fg(color::main_fg()),
     )));
 
     out
@@ -698,25 +697,25 @@ fn raw_json_lines(evt: &crate::types::SaltEvent, highlight: Option<&str>) -> Vec
                 while let Some(pos) = remaining.find(h) {
                     let before = &remaining[..pos];
                     if !before.is_empty() {
-                        spans.push(Span::styled(before.to_string(), Style::default().fg(color::TEXT)));
+                        spans.push(Span::styled(before.to_string(), Style::default().fg(color::main_fg())));
                     }
-                    spans.push(Span::styled(h.to_string(), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)));
+                    spans.push(Span::styled(h.to_string(), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)));
                     remaining = &remaining[pos + h.len()..];
                 }
                 if !remaining.is_empty() {
-                    spans.push(Span::styled(remaining.to_string(), Style::default().fg(color::TEXT)));
+                    spans.push(Span::styled(remaining.to_string(), Style::default().fg(color::main_fg())));
                 }
                 return Line::from(spans);
             }
         }
-        Line::from(Span::styled(line.to_string(), Style::default().fg(color::TEXT)))
+        Line::from(Span::styled(line.to_string(), Style::default().fg(color::main_fg())))
     }).collect()
 }
 
 fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
     let mut lines = header_lines(" Event Detail ", area.width);
-    lines.push(row("Tag", evt.tag.clone(), color::CYAN));
-    lines.push(row("Timestamp", format_ts(evt.ts), color::TEXT_DIM));
+    lines.push(row("Tag", evt.tag.clone(), color::cyan()));
+    lines.push(row("Timestamp", format_ts(evt.ts), color::inactive_fg()));
     lines.push(Line::from(""));
 
     let body_lines: Vec<Line<'static>> = if pretty {
@@ -724,7 +723,7 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
             // Real `salt-run jobs.lookup_jid` text has arrived — authoritative
             // colors/formatting, matching Job Detail exactly.
             (crate::types::PrettyFetch::Ready(text), _) => {
-                App::ansi_text_to_lines(text, Style::default().fg(color::TEXT))
+                App::ansi_text_to_lines(text, Style::default().fg(color::main_fg()))
             }
             // Fetch is still in flight for a job-return event: show the raw
             // JSON rather than the client-side approximation. The
@@ -765,7 +764,7 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
         if pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Loading) {
             Some(Line::from(Span::styled(
                 "  Fetching real salt-run output...",
-                Style::default().fg(color::YELLOW),
+                Style::default().fg(color::yellow()),
             )))
         } else {
             None
@@ -792,7 +791,6 @@ fn draw_job_detail(
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
     clipboard_warning: Option<&str>,
-    cursor_bg: Color,
 ) {
     // ── Outer frame ──
     f.render_widget(Clear, area);
@@ -800,23 +798,23 @@ fn draw_job_detail(
     let status = clipboard_status(clipboard_at, save_at, clipboard_warning);
     let outer_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER_HI))
-        .style(Style::default().bg(color::BG_POPUP))
-        .title_bottom(super::border_hints(&hints, color::BORDER_HI).left_aligned());
+        .border_style(Style::default().fg(color::border_focus()))
+        .style(Style::default().bg(color::popup_bg()))
+        .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned());
     let outer_inner = outer_block.inner(area);
     f.render_widget(outer_block, area);
 
     // ── Build header lines (JID, metadata) ──
     let short_jid: String = jid.chars().take(28).collect();
     let mut jid_line = vec![Span::styled(format!("  Job {}", short_jid),
-        Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD))];
+        Style::default().fg(color::title()).add_modifier(Modifier::BOLD))];
     // Per-lookup timing from the agent (salt-run subprocess + our own
     // post-processing) — right here in the header so a slow lookup is
     // visible without having to go dig through the agent's stderr log.
     if let Some(l) = lookup.as_ref() {
         if l.subprocess_secs > 0.0 || l.postprocess_secs > 0.0 {
             let total = l.subprocess_secs + l.postprocess_secs;
-            let timing_color = if total >= 10.0 { color::ORANGE } else { color::TEXT_DIM };
+            let timing_color = if total >= 10.0 { color::orange() } else { color::inactive_fg() };
             jid_line.push(Span::styled(
                 format!("  (salt-run {:.1}s, parse {:.1}s)", l.subprocess_secs, l.postprocess_secs),
                 Style::default().fg(timing_color),
@@ -834,12 +832,12 @@ fn draw_job_detail(
     } else { String::new() };
     let returns_str = lookup.as_ref().map_or(String::new(), |l| format!("  Returns: {}", l.returns.len()));
     header_lines.push(Line::from(vec![
-        Span::styled(format!("  Fun: "), Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(job_fun.to_string(), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  Tgt: "), Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(job_tgt.to_string(), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-        Span::styled(epoch_str, Style::default().fg(color::TEXT_DIM)),
-        Span::styled(returns_str, Style::default().fg(color::TEXT_LABEL)),
+        Span::styled(format!("  Fun: "), Style::default().fg(color::label_fg())),
+        Span::styled(job_fun.to_string(), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  Tgt: "), Style::default().fg(color::label_fg())),
+        Span::styled(job_tgt.to_string(), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+        Span::styled(epoch_str, Style::default().fg(color::inactive_fg())),
+        Span::styled(returns_str, Style::default().fg(color::label_fg())),
     ]));
     let header_h = (header_lines.len() + 1) as u16; // +1 for spacing after header
 
@@ -853,7 +851,7 @@ fn draw_job_detail(
 
     // Render header
     f.render_widget(
-        Paragraph::new(header_lines).style(Style::default().bg(color::BG_POPUP)),
+        Paragraph::new(header_lines).style(Style::default().bg(color::popup_bg())),
         vert[0],
     );
 
@@ -865,15 +863,15 @@ fn draw_job_detail(
     .split(vert[1]);
 
     // ── Build LEFT panel: compact return list ──
-    let left_border_color = if !panel_focus { color::BORDER_HI } else { color::BORDER };
+    let left_border_color = if !panel_focus { color::border_focus() } else { color::border() };
     let left_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(left_border_color))
         .title(Line::from(super::bracket_title(vec![Span::styled(
             format!("Returns ({})", lookup.as_ref().map_or(0, |l| l.returns.len())),
-            Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::title()).add_modifier(Modifier::BOLD),
         )], left_border_color)))
-        .style(Style::default().bg(color::BG_POPUP));
+        .style(Style::default().bg(color::popup_bg()));
     let left_inner = left_block.inner(horiz[0]);
     f.render_widget(&left_block, horiz[0]);
 
@@ -884,16 +882,16 @@ fn draw_job_detail(
         if l.returns.is_empty() && !l.error.is_empty() {
             left_lines.push(Line::from(Span::styled(
                 "  Lookup failed:",
-                Style::default().fg(color::RED).add_modifier(Modifier::BOLD),
+                Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
             )));
             left_lines.push(Line::from(Span::styled(
                 format!("  {}", l.error),
-                Style::default().fg(color::RED),
+                Style::default().fg(color::red()),
             )));
         } else if l.returns.is_empty() {
             left_lines.push(Line::from(Span::styled(
                 "  No returns yet.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )));
         } else {
             for (i, ret) in l.returns.iter().enumerate() {
@@ -903,16 +901,16 @@ fn draw_job_detail(
                 let cursor = if i == sel { "\u{25b6}" } else { " " };
                 let (live_retcode, live_success) = crate::app::derive_success_retcode(&ret.full_return);
                 let status = if live_success { "OK" } else { "FAIL" };
-                let sc = if live_success { color::GREEN } else { color::RED };
+                let sc = if live_success { color::green() } else { color::red() };
                 let line = Line::from(vec![
                     Span::styled(format!(" {} {}: ", cursor, ret.minion_id),
-                        Style::default().fg(if i == sel { color::CYAN } else { color::TEXT })
+                        Style::default().fg(if i == sel { color::cyan() } else { color::main_fg() })
                             .add_modifier(if i == sel { Modifier::BOLD } else { Modifier::empty() })),
                     Span::styled(status, Style::default().fg(sc).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!(" (retcode={})", live_retcode), Style::default().fg(color::TEXT_DIM)),
+                    Span::styled(format!(" (retcode={})", live_retcode), Style::default().fg(color::inactive_fg())),
                 ]);
                 sel_shown |= i == sel;
-                left_lines.push(if i == sel { color::selected_row(line, cursor_bg) } else { line });
+                left_lines.push(if i == sel { color::selected_row(line) } else { line });
             }
         }
         let sel_vis_idx = if return_filter.is_empty() || return_is_filtering {
@@ -923,7 +921,7 @@ fn draw_job_detail(
         if left_lines.is_empty() {
             left_lines.push(Line::from(Span::styled(
                 "  No matching hosts.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )));
         }
         // The filter bar overlays the panel's last row while typing.
@@ -932,23 +930,23 @@ fn draw_job_detail(
         f.render_widget(
             Paragraph::new(left_lines)
                 .scroll((left_scroll as u16, 0))
-                .style(Style::default().bg(color::BG_POPUP)),
+                .style(Style::default().bg(color::popup_bg())),
             left_inner,
         );
         // The row's own style only covers its text; extend the cursor bar
         // across the panel like the padded table rows.
         if sel_shown && sel_vis_idx >= left_scroll && sel_vis_idx < left_scroll + left_list_h {
             let row = Rect { y: left_inner.y + (sel_vis_idx - left_scroll) as u16, height: 1, ..left_inner };
-            f.buffer_mut().set_style(row, color::select_bg(cursor_bg));
+            f.buffer_mut().set_style(row, color::select_bg());
         }
     } else {
         left_lines.push(Line::from(Span::styled(
             "  Querying master...",
-            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         )));
         f.render_widget(
             Paragraph::new(left_lines)
-                .style(Style::default().bg(color::BG_POPUP)),
+                .style(Style::default().bg(color::popup_bg())),
             left_inner,
         );
     }
@@ -957,9 +955,9 @@ fn draw_job_detail(
     if return_is_filtering {
         let filter_bar = Paragraph::new(Line::from(Span::styled(
             format!("  Filter: {}_", return_filter),
-            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         )))
-        .style(Style::default().bg(color::BG_POPUP));
+        .style(Style::default().bg(color::popup_bg()));
         // Draw filter bar at bottom of left panel
         let filter_area = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
             .split(left_inner)[1];
@@ -967,7 +965,7 @@ fn draw_job_detail(
     }
 
     // ── Build RIGHT panel: return content preview ──
-    let right_border_color = if panel_focus { color::BORDER_HI } else { color::BORDER };
+    let right_border_color = if panel_focus { color::border_focus() } else { color::border() };
     let right_border_style = Style::default().fg(right_border_color);
     let right_title_text = if let Some(ref l) = lookup {
         let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
@@ -982,7 +980,7 @@ fn draw_job_detail(
         if sel < l.returns.len() {
             let ret = &l.returns[sel];
             if !ret.formatted_text.is_empty() {
-                right_lines.extend(crate::app::App::ansi_text_to_lines(&ret.formatted_text, Style::default().fg(color::TEXT)));
+                right_lines.extend(crate::app::App::ansi_text_to_lines(&ret.formatted_text, Style::default().fg(color::main_fg())));
             } else {
                 // `salt-run jobs.lookup_jid` never passes an explicit `_retcode`
                 // to the nested outputter (that kwarg is a `salt`/exec-module
@@ -996,13 +994,13 @@ fn draw_job_detail(
         } else {
             right_lines.push(Line::from(Span::styled(
                 "  No return data.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )));
         }
     } else {
         right_lines.push(Line::from(Span::styled(
             "  Querying Salt master...",
-            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         )));
     }
 
@@ -1023,9 +1021,9 @@ fn draw_job_detail(
         .border_style(right_border_style)
         .title(Line::from(super::bracket_title(vec![Span::styled(
             right_title_text,
-            Style::default().fg(if panel_focus { color::CYAN } else { color::TEXT_TITLE }).add_modifier(Modifier::BOLD),
+            Style::default().fg(if panel_focus { color::cyan() } else { color::title() }).add_modifier(Modifier::BOLD),
         )], right_border_color)))
-        .style(Style::default().bg(color::BG_POPUP));
+        .style(Style::default().bg(color::popup_bg()));
     if more_above {
         right_block = right_block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(right_border_color))).right_aligned());
     }
@@ -1038,14 +1036,14 @@ fn draw_job_detail(
     f.render_widget(
         Paragraph::new(right_lines)
             .scroll((effective_scroll as u16, 0))
-            .style(Style::default().bg(color::BG_POPUP)),
+            .style(Style::default().bg(color::popup_bg())),
         right_inner,
     );
 
     // ── Status (transient only — shortcuts are in the outer border) ──
     if let Some(status_line) = status {
         f.render_widget(
-            Paragraph::new(status_line).style(Style::default().bg(color::BG_POPUP)),
+            Paragraph::new(status_line).style(Style::default().bg(color::popup_bg())),
             vert[2],
         );
     }
@@ -1100,25 +1098,25 @@ fn job_detail_hints(filter_active: bool, right_focus: bool, scroll_mode: bool) -
 
 fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
     let sev_color = match alert.severity {
-        crate::types::AlertSeverity::Info => color::CYAN,
-        crate::types::AlertSeverity::Warn => color::YELLOW,
-        crate::types::AlertSeverity::Crit => color::RED,
+        crate::types::AlertSeverity::Info => color::cyan(),
+        crate::types::AlertSeverity::Warn => color::yellow(),
+        crate::types::AlertSeverity::Crit => color::red(),
     };
     let mut lines = header_lines(" Alert Detail ", area.width);
     lines.push(row("Severity", alert.severity.label().to_string(), sev_color));
-    lines.push(row("Rule", alert.rule.to_string(), color::CYAN));
-    lines.push(row("Description", alert.description.clone(), color::TEXT_HI));
+    lines.push(row("Rule", alert.rule.to_string(), color::cyan()));
+    lines.push(row("Description", alert.description.clone(), color::hi_fg()));
     lines.push(Line::from(""));
 
     if !alert.details.is_empty() {
         lines.push(Line::from(Span::styled(
             format!("  Items ({}):", alert.details.len()),
-            Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD),
         )));
         for detail in &alert.details {
             lines.push(Line::from(Span::styled(
                 format!("    {}", detail),
-                Style::default().fg(color::TEXT),
+                Style::default().fg(color::main_fg()),
             )));
         }
     }
@@ -1132,27 +1130,27 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
 fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiLogEntry, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
     let status_code = entry.response_status.split_whitespace().next().unwrap_or("?");
     let status_color = match status_code.chars().next() {
-        Some('2') | Some('3') => color::GREEN,
-        Some('4') | Some('5') => color::RED,
-        _ => color::TEXT_DIM,
+        Some('2') | Some('3') => color::green(),
+        Some('4') | Some('5') => color::red(),
+        _ => color::inactive_fg(),
     };
 
     let mut lines = header_lines(" API Request ", area.width);
-    lines.push(row("Method", entry.method.clone(), color::PURPLE));
-    lines.push(row("Path", entry.path.clone(), color::CYAN));
-    lines.push(row("Full request line", entry.raw_request_line.clone(), color::TEXT));
-    lines.push(row("Client", entry.client.clone(), color::TEXT_HI));
+    lines.push(row("Method", entry.method.clone(), color::purple()));
+    lines.push(row("Path", entry.path.clone(), color::cyan()));
+    lines.push(row("Full request line", entry.raw_request_line.clone(), color::main_fg()));
+    lines.push(row("Client", entry.client.clone(), color::hi_fg()));
     lines.push(row("Status", entry.response_status.clone(), status_color));
-    lines.push(row("Processing time", format!("{:.3}s", entry.processing_time_secs), color::TEXT_HI));
-    lines.push(row("Captured", format!("{}s ago", entry.received_at.elapsed().as_secs()), color::TEXT_DIM));
+    lines.push(row("Processing time", format!("{:.3}s", entry.processing_time_secs), color::hi_fg()));
+    lines.push(row("Captured", format!("{}s ago", entry.received_at.elapsed().as_secs()), color::inactive_fg()));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Only what cpstats records is available: no request/response body,",
-        Style::default().fg(color::TEXT_DIM),
+        Style::default().fg(color::inactive_fg()),
     )));
     lines.push(Line::from(Span::styled(
         "  no headers \u{2014} so no auth token, credentials, or payload content.",
-        Style::default().fg(color::TEXT_DIM),
+        Style::default().fg(color::inactive_fg()),
     )));
 
     let hints: [(&str, String); 3] = [("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string())];
@@ -1164,44 +1162,44 @@ fn draw_admin_confirm(f: &mut Frame, area: Rect) {
     let mut lines = vec![
         Line::from(Span::styled(
             "  \u{26a0} DANGER ZONE ",
-            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "  ADMIN MODE",
-            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "  You are about to enable admin mode.",
-            Style::default().fg(color::TEXT_HI),
+            Style::default().fg(color::hi_fg()),
         )),
         Line::from(Span::styled(
             "  Actions performed in this mode may have",
-            Style::default().fg(color::TEXT),
+            Style::default().fg(color::main_fg()),
         )),
         Line::from(Span::styled(
             "  consequences on your Salt infrastructure.",
-            Style::default().fg(color::TEXT),
+            Style::default().fg(color::main_fg()),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "  Only proceed if you know what you are doing.",
-            Style::default().fg(color::ORANGE).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::orange()).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
     // Simulated buttons
     lines.push(Line::from(vec![
-        Span::styled("     [ ", Style::default().fg(color::TEXT_DIM)),
-        Span::styled("OK", Style::default().fg(color::GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled(" ] ", Style::default().fg(color::TEXT_DIM)),
-        Span::styled("Enter", Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
-        Span::styled("          ", Style::default().fg(color::TEXT_DIM)),
-        Span::styled("[ ", Style::default().fg(color::TEXT_DIM)),
-        Span::styled("Cancel", Style::default().fg(color::RED).add_modifier(Modifier::BOLD)),
-        Span::styled(" ] ", Style::default().fg(color::TEXT_DIM)),
-        Span::styled("Esc/q/a", Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::ITALIC)),
+        Span::styled("     [ ", Style::default().fg(color::inactive_fg())),
+        Span::styled("OK", Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
+        Span::styled(" ] ", Style::default().fg(color::inactive_fg())),
+        Span::styled("Enter", Style::default().fg(color::inactive_fg()).add_modifier(Modifier::ITALIC)),
+        Span::styled("          ", Style::default().fg(color::inactive_fg())),
+        Span::styled("[ ", Style::default().fg(color::inactive_fg())),
+        Span::styled("Cancel", Style::default().fg(color::red()).add_modifier(Modifier::BOLD)),
+        Span::styled(" ] ", Style::default().fg(color::inactive_fg())),
+        Span::styled("Esc/q/a", Style::default().fg(color::inactive_fg()).add_modifier(Modifier::ITALIC)),
     ]));
     let hints: [(&str, String); 2] = [("Enter", "OK".to_string()), ("Esc/q/a", "cancel".to_string())];
     render_popup(f, area, &lines, &hints, None, (false, false), 0, 0);
@@ -1213,7 +1211,6 @@ fn draw_event_sniffer(
     state: &SnifferState,
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
-    cursor_bg: Color,
     clipboard_warning: Option<&str>,
 ) {
     let ids_str = state.minion_ids.join(", ");
@@ -1232,9 +1229,9 @@ fn draw_event_sniffer(
 
     // Status bar
     let (status_label, status_color) = if state.paused {
-        ("PAUSED", color::YELLOW)
+        ("PAUSED", color::yellow())
     } else {
-        ("LIVE", color::GREEN)
+        ("LIVE", color::green())
     };
     let mut status_spans = vec![
         Span::styled(
@@ -1243,13 +1240,13 @@ fn draw_event_sniffer(
         ),
         Span::styled(
             format!("  Captured: {} / max 1000", state.buffer.len()),
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         ),
     ];
     if !state.highlight_keywords.is_empty() {
         status_spans.push(Span::styled(
             format!("  Shown: {} (highlight filter active)", visible.len()),
-            Style::default().fg(color::YELLOW),
+            Style::default().fg(color::yellow()),
         ));
     }
     lines.push(Line::from(status_spans));
@@ -1258,12 +1255,12 @@ fn draw_event_sniffer(
     if state.buffer.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No matching events yet. Waiting for new events...",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
     } else if visible.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No captured events match the highlight filter.",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
     } else {
         // Column widths: # | Time | JID | Type
@@ -1274,14 +1271,14 @@ fn draw_event_sniffer(
 
         // Column header
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:>nw$} ", "#", nw = num_w - 3), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{:<tw$}", "Time", tw = time_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{:<jw$}", "JID", jw = jid_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{:<tyw$}", "Type", tyw = type_w), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {:>nw$} ", "#", nw = num_w - 3), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<tw$}", "Time", tw = time_w), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<jw$}", "JID", jw = jid_w), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<tyw$}", "Type", tyw = type_w), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
         ]));
         lines.push(Line::from(Span::styled(
             format!("  {}", "\u{2500}".repeat((area.width as usize).saturating_sub(2))),
-            Style::default().fg(Color::Rgb(35, 50, 80)),
+            Style::default().fg(color::div_line()),
         )));
 
         let total = visible.len();
@@ -1305,7 +1302,7 @@ fn draw_event_sniffer(
 
             let is_sel = display_idx == sel;
             let sel_style = if is_sel {
-                color::select_bg(cursor_bg)
+                color::select_bg()
             } else {
                 Style::default()
             };
@@ -1335,15 +1332,15 @@ fn draw_event_sniffer(
             let lower_tag = padded_tag.to_lowercase();
             let tag_has_hit = color_terms.iter().any(|t| lower_tag.contains(&t.to_lowercase()));
             let mut header_spans = vec![
-                Span::styled(format!("  {:>nw$} ", event_num, nw = num_w - 3), Style::default().fg(color::TEXT_DIM)),
-                Span::styled(format!("{:<tw$}", t, tw = time_w), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!("  {:>nw$} ", event_num, nw = num_w - 3), Style::default().fg(color::inactive_fg())),
+                Span::styled(format!("{:<tw$}", t, tw = time_w), Style::default().fg(color::inactive_fg())),
             ];
             if tag_has_hit {
                 header_spans.extend(super::highlight_keywords(&padded_tag, &color_terms));
             } else {
-                header_spans.push(Span::styled(padded_tag, Style::default().fg(color::CYAN)));
+                header_spans.push(Span::styled(padded_tag, Style::default().fg(color::cyan())));
             }
-            header_spans.push(Span::styled(format!("{:<tyw$}", etype, tyw = type_w), Style::default().fg(color::GREEN)));
+            header_spans.push(Span::styled(format!("{:<tyw$}", etype, tyw = type_w), Style::default().fg(color::green())));
             if is_sel {
                 let hdr_w: usize = header_spans.iter().map(|s| s.content.len()).sum();
                 let pad = inner_w.saturating_sub(hdr_w);
@@ -1352,7 +1349,7 @@ fn draw_event_sniffer(
                 }
             }
             let header = Line::from(header_spans);
-            lines.push(if is_sel { color::selected_row(header, cursor_bg) } else { header });
+            lines.push(if is_sel { color::selected_row(header) } else { header });
 
             // Full JSON body (no truncation) with keyword highlighting
             let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
@@ -1372,7 +1369,7 @@ fn draw_event_sniffer(
             } else {
                 for line in json_str.lines() {
                     let text = format!("{}{}", indent, line);
-                    let style = Style::default().fg(color::TEXT);
+                    let style = Style::default().fg(color::main_fg());
                     if is_sel {
                         let pad = inner_w.saturating_sub(text.len());
                         lines.push(Line::from(vec![
@@ -1437,7 +1434,7 @@ fn sniffer_status(
         };
         return Some(Line::from(Span::styled(
             display,
-            Style::default().fg(super::color::YELLOW).add_modifier(Modifier::BOLD),
+            Style::default().fg(super::color::yellow()).add_modifier(Modifier::BOLD),
         )));
     }
     clipboard_status(clipboard_at, save_at, clipboard_warning)

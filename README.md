@@ -193,7 +193,7 @@ Copy-to-clipboard (`y` / `Y`) uses two methods:
 If DISPLAY and XAUTHORITY can't be resolved, a transient yellow hint is shown in the status bar explaining that X11 clipboard is unavailable. Run with `ssh -X` or `ssh -Y` to enable X11 forwarding.
 
 ### Everywhere
-- **High-contrast selection mode** (`c`) — steel-blue background + bold, works inside popups too
+- **Color themes** — btop++-style `.theme` files (see below); the screen behind any popup is dimmed so the popup stands out
 - **Clipboard integration** — tmux load-buffer + xclip via X11 forwarding. DISPLAY and XAUTHORITY are auto-resolved from the process environment or the tmux session's global environment — no manual configuration needed even when running under `sudo`
 - Filter-as-you-type with `/` on all list tabs — each tab keeps its own filter independently, comma-separated terms (each optionally a glob) are OR'd together, and matched terms are consistently colored
 - Keyboard-driven navigation with `?` for help
@@ -241,6 +241,10 @@ service_mem_abs_threshold_mb = 2048.0
 zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 ```
 
+### Themes
+
+Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in the Config Editor, which previews each theme live as you scroll the list, like btop's options menu). The built-in theme is `Default`; the package also ships ports of all of btop++'s bundled themes (Nord, Dracula, Gruvbox, Tokyo Night, Solarized, Everforest, Kanagawa, … and `btop` itself) in `/usr/share/salt-radar/themes/`, and your own `*.theme` files go in `~/.config/salt-radar/themes/` (the user's copy wins on a name clash), and `color_theme` can also be a path to a theme file. The format is the same as btop++'s — `theme[key]="#RRGGBB"` lines, and any key a theme leaves out keeps its Default color. [`salt-radar.theme.example`](salt-radar.theme.example) is the Default theme with every key documented; copy it to `~/.config/salt-radar/themes/<name>.theme` to start your own. Set `theme_background = false` to keep your terminal's own (e.g. transparent) background instead of the theme's.
+
 ## Keyboard Shortcuts
 
 | Key | Action |
@@ -254,7 +258,6 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 | `Esc` | Close popup / help |
 | `/` | Filter (current tab) |
 | `a` | Toggle admin mode |
-| `c` | Toggle high-contrast selection |
 | `?` / `F1` | Help overlay |
 | `F2` | Toggle mouse mode |
 | `F3` | Open Config Editor |

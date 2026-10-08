@@ -26,29 +26,29 @@ fn classify_tag(tag: &str, data: &serde_json::Value) -> (&'static str, Color, Op
             if s.len() > 18 { format!("{}..", &s[..16]) } else { s.to_string() }
         });
         let fun = data["fun"].as_str().unwrap_or("return");
-        return ("return", color::GREEN, Some(format!("{}/{}", fun, jid.unwrap_or_default())));
+        return ("return", color::green(), Some(format!("{}/{}", fun, jid.unwrap_or_default())));
     }
     if tag.contains("/start") || tag.contains("minion_start") {
-        return ("start", color::CYAN, None);
+        return ("start", color::cyan(), None);
     }
     if tag.starts_with("salt/beacon/") {
         let beacon = tag.split('/').nth(2).unwrap_or("beacon");
-        return ("beacon", color::YELLOW, Some(beacon.to_string()));
+        return ("beacon", color::yellow(), Some(beacon.to_string()));
     }
     if tag.contains("salt/auth") {
-        return ("auth", color::PURPLE, None);
+        return ("auth", color::purple(), None);
     }
     if let Some(fun) = data["fun"].as_str() {
-        return ("fun", color::TEXT, Some(fun.to_string()));
+        return ("fun", color::main_fg(), Some(fun.to_string()));
     }
-    ("other", color::TEXT_DIM, None)
+    ("other", color::inactive_fg(), None)
 }
 
 fn alert_color(severity: AlertSeverity) -> Color {
     match severity {
-        AlertSeverity::Crit => color::RED,
-        AlertSeverity::Warn => color::ORANGE,
-        AlertSeverity::Info => color::CYAN,
+        AlertSeverity::Crit => color::red(),
+        AlertSeverity::Warn => color::orange(),
+        AlertSeverity::Info => color::cyan(),
     }
 }
 
@@ -72,10 +72,10 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
     };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::BORDER_HI))
-        .style(Style::default().bg(color::BG_POPUP))
-        .title_bottom(super::border_hints(&hints, color::BORDER_HI).left_aligned())
-        .title_bottom(super::border_info("dim = older than 5m", color::BORDER_HI).right_aligned());
+        .border_style(Style::default().fg(color::border_focus()))
+        .style(Style::default().bg(color::popup_bg()))
+        .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned())
+        .title_bottom(super::border_info("dim = older than 5m", color::border_focus()).right_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -108,17 +108,17 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
     }
     lines.push(Line::from(Span::styled(
         title,
-        Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD),
+        Style::default().fg(color::title()).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
         rule.clone(),
-        Style::default().fg(Color::Rgb(35, 50, 80)),
+        Style::default().fg(color::div_line()),
     )));
 
     if total == 0 {
         lines.push(Line::from(Span::styled(
             format!("  No activity for {}. Salt scheduler or beacons will populate this view.", minion_id),
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
     } else {
         // Column widths: Time | Type | JID/Fun | Tag
@@ -132,11 +132,11 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
             Span::styled(format!("  {:<tw$}  {:<tyw$}  {:<jw$}  {:<tag_w$}",
                 "Time", "Type", "JID/Fun", "Source",
                 tw = time_w, tyw = type_w, jw = jid_w, tag_w = tag_w),
-                Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+                Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
         ]));
         lines.push(Line::from(Span::styled(
             rule.clone(),
-            Style::default().fg(Color::Rgb(35, 50, 80)),
+            Style::default().fg(color::div_line()),
         )));
 
         let now = std::time::SystemTime::now()
@@ -148,7 +148,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         for idx in 0..total {
             let item = &items[idx];
             let is_sel = idx == sel;
-            let sel_bg = if is_sel { color::select_bg(app.cursor_bg()).bg } else { None };
+            let sel_bg = if is_sel { color::select_bg().bg } else { None };
             let span_style = |s: Style| -> Style {
                 match sel_bg { Some(bg) => s.bg(bg), None => s }
             };
@@ -174,18 +174,18 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
 
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {:<tw$}", local_t, tw = time_w),
-                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::TEXT }))),
+                            span_style(Style::default().fg(if is_stale { color::inactive_fg() } else { color::main_fg() }))),
                         Span::styled(format!("  {:<tyw$}", etype, tyw = type_w),
-                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { ecolor }).add_modifier(Modifier::BOLD))),
+                            span_style(Style::default().fg(if is_stale { color::inactive_fg() } else { ecolor }).add_modifier(Modifier::BOLD))),
                         Span::styled(format!("  {:<jw$}", extra_disp, jw = jid_w),
-                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else if etype == "return" { color::YELLOW } else { color::TEXT }))),
+                            span_style(Style::default().fg(if is_stale { color::inactive_fg() } else if etype == "return" { color::yellow() } else { color::main_fg() }))),
                         Span::styled(format!("  {:<tag_w$}", tag_disp, tag_w = tag_w),
-                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN }))),
+                            span_style(Style::default().fg(if is_stale { color::inactive_fg() } else { color::cyan() }))),
                     ]));
                 }
                 MinionActivityItem::CacheJob(job) => {
                     let is_stale = now - job.start_epoch > stale_threshold;
-                    let base_fg = if is_stale { color::TEXT_DIM } else { color::TEXT };
+                    let base_fg = if is_stale { color::inactive_fg() } else { color::main_fg() };
                     let local_t = format_time_local(job.start_epoch);
                     let jid_disp = if job.jid.len() > jid_w {
                         format!("{}..", &job.jid[..jid_w.saturating_sub(2)])
@@ -197,11 +197,11 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
                         Span::styled(format!("  {:<tw$}", local_t, tw = time_w),
                             span_style(Style::default().fg(base_fg))),
                         Span::styled(format!("  {:<tyw$}", "job_cache", tyw = type_w),
-                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN }).add_modifier(Modifier::BOLD))),
+                            span_style(Style::default().fg(if is_stale { color::inactive_fg() } else { color::cyan() }).add_modifier(Modifier::BOLD))),
                         Span::styled(format!("  {:<jw$}", job.fun, jw = jid_w),
-                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::YELLOW }))),
+                            span_style(Style::default().fg(if is_stale { color::inactive_fg() } else { color::yellow() }))),
                         Span::styled(format!("  {:<tag_w$}", jid_disp, tag_w = tag_w),
-                            span_style(Style::default().fg(if is_stale { color::TEXT_DIM } else { color::CYAN }))),
+                            span_style(Style::default().fg(if is_stale { color::inactive_fg() } else { color::cyan() }))),
                     ]));
                 }
                 MinionActivityItem::Alert(alert) => {
@@ -214,13 +214,13 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
 
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {:<tw$}", "  --", tw = time_w),
-                            span_style(Style::default().fg(color::TEXT_DIM))),
+                            span_style(Style::default().fg(color::inactive_fg()))),
                         Span::styled(format!("  {:<tyw$}", "alert", tyw = type_w),
                             span_style(Style::default().fg(acolor).add_modifier(Modifier::BOLD))),
                         Span::styled(format!("  {:<jw$}", alert.severity.label(), jw = jid_w),
                             span_style(Style::default().fg(acolor))),
                         Span::styled(format!("  {:<tag_w$}", desc_disp, tag_w = tag_w),
-                            span_style(Style::default().fg(color::TEXT))),
+                            span_style(Style::default().fg(color::main_fg()))),
                     ]));
                 }
             }
@@ -229,7 +229,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         // Footer with total count
         lines.push(Line::from(Span::styled(
             format!("  \u{2500} {} items \u{2500}", total),
-            Style::default().fg(Color::Rgb(35, 50, 80)),
+            Style::default().fg(color::div_line()),
         )));
     }
 
@@ -245,7 +245,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
     let status = if app.minion_events_is_filtering {
         Some(Line::from(Span::styled(
             format!("  /{}_", app.minion_events_filter),
-            Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         )))
     } else {
         None
@@ -257,12 +257,12 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         .split(inner);
 
     f.render_widget(
-        Paragraph::new(lines).scroll((scroll as u16, 0)).style(Style::default().bg(color::BG_POPUP)),
+        Paragraph::new(lines).scroll((scroll as u16, 0)).style(Style::default().bg(color::popup_bg())),
         chunks[0],
     );
     if let Some(status_line) = status {
         f.render_widget(
-            Paragraph::new(status_line).style(Style::default().bg(color::BG_POPUP)),
+            Paragraph::new(status_line).style(Style::default().bg(color::popup_bg())),
             chunks[1],
         );
     }

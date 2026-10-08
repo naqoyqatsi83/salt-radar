@@ -1,0 +1,41 @@
+# salt-radar port of btop++'s HotPurpleTrafficLight.theme
+# (https://github.com/aristocratos/btop, Apache-2.0)
+#
+# HotPurpleTrafficLight
+# by Pete Allebone - mess with the best... you know the rest. <catch me at: peter at allebone dot org>
+# Designed to flash up bright red with danger when loads are high and attention is needed.
+
+theme[main_bg]="#000000"
+theme[meter_bg]="#1b1b59"
+theme[bar_bg]="#0f0f10"
+theme[popup_bg]="#060607"
+theme[selected_bg]="#4747b2"
+theme[border]="#4d4dff"
+theme[border_focus]="#a64dff"
+theme[div_line]="#4d4dff"
+theme[main_fg]="#d1d1e0"
+theme[inactive_fg]="#9999ff"
+theme[label_fg]="#9999ff"
+theme[title]="#d1d1e0"
+theme[hi_fg]="#d1d1e0"
+theme[header_fg]="#be96ee"
+theme[subtitle_fg]="#b582f0"
+theme[version_fg]="#5a96d2"
+theme[hint_fg]="#9999ff"
+theme[badge_bg]="#593612"
+theme[green]="#00ff00"
+theme[cyan]="#50c8ff"
+theme[yellow]="#ffc850"
+theme[orange]="#ff9933"
+theme[red]="#ff0000"
+theme[purple]="#9933ff"
+theme[pulse_fresh]="#78ff78"
+theme[pulse_aging]="#ff9933"
+theme[tab_active_bg]="#2b2b6b"
+theme[tab_active_fg]="#9933ff"
+theme[tab_inactive_fg]="#9999ff"
+theme[tab_separator]="#4d4dff"
+theme[highlight_1]="#4d4dff"
+theme[highlight_2]="#ff2dc8"
+theme[highlight_3]="#00e6aa"
+theme[highlight_4]="#9933ff"

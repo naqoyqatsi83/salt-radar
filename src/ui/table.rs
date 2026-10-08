@@ -88,9 +88,9 @@ pub fn header_line(table: TableId, cols: &[Column], widths: &[usize], sort: Opti
         let (label, style) = match sort {
             Some((c, desc)) if c == col => (
                 format!("{}{}", col.header(), if desc { "\u{25BC}" } else { "\u{25B2}" }),
-                Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD),
+                Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
             ),
-            _ => (col.header().to_string(), Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
+            _ => (col.header().to_string(), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
         };
         spans.push(cell(&label, w, col.right_aligned(), style));
         hits.push(HeaderHit { y, x0: cx, x1: cx.saturating_add(w as u16), col, table });

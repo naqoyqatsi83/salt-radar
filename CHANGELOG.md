@@ -9,17 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Add `cursor_color` and `cursor_color_hi` (`#rrggbb`) under a new `[ui]` section of `salt-radar.toml`, also editable in the Config Editor, to set the selected-row color in normal and high-contrast mode (#112)
+- Add btop++-style color themes: `color_theme` in a new `[ui]` section of `salt-radar.toml` picks the built-in `Default` or a `*.theme` file from `/usr/share/salt-radar/themes/` or `~/.config/salt-radar/themes/` (or a path to one), `theme_background = false` keeps the terminal's own background, and the Config Editor previews each theme live while picking; `salt-radar.theme.example` documents every key (#114)
+- Ship ports of btop++'s 41 bundled themes plus its built-in default (as `btop`), installed to `/usr/share/salt-radar/themes/` — status colors keep their meaning (red stays red for failures) and text stays readable on each theme's background and cursor bar (#114)
 
 ### Changed
 
-- Dim the screen behind any open popup (detail views, Event Sniffer, Config Editor, admin confirm, help) so the popup stands out; a popup opened on top of another dims the one beneath it too, and the screen returns to normal when it closes (#111)
-- Make the selected row stand out in every table and list: a stronger blue cursor bar with bold text (brighter still with `c`), dim text on it lifted so it stays readable, and the Job Detail Returns list now gets the same full-width bar instead of only a `▶` marker (#112)
+- Dim the screen behind any open popup (detail views, Event Sniffer, Config Editor, admin confirm, help) so the popup stands out — fading toward the theme's background, so light themes wash out instead of going gray; a popup opened on top of another dims the one beneath it too, and the screen returns to normal when it closes (#111)
+- Make the selected row stand out in every table and list: a stronger blue cursor bar with bold text, dim text on it lifted so it stays readable, and the Job Detail Returns list now gets the same full-width bar instead of only a `▶` marker (#112)
 
 ### Fixed
 
 - Fix the default (unsorted) order of the job tables: Job Cache now lists newest first (it re-sorted the agent's newest-first page oldest-first), Live Jobs runs oldest to newest by JID instead of event-arrival order, and jobs started within the same second — including under the Job Cache `Started` sort — are ordered by JID instead of coming out in disk-read order (#110)
 - Fix the Job Detail Returns list scrolling on `PgUp`/`PgDn`/`Home`/`End` when it already fits on screen (`End` pushed the last return to the top and the rest out of view); it now only scrolls as far as needed to keep the selection visible, those keys skip rows hidden by the return filter, and the Minion detail grains pane no longer leaves dead `↑` presses after `End` (#113)
+
+### Removed
+
+- Remove the `c` high-contrast selection toggle; a high-contrast look is now a matter of picking (or writing) a theme (#114)
 
 ## [0.6.3-rc13] - 2026-10-07
 

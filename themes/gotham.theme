@@ -1,0 +1,41 @@
+# salt-radar port of btop++'s gotham.theme
+# (https://github.com/aristocratos/btop, Apache-2.0)
+#
+# btop theme with the Gotham colorscheme for vim/neovim
+# Credit to Andrea Lopardi (https://github.com/whatyouhide/vim-gotham)
+# Adapted by jrebs (https://github.com/jrebs)
+
+theme[main_bg]="#2e3440"
+theme[meter_bg]="#34363c"
+theme[bar_bg]="#353f4a"
+theme[popup_bg]="#313944"
+theme[selected_bg]="#0a3749"
+theme[border]="#4c566a"
+theme[border_focus]="#99d1ce"
+theme[div_line]="#4c566a"
+theme[main_fg]="#99d1ce"
+theme[inactive_fg]="#6c8681"
+theme[label_fg]="#6c8681"
+theme[title]="#2aa889"
+theme[hi_fg]="#99d1ce"
+theme[header_fg]="#99d1ce"
+theme[subtitle_fg]="#708e89"
+theme[version_fg]="#79808f"
+theme[hint_fg]="#6c8681"
+theme[badge_bg]="#595758"
+theme[green]="#50c878"
+theme[cyan]="#99d1ce"
+theme[yellow]="#ffc850"
+theme[orange]="#a89984"
+theme[red]="#ff5050"
+theme[purple]="#b478ff"
+theme[pulse_fresh]="#78ff78"
+theme[pulse_aging]="#a89984"
+theme[tab_active_bg]="#183645"
+theme[tab_active_fg]="#ffffff"
+theme[tab_inactive_fg]="#6c8681"
+theme[tab_separator]="#4c566a"
+theme[highlight_1]="#79808f"
+theme[highlight_2]="#ff2dc8"
+theme[highlight_3]="#2aa889"
+theme[highlight_4]="#aa50ff"

@@ -104,7 +104,9 @@ pub struct App {
     /// Tab where the current popup was opened (popup only shows on that tab)
     pub popup_tab: Option<Tab>,
     pub show_help: bool,
-    pub high_contrast: bool,
+    /// The `(color_theme, theme_background)` currently installed via
+    /// `color::set_theme`, so `sync_theme` only reloads on a change.
+    applied_theme: Option<(String, bool)>,
 
     // Admin mode
     pub admin_mode: bool,
@@ -434,6 +436,9 @@ pub enum ConfigFieldKind {
     /// the shown items in order, and every key it leaves out is hidden.
     /// `Space` toggles an item between shown and hidden.
     Columns(&'static [&'static str]),
+    /// `color_theme`: a `Choice` over the themes found on disk
+    /// (`ConfigEditorState::themes`) rather than a fixed list.
+    Theme,
     SaveButton,
 }
 
@@ -509,9 +514,20 @@ pub struct ConfigEditorState {
     pub original: Vec<String>,
     /// Set by a first Esc/q with unsaved changes; a second one discards.
     pub confirm_discard: bool,
+    /// Theme names offered by the `color_theme` picker.
+    pub themes: Vec<String>,
 }
 
 impl ConfigEditorState {
+    /// The option list of a picker field (`Choice` or `Theme`).
+    pub fn options(&self, kind: ConfigFieldKind) -> Option<Vec<String>> {
+        match kind {
+            ConfigFieldKind::Choice(options) => Some(options.iter().map(|o| o.to_string()).collect()),
+            ConfigFieldKind::Theme => Some(self.themes.clone()),
+            _ => None,
+        }
+    }
+
     pub fn dirty(&self) -> bool {
         self.fields.iter().zip(&self.original).any(|(f, o)| f.label_value != *o)
     }
@@ -627,7 +643,7 @@ impl App {
             detail_popup: None,
             popup_tab: None,
             show_help: false,
-            high_contrast: false,
+            applied_theme: None,
 
             sniffer_input_active: false,
             sniffer_input_text: String::new(),
@@ -2154,9 +2170,34 @@ impl App {
         Column::parse_list(self.config.columns_for(table), table)
     }
 
-    /// Background of the selected row, per high-contrast mode.
-    pub fn cursor_bg(&self) -> ratatui::style::Color {
-        if self.high_contrast { self.config.cursor_color_hi } else { self.config.cursor_color }
+    /// Installs the theme to draw with: the configured one, or while the
+    /// Config Editor is open, whatever its theme fields currently hold —
+    /// including the option highlighted in an open picker, so themes
+    /// preview live as you scroll through them (like btop's options menu)
+    /// and revert on their own when the edit is cancelled or discarded.
+    pub fn sync_theme(&mut self) {
+        let mut wanted = (self.config.color_theme.clone(), self.config.theme_background);
+        if let Some(DetailPopup::ConfigEditor(ref s)) = self.detail_popup {
+            let current = |label: &str| {
+                let i = s.fields.iter().position(|f| f.label == label)?;
+                if s.editing && s.selected == i {
+                    s.options(s.fields[i].kind)?.get(s.choice_idx).cloned()
+                } else {
+                    Some(s.fields[i].label_value.clone())
+                }
+            };
+            if let Some(theme) = current("color_theme") { wanted.0 = theme; }
+            if let Some(bg) = current("theme_background") { wanted.1 = bg == "on"; }
+        }
+        if self.applied_theme.as_ref() == Some(&wanted) { return; }
+        let mut theme = crate::config::load_theme(&wanted.0);
+        if !wanted.1 {
+            theme.main_bg = ratatui::style::Color::Reset;
+            theme.bar_bg = ratatui::style::Color::Reset;
+            theme.meter_bg = ratatui::style::Color::Reset;
+        }
+        crate::ui::color::set_theme(theme);
+        self.applied_theme = Some(wanted);
     }
 
     pub fn sort_of(&self, table: TableId) -> Option<SortSpec> {
@@ -2540,8 +2581,8 @@ impl App {
                 self.columns_field(TableId::LiveJobs),
                 self.columns_field(TableId::JobCache),
                 ConfigField { label: "[ui]", label_value: String::new(), kind: ConfigFieldKind::Section },
-                ConfigField { label: "cursor_color", label_value: crate::config::hex_color(cfg.cursor_color), kind: ConfigFieldKind::Str },
-                ConfigField { label: "cursor_color_hi", label_value: crate::config::hex_color(cfg.cursor_color_hi), kind: ConfigFieldKind::Str },
+                ConfigField { label: "color_theme", label_value: cfg.color_theme.clone(), kind: ConfigFieldKind::Theme },
+                ConfigField { label: "theme_background", label_value: on_off(cfg.theme_background), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -2552,6 +2593,7 @@ impl App {
             quick: false,
             original: Vec::new(),
             confirm_discard: false,
+            themes: crate::config::theme_names(),
         }));
         if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
             s.original = s.fields.iter().map(|f| f.label_value.clone()).collect();
@@ -2568,7 +2610,7 @@ impl App {
         let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         for f in fields {
             match f.kind {
-                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order | ConfigFieldKind::Columns(_) => {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order | ConfigFieldKind::Columns(_) | ConfigFieldKind::Theme => {
                     vals.insert(f.label, f.label_value.as_str());
                 }
                 _ => {}
@@ -2580,7 +2622,6 @@ impl App {
         let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
         let parse_bool = |key| vals.get(key) == Some(&"on");
         let columns = |key, table: TableId| vals.get(key).copied().unwrap_or(table.default_columns()).to_string();
-        let parse_color = |key| vals.get(key).and_then(|v| crate::config::parse_hex_color(v)).ok_or_else(|| format!("Invalid {}: expected #rrggbb", key));
 
         let new_config = AppConfig {
             agent_path: vals.get("agent_path").unwrap_or(&"").to_string(),
@@ -2646,8 +2687,8 @@ impl App {
             event_columns: columns("event_columns", TableId::Events),
             alert_columns: columns("alert_columns", TableId::Alerts),
             api_request_columns: columns("request_columns", TableId::ApiLog),
-            cursor_color: parse_color("cursor_color")?,
-            cursor_color_hi: parse_color("cursor_color_hi")?,
+            color_theme: vals.get("color_theme").unwrap_or(&crate::config::DEFAULT_THEME).to_string(),
+            theme_background: parse_bool("theme_background"),
         };
 
         crate::config::write_config(&self.config_path, &new_config)
@@ -2681,7 +2722,7 @@ impl App {
             if s.editing {
                 // Choice fields are edited via an inline picker (arrow keys +
                 // Enter over the option list) instead of free-text entry.
-                if let Some(ConfigFieldKind::Choice(options)) = s.fields.get(s.selected).map(|f| f.kind) {
+                if let Some(options) = s.fields.get(s.selected).and_then(|f| s.options(f.kind)) {
                     match code {
                         KeyCode::Up | KeyCode::Char('k') => {
                             s.choice_idx = s.choice_idx.saturating_sub(1);
@@ -2692,7 +2733,7 @@ impl App {
                         KeyCode::Enter => {
                             if let Some(opt) = options.get(s.choice_idx) {
                                 if let Some(field) = s.fields.get_mut(s.selected) {
-                                    field.label_value = opt.to_string();
+                                    field.label_value = opt.clone();
                                 }
                             }
                             s.editing = false;
@@ -2922,7 +2963,7 @@ impl App {
                     Some(DetailPopup::ConfigEditor(ref s)) => {
                         match s.fields.get(s.selected).map(|f| &f.kind) {
                             Some(ConfigFieldKind::SaveButton) => Some("save"),
-                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) | Some(ConfigFieldKind::Order) | Some(ConfigFieldKind::Columns(_)) => {
+                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) | Some(ConfigFieldKind::Order) | Some(ConfigFieldKind::Columns(_)) | Some(ConfigFieldKind::Theme) => {
                                 Some("edit")
                             }
                             _ => None,
@@ -2941,7 +2982,7 @@ impl App {
                         };
                         if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
                             if let Some((val, kind)) = field_info {
-                                if let ConfigFieldKind::Choice(options) = kind {
+                                if let Some(options) = s.options(kind) {
                                     s.choice_idx = options.iter().position(|o| *o == val).unwrap_or(0);
                                 } else if let ConfigFieldKind::Order | ConfigFieldKind::Columns(_) = kind {
                                     // s.input snapshots the pre-edit order so Esc can restore it —
@@ -2970,9 +3011,6 @@ impl App {
                     }
                 }
                 self.detail_popup = None;
-            }
-            KeyCode::Char('c') | KeyCode::Char('C') => {
-                self.high_contrast = !self.high_contrast;
             }
             _ => {}
         }
@@ -4651,10 +4689,6 @@ impl App {
             };
             if !popup_text_input {
                 match code {
-                    KeyCode::Char('c') | KeyCode::Char('C') => {
-                        self.high_contrast = !self.high_contrast;
-                        return false;
-                    }
                     KeyCode::Tab => { self.current_tab = self.current_tab.next(); return false; }
                     KeyCode::BackTab => { self.current_tab = self.current_tab.prev(); return false; }
                     KeyCode::Char('1') => { self.current_tab = Tab::Dashboard; return false; }
@@ -5692,9 +5726,6 @@ impl App {
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
                 self.show_help = true;
-            }
-            KeyCode::Char('c') | KeyCode::Char('C') => {
-                self.high_contrast = !self.high_contrast;
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 self.sparkline_style = match self.sparkline_style {

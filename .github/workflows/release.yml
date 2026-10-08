@@ -68,6 +68,8 @@ jobs:
 
           install -m 0755 "$BINARY" "$PKG_ROOT/usr/bin/salt-radar"
           install -m 0644 "${{ github.workspace }}/agent/salt_radar_agent.py" "$PKG_ROOT/usr/share/salt-radar/salt_radar_agent.py"
+          install -d "$PKG_ROOT/usr/share/salt-radar/themes"
+          install -m 0644 "${{ github.workspace }}"/themes/*.theme "$PKG_ROOT/usr/share/salt-radar/themes/"
           cp "${{ github.workspace }}/LICENSE" "$PKG_ROOT/usr/share/doc/salt-radar/" 2>/dev/null || true
           cp "${{ github.workspace }}/README.md" "$PKG_ROOT/usr/share/doc/salt-radar/"
 

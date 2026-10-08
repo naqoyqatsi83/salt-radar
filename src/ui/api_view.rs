@@ -58,57 +58,57 @@ fn draw_unavailable(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![
         Line::from(Span::styled(
             "  salt-api request stats aren't available.",
-            Style::default().fg(color::TEXT_DIM).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::inactive_fg()).add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(format!("  {}", hint), Style::default().fg(color::TEXT_DIM))),
+        Line::from(Span::styled(format!("  {}", hint), Style::default().fg(color::inactive_fg()))),
     ];
     if !app.api_stats.error.is_empty() {
-        lines.push(Line::from(Span::styled(format!("  error: {}", app.api_stats.error), Style::default().fg(color::RED))));
+        lines.push(Line::from(Span::styled(format!("  error: {}", app.api_stats.error), Style::default().fg(color::red()))));
     }
     lines.push(Line::from(""));
     if authed {
         lines.push(Line::from(Span::styled(
             "  Set the following in the master config and restart salt-api:",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
         lines.push(Line::from(Span::styled(
             "    rest_cherrypy: {collect_stats: True}",
-            Style::default().fg(color::CYAN),
+            Style::default().fg(color::cyan()),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("  Authenticating via stats_auth_mode = {:?} (Config Editor, 'F3') —", app.config.api_stats_auth_mode),
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
         lines.push(Line::from(Span::styled(
             "  check the error above and the eauth/credentials/pillar settings there.",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
     } else {
         lines.push(Line::from(Span::styled(
             "  Set the following in the master config and restart salt-api:",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
         lines.push(Line::from(Span::styled(
             "    rest_cherrypy: {collect_stats: True, stats_disable_auth: True}",
-            Style::default().fg(color::CYAN),
+            Style::default().fg(color::cyan()),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  See README for why stats_disable_auth is required (or set",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
         lines.push(Line::from(Span::styled(
             "  stats_auth_mode instead of stats_disable_auth — Config Editor, 'F3').",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
     }
 
-    let block = super::list_block_hinted(" API ", Style::default().fg(color::BORDER), color::BG_DARK, false, false, &[]);
+    let block = super::list_block_hinted(" API ", Style::default().fg(color::border()), color::main_bg(), false, false, &[]);
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)).wrap(Wrap { trim: false }),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())).wrap(Wrap { trim: false }),
         inner,
     );
 }
@@ -118,30 +118,30 @@ fn request_cells(entry: &ApiLogEntry, col: Column, w: usize) -> Span<'static> {
     match col {
         Column::Age => cell(
             &format!("{} ago", super::dashboard::format_duration(entry.received_at.elapsed().as_secs())),
-            w, right, Style::default().fg(color::TEXT_DIM),
+            w, right, Style::default().fg(color::inactive_fg()),
         ),
-        Column::Method => cell(&entry.method, w, right, Style::default().fg(color::PURPLE)),
-        Column::Client => cell(&entry.client, w, right, Style::default().fg(color::TEXT_DIM)),
-        Column::Path => cell(&entry.path, w, right, Style::default().fg(color::CYAN)),
+        Column::Method => cell(&entry.method, w, right, Style::default().fg(color::purple())),
+        Column::Client => cell(&entry.client, w, right, Style::default().fg(color::inactive_fg())),
+        Column::Path => cell(&entry.path, w, right, Style::default().fg(color::cyan())),
         Column::Status => {
             let status_code = entry.response_status.split_whitespace().next().unwrap_or("?");
             let status_color = match status_code.chars().next() {
-                Some('2') | Some('3') => color::GREEN,
-                Some('4') | Some('5') => color::RED,
-                _ => color::TEXT_DIM,
+                Some('2') | Some('3') => color::green(),
+                Some('4') | Some('5') => color::red(),
+                _ => color::inactive_fg(),
             };
             cell(&entry.response_status, w, right, Style::default().fg(status_color))
         }
-        Column::Time => cell(&format!("{:.2}s", entry.processing_time_secs), w, right, Style::default().fg(color::TEXT_DIM)),
+        Column::Time => cell(&format!("{:.2}s", entry.processing_time_secs), w, right, Style::default().fg(color::inactive_fg())),
         _ => cell("", w, right, Style::default()),
     }
 }
 
 fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) {
     let border_style = if tab_focused {
-        Style::default().fg(color::BORDER_HI)
+        Style::default().fg(color::border_focus())
     } else {
-        Style::default().fg(color::BORDER)
+        Style::default().fg(color::border())
     };
 
     // Filtered and sorted once per frame, not once per visible row.
@@ -167,7 +167,7 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
     };
     let block = super::list_block_hinted(
         title,
-        border_style, color::BG_DARK, has_more_above, has_more_below, &hints,
+        border_style, color::main_bg(), has_more_above, has_more_below, &hints,
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -177,20 +177,20 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
     if app.is_filtering {
         let cursor = if app.filter_text.len() % 2 == 0 { '|' } else { ' ' };
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     } else if !app.filter_text_for(Tab::Api).is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.filter_text_for(Tab::Api)), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" /{}/ ", app.filter_text_for(Tab::Api)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     }
 
     if app.api_requests_log.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No requests captured yet.",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
     } else {
         let cols = app.columns(TableId::ApiLog);
@@ -200,7 +200,7 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
         if total == 0 {
             lines.push(Line::from(Span::styled(
                 "  No requests match the filter.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )));
         } else {
             for (idx, entry) in filtered.iter().enumerate().skip(scroll).take(visible) {
@@ -209,13 +209,13 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
                     row.push(request_cells(entry, col, w));
                 }
                 let line = Line::from(row);
-                lines.push(if idx == selected { color::selected_row(line, app.cursor_bg()) } else { line });
+                lines.push(if idx == selected { color::selected_row(line) } else { line });
             }
         }
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }
@@ -229,43 +229,43 @@ fn draw_endpoint_breakdown(f: &mut Frame, area: Rect, app: &App) {
         app.api_requests_per_sec_recent,
         app.api_error_pct().map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into()),
     );
-    let block = super::list_block_hinted(title, Style::default().fg(color::BORDER), color::BG_DARK, false, false, &[]);
+    let block = super::list_block_hinted(title, Style::default().fg(color::border()), color::main_bg(), false, false, &[]);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(vec![
-        Span::styled(" current:", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(stats.current_requests.to_string(), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled(" total:", Style::default().fg(color::TEXT_LABEL)),
-        Span::styled(stats.total_requests.to_string(), Style::default().fg(color::TEXT_DIM)),
+        Span::styled(" current:", Style::default().fg(color::label_fg())),
+        Span::styled(stats.current_requests.to_string(), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+        Span::styled(" total:", Style::default().fg(color::label_fg())),
+        Span::styled(stats.total_requests.to_string(), Style::default().fg(color::inactive_fg())),
     ]));
     lines.push(Line::from(""));
 
     if breakdown.is_empty() {
-        lines.push(Line::from(Span::styled("  No requests captured yet.", Style::default().fg(color::TEXT_DIM))));
+        lines.push(Line::from(Span::styled("  No requests captured yet.", Style::default().fg(color::inactive_fg()))));
     } else {
         lines.push(Line::from(Span::styled(
             format!(" {:<7}{:<20}{:<6}{:<7}{:<7}{}", "Method", "Path", "Cnt", "Avg", "p95", "Err%"),
-            Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD),
         )));
         let max_rows = (inner.height as usize).saturating_sub(3);
         for ep in breakdown.iter().take(max_rows) {
             let path_str = truncate(&ep.path, 20);
-            let err_color = if ep.error_pct >= 10.0 { color::RED } else if ep.error_pct > 0.0 { color::YELLOW } else { color::GREEN };
+            let err_color = if ep.error_pct >= 10.0 { color::red() } else if ep.error_pct > 0.0 { color::yellow() } else { color::green() };
             lines.push(Line::from(vec![
-                Span::styled(format!(" {:<7}", ep.method), Style::default().fg(color::PURPLE)),
-                Span::styled(format!("{:<20}", path_str), Style::default().fg(color::CYAN)),
-                Span::styled(format!("{:<6}", ep.count), Style::default().fg(color::TEXT_DIM)),
-                Span::styled(format!("{:<7}", format!("{:.2}s", ep.avg_secs)), Style::default().fg(color::TEXT_DIM)),
-                Span::styled(format!("{:<7}", format!("{:.2}s", ep.p95_secs)), Style::default().fg(color::TEXT_DIM)),
+                Span::styled(format!(" {:<7}", ep.method), Style::default().fg(color::purple())),
+                Span::styled(format!("{:<20}", path_str), Style::default().fg(color::cyan())),
+                Span::styled(format!("{:<6}", ep.count), Style::default().fg(color::inactive_fg())),
+                Span::styled(format!("{:<7}", format!("{:.2}s", ep.avg_secs)), Style::default().fg(color::inactive_fg())),
+                Span::styled(format!("{:<7}", format!("{:.2}s", ep.p95_secs)), Style::default().fg(color::inactive_fg())),
                 Span::styled(format!("{:.0}%", ep.error_pct), Style::default().fg(err_color)),
             ]));
         }
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }

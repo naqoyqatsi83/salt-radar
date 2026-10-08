@@ -59,8 +59,8 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
     hints.extend(super::table::hints(TableId::Events));
     let block = super::list_block_hinted(
         format!(" Events ({}/{}) ", app.events.len(), app.config.event_buffer_size),
-        Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
-        color::BG_DARK,
+        Style::default().fg(if focused { color::border_focus() } else { color::border() }),
+        color::main_bg(),
         has_more_above,
         has_more_below,
         &hints,
@@ -77,20 +77,20 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
         let cursor = if app.filter_text.len() % 2 == 0 { '|' } else { ' ' };
         let filter_text = format!(" /{} {}", app.filter_text, cursor);
         lines.push(Line::from(vec![
-            Span::styled(filter_text, Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(filter_text, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     } else if !app.applied_filter.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.applied_filter), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" /{}/ ", app.applied_filter), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     }
 
     if app.events.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No events received.",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
     } else {
         let cols = app.columns(TableId::Events);
@@ -100,7 +100,7 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
         if total == 0 {
             lines.push(Line::from(Span::styled(
                 "  No events match the filter.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )));
         } else {
             for idx in scroll..(scroll + visible).min(total) {
@@ -109,11 +109,11 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
                 let mut spans = vec![Span::raw("  ")];
                 for (&col, &w) in cols.iter().zip(&widths) {
                     let (text, fg) = match col {
-                        Column::Local => (format_time_local(evt.ts), color::TEXT_TITLE),
-                        Column::Utc => (format_time_utc(evt.ts), color::TEXT_TITLE),
-                        Column::Tag => (evt.tag.clone(), color::CYAN),
-                        Column::EventMinion => (evt.data["id"].as_str().unwrap_or("").to_string(), color::YELLOW),
-                        _ => (String::new(), color::TEXT),
+                        Column::Local => (format_time_local(evt.ts), color::title()),
+                        Column::Utc => (format_time_utc(evt.ts), color::title()),
+                        Column::Tag => (evt.tag.clone(), color::cyan()),
+                        Column::EventMinion => (evt.data["id"].as_str().unwrap_or("").to_string(), color::yellow()),
+                        _ => (String::new(), color::main_fg()),
                     };
                     let padded = pad(&text, w, false);
                     // A row can be in the filtered set because a term matched
@@ -132,20 +132,20 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
                 }
 
                 let line = Line::from(spans);
-                lines.push(if idx == selected { color::selected_row(line, app.cursor_bg()) } else { line });
+                lines.push(if idx == selected { color::selected_row(line) } else { line });
             }
         }
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }
 
 /// Right panel: preview of the selected event
 fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::types::SaltEvent]) {
-    let block = super::titled_block(" Preview ", Style::default().fg(color::BORDER), color::BG_DARK);
+    let block = super::titled_block(" Preview ", Style::default().fg(color::border()), color::main_bg());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -153,8 +153,8 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
     let total = filtered.len();
     if total == 0 {
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled("  No event selected.", Style::default().fg(color::TEXT_DIM))))
-                .style(Style::default().bg(color::BG_DARK)),
+            Paragraph::new(Line::from(Span::styled("  No event selected.", Style::default().fg(color::inactive_fg()))))
+                .style(Style::default().bg(color::main_bg())),
             inner,
         );
         return;
@@ -167,22 +167,22 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
 
     // Tag
     lines.push(Line::from(vec![
-        Span::styled("  Tag", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled("  Tag", Style::default().fg(color::label_fg())),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  {}", evt.tag), Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  {}", evt.tag), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
     ]));
     lines.push(Line::from(""));
 
     // Timestamps
     lines.push(Line::from(vec![
-        Span::styled("  Timestamp", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled("  Timestamp", Style::default().fg(color::label_fg())),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  Local  {}", format_time_local(evt.ts)), Style::default().fg(color::TEXT_DIM)),
+        Span::styled(format!("  Local  {}", format_time_local(evt.ts)), Style::default().fg(color::inactive_fg())),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  UTC   {}", format_time_utc(evt.ts)), Style::default().fg(color::TEXT_DIM)),
+        Span::styled(format!("  UTC   {}", format_time_utc(evt.ts)), Style::default().fg(color::inactive_fg())),
     ]));
     lines.push(Line::from(""));
 
@@ -190,17 +190,17 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
     let fun = evt.data["fun"].as_str().unwrap_or("");
     if !fun.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("  Function", Style::default().fg(color::TEXT_LABEL)),
+            Span::styled("  Function", Style::default().fg(color::label_fg())),
         ]));
         lines.push(Line::from(vec![
-            Span::styled(format!("  {}", fun), Style::default().fg(color::YELLOW)),
+            Span::styled(format!("  {}", fun), Style::default().fg(color::yellow())),
         ]));
         lines.push(Line::from(""));
     }
 
     // JSON body — render as pretty-printed, truncate to available height
     lines.push(Line::from(vec![
-        Span::styled("  Body", Style::default().fg(color::TEXT_LABEL)),
+        Span::styled("  Body", Style::default().fg(color::label_fg())),
     ]));
 
     let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
@@ -210,18 +210,18 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
     for data_line in data_lines.iter().take(max_body) {
         lines.push(Line::from(Span::styled(
             format!("  {}", data_line),
-            Style::default().fg(color::TEXT),
+            Style::default().fg(color::main_fg()),
         )));
     }
     if data_lines.len() > max_body {
         lines.push(Line::from(Span::styled(
             "  ... (press 'Enter' to view full)",
-            Style::default().fg(color::YELLOW),
+            Style::default().fg(color::yellow()),
         )));
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }

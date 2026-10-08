@@ -1,0 +1,41 @@
+# salt-radar port of btop++'s elementarish.theme
+# (https://github.com/aristocratos/btop, Apache-2.0)
+#
+# Theme: Elementarish
+# (inspired by Elementary OS)
+# By: Dennis Mayr
+
+theme[main_bg]="#333333"
+theme[meter_bg]="#444c4f"
+theme[bar_bg]="#40403e"
+theme[popup_bg]="#393838"
+theme[selected_bg]="#2b6c99"
+theme[border]="#657b83"
+theme[border_focus]="#657b83"
+theme[div_line]="#657b83"
+theme[main_fg]="#eee8d5"
+theme[inactive_fg]="#6c8087"
+theme[label_fg]="#6c8087"
+theme[title]="#eee8d5"
+theme[hi_fg]="#eee8d5"
+theme[header_fg]="#b0b7b0"
+theme[subtitle_fg]="#aab2ac"
+theme[version_fg]="#268ad0"
+theme[hint_fg]="#6c8087"
+theme[badge_bg]="#7a5636"
+theme[green]="#50c878"
+theme[cyan]="#268ad0"
+theme[yellow]="#b28602"
+theme[orange]="#ff963c"
+theme[red]="#d84f4c"
+theme[purple]="#b478ff"
+theme[pulse_fresh]="#78ff78"
+theme[pulse_aging]="#ff963c"
+theme[tab_active_bg]="#2e5570"
+theme[tab_active_fg]="#d84f4c"
+theme[tab_inactive_fg]="#6c8087"
+theme[tab_separator]="#657b83"
+theme[highlight_1]="#268ad0"
+theme[highlight_2]="#ff2dc8"
+theme[highlight_3]="#2a9d95"
+theme[highlight_4]="#aa50ff"
