@@ -2154,6 +2154,11 @@ impl App {
         Column::parse_list(self.config.columns_for(table), table)
     }
 
+    /// Background of the selected row, per high-contrast mode.
+    pub fn cursor_bg(&self) -> ratatui::style::Color {
+        if self.high_contrast { self.config.cursor_color_hi } else { self.config.cursor_color }
+    }
+
     pub fn sort_of(&self, table: TableId) -> Option<SortSpec> {
         self.table_sorts.get(&table).copied()
     }
@@ -2534,6 +2539,9 @@ impl App {
                 ConfigField { label: "lookup_timeout_secs", label_value: cfg.lookup_timeout_secs.to_string(), kind: ConfigFieldKind::U64 },
                 self.columns_field(TableId::LiveJobs),
                 self.columns_field(TableId::JobCache),
+                ConfigField { label: "[ui]", label_value: String::new(), kind: ConfigFieldKind::Section },
+                ConfigField { label: "cursor_color", label_value: crate::config::hex_color(cfg.cursor_color), kind: ConfigFieldKind::Str },
+                ConfigField { label: "cursor_color_hi", label_value: crate::config::hex_color(cfg.cursor_color_hi), kind: ConfigFieldKind::Str },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -2572,6 +2580,7 @@ impl App {
         let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
         let parse_bool = |key| vals.get(key) == Some(&"on");
         let columns = |key, table: TableId| vals.get(key).copied().unwrap_or(table.default_columns()).to_string();
+        let parse_color = |key| vals.get(key).and_then(|v| crate::config::parse_hex_color(v)).ok_or_else(|| format!("Invalid {}: expected #rrggbb", key));
 
         let new_config = AppConfig {
             agent_path: vals.get("agent_path").unwrap_or(&"").to_string(),
@@ -2637,6 +2646,8 @@ impl App {
             event_columns: columns("event_columns", TableId::Events),
             alert_columns: columns("alert_columns", TableId::Alerts),
             api_request_columns: columns("request_columns", TableId::ApiLog),
+            cursor_color: parse_color("cursor_color")?,
+            cursor_color_hi: parse_color("cursor_color_hi")?,
         };
 
         crate::config::write_config(&self.config_path, &new_config)

@@ -102,16 +102,12 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &m
             )));
         } else {
             for (idx, alert) in filtered.iter().enumerate().skip(scroll).take(visible) {
-                let sel_style = if idx == selected {
-                    color::select_bg(app.high_contrast)
-                } else {
-                    Style::default().bg(color::BG_DARK)
-                };
                 let mut row = vec![Span::raw("  ")];
                 for (&col, &w) in cols.iter().zip(&widths) {
                     row.extend(alert_cells(alert, col, w));
                 }
-                lines.push(Line::from(row).style(sel_style));
+                let line = Line::from(row);
+                lines.push(if idx == selected { color::selected_row(line, app.cursor_bg()) } else { line });
             }
         }
     }

@@ -204,16 +204,12 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
             )));
         } else {
             for (idx, entry) in filtered.iter().enumerate().skip(scroll).take(visible) {
-                let sel_style = if idx == selected {
-                    color::select_bg(app.high_contrast)
-                } else {
-                    Style::default().bg(color::BG_DARK)
-                };
                 let mut row = vec![Span::raw("  ")];
                 for (&col, &w) in cols.iter().zip(&widths) {
                     row.push(request_cells(entry, col, w));
                 }
-                lines.push(Line::from(row).style(sel_style));
+                let line = Line::from(row);
+                lines.push(if idx == selected { color::selected_row(line, app.cursor_bg()) } else { line });
             }
         }
     }

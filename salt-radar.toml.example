@@ -225,3 +225,10 @@
 #   cache_columns: jid, user, started, target, fun, args
 # live_columns = "jid,fun,args,target,source,tgt,ok,fail,wait"
 # cache_columns = "jid,user,started,target,fun,args"
+
+[ui]
+# Background of the selected (cursor) row in every table and list, as a
+# #rrggbb hex color. cursor_color_hi is used instead while high-contrast
+# mode is on ('c').
+# cursor_color = "#223660"
+# cursor_color_hi = "#345494"

@@ -148,7 +148,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         for idx in 0..total {
             let item = &items[idx];
             let is_sel = idx == sel;
-            let sel_bg = if is_sel { color::select_bg(app.high_contrast).bg } else { None };
+            let sel_bg = if is_sel { color::select_bg(app.cursor_bg()).bg } else { None };
             let span_style = |s: Style| -> Style {
                 match sel_bg { Some(bg) => s.bg(bg), None => s }
             };

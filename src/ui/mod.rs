@@ -57,12 +57,21 @@ pub mod color {
     pub const TAB_INACTIVE: Color = Color::Rgb(80, 100, 135);
     pub const TAB_SEPARATOR: Color = Color::Rgb(40, 55, 80);
 
-    pub fn select_bg(high_contrast: bool) -> ratatui::style::Style {
-        if high_contrast {
-            ratatui::style::Style::default().bg(Color::Rgb(40, 55, 80)).add_modifier(ratatui::style::Modifier::BOLD)
-        } else {
-            ratatui::style::Style::default().bg(BG_LIGHT)
+    /// `bg` is `App::cursor_bg()` — the configured cursor color.
+    pub fn select_bg(bg: Color) -> ratatui::style::Style {
+        ratatui::style::Style::default().bg(bg).add_modifier(ratatui::style::Modifier::BOLD)
+    }
+
+    /// Styles a list row as the cursor row. Dim/label text is lifted to
+    /// normal text, since those colors sit too close to the selection
+    /// background to stay readable on it.
+    pub fn selected_row(mut line: ratatui::text::Line<'_>, bg: Color) -> ratatui::text::Line<'_> {
+        for span in line.spans.iter_mut() {
+            if matches!(span.style.fg, Some(TEXT_DIM) | Some(TEXT_LABEL)) {
+                span.style.fg = Some(TEXT_HI);
+            }
         }
+        line.style(select_bg(bg))
     }
 
     // Dedicated palette for coloring filter/highlight terms (multi-host

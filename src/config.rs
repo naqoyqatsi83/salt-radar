@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use ratatui::style::Color;
+
 use crate::types::TableId;
 
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
@@ -169,6 +171,10 @@ pub struct AppConfig {
     pub event_columns: String,
     pub alert_columns: String,
     pub api_request_columns: String,
+    /// Background of the selected (cursor) row in every table and list;
+    /// `cursor_color_hi` replaces it while high-contrast mode (`c`) is on.
+    pub cursor_color: Color,
+    pub cursor_color_hi: Color,
 }
 
 impl AppConfig {
@@ -247,6 +253,8 @@ impl Default for AppConfig {
             event_columns: TableId::Events.default_columns().into(),
             alert_columns: TableId::Alerts.default_columns().into(),
             api_request_columns: TableId::ApiLog.default_columns().into(),
+            cursor_color: Color::Rgb(34, 54, 96),
+            cursor_color_hi: Color::Rgb(52, 84, 148),
         }
     }
 }
@@ -262,6 +270,7 @@ struct TomlConfig {
     minions: Option<MinionsConfig>,
     export: Option<ExportConfig>,
     jobs: Option<JobsConfig>,
+    ui: Option<UiConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -341,6 +350,27 @@ struct JobsConfig {
     lookup_timeout_secs: Option<u64>,
     live_columns: Option<String>,
     cache_columns: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct UiConfig {
+    cursor_color: Option<String>,
+    cursor_color_hi: Option<String>,
+}
+
+/// Parses a `#rrggbb` (or bare `rrggbb`) hex color.
+pub fn parse_hex_color(s: &str) -> Option<Color> {
+    let hex = s.trim().trim_start_matches('#');
+    if hex.len() != 6 || !hex.is_ascii() { return None; }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some(Color::Rgb(byte(0)?, byte(2)?, byte(4)?))
+}
+
+pub fn hex_color(c: Color) -> String {
+    match c {
+        Color::Rgb(r, g, b) => format!("#{:02x}{:02x}{:02x}", r, g, b),
+        other => other.to_string(),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -443,7 +473,11 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          [jobs]\n\
          lookup_timeout_secs = {}\n\
          live_columns = {:?}\n\
-         cache_columns = {:?}\n",
+         cache_columns = {:?}\n\
+         \n\
+         [ui]\n\
+         cursor_color = {:?}\n\
+         cursor_color_hi = {:?}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -504,6 +538,8 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.lookup_timeout_secs,
         config.jobs_live_columns,
         config.jobs_cache_columns,
+        hex_color(config.cursor_color),
+        hex_color(config.cursor_color_hi),
     );
     std::fs::write(path, toml)
 }
@@ -590,6 +626,10 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = j.lookup_timeout_secs { cfg.lookup_timeout_secs = v.max(1); }
                 if let Some(v) = j.live_columns { cfg.jobs_live_columns = v; }
                 if let Some(v) = j.cache_columns { cfg.jobs_cache_columns = v; }
+            }
+            if let Some(u) = toml_cfg.ui {
+                if let Some(v) = u.cursor_color.as_deref().and_then(parse_hex_color) { cfg.cursor_color = v; }
+                if let Some(v) = u.cursor_color_hi.as_deref().and_then(parse_hex_color) { cfg.cursor_color_hi = v; }
             }
         }
     }

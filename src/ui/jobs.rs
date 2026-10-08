@@ -154,16 +154,12 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
         } else {
             for idx in scroll..(scroll + visible).min(total) {
                 let job = filtered[idx];
-                let sel_style = if idx == selected {
-                    color::select_bg(app.high_contrast)
-                } else {
-                    Style::default().bg(color::BG_DARK)
-                };
                 let mut row = vec![Span::raw("  ")];
                 for (&col, &w) in cols.iter().zip(&widths) {
                     row.extend(live_cells(job, col, w));
                 }
-                lines.push(Line::from(row).style(sel_style));
+                let line = Line::from(row);
+                lines.push(if idx == selected { color::selected_row(line, app.cursor_bg()) } else { line });
             }
         }
     }
@@ -286,16 +282,12 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
                     Some(j) => j,
                     None => break,
                 };
-                let sel_style = if idx == selected {
-                    color::select_bg(app.high_contrast)
-                } else {
-                    Style::default().bg(color::BG_DARK)
-                };
                 let mut row = vec![Span::raw("  ")];
                 for (&col, &w) in cols.iter().zip(&widths) {
                     row.extend(cache_cells(job, col, w));
                 }
-                lines.push(Line::from(row).style(sel_style));
+                let line = Line::from(row);
+                lines.push(if idx == selected { color::selected_row(line, app.cursor_bg()) } else { line });
             }
         }
     }

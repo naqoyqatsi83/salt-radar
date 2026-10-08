@@ -106,13 +106,6 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
             for idx in scroll..(scroll + visible).min(total) {
                 let evt = filtered[idx];
 
-                let is_selected = idx == selected;
-                let sel_style = if is_selected {
-                    color::select_bg(app.high_contrast)
-                } else {
-                    Style::default().bg(color::BG_DARK)
-                };
-
                 let mut spans = vec![Span::raw("  ")];
                 for (&col, &w) in cols.iter().zip(&widths) {
                     let (text, fg) = match col {
@@ -138,7 +131,8 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
                     }
                 }
 
-                lines.push(Line::from(spans).style(sel_style));
+                let line = Line::from(spans);
+                lines.push(if idx == selected { color::selected_row(line, app.cursor_bg()) } else { line });
             }
         }
     }

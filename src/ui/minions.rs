@@ -86,11 +86,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
             let now = chrono::Utc::now().timestamp().max(0) as u64;
 
             for (idx, row) in rows.iter().enumerate().skip(scroll).take(visible) {
-                let sel_style = if idx == selected {
-                    color::select_bg(app.high_contrast)
-                } else {
-                    Style::default().bg(color::BG_DARK)
-                };
+                let select = |line: Line<'static>| if idx == selected { color::selected_row(line, app.cursor_bg()) } else { line };
 
                 match row {
                     Some(minion) => {
@@ -104,7 +100,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
                         for (&col, &w) in cols.iter().zip(&widths) {
                             spans.push(minion_cell(minion, ks, col, w, now));
                         }
-                        lines.push(Line::from(spans).style(sel_style));
+                        lines.push(select(Line::from(spans)));
                     }
                     None => {
                         // Collapsible section header row
@@ -114,7 +110,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
                             Span::styled(format!("  {} Timed out ({}){}", prefix, to_count, hint),
                                 Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD)),
                         ]);
-                        lines.push(line.style(sel_style));
+                        lines.push(select(line));
                     }
                 }
             }

@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `cursor_color` and `cursor_color_hi` (`#rrggbb`) under a new `[ui]` section of `salt-radar.toml`, also editable in the Config Editor, to set the selected-row color in normal and high-contrast mode (#112)
+
 ### Changed
 
 - Dim the screen behind any open popup (detail views, Event Sniffer, Config Editor, admin confirm, help) so the popup stands out; a popup opened on top of another dims the one beneath it too, and the screen returns to normal when it closes (#111)
+- Make the selected row stand out in every table and list: a stronger blue cursor bar with bold text (brighter still with `c`), dim text on it lifted so it stays readable, and the Job Detail Returns list now gets the same full-width bar instead of only a `▶` marker (#112)
 
 ### Fixed
 

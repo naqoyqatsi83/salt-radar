@@ -34,9 +34,10 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let area = centered_rect(85, 85, f.area());
             f.render_widget(Clear, area);
             let clipboard_at = app.clipboard_at;
+            let cursor_bg = app.cursor_bg();
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, clipboard_at, save_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, clipboard_at, save_at, clipboard_msg, cursor_bg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -73,7 +74,7 @@ pub fn draw_sniffer_overlay(f: &mut Frame, app: &App) {
     let Some(ref state) = app.sniffer else { return };
     let area = centered_rect(80, 85, f.area());
     f.render_widget(Clear, area);
-    draw_event_sniffer(f, area, state, app.clipboard_at, app.save_at, app.high_contrast, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+    draw_event_sniffer(f, area, state, app.clipboard_at, app.save_at, app.cursor_bg(), app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
 }
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -791,6 +792,7 @@ fn draw_job_detail(
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
     clipboard_warning: Option<&str>,
+    cursor_bg: Color,
 ) {
     // ── Outer frame ──
     f.render_widget(Clear, area);
@@ -877,6 +879,7 @@ fn draw_job_detail(
 
     let mut left_lines: Vec<Line<'static>> = Vec::new();
     if let Some(ref l) = lookup {
+        let mut sel_shown = false;
         let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
         if l.returns.is_empty() && !l.error.is_empty() {
             left_lines.push(Line::from(Span::styled(
@@ -901,13 +904,15 @@ fn draw_job_detail(
                 let (live_retcode, live_success) = crate::app::derive_success_retcode(&ret.full_return);
                 let status = if live_success { "OK" } else { "FAIL" };
                 let sc = if live_success { color::GREEN } else { color::RED };
-                left_lines.push(Line::from(vec![
+                let line = Line::from(vec![
                     Span::styled(format!(" {} {}: ", cursor, ret.minion_id),
                         Style::default().fg(if i == sel { color::CYAN } else { color::TEXT })
                             .add_modifier(if i == sel { Modifier::BOLD } else { Modifier::empty() })),
                     Span::styled(status, Style::default().fg(sc).add_modifier(Modifier::BOLD)),
                     Span::styled(format!(" (retcode={})", live_retcode), Style::default().fg(color::TEXT_DIM)),
-                ]));
+                ]);
+                sel_shown |= i == sel;
+                left_lines.push(if i == sel { color::selected_row(line, cursor_bg) } else { line });
             }
         }
         let sel_vis_idx = if return_filter.is_empty() || return_is_filtering {
@@ -930,6 +935,12 @@ fn draw_job_detail(
                 .style(Style::default().bg(color::BG_POPUP)),
             left_inner,
         );
+        // The row's own style only covers its text; extend the cursor bar
+        // across the panel like the padded table rows.
+        if sel_shown && sel_vis_idx >= left_scroll && sel_vis_idx < left_scroll + left_list_h {
+            let row = Rect { y: left_inner.y + (sel_vis_idx - left_scroll) as u16, height: 1, ..left_inner };
+            f.buffer_mut().set_style(row, color::select_bg(cursor_bg));
+        }
     } else {
         left_lines.push(Line::from(Span::styled(
             "  Querying master...",
@@ -1202,7 +1213,7 @@ fn draw_event_sniffer(
     state: &SnifferState,
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
-    high_contrast: bool,
+    cursor_bg: Color,
     clipboard_warning: Option<&str>,
 ) {
     let ids_str = state.minion_ids.join(", ");
@@ -1294,7 +1305,7 @@ fn draw_event_sniffer(
 
             let is_sel = display_idx == sel;
             let sel_style = if is_sel {
-                color::select_bg(high_contrast)
+                color::select_bg(cursor_bg)
             } else {
                 Style::default()
             };
@@ -1340,7 +1351,8 @@ fn draw_event_sniffer(
                     header_spans.push(Span::styled(" ".repeat(pad), sel_style));
                 }
             }
-            lines.push(Line::from(header_spans).style(sel_style));
+            let header = Line::from(header_spans);
+            lines.push(if is_sel { color::selected_row(header, cursor_bg) } else { header });
 
             // Full JSON body (no truncation) with keyword highlighting
             let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();

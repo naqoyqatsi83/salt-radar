@@ -79,7 +79,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             }
             ConfigFieldKind::SaveButton => {
                 let is_sel = field_idx == state.selected;
-                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
                 lines.push(Line::from(""));
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(
@@ -98,7 +98,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             ConfigFieldKind::Choice(options) => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
-                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
 
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(vec![
@@ -114,7 +114,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 if editing {
                     for (i, opt) in options.iter().enumerate() {
                         let opt_sel = i == state.choice_idx;
-                        let opt_style = if opt_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                        let opt_style = if opt_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
                         let marker = if opt_sel { "\u{25B8} " } else { "  " };
                         lines.push(Line::from(Span::styled(
                             format!("      {}{}", marker, opt),
@@ -126,7 +126,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             ConfigFieldKind::Columns(all) => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
-                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
 
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(vec![
@@ -143,7 +143,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     let (items, shown) = crate::app::column_editor_items(&field.label_value, all);
                     for (i, item) in items.iter().enumerate() {
                         let item_sel = i == state.choice_idx;
-                        let item_style = if item_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                        let item_style = if item_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
                         let marker = if item_sel { "\u{25B8} " } else { "  " };
                         let check = if i < shown { "[x]" } else { "[ ]" };
                         let fg = if item_sel { color::YELLOW } else if i < shown { color::TEXT } else { color::TEXT_DIM };
@@ -158,7 +158,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             ConfigFieldKind::Order => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
-                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
 
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(vec![
@@ -174,7 +174,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 if editing {
                     for (i, item) in field.label_value.split(',').enumerate() {
                         let item_sel = i == state.choice_idx;
-                        let item_style = if item_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                        let item_style = if item_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
                         let marker = if item_sel { "\u{25B8} " } else { "  " };
                         lines.push(Line::from(Span::styled(
                             format!("      {}{}", marker, item),
@@ -186,7 +186,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
             _ => {
                 let is_sel = field_idx == state.selected;
                 let editing = is_sel && state.editing;
-                let sel_style = if is_sel { color::select_bg(app.high_contrast) } else { Style::default().bg(color::BG_DARK) };
+                let sel_style = if is_sel { color::select_bg(app.cursor_bg()) } else { Style::default().bg(color::BG_DARK) };
 
                 let display_val = if editing {
                     let cursor = if state.input.len() % 2 == 0 { "\u{2588}" } else { " " };
