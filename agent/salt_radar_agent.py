@@ -1118,11 +1118,12 @@ def cmd_jid_lookup(opts, req):
       `{"outputter": ..., "data": ...}` unwrap as above before it can be
       iterated per-minion).
 
-    This is a real 2x subprocess cost for one lookup, but each command now
-    dispatches on its own thread (see `dispatch`), so it no longer blocks
-    any other command while it runs — `subprocess_secs`/`postprocess_secs`
-    are still returned so the Rust side can show the breakdown in the
-    popup header.
+    Both run concurrently, so a lookup costs the slower of the two rather
+    than their sum -- on a 4000-minion `grains.items` job each one alone can
+    take 20s+. The colored run is best-effort: if it fails or misses the
+    deadline, the popup falls back to rendering `full_return` itself.
+    `subprocess_secs`/`postprocess_secs` are returned so the Rust side can
+    show the breakdown in the popup header.
     """
     jid = req.get("jid", "")
     if not jid:
@@ -1130,10 +1131,28 @@ def cmd_jid_lookup(opts, req):
         return
 
     import json as json_mod
+    import subprocess as sp
+
+    timeout = req.get("timeout") or 300
+    outputs = {}
+    errors = {}
+
+    def _lookup(key, args):
+        try:
+            cp = sp.run(args, capture_output=True, text=True, timeout=timeout)
+            if cp.returncode == 0 and cp.stdout.strip():
+                outputs[key] = cp.stdout
+            else:
+                lines = (cp.stderr or "").strip().splitlines()
+                errors[key] = lines[-1] if lines else "salt-run exited with code {}".format(cp.returncode)
+        except sp.TimeoutExpired:
+            errors[key] = "salt-run jobs.lookup_jid timed out after {}s".format(timeout)
+        except Exception as exc:
+            errors[key] = str(exc)
 
     t0 = time.time()
-    raw_output = _run_salt_cmd(
-        [
+    threads = [
+        threading.Thread(target=_lookup, args=("raw", [
             "salt-run", "jobs.lookup_jid", jid, "--force-color",
             # Always show full state detail regardless of the master's
             # configured state_output/state_verbose -- a "terse"/"changes"
@@ -1141,16 +1160,24 @@ def cmd_jid_lookup(opts, req):
             # from this popup even though the user explicitly opened it to
             # see everything about this one job.
             "--state-output=full", "--state-verbose=True",
-        ],
-        timeout=60,
-    ) or ""
-    json_output = _run_salt_cmd(
-        ["salt-run", "jobs.lookup_jid", jid, "--out=json"],
-        timeout=60,
-    )
+        ]), daemon=True),
+        threading.Thread(target=_lookup, args=("json", [
+            "salt-run", "jobs.lookup_jid", jid, "--out=json",
+        ]), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     t1 = time.time()
+    raw_output = outputs.get("raw", "")
+    json_output = outputs.get("json")
     if not json_output:
-        result(req["id"], "jid_lookup", ok=False, data={"found": False})
+        result(req["id"], "jid_lookup", ok=False, data={
+            "found": False,
+            "error": errors.get("json", "salt-run returned no output"),
+            "subprocess_secs": round(t1 - t0, 2),
+        })
         return
 
     try:
@@ -1174,6 +1201,17 @@ def cmd_jid_lookup(opts, req):
                     return (1, False)
                 if isinstance(result_val, bool):
                     return (0, True)
+            elif return_val and all(
+                isinstance(v, dict) and ("result" in v or "__run_num__" in v)
+                for v in return_val.values()
+            ):
+                # state.apply-style return: a dict keyed by state ID, each
+                # value its own per-state result dict -- there's no
+                # top-level "result"/"retcode" to find above, so without
+                # this the whole job silently defaulted to "success" (rc=0)
+                # even when every state inside had result=False.
+                any_failed = any(v.get("result") is False for v in return_val.values())
+                return (1, False) if any_failed else (0, True)
             rc = return_val.get("retcode", 0)
             if not isinstance(rc, int):
                 try:
@@ -1195,19 +1233,26 @@ def cmd_jid_lookup(opts, req):
         index in the original string — so a position found in the stripped
         text (used for reliably matching a bare "mid:" header even though
         `--force-color` puts escape codes right before it) can be mapped
-        back to a slice boundary in the original (still-colored) text."""
-        out_chars = []
+        back to a slice boundary in the original (still-colored) text.
+
+        Walks escape-code matches only (`finditer`), copying each run of
+        plain text between them in one slice, rather than a Python-level
+        loop doing a regex match at every single character position — for
+        a lookup spanning thousands of minions (hundreds of thousands of
+        lines) the per-character version added a real, visible delay on its
+        own before the O(n^2) bug below was even reached."""
+        out_parts = []
         pos_map = []
-        i, n = 0, len(text)
-        while i < n:
-            m = _ansi_re.match(text, i)
-            if m:
-                i = m.end()
-                continue
-            out_chars.append(text[i])
-            pos_map.append(i)
-            i += 1
-        return "".join(out_chars), pos_map
+        last = 0
+        for m in _ansi_re.finditer(text):
+            if m.start() > last:
+                out_parts.append(text[last:m.start()])
+                pos_map.extend(range(last, m.start()))
+            last = m.end()
+        if last < len(text):
+            out_parts.append(text[last:])
+            pos_map.extend(range(last, len(text)))
+        return "".join(out_parts), pos_map
 
     _stripped, _pos_map = _strip_ansi_with_map(raw_output)
 
@@ -1216,33 +1261,44 @@ def cmd_jid_lookup(opts, req):
             return len(raw_output)
         return _pos_map[stripped_pos]
 
+    # Precompute every minion's [start, end) span in the stripped text in a
+    # single regex pass over column-0 "mid:" header lines. A `.find()` per
+    # minion is O(minions x text) -- for a 4000-minion `grains.items` job
+    # (tens of MB of output) that alone could outlast the lookup timeout.
+    # Each section's end is simply the next header's start.
+    if _stripped.strip():
+        # Each entry is (newline_pos, content_start, mid) -- content_start
+        # (right after "mid:") is where THIS minion's own slice begins;
+        # newline_pos (the position of the newline preceding "mid:") is what
+        # closes the PREVIOUS minion's slice. Keeping these distinct matters:
+        # the raw text between a newline and the next visible character can
+        # contain that next minion's own leading ANSI codes (`--force-color`
+        # puts them immediately before the name), and ending a slice at
+        # "next minion's content_start" instead of "next minion's newline_pos"
+        # would pull those codes into the wrong (preceding) minion's section.
+        _mids = {str(k) for k in lookup_data}
+        _mid_starts = []
+        for m in re.finditer(r"^(\S[^\n]*?):[ \t]*$", _stripped, re.M):
+            mid_str = m.group(1)
+            if mid_str in _mids:
+                _mids.discard(mid_str)
+                start = m.start()
+                _mid_starts.append((max(start - 1, 0), start, mid_str))
+        _mid_spans = {}
+        for idx, (_newline_pos, content_start, mid_str) in enumerate(_mid_starts):
+            end = _mid_starts[idx + 1][0] if idx + 1 < len(_mid_starts) else len(_stripped)
+            _mid_spans[mid_str] = (_to_raw_pos(content_start), _to_raw_pos(end))
+    else:
+        _mid_spans = {}
+
     def _extract_section(mid):
         """Pull this minion's own section out of the raw multi-minion CLI
         text — everything from its "mid:" header up to the next minion's
         header (or EOF) — preserving the original ANSI color codes."""
-        if not _stripped.strip():
+        bounds = _mid_spans.get(mid)
+        if not bounds:
             return ""
-        marker = "\n" + mid + ":"
-        if _stripped.startswith(mid + ":"):
-            content_start = 0
-        else:
-            pos = _stripped.find(marker)
-            if pos == -1:
-                return ""
-            content_start = pos + 1
-        rest = _stripped[content_start + len(mid) + 1:]
-        next_stripped_pos = len(_stripped)
-        for other_mid in lookup_data:
-            other_mid = str(other_mid)
-            if other_mid == mid:
-                continue
-            np = rest.find("\n" + other_mid + ":")
-            if np != -1:
-                candidate = content_start + len(mid) + 1 + np
-                if candidate < next_stripped_pos:
-                    next_stripped_pos = candidate
-        raw_start = _to_raw_pos(content_start)
-        raw_end = _to_raw_pos(next_stripped_pos)
+        raw_start, raw_end = bounds
         return raw_output[raw_start:raw_end].strip()
 
     returns = []
@@ -1250,10 +1306,8 @@ def cmd_jid_lookup(opts, req):
         mid = str(mid)
         retcode, success = _derive_retcode_and_success(ret_val)
 
-        try:
-            clean_return = json_mod.loads(json_mod.dumps(ret_val, default=str))
-        except Exception:
-            clean_return = str(ret_val)
+        # Already plain JSON types -- it came straight from json.loads above.
+        clean_return = ret_val
 
         summary = json_mod.dumps(clean_return, default=str)[:200]
 
@@ -1409,40 +1463,134 @@ def cmd_fleet_scan(opts, req):
     })
 
 
-def _fast_local_job_walk(opts, on_progress):
-    """Read the local_cache job directory ourselves, one job at a time, via
-    Salt's own (private) local_cache returner helpers — rather than the
-    atomic `salt-run jobs.list_jobs` call, which only returns once it has
-    already read the entire cache with no visibility into how far along it
-    is. `on_progress(count)` is invoked periodically as jobs are read, so a
-    slow cache (tens of thousands of jobs) can show live progress instead
-    of an opaque multi-second freeze.
+_STATE_APPLY_FUNS = ("state.apply", "state.sls", "state.highstate", "state.top")
 
-    Only correct for the `local_cache` job-cache backend — callers must
+
+def _format_job_args(fun, args):
+    """Mirror of `format_job_args` in src/types.rs: renders a job's raw Salt
+    `arg` list for the Args column -- for state runs the requested SLS list
+    (or "highstate" when none was named), with `test=True` returned as a
+    separate flag. Done here for the Job Cache so the server-side search and
+    sort see the same text the TUI shows. Keys are walked sorted to match
+    serde_json's (BTreeMap) object order on the Rust side.
+    """
+    def text(v):
+        if isinstance(v, str):
+            return v
+        if isinstance(v, (list, tuple)):
+            return ",".join(text(i) for i in v)
+        return json.dumps(v, separators=(",", ":"), sort_keys=True, default=str)
+
+    positional, kwargs, test_run = [], [], False
+    for v in args if isinstance(args, list) else []:
+        if isinstance(v, dict) and v.get("__kwarg__") is True:
+            for k in sorted(v):
+                val = v[k]
+                if k == "test":
+                    test_run = val is True or (isinstance(val, str) and val.lower() == "true")
+                elif not k.startswith("__"):
+                    kwargs.append((k, val))
+        else:
+            positional.append(text(v))
+    if fun in _STATE_APPLY_FUNS:
+        for i, (k, val) in enumerate(kwargs):
+            if k == "mods":
+                positional.insert(0, text(val))
+                del kwargs[i]
+                break
+        if not positional and fun != "state.sls":
+            positional.append("highstate")
+    parts = positional + ["{}={}".format(k, text(val)) for k, val in kwargs]
+    return " ".join(parts), test_run
+
+
+# str() since py3 can't order a None (e.g. a cache entry missing its user)
+# against a str.
+_JOB_SORT_KEYS = {
+    "jid": lambda j: j["jid"],
+    "user": lambda j: str(j["user"]),
+    "started": lambda j: (j["start_epoch"], j["jid"]),
+    "target": lambda j: str(j["tgt"]),
+    "fun": lambda j: str(j["fun"]),
+    "args": lambda j: (j["args"], j["test_run"]),
+}
+
+
+# Job-cache summaries already read from disk, keyed by the job's
+# (top, final) directory pair under `<cachedir>/jobs/`. A busy master's cache
+# holds tens of thousands of jobs, and unpickling every `.load.p` again for
+# each search/page/refresh is what made the Job Cache panel re-load from
+# scratch every time -- only directories not seen before are read now.
+_JOB_INDEX = {}
+_JOB_INDEX_LOCK = threading.Lock()
+
+
+def _fast_local_job_walk(opts, on_progress):
+    """Read the local_cache job directory ourselves via Salt's own (private)
+    local_cache layout -- rather than the atomic `salt-run jobs.list_jobs`
+    call, which only returns once it has read the entire cache with no
+    visibility into how far along it is. `on_progress(count)` is invoked
+    periodically as jobs are read, so a slow first read (tens of thousands
+    of jobs) shows live progress instead of an opaque freeze.
+
+    Incremental across calls: directory listings are cheap, so every call
+    re-lists the cache, reads `.load.p` only for job directories missing
+    from `_JOB_INDEX`, and forgets directories Salt has since expired
+    (`keep_jobs_seconds`). Jobs whose `.load.p` isn't written yet or can't
+    be read are left out of the index so the next call retries them.
+
+    Only correct for the `local_cache` job-cache backend -- callers must
     check `master_job_cache`/`ext_job_cache` first and fall back to the
     slower salt-run-based path for any other backend (redis, mysql, etcd).
-    Reaches into `local_cache`'s private `_walk_through`/`_job_dir`, so any
+    Reaches into `local_cache`'s private `_job_dir`/`LOAD_P`, so any
     failure (e.g. a future Salt version renaming them) raises and the
     caller falls back to the safe path rather than surfacing a broken cache
     view.
     """
+    import salt.payload
     import salt.returners.local_cache as local_cache_mod
     import salt.utils.jid as jid_mod
 
     # These modules normally get `__opts__` injected by Salt's loader when
     # loaded as a returner plugin; called directly like this, it has to be
-    # set by hand before `_job_dir()`/`_walk_through()` (which read it) work.
+    # set by hand before `_job_dir()` (which reads it) works.
     local_cache_mod.__opts__ = opts
+    job_dir = local_cache_mod._job_dir()
 
-    jobs = {}
-    count = 0
-    for jid, job, _t_path, _final in local_cache_mod._walk_through(local_cache_mod._job_dir()):
-        jobs[jid] = jid_mod.format_jid_instance(jid, job)
-        count += 1
-        if count % 250 == 0:
-            on_progress(count)
-    on_progress(count)
-    return jobs
+    # Serialized so a search typed while the first read is still running
+    # waits for it and then reuses it, instead of starting a second full read.
+    with _JOB_INDEX_LOCK:
+        seen = set()
+        new = 0
+        for top in os.listdir(job_dir):
+            t_path = os.path.join(job_dir, top)
+            try:
+                finals = os.listdir(t_path)
+            except OSError:
+                continue
+            for final in finals:
+                key = (top, final)
+                seen.add(key)
+                if key in _JOB_INDEX:
+                    continue
+                try:
+                    with open(os.path.join(t_path, final, local_cache_mod.LOAD_P), "rb") as rfh:
+                        job = salt.payload.load(rfh)
+                except Exception:
+                    continue
+                if not job or "jid" not in job:
+                    continue
+                jid = job["jid"]
+                info = jid_mod.format_jid_instance(jid, job)
+                info.pop("Metadata", None)
+                _JOB_INDEX[key] = (jid, info)
+                new += 1
+                if new % 250 == 0:
+                    on_progress(len(_JOB_INDEX))
+        for key in [k for k in _JOB_INDEX if k not in seen]:
+            del _JOB_INDEX[key]
+        on_progress(len(_JOB_INDEX))
+        return dict(_JOB_INDEX.values())
 
 
 def cmd_jobs_list(opts, req):
@@ -1456,9 +1604,12 @@ def cmd_jobs_list(opts, req):
     other backend, or if the fast path fails for any reason.
 
     Optional request fields:
-      - filter_text (str): search across jid/fun/tgt/user on the full cache
+      - filter_text (str): search across jid/fun/tgt/user/args on the full cache
       - max_results (int): max items to return (default 500)
-      - offset (int): skip N newest entries (for pagination)
+      - offset (int): skip N entries in sort order (for pagination)
+      - sort_key (str): jid/user/started/target/fun/args -- sort the full
+        cache by this column before paging (default: newest first)
+      - sort_desc (bool): reverse sort_key's order
     """
     import json as json_mod
 
@@ -1496,6 +1647,8 @@ def cmd_jobs_list(opts, req):
             continue
         fun = info.get("Function", info.get("fun", ""))
         tgt = info.get("Target", info.get("tgt", ""))
+        if isinstance(tgt, (list, tuple)):
+            tgt = ",".join(str(t) for t in tgt)
         tgt_type = info.get("Target-type", info.get("tgt_type", "glob"))
         user = info.get("User", info.get("user", ""))
         # Use JID-derived epoch as primary — the JID always encodes the master
@@ -1507,13 +1660,12 @@ def cmd_jobs_list(opts, req):
             stamp = info.get("StartTime", info.get("start_time", info.get("_stamp", "")))
             start_epoch = _parse_stamp(stamp)
 
-        args_raw = info.get("Arguments", info.get("arg", []))
-        args_list = args_raw if isinstance(args_raw, list) else []
+        args, test_run = _format_job_args(fun, info.get("Arguments", info.get("arg", [])))
 
         # Apply filter across full cache (server-side search)
         if filter_text:
             ft = filter_text.lower()
-            fields_to_search = [str(jid).lower(), str(fun).lower(), str(tgt).lower(), str(user).lower()]
+            fields_to_search = [str(jid).lower(), str(fun).lower(), str(tgt).lower(), str(user).lower(), args.lower()]
             if not any(ft in f for f in fields_to_search):
                 continue
         jobs.append({
@@ -1524,11 +1676,17 @@ def cmd_jobs_list(opts, req):
             "user": user,
             "start_time": str(stamp),
             "start_epoch": start_epoch,
-            "arguments": args_list,
+            "args": args,
+            "test_run": test_run,
         })
 
     total_matching = len(jobs)
-    jobs.sort(key=lambda j: j["start_epoch"], reverse=True)
+    # start_epoch only has whole-second precision; the JID breaks ties so
+    # jobs started within the same second still come out newest first.
+    jobs.sort(key=lambda j: (j["start_epoch"], j["jid"]), reverse=True)
+    sort_key = _JOB_SORT_KEYS.get(req.get("sort_key", ""))
+    if sort_key:
+        jobs.sort(key=sort_key, reverse=bool(req.get("sort_desc")))
     jobs = jobs[offset:]
     jobs = jobs[:max_results]
 

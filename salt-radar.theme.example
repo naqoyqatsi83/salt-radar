@@ -1,0 +1,117 @@
+# salt-radar color theme -- the built-in "Default" theme, with every key.
+#
+# Copy this file to ~/.config/salt-radar/themes/<name>.theme (or
+# /usr/share/salt-radar/themes/ for all users), change what you like, and
+# pick <name> as color_theme in the Config Editor (F3) or in the [ui]
+# section of salt-radar.toml. Themes preview live while you scroll the
+# color_theme picker.
+#
+# Same format as btop++ themes: theme[key]="value", where value is
+#   "#RRGGBB"   a 24-bit color
+#   "#RR"       a gray level (#80 == #808080)
+#   "R G B"     decimal 0-255 components
+#   ""          the terminal's own default color
+# Keys left out (or with an unparseable value) keep their Default color,
+# so a theme only needs the keys it changes. Unknown keys are ignored.
+
+# Background of tabs, tables and panels
+theme[main_bg]="#080c18"
+
+# Background behind Dashboard gauges
+theme[meter_bg]="#0a0e1c"
+
+# Background of the tab bar, info line and status bar
+theme[bar_bg]="#12192d"
+
+# Background of popups
+theme[popup_bg]="#0a0e1c"
+
+# Cursor (selected row) bar
+theme[selected_bg]="#223660"
+
+# Panel borders
+theme[border]="#1e3255"
+
+# Border of the focused panel and of popups
+theme[border_focus]="#3c64b4"
+
+# Horizontal rules and separators
+theme[div_line]="#233250"
+
+# Main text
+theme[main_fg]="#aab9d2"
+
+# Dimmed / secondary text
+theme[inactive_fg]="#506487"
+
+# Field labels
+theme[label_fg]="#5a6987"
+
+# Panel and popup titles
+theme[title]="#c8dcff"
+
+# Emphasized text (e.g. dim text on the cursor row)
+theme[hi_fg]="#c8d2e6"
+
+# Table column headers
+theme[header_fg]="#648cb4"
+
+# "Salt Master Monitor" in the title bar
+theme[subtitle_fg]="#8296be"
+
+# Salt version in the title bar
+theme[version_fg]="#5a96d2"
+
+# Shortcut descriptions in the status bar
+theme[hint_fg]="#5f6c87"
+
+# Background of "ON" mode badges in the status bar
+theme[badge_bg]="#503700"
+
+# OK / success / healthy
+theme[green]="#50c878"
+
+# Accent: IDs, tags, info
+theme[cyan]="#50c8ff"
+
+# Warnings, shortcut keys, values being edited
+theme[yellow]="#ffc850"
+
+# Elevated warnings, active alert count
+theme[orange]="#ffb450"
+
+# Failures and errors
+theme[red]="#ff5050"
+
+# Accent
+theme[purple]="#b478ff"
+
+# Pulse tab: minion returned within the last few seconds
+theme[pulse_fresh]="#78ff78"
+
+# Pulse tab: minion last returned 5-10 minutes ago
+theme[pulse_aging]="#ffa500"
+
+# Active tab background
+theme[tab_active_bg]="#1e2a46"
+
+# Active tab text
+theme[tab_active_fg]="#ffdc78"
+
+# Inactive tab text
+theme[tab_inactive_fg]="#506487"
+
+# Separators between tabs and status bar items
+theme[tab_separator]="#283750"
+
+# Filter / sniffer keyword highlight color 1
+theme[highlight_1]="#3282ff"
+
+# Filter / sniffer keyword highlight color 2
+theme[highlight_2]="#ff2dc8"
+
+# Filter / sniffer keyword highlight color 3
+theme[highlight_3]="#00e6aa"
+
+# Filter / sniffer keyword highlight color 4
+theme[highlight_4]="#aa50ff"

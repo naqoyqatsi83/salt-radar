@@ -1,0 +1,42 @@
+# salt-radar port of btop++'s paper.theme
+# (https://github.com/aristocratos/btop, Apache-2.0)
+#
+# Bashtop Paper theme
+# c/o @s6muel
+# inspired by @yorickpeterse's vim-paper theme at https://gitlab.com/yorickpeterse/vim-paper
+#
+
+theme[main_bg]="#f2eede"
+theme[meter_bg]="#e9e5d6"
+theme[bar_bg]="#e1ddce"
+theme[popup_bg]="#ebe7d7"
+theme[selected_bg]="#d8d5c7"
+theme[border]="#000000"
+theme[border_focus]="#000000"
+theme[div_line]="#000000"
+theme[main_fg]="#000000"
+theme[inactive_fg]="#828077"
+theme[label_fg]="#828077"
+theme[title]="#000000"
+theme[hi_fg]="#000000"
+theme[header_fg]="#000000"
+theme[subtitle_fg]="#6c6a64"
+theme[version_fg]="#1e6fcc"
+theme[hint_fg]="#828077"
+theme[badge_bg]="#e0c2a0"
+theme[green]="#3c965a"
+theme[cyan]="#1e6fcc"
+theme[yellow]="#a68234"
+theme[orange]="#bf702d"
+theme[red]="#cc3e28"
+theme[purple]="#a26ce6"
+theme[pulse_fresh]="#216609"
+theme[pulse_aging]="#bf702d"
+theme[tab_active_bg]="#e2dfd0"
+theme[tab_active_fg]="#cc3e28"
+theme[tab_inactive_fg]="#828077"
+theme[tab_separator]="#000000"
+theme[highlight_1]="#1e6fcc"
+theme[highlight_2]="#f22bbe"
+theme[highlight_3]="#00966e"
+theme[highlight_4]="#aa50ff"

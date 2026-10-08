@@ -5,10 +5,12 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::types::{CacheJobEntry, Column, HeaderHit, JobEntry, Tab, TableId};
 
 use super::color;
+use super::table::{cell, cell_with_suffix, column_widths, header_line};
 
-pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
+pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) {
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -17,33 +19,103 @@ pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
         ])
         .split(area);
 
-    draw_live_jobs_panel(f, layout[0], app, tab_focused);
-    draw_cache_panel(f, layout[1], app, tab_focused);
+    draw_live_jobs_panel(f, layout[0], app, tab_focused, hits);
+    draw_cache_panel(f, layout[1], app, tab_focused, hits);
 }
 
-fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
+fn args_cell(args: &str, test_run: bool, w: usize) -> Vec<Span<'static>> {
+    let marker = if !test_run { "" } else if args.is_empty() { "(test)" } else { " (test)" };
+    cell_with_suffix(args, marker, w, Style::default().fg(color::main_fg()), Style::default().fg(color::inactive_fg()))
+}
+
+fn format_started(epoch: f64) -> String {
+    if epoch > 0.0 {
+        chrono::DateTime::from_timestamp(epoch as i64, 0)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "?".to_string())
+    } else {
+        "?".to_string()
+    }
+}
+
+fn live_cells(job: &JobEntry, col: Column, w: usize) -> Vec<Span<'static>> {
+    let right = col.right_aligned();
+    let dim = Style::default().fg(color::inactive_fg());
+    let count = |n: usize, hot: Style| {
+        if job.target_count == 0 {
+            cell("?", w, right, Style::default().fg(color::orange()).add_modifier(Modifier::BOLD))
+        } else {
+            cell(&n.to_string(), w, right, if n > 0 { hot } else { dim })
+        }
+    };
+    let span = match col {
+        Column::Jid => cell(&job.jid, w, right, dim),
+        Column::Fun => cell(&job.fun, w, right, Style::default().fg(color::cyan())),
+        Column::Args => return args_cell(&job.args, job.test_run, w),
+        Column::Target => cell(&job.tgt, w, right, Style::default().fg(color::yellow())),
+        Column::Source => {
+            if job.local {
+                cell("local", w, right, Style::default().fg(color::purple()))
+            } else {
+                cell("master", w, right, Style::default().fg(color::green()))
+            }
+        }
+        Column::Targeted => count(job.target_count, Style::default().fg(color::main_fg())),
+        Column::Ok => count(job.succeeded, Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
+        Column::Fail => count(job.failed, Style::default().fg(color::red()).add_modifier(Modifier::BOLD)),
+        Column::Wait => count(job.target_count.saturating_sub(job.returned), Style::default().fg(color::orange())),
+        Column::Started => cell(&format_started(job.created_epoch), w, right, dim),
+        _ => cell("", w, right, dim),
+    };
+    vec![span]
+}
+
+fn cache_cells(job: &CacheJobEntry, col: Column, w: usize) -> Vec<Span<'static>> {
+    let right = col.right_aligned();
+    let dim = Style::default().fg(color::inactive_fg());
+    let span = match col {
+        Column::Jid => cell(&job.jid, w, right, dim),
+        Column::User => cell(&job.user, w, right, Style::default().fg(color::purple())),
+        Column::Started => cell(&format_started(job.start_epoch), w, right, dim),
+        Column::Target => cell(&job.tgt, w, right, Style::default().fg(color::yellow())),
+        Column::Fun => cell(&job.fun, w, right, Style::default().fg(color::cyan())),
+        Column::Args => return args_cell(&job.args, job.test_run, w),
+        _ => cell("", w, right, dim),
+    };
+    vec![span]
+}
+
+fn panel_hints(table: TableId, focused: bool, extra: &[(&'static str, &'static str)], arrow: (&'static str, &'static str)) -> Vec<(&'static str, String)> {
+    let mut hints: Vec<(&str, String)> = extra.iter().map(|(k, v)| (*k, v.to_string())).collect();
+    hints.extend(super::table::hints(table));
+    if focused {
+        hints.push((arrow.0, arrow.1.to_string()));
+    }
+    hints
+}
+
+fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) {
     let focused = tab_focused && !app.cache_focus;
     let border_style = if focused {
-        Style::default().fg(color::BORDER_HI)
+        Style::default().fg(color::border_focus())
     } else {
-        Style::default().fg(color::BORDER)
+        Style::default().fg(color::border())
     };
 
-    let total = app.filtered_jobs_len();
+    // Filtered once per frame, not once per visible row (#104).
+    let filtered = app.filtered_jobs();
+    let total = filtered.len();
     let selected = app.job_selected.min(total.saturating_sub(1));
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
 
-    let mut hints: Vec<(&str, String)> = vec![
-        ("/", "filter".to_string()),
-        ("Enter", "detail".to_string()),
-        ("PgUp/PgDn", "page".to_string()),
-        ("Home/End", "top/bottom".to_string()),
-    ];
-    if focused {
-        hints.push(("\u{2192}", "cache".to_string()));
-    }
-    let block = super::list_block_hinted(format!(" Live Jobs ({}) ", app.jobs.len()), border_style, color::BG_DARK, has_more_above, has_more_below, &hints);
+    let hints = panel_hints(TableId::LiveJobs, focused, &[
+        ("/", "filter"),
+        ("Enter", "detail"),
+        ("PgUp/PgDn", "page"),
+        ("Home/End", "top/bottom"),
+    ], ("\u{2192}", "cache"));
+    let block = super::list_block_hinted(format!(" Live Jobs ({}) ", app.jobs.len()), border_style, color::main_bg(), has_more_above, has_more_below, &hints);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -54,80 +126,56 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool)
     if app.is_filtering {
         let cursor = if app.filter_text.len() % 2 == 0 { '|' } else { ' ' };
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
         ]));
-    } else if !app.filter_text.is_empty() {
+    } else if !app.filter_text_for(Tab::Jobs).is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.filter_text), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" /{}/ ", app.filter_text_for(Tab::Jobs)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     }
 
     if app.jobs.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No active jobs.",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
     } else {
-        lines.push(Line::from(Span::styled(
-            format!("  {:<24}{:<26}{:<22}{:<8}Progress", "JID", "Fun", "Target", "Source"),
-            Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
-        )));
+        let cols = app.columns(TableId::LiveJobs);
+        let widths = column_widths(&cols, (inner.width as usize).saturating_sub(2));
+        lines.push(header_line(TableId::LiveJobs, &cols, &widths, app.sort_of(TableId::LiveJobs), inner.x, inner.y + lines.len() as u16, hits));
 
         if total == 0 {
             lines.push(Line::from(Span::styled(
                 "  No jobs match the filter.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )));
         } else {
             for idx in scroll..(scroll + visible).min(total) {
-                let job = match app.get_filtered_job(idx) {
-                    Some(j) => j,
-                    None => break,
-                };
-
-                let is_selected = idx == selected;
-                let sel_style = if is_selected {
-                    color::select_bg(app.high_contrast)
-                } else {
-                    Style::default().bg(color::BG_DARK)
-                };
-
-                let progress = if job.target_count > 0 {
-                    format!("{}/{}", job.returned, job.target_count)
-                } else {
-                    "?".to_string()
-                };
-
-                let jid_str = if job.jid.len() > 24 { format!("{}..", &job.jid[..22]) } else { job.jid.clone() };
-                let fun_str = if job.fun.len() > 26 { format!("{}..", &job.fun[..24]) } else { job.fun.clone() };
-                let tgt_str = if job.tgt.len() > 22 { format!("{}..", &job.tgt[..20]) } else { job.tgt.clone() };
-                let source_str = if job.local { "local" } else { "master" };
-
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<24}", jid_str), Style::default().fg(color::TEXT_DIM)),
-                    Span::styled(format!("{:<26}", fun_str), Style::default().fg(color::CYAN)),
-                    Span::styled(format!("{:<22}", tgt_str), Style::default().fg(color::YELLOW)),
-                    Span::styled(format!("{:<8}", source_str), Style::default().fg(if job.local { color::PURPLE } else { color::GREEN })),
-                    Span::styled(progress, Style::default().fg(if job.returned >= job.target_count && job.target_count > 0 { color::GREEN } else { color::ORANGE }).add_modifier(Modifier::BOLD)),
-                ]).style(sel_style));
+                let job = filtered[idx];
+                let mut row = vec![Span::raw("  ")];
+                for (&col, &w) in cols.iter().zip(&widths) {
+                    row.extend(live_cells(job, col, w));
+                }
+                let line = Line::from(row);
+                lines.push(if idx == selected { color::selected_row(line) } else { line });
             }
         }
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }
 
-fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
+fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) {
     let focused = tab_focused && app.cache_focus;
     let border_style = if focused {
-        Style::default().fg(color::BORDER_HI)
+        Style::default().fg(color::border_focus())
     } else {
-        Style::default().fg(color::BORDER)
+        Style::default().fg(color::border())
     };
 
     let total_hint = if app.cache_loaded {
@@ -150,19 +198,16 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
     let visible = (area.height as usize).saturating_sub(2).saturating_sub(2);
     let (scroll, has_more_above, has_more_below) = super::scroll_window(selected, visible, total);
 
-    let mut hints: Vec<(&str, String)> = vec![
-        ("/", "filter".to_string()),
-        ("Enter", "detail".to_string()),
-        ("PgUp/PgDn", "scroll".to_string()),
-        ("Home/End", "top/bottom".to_string()),
-        ("[ ]", "limit".to_string()),
-        (", .", "page".to_string()),
-        ("r", "refresh".to_string()),
-    ];
-    if focused {
-        hints.push(("\u{2190}", "live".to_string()));
-    }
-    let block = super::list_block_hinted(format!(" Job Cache ({}) ", total_hint), border_style, color::BG_DARK, has_more_above, has_more_below, &hints);
+    let hints = panel_hints(TableId::JobCache, focused, &[
+        ("/", "filter"),
+        ("Enter", "detail"),
+        ("PgUp/PgDn", "scroll"),
+        ("Home/End", "top/bottom"),
+        ("[ ]", "limit"),
+        (", .", "page"),
+        ("r", "refresh"),
+    ], ("\u{2190}", "live"));
+    let block = super::list_block_hinted(format!(" Job Cache ({}) ", total_hint), border_style, color::main_bg(), has_more_above, has_more_below, &hints);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -175,15 +220,15 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
     // doesn't, so this just falls back to a plain "Loading..." line).
     if app.cache_loading && !app.cache_loaded {
         let elapsed = app.cache_loading_at.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
-        let mut spans = vec![Span::styled("  Loading job cache... ", Style::default().fg(color::TEXT_DIM))];
+        let mut spans = vec![Span::styled("  Loading job cache... ", Style::default().fg(color::inactive_fg()))];
         if let Some(loaded) = app.cache_load_progress {
-            spans.push(Span::styled(format!("{}", loaded), Style::default().fg(color::TEXT_TITLE).add_modifier(Modifier::BOLD)));
-            spans.push(Span::styled(" jobs read", Style::default().fg(color::TEXT_DIM)));
+            spans.push(Span::styled(format!("{}", loaded), Style::default().fg(color::title()).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(" jobs read", Style::default().fg(color::inactive_fg())));
         }
-        spans.push(Span::styled(format!(" ({:.0}s)", elapsed), Style::default().fg(color::TEXT_DIM)));
+        spans.push(Span::styled(format!(" ({:.0}s)", elapsed), Style::default().fg(color::inactive_fg())));
         lines.push(Line::from(spans));
         f.render_widget(
-            Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+            Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
             inner,
         );
         return;
@@ -193,10 +238,10 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
     if let Some(ref err) = app.cache_load_error {
         lines.push(Line::from(Span::styled(
             format!("  Error: {}", err),
-            Style::default().fg(color::RED),
+            Style::default().fg(color::red()),
         )));
         f.render_widget(
-            Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+            Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
             inner,
         );
         return;
@@ -206,35 +251,30 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
     if app.cache_is_filtering {
         let cursor = if app.cache_filter_text.len() % 2 == 0 { '|' } else { ' ' };
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{} {}", app.cache_filter_text, cursor), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {} items", total), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" /{} {}", app.cache_filter_text, cursor), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     } else if !app.cache_server_filter.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.cache_server_filter), Style::default().fg(color::YELLOW).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items (of {} total)", total, app.cache_total_count), Style::default().fg(color::TEXT_DIM)),
+            Span::styled(format!(" /{}/ ", app.cache_server_filter), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} items (of {} total)", total, app.cache_total_count), Style::default().fg(color::inactive_fg())),
         ]));
     }
 
     if app.jobs_cache.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No cached jobs.",
-            Style::default().fg(color::TEXT_DIM),
+            Style::default().fg(color::inactive_fg()),
         )));
     } else {
-        // Header — JID/User/Started (fixed-width, no truncation fallback) come
-        // before Target/Fun (already truncate past their width) so a narrow
-        // panel clips the columns that already handle overflow instead of
-        // cutting off Started, which has no fallback of its own (#39).
-        lines.push(Line::from(Span::styled(
-            format!("  {:<23} {:<12} {:<19} {:<20} {}", "JID", "User", "Started", "Target", "Fun"),
-            Style::default().fg(color::TEXT_LABEL).add_modifier(Modifier::BOLD),
-        )));
+        let cols = app.columns(TableId::JobCache);
+        let widths = column_widths(&cols, (inner.width as usize).saturating_sub(2));
+        lines.push(header_line(TableId::JobCache, &cols, &widths, app.sort_of(TableId::JobCache), inner.x, inner.y + lines.len() as u16, hits));
 
         if total == 0 {
             lines.push(Line::from(Span::styled(
                 "  No cached jobs match the filter.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )));
         } else {
             for idx in scroll..(scroll + visible).min(total) {
@@ -242,44 +282,18 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool) {
                     Some(j) => j,
                     None => break,
                 };
-
-                let is_selected = idx == selected;
-                let sel_style = if is_selected {
-                    color::select_bg(app.high_contrast)
-                } else {
-                    Style::default().bg(color::BG_DARK)
-                };
-
-                let jid_str = if job.jid.len() > 23 { format!("{}..", &job.jid[..21]) } else { job.jid.clone() };
-                let fun_str = if job.fun.len() > 26 { format!("{}..", &job.fun[..24]) } else { job.fun.clone() };
-                let tgt_str = if job.tgt.len() > 20 { format!("{}..", &job.tgt[..18]) } else { job.tgt.clone() };
-                let user_str = if job.user.len() > 12 { format!("{}..", &job.user[..10]) } else { job.user.clone() };
-                // Format from start_epoch as local time
-                let started = if job.start_epoch > 0.0 {
-                    chrono::DateTime::from_timestamp(job.start_epoch as i64, 0)
-                        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
-                        .unwrap_or_else(|| "?".to_string())
-                } else {
-                    "?".to_string()
-                };
-
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<23}", jid_str), Style::default().fg(color::TEXT_DIM)),
-                    Span::styled(" ", Style::default()),
-                    Span::styled(format!("{:<12}", user_str), Style::default().fg(color::PURPLE)),
-                    Span::styled(" ", Style::default()),
-                    Span::styled(format!("{:<19}", started), Style::default().fg(color::TEXT_DIM)),
-                    Span::styled(" ", Style::default()),
-                    Span::styled(format!("{:<20}", tgt_str), Style::default().fg(color::YELLOW)),
-                    Span::styled(" ", Style::default()),
-                    Span::styled(fun_str, Style::default().fg(color::CYAN)),
-                ]).style(sel_style));
+                let mut row = vec![Span::raw("  ")];
+                for (&col, &w) in cols.iter().zip(&widths) {
+                    row.extend(cache_cells(job, col, w));
+                }
+                let line = Line::from(row);
+                lines.push(if idx == selected { color::selected_row(line) } else { line });
             }
         }
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }

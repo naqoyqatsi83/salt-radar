@@ -37,8 +37,8 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     ];
     let block = super::titled_block_hinted(
         format!(" Minion Pulse ({}) ", app.pulse_minions_count()),
-        Style::default().fg(if focused { color::BORDER_HI } else { color::BORDER }),
-        color::BG_DARK,
+        Style::default().fg(if focused { color::border_focus() } else { color::border() }),
+        color::main_bg(),
         &hints,
     );
 
@@ -51,9 +51,9 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  No minion data available.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )))
-            .style(Style::default().bg(color::BG_DARK)),
+            .style(Style::default().bg(color::main_bg())),
             inner,
         );
         return;
@@ -92,7 +92,7 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
         .collect();
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }
@@ -124,11 +124,11 @@ fn pulse_tier(minion: &MinionInfo, app: &App) -> PulseTier {
 
 fn tier_color(tier: PulseTier) -> (Color, Modifier) {
     match tier {
-        PulseTier::TimedOut => (color::RED, Modifier::empty()),
-        PulseTier::Flash => (Color::Rgb(120, 255, 120), Modifier::BOLD),
-        PulseTier::Recent => (color::GREEN, Modifier::empty()),
-        PulseTier::Aging => (Color::Rgb(255, 165, 0), Modifier::empty()),
-        PulseTier::Stale => (color::TEXT_DIM, Modifier::empty()),
+        PulseTier::TimedOut => (color::red(), Modifier::empty()),
+        PulseTier::Flash => (color::pulse_fresh(), Modifier::BOLD),
+        PulseTier::Recent => (color::green(), Modifier::empty()),
+        PulseTier::Aging => (color::pulse_aging(), Modifier::empty()),
+        PulseTier::Stale => (color::inactive_fg(), Modifier::empty()),
     }
 }
 
@@ -145,9 +145,9 @@ fn tier_style(tier: PulseTier, selected: bool) -> Style {
     let (fg, modif) = tier_color(tier);
 
     let bg = if selected {
-        color::TAB_ACTIVE_BG
+        color::tab_active_bg()
     } else {
-        color::BG_DARK
+        color::main_bg()
     };
     let mut style = Style::default().fg(fg).bg(bg).add_modifier(modif);
     if selected {
@@ -158,7 +158,7 @@ fn tier_style(tier: PulseTier, selected: bool) -> Style {
 
 /// Legend panel: explains what each dot in the grid above means
 fn draw_legend_panel(f: &mut Frame, area: Rect) {
-    let block = super::titled_block(" Legend ", Style::default().fg(color::BORDER), color::BG_DARK);
+    let block = super::titled_block(" Legend ", Style::default().fg(color::border()), color::main_bg());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -179,20 +179,20 @@ fn draw_legend_panel(f: &mut Frame, area: Rect) {
                     format!("  {} ", tier_glyph(*tier)),
                     Style::default().fg(fg).add_modifier(modif),
                 ),
-                Span::styled(*desc, Style::default().fg(color::TEXT_DIM)),
+                Span::styled(*desc, Style::default().fg(color::inactive_fg())),
             ])
         })
         .collect();
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }
 
 /// Info panel: selected minion details
 fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = super::titled_block(" Details ", Style::default().fg(color::BORDER), color::BG_DARK);
+    let block = super::titled_block(" Details ", Style::default().fg(color::border()), color::main_bg());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -202,9 +202,9 @@ fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  No minion data.",
-                Style::default().fg(color::TEXT_DIM),
+                Style::default().fg(color::inactive_fg()),
             )))
-            .style(Style::default().bg(color::BG_DARK)),
+            .style(Style::default().bg(color::main_bg())),
             inner,
         );
         return;
@@ -224,25 +224,25 @@ fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
     // ID
     lines.push(Line::from(vec![Span::styled(
         "  ID",
-        Style::default().fg(color::TEXT_LABEL),
+        Style::default().fg(color::label_fg()),
     )]));
     lines.push(Line::from(vec![Span::styled(
         format!("  {}", minion.id),
-        Style::default().fg(color::CYAN).add_modifier(Modifier::BOLD),
+        Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(""));
 
     // Status
     lines.push(Line::from(vec![Span::styled(
         "  Status",
-        Style::default().fg(color::TEXT_LABEL),
+        Style::default().fg(color::label_fg()),
     )]));
     let status_color = if minion.timed_out {
-        color::RED
+        color::red()
     } else if minion.connected {
-        color::GREEN
+        color::green()
     } else {
-        color::YELLOW
+        color::yellow()
     };
     let status_text = if minion.timed_out {
         "Timed out"
@@ -270,16 +270,16 @@ fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
     // Last ZMQ return
     lines.push(Line::from(vec![Span::styled(
         "  Last return",
-        Style::default().fg(color::TEXT_LABEL),
+        Style::default().fg(color::label_fg()),
     )]));
     let flash_color = if let Some(t) = app.last_zmq_return.get(&minion.id) {
         let secs = t.elapsed().as_secs_f64();
-        if secs < 5.0 { Color::Rgb(120, 255, 120) }
-        else if secs < 300.0 { color::GREEN }
-        else if secs < 600.0 { Color::Rgb(255, 165, 0) }
-        else { color::TEXT_DIM }
+        if secs < 5.0 { color::pulse_fresh() }
+        else if secs < 300.0 { color::green() }
+        else if secs < 600.0 { color::pulse_aging() }
+        else { color::inactive_fg() }
     } else {
-        color::TEXT_DIM
+        color::inactive_fg()
     };
     lines.push(Line::from(vec![Span::styled(
         format!("  {}", flash),
@@ -297,11 +297,11 @@ fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
     };
     lines.push(Line::from(vec![Span::styled(
         "  OS",
-        Style::default().fg(color::TEXT_LABEL),
+        Style::default().fg(color::label_fg()),
     )]));
     lines.push(Line::from(vec![Span::styled(
         format!("  {}", os_str),
-        Style::default().fg(color::TEXT),
+        Style::default().fg(color::main_fg()),
     )]));
 
     // Salt version
@@ -309,16 +309,16 @@ fn draw_info_panel(f: &mut Frame, area: Rect, app: &mut App) {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             "  Salt version",
-            Style::default().fg(color::TEXT_LABEL),
+            Style::default().fg(color::label_fg()),
         )]));
         lines.push(Line::from(vec![Span::styled(
             format!("  {}", minion.salt_version),
-            Style::default().fg(color::YELLOW),
+            Style::default().fg(color::yellow()),
         )]));
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(color::BG_DARK)),
+        Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
 }

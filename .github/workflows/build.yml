@@ -32,6 +32,8 @@ jobs:
           mkdir -p "$PKG_ROOT/usr/share/doc/salt-radar"
           install -m 0755 target/release/salt-radar "$PKG_ROOT/usr/bin/salt-radar"
           install -m 0644 agent/salt_radar_agent.py "$PKG_ROOT/usr/share/salt-radar/salt_radar_agent.py"
+          install -d "$PKG_ROOT/usr/share/salt-radar/themes"
+          install -m 0644 themes/*.theme "$PKG_ROOT/usr/share/salt-radar/themes/"
           cp LICENSE "$PKG_ROOT/usr/share/doc/salt-radar/" 2>/dev/null || true
           cp README.md "$PKG_ROOT/usr/share/doc/salt-radar/"
           {

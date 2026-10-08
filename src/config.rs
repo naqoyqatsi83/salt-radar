@@ -1,5 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use ratatui::style::Color;
+
+use crate::types::TableId;
+use crate::ui::color::Theme;
+
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
 /// directory wins if present (lets you keep a per-directory config, and
 /// preserves behavior for anyone already relying on the old cwd-only
@@ -13,13 +18,99 @@ pub fn resolve_config_path() -> PathBuf {
         return cwd_path;
     }
 
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-
-    match config_home {
-        Some(dir) => dir.join("salt-radar").join("salt-radar.toml"),
+    match user_config_dir() {
+        Some(dir) => dir.join("salt-radar.toml"),
         None => cwd_path,
+    }
+}
+
+/// `$XDG_CONFIG_HOME/salt-radar`, falling back to `~/.config/salt-radar`.
+fn user_config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|dir| dir.join("salt-radar"))
+}
+
+pub const DEFAULT_THEME: &str = "Default";
+
+/// Where `*.theme` files are looked up, lowest priority first: the
+/// packaged themes, then the user's own (which win on a name clash).
+fn theme_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("/usr/share/salt-radar/themes")];
+    dirs.extend(user_config_dir().map(|d| d.join("themes")));
+    dirs
+}
+
+/// Names selectable as `color_theme`: the built-in `Default`, then every
+/// `*.theme` file found in `theme_dirs`, by file stem.
+pub fn theme_names() -> Vec<String> {
+    let mut names: Vec<String> = theme_dirs().iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension()? != "theme" { return None; }
+            Some(path.file_stem()?.to_string_lossy().into_owned())
+        })
+        .filter(|name| name != DEFAULT_THEME)
+        .collect();
+    names.sort();
+    names.dedup();
+    names.insert(0, DEFAULT_THEME.to_string());
+    names
+}
+
+/// Resolves `color_theme` — a theme name from `theme_names`, or a path to a
+/// `.theme` file — onto the built-in default; keys the file doesn't set (or
+/// sets to something unparseable) keep their default color, and an unknown
+/// theme is just the default.
+pub fn load_theme(name: &str) -> Theme {
+    let mut theme = Theme::DEFAULT;
+    if name == DEFAULT_THEME { return theme; }
+    let path = if name.contains('/') || name.ends_with(".theme") {
+        Some(PathBuf::from(name))
+    } else {
+        theme_dirs().into_iter().rev()
+            .map(|dir| dir.join(format!("{}.theme", name)))
+            .find(|p| p.is_file())
+    };
+    let Some(data) = path.and_then(|p| std::fs::read_to_string(p).ok()) else { return theme };
+    for line in data.lines() {
+        let Some((key, value)) = parse_theme_line(line) else { continue };
+        if let (Some(slot), Some(color)) = (theme.slot(key), parse_theme_color(value)) {
+            *slot = color;
+        }
+    }
+    theme
+}
+
+/// `theme[key]="value"` (btop's format); anything else is skipped.
+fn parse_theme_line(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim().strip_prefix("theme[")?;
+    let (key, rest) = rest.split_once(']')?;
+    let value = rest.trim_start().strip_prefix('=')?.trim();
+    Some((key.trim(), value.trim_matches('"')))
+}
+
+/// `#RRGGBB`, `#RR` (a gray level), or decimal `R G B`; empty means the
+/// terminal's own default color.
+fn parse_theme_color(value: &str) -> Option<Color> {
+    let value = value.trim();
+    if value.is_empty() { return Some(Color::Reset); }
+    if let Some(hex) = value.strip_prefix('#') {
+        if !hex.is_ascii() { return None; }
+        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+        return match hex.len() {
+            2 => byte(0).map(|v| Color::Rgb(v, v, v)),
+            6 => Some(Color::Rgb(byte(0)?, byte(2)?, byte(4)?)),
+            _ => None,
+        };
+    }
+    let rgb: Vec<u8> = value.split_whitespace().map(|v| v.parse().ok()).collect::<Option<_>>()?;
+    match rgb[..] {
+        [r, g, b] => Some(Color::Rgb(r, g, b)),
+        _ => None,
     }
 }
 
@@ -142,6 +233,49 @@ pub struct AppConfig {
     pub show_event_types: bool,
     pub show_job_pulse: bool,
     pub show_salt_api: bool,
+    /// Whether the Minions tab's Fleet Overview breakdown (OS/version/arch)
+    /// scopes itself to the active list filter, or always aggregates the
+    /// whole fleet regardless of what's filtered on the left. Toggled live
+    /// with `f` on the Minions tab; this is just the startup default.
+    pub minions_follow_filter: bool,
+    /// Default directory `s`/`S` ("save to file") writes into, from any
+    /// popup that supports it. `~` (or `~/...`) is expanded against $HOME
+    /// at save time, not at load time, so changing $HOME between launches
+    /// (or editing this value live in the Config Editor) takes effect
+    /// immediately.
+    pub save_dir: String,
+    /// How long (seconds) a Job Detail lookup (`salt-run jobs.lookup_jid`)
+    /// may run before it's reported as timed out. Huge jobs (e.g.
+    /// `grains.items` across thousands of minions) legitimately take tens of
+    /// seconds or more to read back from the job cache.
+    pub lookup_timeout_secs: u64,
+    /// Which columns each list table shows, and in what order, as comma-
+    /// separated column keys (see types::TableId::all_columns). Any valid
+    /// key left out is hidden.
+    pub jobs_live_columns: String,
+    pub jobs_cache_columns: String,
+    pub minion_columns: String,
+    pub event_columns: String,
+    pub alert_columns: String,
+    pub api_request_columns: String,
+    /// Theme name (see `theme_names`) or path to a `.theme` file.
+    pub color_theme: String,
+    /// When false, the theme's screen backgrounds are left to the
+    /// terminal (transparent); popups and the cursor keep theirs.
+    pub theme_background: bool,
+}
+
+impl AppConfig {
+    pub fn columns_for(&self, table: TableId) -> &str {
+        match table {
+            TableId::LiveJobs => &self.jobs_live_columns,
+            TableId::JobCache => &self.jobs_cache_columns,
+            TableId::Minions => &self.minion_columns,
+            TableId::Events => &self.event_columns,
+            TableId::Alerts => &self.alert_columns,
+            TableId::ApiLog => &self.api_request_columns,
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -198,6 +332,17 @@ impl Default for AppConfig {
             show_event_types: true,
             show_job_pulse: true,
             show_salt_api: true,
+            minions_follow_filter: true,
+            save_dir: "~".into(),
+            lookup_timeout_secs: 300,
+            jobs_live_columns: TableId::LiveJobs.default_columns().into(),
+            jobs_cache_columns: TableId::JobCache.default_columns().into(),
+            minion_columns: TableId::Minions.default_columns().into(),
+            event_columns: TableId::Events.default_columns().into(),
+            alert_columns: TableId::Alerts.default_columns().into(),
+            api_request_columns: TableId::ApiLog.default_columns().into(),
+            color_theme: DEFAULT_THEME.into(),
+            theme_background: true,
         }
     }
 }
@@ -210,6 +355,10 @@ struct TomlConfig {
     alerts: Option<AlertsConfig>,
     dashboard: Option<DashboardConfig>,
     api: Option<ApiConfig>,
+    minions: Option<MinionsConfig>,
+    export: Option<ExportConfig>,
+    jobs: Option<JobsConfig>,
+    ui: Option<UiConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -230,6 +379,7 @@ struct RefreshConfig {
 struct EventsConfig {
     buffer_size: Option<usize>,
     sniffer_buffer_size: Option<usize>,
+    event_columns: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -254,6 +404,7 @@ struct AlertsConfig {
     service_mem_pct_threshold_api: Option<f64>,
     service_mem_abs_threshold_syndic_mb: Option<f64>,
     service_mem_pct_threshold_syndic: Option<f64>,
+    alert_columns: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -268,6 +419,31 @@ struct ApiConfig {
     stats_auth_password: Option<String>,
     stats_auth_username_pillar_path: Option<String>,
     stats_auth_password_pillar_path: Option<String>,
+    request_columns: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct MinionsConfig {
+    follow_filter: Option<bool>,
+    minion_columns: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ExportConfig {
+    save_dir: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct JobsConfig {
+    lookup_timeout_secs: Option<u64>,
+    live_columns: Option<String>,
+    cache_columns: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct UiConfig {
+    color_theme: Option<String>,
+    theme_background: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -307,6 +483,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          [events]\n\
          buffer_size = {}\n\
          sniffer_buffer_size = {}\n\
+         event_columns = {:?}\n\
          \n\
          [alerts]\n\
          stale_minion_secs = {}\n\
@@ -329,6 +506,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          service_mem_pct_threshold_api = {}\n\
          service_mem_abs_threshold_syndic_mb = {}\n\
          service_mem_pct_threshold_syndic = {}\n\
+         alert_columns = {:?}\n\
          \n\
          [api]\n\
          stats_window = {}\n\
@@ -341,6 +519,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          stats_auth_password = {:?}\n\
          stats_auth_username_pillar_path = {:?}\n\
          stats_auth_password_pillar_path = {:?}\n\
+         request_columns = {:?}\n\
          \n\
          [dashboard]\n\
          zmq_latency_source = {:?}\n\
@@ -355,7 +534,23 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          show_key_status = {}\n\
          show_event_types = {}\n\
          show_job_pulse = {}\n\
-         show_salt_api = {}\n",
+         show_salt_api = {}\n\
+         \n\
+         [minions]\n\
+         follow_filter = {}\n\
+         minion_columns = {:?}\n\
+         \n\
+         [export]\n\
+         save_dir = {:?}\n\
+         \n\
+         [jobs]\n\
+         lookup_timeout_secs = {}\n\
+         live_columns = {:?}\n\
+         cache_columns = {:?}\n\
+         \n\
+         [ui]\n\
+         color_theme = {:?}\n\
+         theme_background = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -364,6 +559,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.config_secs,
         config.event_buffer_size,
         config.sniffer_buffer_size,
+        config.event_columns,
         config.stale_minion_secs,
         config.pending_key_secs,
         config.job_straggler_secs,
@@ -384,6 +580,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.service_mem_pct_threshold_api,
         config.service_mem_abs_threshold_syndic_mb,
         config.service_mem_pct_threshold_syndic,
+        config.alert_columns,
         config.api_stats_window,
         config.api_log_cap,
         config.api_log_max_age_secs,
@@ -394,6 +591,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.api_stats_auth_password,
         config.api_stats_auth_username_pillar_path,
         config.api_stats_auth_password_pillar_path,
+        config.api_request_columns,
         config.zmq_latency_source,
         config.show_zmq_graph,
         config.show_events_graph,
@@ -407,6 +605,14 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.show_event_types,
         config.show_job_pulse,
         config.show_salt_api,
+        config.minions_follow_filter,
+        config.minion_columns,
+        config.save_dir,
+        config.lookup_timeout_secs,
+        config.jobs_live_columns,
+        config.jobs_cache_columns,
+        config.color_theme,
+        config.theme_background,
     );
     std::fs::write(path, toml)
 }
@@ -429,6 +635,7 @@ pub fn load_config(path: &Path) -> AppConfig {
             if let Some(e) = toml_cfg.events {
                 if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
                 if let Some(v) = e.sniffer_buffer_size { cfg.sniffer_buffer_size = v; }
+                if let Some(v) = e.event_columns { cfg.event_columns = v; }
             }
             if let Some(a) = toml_cfg.alerts {
                 if let Some(v) = a.stale_minion_secs { cfg.stale_minion_secs = v; }
@@ -451,6 +658,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.service_mem_pct_threshold_api { cfg.service_mem_pct_threshold_api = v; }
                 if let Some(v) = a.service_mem_abs_threshold_syndic_mb { cfg.service_mem_abs_threshold_syndic_mb = v; }
                 if let Some(v) = a.service_mem_pct_threshold_syndic { cfg.service_mem_pct_threshold_syndic = v; }
+                if let Some(v) = a.alert_columns { cfg.alert_columns = v; }
             }
             if let Some(a) = toml_cfg.api {
                 if let Some(v) = a.stats_window { cfg.api_stats_window = v; }
@@ -463,6 +671,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = a.stats_auth_password { cfg.api_stats_auth_password = v; }
                 if let Some(v) = a.stats_auth_username_pillar_path { cfg.api_stats_auth_username_pillar_path = v; }
                 if let Some(v) = a.stats_auth_password_pillar_path { cfg.api_stats_auth_password_pillar_path = v; }
+                if let Some(v) = a.request_columns { cfg.api_request_columns = v; }
             }
             if let Some(d) = toml_cfg.dashboard {
                 if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
@@ -478,6 +687,22 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = d.show_event_types { cfg.show_event_types = v; }
                 if let Some(v) = d.show_job_pulse { cfg.show_job_pulse = v; }
                 if let Some(v) = d.show_salt_api { cfg.show_salt_api = v; }
+            }
+            if let Some(m) = toml_cfg.minions {
+                if let Some(v) = m.follow_filter { cfg.minions_follow_filter = v; }
+                if let Some(v) = m.minion_columns { cfg.minion_columns = v; }
+            }
+            if let Some(e) = toml_cfg.export {
+                if let Some(v) = e.save_dir { cfg.save_dir = v; }
+            }
+            if let Some(j) = toml_cfg.jobs {
+                if let Some(v) = j.lookup_timeout_secs { cfg.lookup_timeout_secs = v.max(1); }
+                if let Some(v) = j.live_columns { cfg.jobs_live_columns = v; }
+                if let Some(v) = j.cache_columns { cfg.jobs_cache_columns = v; }
+            }
+            if let Some(u) = toml_cfg.ui {
+                if let Some(v) = u.color_theme { cfg.color_theme = v; }
+                if let Some(v) = u.theme_background { cfg.theme_background = v; }
             }
         }
     }

@@ -2,8 +2,10 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use crate::app::AgentMessage;
 
@@ -18,16 +20,19 @@ const MAX_QUEUE_LEN: usize = 20_000;
 /// session, ...) instead of leaving the connection dead forever — this used
 /// to `return` on exit, silently freezing every view that depends on agent
 /// data (Minions, Pulse, ...) for the rest of the session with no recovery.
+/// Returns once the app drops its end of `cmds`.
 pub fn agent_main(
     tx: Arc<Mutex<VecDeque<AgentMessage>>>,
     dropped: Arc<AtomicU64>,
     agent_path: &str,
     python_bin: &str,
     master_config: &str,
-    cmd_path: &str,
+    cmds: Receiver<String>,
 ) {
     loop {
-        run_agent_once(&tx, &dropped, agent_path, python_bin, master_config, cmd_path);
+        if !run_agent_once(&tx, &dropped, agent_path, python_bin, master_config, &cmds) {
+            return;
+        }
         {
             let mut q = tx.lock().unwrap();
             q.push_back(AgentMessage::Error {
@@ -45,8 +50,8 @@ fn run_agent_once(
     agent_path: &str,
     python_bin: &str,
     master_config: &str,
-    cmd_path: &str,
-) {
+    cmds: &Receiver<String>,
+) -> bool {
     // Start the Python agent process
     let mut child = match Command::new(python_bin)
         .arg(agent_path)
@@ -64,7 +69,7 @@ fn run_agent_once(
                 id: None,
                 message: format!("Failed to spawn agent: {}", e),
             });
-            return;
+            return true;
         }
     };
 
@@ -80,6 +85,7 @@ fn run_agent_once(
                 Ok(l) => l,
                 Err(_) => break,
             };
+            let received = Instant::now();
             if line.trim().is_empty() {
                 continue;
             }
@@ -94,11 +100,13 @@ fn run_agent_once(
                     cmd: parsed["cmd"].as_str().unwrap_or("").to_string(),
                     ok: parsed["ok"].as_bool().unwrap_or(false),
                     data: parsed["data"].clone(),
+                    received,
                 },
                 Some("event") => AgentMessage::Event {
                     tag: parsed["tag"].as_str().unwrap_or("").to_string(),
                     data: parsed["data"].clone(),
                     ts: parsed["ts"].as_f64().unwrap_or(0.0),
+                    received,
                 },
                 Some("error") => AgentMessage::Error {
                     id: parsed.get("id").and_then(|v| v.as_u64()),
@@ -113,7 +121,20 @@ fn run_agent_once(
 
             let mut q = tx_clone.lock().unwrap();
             if q.len() >= MAX_QUEUE_LEN {
-                q.pop_front();
+                // Never let a job-start ("/new") event be the one silently
+                // dropped here -- losing it permanently mistracks that job
+                // for the rest of its life (Job tracking has no other way
+                // to learn the real target/count, so it falls back to
+                // treating the job's first-seen `/ret/` as a one-off local
+                // execution and never recovers). Every other message is
+                // either transient or has other copies close behind it (the
+                // job's own further `/ret/`s), so evict the oldest of those
+                // instead, scanning forward only in the rare case the queue
+                // is nothing but `/new` events.
+                let victim = q.iter()
+                    .position(|m| !matches!(m, AgentMessage::Event { tag, .. } if tag.ends_with("/new")))
+                    .unwrap_or(0);
+                q.remove(victim);
                 dropped_clone.fetch_add(1, Ordering::Relaxed);
             }
             q.push_back(msg);
@@ -145,20 +166,22 @@ fn run_agent_once(
         thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    // Poll the command file for new commands
+    // Forward each command the moment it's sent — round-trip timings (the
+    // ZMQ panel's agent_ipc latency) depend on it — waking at least every
+    // 100ms to notice the agent exiting. Returns true when the agent
+    // exited (agent_main respawns it), false when the app has gone away.
     loop {
-        if let Ok(data) = std::fs::read_to_string(cmd_path) {
-            if !data.trim().is_empty() {
-                let _ = writeln!(stdin, "{}", data.trim());
-                let _ = std::fs::write(cmd_path, "");
+        match cmds.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(cmd) => { let _ = stdin.write_all(cmd.as_bytes()); }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                let _ = child.kill();
+                return false;
             }
         }
         match child.try_wait() {
-            // Process exited; the caller (agent_main) reports it and respawns.
-            Ok(Some(_)) => return,
             Ok(None) => {}
-            Err(_) => return,
+            _ => return true,
         }
-        thread::sleep(std::time::Duration::from_millis(100));
     }
 }

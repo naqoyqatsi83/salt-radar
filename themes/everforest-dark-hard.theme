@@ -1,0 +1,42 @@
+# salt-radar port of btop++'s everforest-dark-hard.theme
+# (https://github.com/aristocratos/btop, Apache-2.0)
+#
+# All graphs and meters can be gradients
+# For single color graphs leave "mid" and "end" variable empty.
+# Use "start" and "end" variables for two color gradient
+# Use "start", "mid" and "end" for three color gradient
+
+theme[main_bg]="#272e33"
+theme[meter_bg]="#272e33"
+theme[bar_bg]="#33393b"
+theme[popup_bg]="#2c3337"
+theme[selected_bg]="#374145"
+theme[border]="#474e4f"
+theme[border_focus]="#6e7068"
+theme[div_line]="#3f484a"
+theme[main_fg]="#d3c6aa"
+theme[inactive_fg]="#7d7a6e"
+theme[label_fg]="#7d7a6e"
+theme[title]="#d3c6aa"
+theme[hi_fg]="#d3c6aa"
+theme[header_fg]="#8d8a7d"
+theme[subtitle_fg]="#d3c6aa"
+theme[version_fg]="#5a96d2"
+theme[hint_fg]="#7d7a6e"
+theme[badge_bg]="#6a534a"
+theme[green]="#83c092"
+theme[cyan]="#7fbbb3"
+theme[yellow]="#dbbc7f"
+theme[orange]="#e69875"
+theme[red]="#f85552"
+theme[purple]="#b478ff"
+theme[pulse_fresh]="#78ff78"
+theme[pulse_aging]="#e69875"
+theme[tab_active_bg]="#31393e"
+theme[tab_active_fg]="#e67e80"
+theme[tab_inactive_fg]="#7d7a6e"
+theme[tab_separator]="#3f484a"
+theme[highlight_1]="#3282ff"
+theme[highlight_2]="#ff2dc8"
+theme[highlight_3]="#7fbbb3"
+theme[highlight_4]="#aa50ff"
