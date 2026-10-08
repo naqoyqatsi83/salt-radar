@@ -4214,6 +4214,30 @@ impl App {
                 self.fleet_scan_expected.retain(|e| *e != mid);
             }
         }
+        if self.fleet_scanning && self.fleet_scan_all_responded() {
+            self.finish_fleet_scan();
+        }
+    }
+
+    /// Every minion the scan is waiting on has answered: all accepted keys,
+    /// or — when the key list isn't available — the agent's own expected
+    /// list, which shrinks as answers arrive.
+    fn fleet_scan_all_responded(&self) -> bool {
+        let mut accepted = self.keys.iter().filter(|k| k.status == KeyStatus::Accepted).peekable();
+        if accepted.peek().is_some() {
+            accepted.all(|k| self.fleet_scan_responded.contains(&k.id))
+        } else {
+            !self.fleet_scan_responded.is_empty() && self.fleet_scan_expected.is_empty()
+        }
+    }
+
+    fn finish_fleet_scan(&mut self) {
+        self.fleet_scan_jid = None;
+        self.fleet_scan_responded.clear();
+        self.fleet_scan_expected.clear();
+        self.fleet_scan_started_at = None;
+        self.fleet_scanning = false;
+        self.fleet_scan_completed = true;
     }
 
     /// Called every tick (1s)
@@ -4276,12 +4300,7 @@ impl App {
                             }
                         }
                     }
-                    self.fleet_scan_jid = None;
-                    self.fleet_scan_responded.clear();
-                    self.fleet_scan_expected.clear();
-                    self.fleet_scan_started_at = None;
-                    self.fleet_scanning = false;
-                    self.fleet_scan_completed = true;
+                    self.finish_fleet_scan();
                 }
             }
         }
