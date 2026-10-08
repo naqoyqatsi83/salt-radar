@@ -208,6 +208,10 @@ pub struct AppConfig {
     /// master_stats: True in the master's own config). Unrecognized values
     /// fall back to "agent_ipc" behavior.
     pub zmq_latency_source: String,
+    /// Latency (ms) at the top of the ZMQ graph's log scale — drawn red, and
+    /// anything slower is clipped there. 0 means the default for the
+    /// configured zmq_latency_source (see `zmq_latency_ceiling`).
+    pub zmq_latency_ceiling_ms: f64,
     /// Which of the Dashboard's bottom sparkline panels are shown. ZMQ /
     /// Events / Activity default on (today's fixed set); CPU / Memory
     /// default off since enabling them changes the existing layout's panel
@@ -266,6 +270,21 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    /// The ZMQ graph's top-of-scale latency: `zmq_latency_ceiling_ms`, or
+    /// when unset, a default sized to what the source measures — a local
+    /// agent round trip is a few ms when healthy, a real test.ping over the
+    /// bus or Salt's own command timings are hundreds.
+    pub fn zmq_latency_ceiling(&self) -> f64 {
+        if self.zmq_latency_ceiling_ms > 0.0 {
+            return self.zmq_latency_ceiling_ms;
+        }
+        match self.zmq_latency_source.as_str() {
+            "job_ping" => 1000.0,
+            "master_stats" => 500.0,
+            _ => 100.0,
+        }
+    }
+
     pub fn columns_for(&self, table: TableId) -> &str {
         match table {
             TableId::LiveJobs => &self.jobs_live_columns,
@@ -320,6 +339,7 @@ impl Default for AppConfig {
             service_mem_abs_threshold_syndic_mb: 0.0,
             service_mem_pct_threshold_syndic: 0.0,
             zmq_latency_source: "agent_ipc".into(),
+            zmq_latency_ceiling_ms: 0.0,
             show_zmq_graph: true,
             show_events_graph: true,
             show_activity_graph: true,
@@ -449,6 +469,7 @@ struct UiConfig {
 #[derive(serde::Deserialize)]
 struct DashboardConfig {
     zmq_latency_source: Option<String>,
+    zmq_latency_ceiling_ms: Option<f64>,
     show_zmq_graph: Option<bool>,
     show_events_graph: Option<bool>,
     show_activity_graph: Option<bool>,
@@ -523,6 +544,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          \n\
          [dashboard]\n\
          zmq_latency_source = {:?}\n\
+         zmq_latency_ceiling_ms = {}\n\
          show_zmq_graph = {}\n\
          show_events_graph = {}\n\
          show_activity_graph = {}\n\
@@ -593,6 +615,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.api_stats_auth_password_pillar_path,
         config.api_request_columns,
         config.zmq_latency_source,
+        config.zmq_latency_ceiling_ms,
         config.show_zmq_graph,
         config.show_events_graph,
         config.show_activity_graph,
@@ -675,6 +698,7 @@ pub fn load_config(path: &Path) -> AppConfig {
             }
             if let Some(d) = toml_cfg.dashboard {
                 if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
+                if let Some(v) = d.zmq_latency_ceiling_ms { cfg.zmq_latency_ceiling_ms = v.max(0.0); }
                 if let Some(v) = d.show_zmq_graph { cfg.show_zmq_graph = v; }
                 if let Some(v) = d.show_events_graph { cfg.show_events_graph = v; }
                 if let Some(v) = d.show_activity_graph { cfg.show_activity_graph = v; }

@@ -169,6 +169,13 @@
 #                    master_stats: True in the Salt master's own config)
 # zmq_latency_source = "agent_ipc"
 
+# Latency (ms) at the top of the ZMQ graph. The graph uses a log scale from 0
+# up to this value, colored green -> yellow -> amber -> red by height, so the
+# top (red) means "this slow is bad"; slower samples are clipped there.
+# 0 = a default for the source above: agent_ipc 100, job_ping 1000,
+# master_stats 500.
+# zmq_latency_ceiling_ms = 0
+
 # Which of the Dashboard's bottom sparkline panels are shown — all five
 # default on.
 # show_zmq_graph = true

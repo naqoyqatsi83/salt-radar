@@ -97,6 +97,8 @@ jobs:
           mkdir -p "$TAR_DIR/salt-radar-${VERSION}"
           install -m 0755 "${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/salt-radar" "$TAR_DIR/salt-radar-${VERSION}/salt-radar"
           install -m 0644 "${{ github.workspace }}/agent/salt_radar_agent.py" "$TAR_DIR/salt-radar-${VERSION}/salt_radar_agent.py"
+          install -d "$TAR_DIR/salt-radar-${VERSION}/themes"
+          install -m 0644 "${{ github.workspace }}"/themes/*.theme "$TAR_DIR/salt-radar-${VERSION}/themes/"
           cp "${{ github.workspace }}/README.md" "$TAR_DIR/salt-radar-${VERSION}/" 2>/dev/null || true
           cp "${{ github.workspace }}/LICENSE" "$TAR_DIR/salt-radar-${VERSION}/" 2>/dev/null || true
           cd "$TAR_DIR" && tar czf "${{ runner.temp }}/upload/salt-radar-${VERSION}-x86_64-unknown-linux-musl.tar.gz" "salt-radar-${VERSION}"
@@ -129,10 +131,13 @@ jobs:
             printf 'mkdir -p %%{buildroot}%%{_datadir}/salt-radar\n'
             printf 'install -m 0755 %%{_sourcedir}/salt-radar %%{buildroot}%%{_bindir}/salt-radar\n'
             printf 'install -m 0644 %%{_sourcedir}/salt_radar_agent.py %%{buildroot}%%{_datadir}/salt-radar/salt_radar_agent.py\n'
+            printf 'mkdir -p %%{buildroot}%%{_datadir}/salt-radar/themes\n'
+            printf 'install -m 0644 %%{_sourcedir}/themes/*.theme %%{buildroot}%%{_datadir}/salt-radar/themes/\n'
             printf '\n'
             printf '%%files\n'
             printf '%%{_bindir}/salt-radar\n'
             printf '%%{_datadir}/salt-radar/salt_radar_agent.py\n'
+            printf '%%{_datadir}/salt-radar/themes\n'
             printf '\n'
             printf '%%changelog\n'
             printf '* Thu Jun 18 2026 naqoyqatsi83 <naqoyqatsi83@users.noreply.github.com> - %s\n' "$VERSION"
@@ -141,6 +146,8 @@ jobs:
 
           install -m 0755 "${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/salt-radar" $HOME/rpmbuild/SOURCES/salt-radar
           install -m 0644 "${{ github.workspace }}/agent/salt_radar_agent.py" $HOME/rpmbuild/SOURCES/salt_radar_agent.py
+          install -d $HOME/rpmbuild/SOURCES/themes
+          install -m 0644 "${{ github.workspace }}"/themes/*.theme $HOME/rpmbuild/SOURCES/themes/
 
           rpmbuild -ba $HOME/rpmbuild/SPECS/salt-radar.spec
           cp $HOME/rpmbuild/RPMS/x86_64/salt-radar-*.rpm "${{ runner.temp }}/upload/"
