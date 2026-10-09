@@ -375,6 +375,13 @@ fn mem_color(pct: f64) -> Color {
     color::mem_gradient(pct / 100.0)
 }
 
+/// Whether the agent has reported host figures yet (load, memory, CPU). Until
+/// then they're all zero — e.g. the agent is down or still starting — and must
+/// read "n/a", not 0% load and a full "100%" memory bar from dividing by zero.
+fn host_data(app: &App) -> bool {
+    app.system_info.mem_total_kb > 0
+}
+
 /// How a sparkline is colored: one fixed color, or btop-style by level —
 /// each row by its height on the graph's fixed 0–100 scale, so a bar's top
 /// shows how high it reached and history never recolors as new values come in.
@@ -509,15 +516,21 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     // "Salt RSS", which is how that figure previously read over 100%.
     let salt_processes = app.processes.iter().filter(|p| p.role != crate::types::SaltProcessRole::Unknown);
     let total_rss_used: u64 = salt_processes.clone().map(|p| p.rss_kb).sum();
-    let mem_total_kb = app.system_info.mem_total_kb.max(1);
-    let mem_pct = (total_rss_used as f64 / mem_total_kb as f64) * 100.0;
+    let mem_pct = if host_data(app) {
+        (total_rss_used as f64 / app.system_info.mem_total_kb as f64) * 100.0
+    } else {
+        0.0
+    };
 
     let proc_count = salt_processes.count();
 
-    let mem_gauge_fg = if mem_pct > 80.0 { color::orange() } else if mem_pct > 55.0 { color::yellow() } else { color::green() };
     let title = Line::from(vec![
         Span::styled(" Services ", Style::default().fg(color::title())),
-        Span::styled(format!("Mem: {:.0}% ", mem_pct), Style::default().fg(mem_gauge_fg)),
+        if host_data(app) {
+            Span::styled(format!("Mem: {:.0}% ", mem_pct), Style::default().fg(mem_color(mem_pct)))
+        } else {
+            Span::styled("Mem: n/a ", Style::default().fg(color::inactive_fg()))
+        },
     ]);
     let block = make_block_line(title);
     let inner = block.inner(area);
@@ -683,12 +696,35 @@ fn format_bytes_total(bytes: u64) -> String {
 }
 
 fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
-    let mem_total_kb = app.system_info.mem_total_kb.max(1);
+    if !host_data(app) {
+        let title = Line::from(vec![
+            Span::styled(" Host Resources ", Style::default().fg(color::title())),
+            Span::styled("waiting for agent\u{2026} ", Style::default().fg(color::inactive_fg())),
+        ]);
+        let block = make_block_line(title);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+            .split(inner);
+        for (row, label) in rows.iter().zip(["Load: n/a", "Mem: n/a", "Net: n/a"]) {
+            let gauge = Gauge::default()
+                .gauge_style(Style::default().fg(color::inactive_fg()).bg(color::meter_bg()))
+                .percent(0)
+                .label(label);
+            f.render_widget(gauge, *row);
+        }
+        return;
+    }
+    let mem_total_kb = app.system_info.mem_total_kb;
     let mem_avail_kb = app.system_info.mem_avail_kb;
     let mem_pct = ((mem_total_kb - mem_avail_kb) as f64 / mem_total_kb as f64) * 100.0;
 
-    let cpu_count = app.config_snapshot.as_ref().map(|c| c.cpu_count).unwrap_or(1) as f64;
-    let load_pct = (app.system_info.load_1 / cpu_count * 100.0).min(100.0).max(0.0) as u16;
+    // The core count comes with the agent's config snapshot; without it there
+    // is no meaningful load percentage, only the raw load averages.
+    let cpu_count = app.config_snapshot.as_ref().map(|c| c.cpu_count).filter(|&n| n > 0);
+    let load_pct = cpu_count.map_or(0, |n| (app.system_info.load_1 / n as f64 * 100.0).clamp(0.0, 100.0) as u16);
 
     let net_rate_str = format!(
         "Net: \u{25bc}{} \u{25b2}{}",
@@ -715,11 +751,16 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     let load_gauge = Gauge::default()
         .gauge_style(pct_gauge_style(load_pct as f64))
         .percent(load_pct)
-        .label(format!(
-            "Load: {:.1}/{:.1}/{:.1}  ({}-core host  {:.0}%)",
-            app.system_info.load_1, app.system_info.load_5, app.system_info.load_15,
-            cpu_count as u32, load_pct,
-        ));
+        .label(match cpu_count {
+            Some(n) => format!(
+                "Load: {:.1}/{:.1}/{:.1}  ({}-core host  {:.0}%)",
+                app.system_info.load_1, app.system_info.load_5, app.system_info.load_15, n, load_pct,
+            ),
+            None => format!(
+                "Load: {:.1}/{:.1}/{:.1}",
+                app.system_info.load_1, app.system_info.load_5, app.system_info.load_15,
+            ),
+        });
 
     let mem_total_mb = mem_total_kb / 1024;
     let mem_used_mb = (mem_total_kb.saturating_sub(mem_avail_kb)) / 1024;
@@ -1049,6 +1090,11 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
     let current_pct = app.system_info.cpu_percent;
+    let (current, current_fg) = if host_data(app) {
+        (format!("{:.0}%", current_pct), pct_color(current_pct))
+    } else {
+        ("n/a".to_string(), color::inactive_fg())
+    };
     let peak_pct = app.cpu_history.iter().cloned().fold(0.0_f64, f64::max);
 
     let idx = app.cpu_history_idx;
@@ -1059,25 +1105,28 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
     let title = if area.width >= 70 {
         Line::from(vec![
             Span::styled(" CPU ", Style::default().fg(color::title())),
-            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} ", current), Style::default().fg(current_fg).add_modifier(Modifier::BOLD)),
             Span::styled("pk:", Style::default().fg(color::label_fg())),
             Span::styled(format!("{:.0}% ", peak_pct), Style::default().fg(color::inactive_fg())),
             Span::styled("avg:", Style::default().fg(color::label_fg())),
             Span::styled(format!("{:.0}% ", avg_pct), Style::default().fg(color::inactive_fg())),
             Span::styled("load:", Style::default().fg(color::label_fg())),
-            Span::styled(format!("{:.1}/{:.1}/{:.1}", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15), Style::default().fg(color::inactive_fg())),
+            Span::styled(
+                if host_data(app) { format!("{:.1}/{:.1}/{:.1}", app.system_info.load_1, app.system_info.load_5, app.system_info.load_15) } else { "n/a".to_string() },
+                Style::default().fg(color::inactive_fg()),
+            ),
         ])
     } else if area.width >= 40 {
         Line::from(vec![
             Span::styled(" CPU ", Style::default().fg(color::title())),
-            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} ", current), Style::default().fg(current_fg).add_modifier(Modifier::BOLD)),
             Span::styled("pk:", Style::default().fg(color::label_fg())),
             Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::inactive_fg())),
         ])
     } else {
         Line::from(vec![
             Span::styled(" CPU ", Style::default().fg(color::title())),
-            Span::styled(format!("{:.0}%", current_pct), Style::default().fg(pct_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled(current.clone(), Style::default().fg(current_fg).add_modifier(Modifier::BOLD)),
         ])
     };
 
@@ -1095,6 +1144,7 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
     let mem_total_kb = app.system_info.mem_total_kb.max(1);
+    let have = host_data(app);
     let mem_avail_kb = app.system_info.mem_avail_kb;
     let current_pct = ((mem_total_kb.saturating_sub(mem_avail_kb)) as f64 / mem_total_kb as f64 * 100.0).clamp(0.0, 100.0);
     let peak_pct = app.mem_history.iter().cloned().fold(0.0_f64, f64::max);
@@ -1105,29 +1155,35 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
     let avg_pct = if n > 0 { ordered[ordered.len() - n..].iter().sum::<f64>() / n as f64 } else { 0.0 };
     let mem_used_mb = mem_total_kb.saturating_sub(mem_avail_kb) / 1024;
     let mem_total_mb = mem_total_kb / 1024;
+    let (current, current_fg) = if have {
+        (format!("{:.0}%", current_pct), mem_color(current_pct))
+    } else {
+        ("n/a".to_string(), color::inactive_fg())
+    };
+    let used = if have { format!("{} MB / {} MB", mem_used_mb, mem_total_mb) } else { "n/a".to_string() };
 
     let title = if area.width >= 70 {
         Line::from(vec![
             Span::styled(" Memory ", Style::default().fg(color::title())),
-            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(mem_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} ", current), Style::default().fg(current_fg).add_modifier(Modifier::BOLD)),
             Span::styled("pk:", Style::default().fg(color::label_fg())),
             Span::styled(format!("{:.0}% ", peak_pct), Style::default().fg(color::inactive_fg())),
             Span::styled("avg:", Style::default().fg(color::label_fg())),
             Span::styled(format!("{:.0}% ", avg_pct), Style::default().fg(color::inactive_fg())),
             Span::styled("used:", Style::default().fg(color::label_fg())),
-            Span::styled(format!("{} MB / {} MB", mem_used_mb, mem_total_mb), Style::default().fg(color::inactive_fg())),
+            Span::styled(used, Style::default().fg(color::inactive_fg())),
         ])
     } else if area.width >= 40 {
         Line::from(vec![
             Span::styled(" Memory ", Style::default().fg(color::title())),
-            Span::styled(format!("{:.0}% ", current_pct), Style::default().fg(mem_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} ", current), Style::default().fg(current_fg).add_modifier(Modifier::BOLD)),
             Span::styled("pk:", Style::default().fg(color::label_fg())),
             Span::styled(format!("{:.0}%", peak_pct), Style::default().fg(color::inactive_fg())),
         ])
     } else {
         Line::from(vec![
             Span::styled(" Memory ", Style::default().fg(color::title())),
-            Span::styled(format!("{:.0}%", current_pct), Style::default().fg(mem_color(current_pct)).add_modifier(Modifier::BOLD)),
+            Span::styled(current.clone(), Style::default().fg(current_fg).add_modifier(Modifier::BOLD)),
         ])
     };
 
