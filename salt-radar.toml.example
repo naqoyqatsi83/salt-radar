@@ -242,3 +242,7 @@
 # false leaves the screen background to the terminal (e.g. transparency)
 # instead of the theme's; popups and the cursor bar keep theirs.
 # theme_background = true
+
+# How strongly the screen behind a popup is dimmed (faded toward the theme's
+# background), 0-100%. 0 turns dimming off.
+# popup_dim_pct = 70

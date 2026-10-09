@@ -196,6 +196,10 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 } else {
                     field.label_value.clone()
                 };
+                let missing = match field.kind {
+                    ConfigFieldKind::Path(kind) if !editing => !kind.exists(&field.label_value),
+                    _ => false,
+                };
 
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(vec![
@@ -206,6 +210,10 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     Span::styled(
                         display_val,
                         sel_style.fg(if editing { color::yellow() } else { color::main_fg() }),
+                    ),
+                    Span::styled(
+                        if missing { "  \u{2717} not found" } else { "" },
+                        sel_style.fg(color::red()).add_modifier(Modifier::BOLD),
                     ),
                 ]));
             }
@@ -235,7 +243,54 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         Paragraph::new(lines).style(Style::default().bg(color::main_bg())).scroll((scroll as u16, 0)),
         inner,
     );
+
+    if let Some(ref b) = state.browser {
+        super::dim_background(f, app.config.popup_dim_pct);
+        draw_path_browser(f, b, state.fields.get(state.selected).map_or("", |f| f.label));
+    }
+}
+
+fn draw_path_browser(f: &mut Frame, b: &PathBrowser, label: &str) {
+    let area = detail_popup::centered_rect(60, 70, f.area());
+    f.render_widget(Clear, area);
+    let what = match b.kind { PathKind::File => "file", PathKind::Dir => "directory" };
+    let hints: Vec<(&str, String)> = vec![
+        ("Enter", if b.kind == PathKind::File { "open/pick" } else { "open" }.to_string()),
+        ("\u{2190}", "up".to_string()),
+        (".", if b.show_hidden { "hide hidden" } else { "show hidden" }.to_string()),
+        ("e", "type path".to_string()),
+        ("Esc", "cancel".to_string()),
+    ];
+    let block = super::titled_block(format!(" {}: select a {} ", label, what), Style::default().fg(color::border_focus()), color::popup_bg())
+        .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(format!("  {}", b.dir.display()), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+    ];
+    let header = lines.len();
+    for (i, entry) in b.entries.iter().enumerate() {
+        let (text, fg) = match entry {
+            BrowserEntry::SelectHere => ("  \u{2713} select this directory".to_string(), color::green()),
+            BrowserEntry::Parent => ("  ../".to_string(), color::inactive_fg()),
+            BrowserEntry::Dir(n) => (format!("  {}/", n), color::cyan()),
+            BrowserEntry::File(n) => (format!("  {}", n), color::main_fg()),
+        };
+        let line = Line::from(Span::styled(text, Style::default().fg(fg)));
+        lines.push(if i == b.selected { color::selected_row(line) } else { line });
+    }
+    if b.entries.iter().all(|e| matches!(e, BrowserEntry::SelectHere | BrowserEntry::Parent)) {
+        lines.push(Line::from(Span::styled("  (empty)", Style::default().fg(color::inactive_fg()))));
+    }
+    let visible = inner.height as usize;
+    let (scroll, _, _) = super::scroll_window(header + b.selected, visible, lines.len());
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(color::popup_bg())).scroll((scroll as u16, 0)),
+        inner,
+    );
 }
 
 // Re-export ConfigFieldKind from the app module for use here
-pub use crate::app::ConfigFieldKind;
+pub use crate::app::{BrowserEntry, ConfigFieldKind, PathBrowser, PathKind};

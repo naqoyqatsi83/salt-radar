@@ -422,13 +422,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_key_hints(f, main_layout[2], app);
 
     // Detail popup overlay
-    if popup_active || sniffer_active { dim_background(f); }
+    let dim = app.config.popup_dim_pct;
+    if popup_active || sniffer_active { dim_background(f, dim); }
     if popup_active { detail_popup::draw_detail_popup(f, app); }
     else if sniffer_active { detail_popup::draw_sniffer_overlay(f, app); }
 
     // Help overlay
     if app.show_help {
-        dim_background(f);
+        dim_background(f, dim);
         let help_area = detail_popup::centered_rect(60, 65, f.area());
         f.render_widget(Clear, help_area);
         draw_help_overlay(f, help_area);
@@ -436,25 +437,27 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Save-to-file prompt: opened from inside a popup, so it's the top layer.
     if app.save_prompt.is_some() {
-        dim_background(f);
+        dim_background(f, dim);
         detail_popup::draw_save_prompt(f, app);
     }
 }
 
-/// Fades everything already drawn toward the theme's background so the
-/// popup rendered next stands out — darker on a dark theme, washed out on a
-/// light one. Called once per overlay layer, so a nested popup fades the one
-/// beneath it as well. A transparent (terminal-default) background fades
-/// toward black; terminal-default and palette colors can't be blended
-/// (their real value depends on the terminal's theme), so their foreground
-/// falls back to `Modifier::DIM`.
-fn dim_background(f: &mut Frame) {
-    const KEEP: u16 = 50;
+/// Fades everything already drawn toward the theme's background by
+/// `dim_pct` (the `popup_dim_pct` setting) so the popup rendered next stands
+/// out — darker on a dark theme, washed out on a light one. Called once per
+/// overlay layer, so a nested popup fades the one beneath it as well. A
+/// transparent (terminal-default) background fades toward black;
+/// terminal-default and palette colors can't be blended (their real value
+/// depends on the terminal's theme), so their foreground falls back to
+/// `Modifier::DIM`.
+pub(crate) fn dim_background(f: &mut Frame, dim_pct: u64) {
+    if dim_pct == 0 { return; }
+    let keep = 100 - dim_pct.min(100) as u16;
     let (tr, tg, tb) = match color::main_bg() {
         Color::Rgb(r, g, b) => (r, g, b),
         _ => (0, 0, 0),
     };
-    let mix = |c: u8, t: u8| ((c as u16 * KEEP + t as u16 * (100 - KEEP)) / 100) as u8;
+    let mix = |c: u8, t: u8| ((c as u16 * keep + t as u16 * (100 - keep)) / 100) as u8;
     let fade = |r, g, b| Color::Rgb(mix(r, tr), mix(g, tg), mix(b, tb));
     for cell in f.buffer_mut().content.iter_mut() {
         match cell.fg {

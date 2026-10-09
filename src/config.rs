@@ -32,6 +32,20 @@ fn user_config_dir() -> Option<PathBuf> {
         .map(|dir| dir.join("salt-radar"))
 }
 
+/// Expands a leading `~` / `~/` against $HOME, as the shell would.
+pub fn expand_home(raw: &str) -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    if raw == "~" {
+        return home().unwrap_or_else(|| PathBuf::from("/root"));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(h) = home() {
+            return h.join(rest);
+        }
+    }
+    PathBuf::from(raw)
+}
+
 pub const DEFAULT_THEME: &str = "Default";
 
 /// Where `*.theme` files are looked up, lowest priority first: the
@@ -267,6 +281,9 @@ pub struct AppConfig {
     /// When false, the theme's screen backgrounds are left to the
     /// terminal (transparent); popups and the cursor keep theirs.
     pub theme_background: bool,
+    /// How strongly the screen behind a popup is faded toward the theme's
+    /// background, 0-100% (0 = no dimming).
+    pub popup_dim_pct: u64,
 }
 
 impl AppConfig {
@@ -363,6 +380,7 @@ impl Default for AppConfig {
             api_request_columns: TableId::ApiLog.default_columns().into(),
             color_theme: DEFAULT_THEME.into(),
             theme_background: true,
+            popup_dim_pct: 70,
         }
     }
 }
@@ -464,6 +482,7 @@ struct JobsConfig {
 struct UiConfig {
     color_theme: Option<String>,
     theme_background: Option<bool>,
+    popup_dim_pct: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -572,7 +591,8 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
          \n\
          [ui]\n\
          color_theme = {:?}\n\
-         theme_background = {}\n",
+         theme_background = {}\n\
+         popup_dim_pct = {}\n",
         config.agent_path,
         config.python_bin,
         config.master_config,
@@ -636,6 +656,7 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         config.jobs_cache_columns,
         config.color_theme,
         config.theme_background,
+        config.popup_dim_pct,
     );
     std::fs::write(path, toml)
 }
@@ -727,6 +748,7 @@ pub fn load_config(path: &Path) -> AppConfig {
             if let Some(u) = toml_cfg.ui {
                 if let Some(v) = u.color_theme { cfg.color_theme = v; }
                 if let Some(v) = u.theme_background { cfg.theme_background = v; }
+                if let Some(v) = u.popup_dim_pct { cfg.popup_dim_pct = v.min(100); }
             }
         }
     }
