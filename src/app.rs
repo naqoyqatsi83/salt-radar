@@ -2586,6 +2586,7 @@ impl App {
                 ConfigField { label: "[ui]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "color_theme", label_value: cfg.color_theme.clone(), kind: ConfigFieldKind::Theme },
                 ConfigField { label: "theme_background", label_value: on_off(cfg.theme_background), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "popup_dim_pct", label_value: cfg.popup_dim_pct.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -2693,6 +2694,7 @@ impl App {
             api_request_columns: columns("request_columns", TableId::ApiLog),
             color_theme: vals.get("color_theme").unwrap_or(&crate::config::DEFAULT_THEME).to_string(),
             theme_background: parse_bool("theme_background"),
+            popup_dim_pct: parse_u64("popup_dim_pct")?.min(100),
         };
 
         crate::config::write_config(&self.config_path, &new_config)

@@ -208,7 +208,7 @@ Copy-to-clipboard (`y` / `Y`) uses two methods:
 If DISPLAY and XAUTHORITY can't be resolved, a transient yellow hint is shown in the status bar explaining that X11 clipboard is unavailable. Run with `ssh -X` or `ssh -Y` to enable X11 forwarding.
 
 ### Everywhere
-- **Color themes** — btop++-style `.theme` files (see below); the screen behind any popup is dimmed so the popup stands out
+- **Color themes** — btop++-style `.theme` files (see below); the screen behind any popup is dimmed so the popup stands out — how strongly is `popup_dim_pct` in `[ui]` (default 50%, `0` turns it off)
 - **Clipboard integration** — tmux load-buffer + xclip via X11 forwarding. DISPLAY and XAUTHORITY are auto-resolved from the process environment or the tmux session's global environment — no manual configuration needed even when running under `sudo`
 - Filter-as-you-type with `/` on all list tabs — each tab keeps its own filter independently, comma-separated terms (each optionally a glob) are OR'd together, and matched terms are consistently colored
 - Keyboard-driven navigation with `?` for help
