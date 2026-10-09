@@ -34,16 +34,13 @@ jobs:
           CARGO_HTTP_TIMEOUT: 120
         run: |
           # Static musl build: zero glibc dependency, so it runs unmodified on
-          # any x86_64 Linux regardless of the target distro's libc version —
-          # more robust than pinning to an old glibc build image (Debian
-          # Bullseye's own package mirrors broke once it went EOL).
-          docker run --rm -v ${{ github.workspace }}:/work -w /work \
-            -e CARGO_NET_RETRY=5 -e CARGO_HTTP_TIMEOUT=120 \
-            rust:latest bash -c '
-            set -e
-            rustup target add x86_64-unknown-linux-musl
-            apt-get update -qq && apt-get install -y -qq musl-tools > /dev/null
-            for i in 1 2 3; do
+          # any x86_64 Linux regardless of the target distro's libc version.
+          # Built directly on the runner (it ships rustup) rather than in a
+          # Docker image, so a Docker Hub outage can't block a release.
+          set -e
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools > /dev/null
+          for i in 1 2 3; do
             cargo build --release --target x86_64-unknown-linux-musl && break
             echo "Build attempt $i failed, retrying..."
             sleep 5
@@ -52,7 +49,6 @@ jobs:
               exit 1
             fi
           done
-          '
 
       - name: Create .deb package (amd64)
         run: |
