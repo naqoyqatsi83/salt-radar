@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-10-10
+
+### Added
+
+- Add saving the Events tab's filtered event list to a file: `s` as readable text, `S` as NDJSON (one `{"tag", "ts", "time", "data"}` object per line, ready for `jq`), through the same save dialog as the popups, with the active filter in the proposed file name (#4)
+
+### Changed
+
+- Event Sniffer: `S` now saves the shown events as NDJSON (it saved the same text as `s`), and text exports label their timestamps as UTC
+- Split the 7,100-line `src/app.rs` into modules — key handling, agent messages, the Config Editor and clipboard — without behavior changes (#125)
+
 ## [0.7.3] - 2026-10-09
 
 ### Changed

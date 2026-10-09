@@ -300,6 +300,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Tab | Key | Action |
 |-----|-----|--------|
 | Events | `n` | Launch event sniffer |
+| Events | `s` / `S` | Save the filtered event list to a file (text / NDJSON) |
 | Minions | `r` | Minion event/return history popup |
 | Minions | `s` | Fleet scan (admin mode only) |
 | Minions | `x` | Hide/show non-responsive minions |
@@ -337,7 +338,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `y` | Copy to clipboard |
 | `Y` | Copy raw JSON (job detail) |
 | `s` | Save to file |
-| `S` | Save raw JSON to file (job detail) |
+| `S` | Save raw JSON to file (job detail; NDJSON in the sniffer) |
 | `a` | Save every return in the job to one file (job detail) |
 | `A` | Save every return as one JSON object (job detail) |
 | `j`/`k` | Next/previous return (job detail) |
@@ -420,7 +421,12 @@ cargo build --release
 ```
 src/
 ├── main.rs              # Terminal setup, event loop, tick scheduling
-├── app.rs               # Application state, key handling, clipboard
+├── app/                 # Application state and behavior
+│   ├── mod.rs           # App state, tick/update loop, filtering and sorting, job tracking
+│   ├── keys.rs          # Keyboard and mouse input for tabs, lists and every popup
+│   ├── messages.rs      # Agent results/events in, agent commands out, fleet scan
+│   ├── config_editor.rs # Config Editor: field model, path browser, saving, theme preview
+│   └── clipboard.rs     # Clipboard (tmux/OSC 52, X11 via xclip) and save-to-file
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management
