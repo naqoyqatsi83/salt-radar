@@ -104,6 +104,8 @@ pub struct App {
     /// Tab where the current popup was opened (popup only shows on that tab)
     pub popup_tab: Option<Tab>,
     pub show_help: bool,
+    /// Help overlay scroll offset, clamped while drawing.
+    pub help_scroll: u16,
     /// The `(color_theme, theme_background)` currently installed via
     /// `color::set_theme`, so `sync_theme` only reloads on a change.
     applied_theme: Option<(String, bool)>,
@@ -746,6 +748,7 @@ impl App {
             detail_popup: None,
             popup_tab: None,
             show_help: false,
+            help_scroll: 0,
             applied_theme: None,
 
             sniffer_input_active: false,
@@ -4785,6 +4788,12 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') | KeyCode::F(1) => {
                     self.show_help = false;
                 }
+                KeyCode::Up | KeyCode::Char('k') => self.help_scroll = self.help_scroll.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => self.help_scroll = self.help_scroll.saturating_add(1),
+                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+                KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(10),
+                KeyCode::Home => self.help_scroll = 0,
+                KeyCode::End => self.help_scroll = u16::MAX,
                 _ => {}
             }
             return false;
@@ -4891,6 +4900,7 @@ impl App {
                     }
                     KeyCode::Char('?') | KeyCode::F(1) => {
                         self.show_help = true;
+                        self.help_scroll = 0;
                         return false;
                     }
                     _ => {}
@@ -5912,6 +5922,7 @@ impl App {
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
                 self.show_help = true;
+                self.help_scroll = 0;
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 self.sparkline_style = match self.sparkline_style {

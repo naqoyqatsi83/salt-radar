@@ -281,6 +281,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | `1`–`7` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
+| `Home`/`End` | First/last row |
 | `Enter` | Open detail popup |
 | `Esc` | Close popup / help |
 | `/` | Filter (current tab) |
@@ -319,9 +320,14 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Key | Action |
 |-----|--------|
 | `↑`/`↓` | Move between fields |
+| `PgUp`/`PgDn` | Page through fields |
+| `Home`/`End` | First/last field |
 | `Enter` | Edit field / open picker (fixed-option fields) or file browser (path fields) / confirm picker selection |
 | `Esc` | Cancel edit or close the picker without changing the value |
 | `s` | Save all changes and apply them |
+| `←` / `Backspace` | Up one folder (file browser) |
+| `.` | Show/hide hidden files (file browser) |
+| `e` | Type the path by hand (file browser) |
 
 ### Popups
 
