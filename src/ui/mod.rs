@@ -250,7 +250,7 @@ pub fn scroll_window(selected: usize, visible: usize, total: usize) -> (usize, b
     if visible == 0 || total <= visible {
         return (0, false, false);
     }
-    let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+    let scroll = selected.saturating_sub(visible / 2);
     let scroll = scroll.min(total.saturating_sub(visible));
     (scroll, scroll > 0, scroll + visible < total)
 }
@@ -432,7 +432,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         dim_background(f, dim);
         let help_area = detail_popup::centered_rect(60, 65, f.area());
         f.render_widget(Clear, help_area);
-        draw_help_overlay(f, help_area);
+        draw_help_overlay(f, help_area, &mut app.help_scroll);
     }
 
     // Save-to-file prompt: opened from inside a popup, so it's the top layer.
@@ -594,7 +594,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     if app.sniffer_input_active {
-        let cursor = if app.sniffer_input_text.len() % 2 == 0 { '|' } else { ' ' };
+        let cursor = if app.sniffer_input_text.len().is_multiple_of(2) { '|' } else { ' ' };
         let k1 = key::render("Esc", "Cancel");
         let k2 = key::render("Enter", "Start");
         let mut all_spans: Vec<Span<'static>> = Vec::new();
@@ -618,7 +618,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         let mut all_spans: Vec<Span<'static>> = Vec::new();
         for s in spans { all_spans.extend(s); }
         all_spans.push(Span::styled(
-            format!("  filter: /{} {}", app.filter_text, if app.filter_text.len() % 2 == 0 { '|' } else { ' ' }),
+            format!("  filter: /{} {}", app.filter_text, if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' }),
             Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         ));
         let paragraph = Paragraph::new(Line::from(all_spans))
@@ -755,88 +755,107 @@ pub fn render_table_header(f: &mut Frame, area: Rect, columns: &[(&str, u16)], b
 
 // ─── Help overlay ──────────────────────────────────────────────────────────
 
-fn draw_help_overlay(f: &mut Frame, area: Rect) {
-    let lines = vec![
+/// One keyboard shortcut, spelled exactly as in the README's tables (keys in
+/// backticks) — the help overlay is drawn from this list and a test checks
+/// every entry against the README, so the two can't drift apart.
+pub struct Shortcut {
+    /// Tab(s) the key applies to, for the "Per tab" group; empty otherwise.
+    pub tab: &'static str,
+    pub key: &'static str,
+    pub action: &'static str,
+}
+
+/// Every shortcut, grouped like the README's keyboard tables.
+pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
+    ("General", &[
+        Shortcut { tab: "", key: "`q`", action: "Quit" },
+        Shortcut { tab: "", key: "`Tab`", action: "Switch tab" },
+        Shortcut { tab: "", key: "`1`–`7`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse)" },
+        Shortcut { tab: "", key: "`↑`/`↓`", action: "Scroll / navigate" },
+        Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Page scroll" },
+        Shortcut { tab: "", key: "`Home`/`End`", action: "First/last row" },
+        Shortcut { tab: "", key: "`Enter`", action: "Open detail popup" },
+        Shortcut { tab: "", key: "`Esc`", action: "Close popup / help" },
+        Shortcut { tab: "", key: "`/`", action: "Filter (current tab)" },
+        Shortcut { tab: "", key: "`a`", action: "Toggle admin mode" },
+        Shortcut { tab: "", key: "`?` / `F1`", action: "Help overlay" },
+        Shortcut { tab: "", key: "`F2`", action: "Toggle mouse mode" },
+        Shortcut { tab: "", key: "`F3`", action: "Open Config Editor" },
+        Shortcut { tab: "", key: "`+`/`-`", action: "Adjust refresh interval" },
+        Shortcut { tab: "", key: "`m`", action: "Toggle sparkline style (Dashboard)" },
+        Shortcut { tab: "", key: "`F4`–`F8`", action: "Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard)" },
+    ]),
+    ("Per tab", &[
+        Shortcut { tab: "Events", key: "`n`", action: "Launch event sniffer" },
+        Shortcut { tab: "Minions", key: "`r`", action: "Minion event/return history popup" },
+        Shortcut { tab: "Minions", key: "`s`", action: "Fleet scan (admin mode only)" },
+        Shortcut { tab: "Minions", key: "`x`", action: "Hide/show non-responsive minions" },
+        Shortcut { tab: "Minions", key: "`z`", action: "Collapse/expand timed-out minions into one row (when not hidden)" },
+        Shortcut { tab: "Minions", key: "`f`", action: "Toggle whether the Fleet Overview breakdown follows the active list filter" },
+        Shortcut { tab: "Minions, Jobs, Alerts, API", key: "`o` / `O`", action: "Sort by the next column / reverse the sort (also: click a column header)" },
+        Shortcut { tab: "Minions, Events, Jobs, Alerts, API", key: "`v`", action: "Choose which columns the focused table shows, and their order" },
+        Shortcut { tab: "Jobs (Cache)", key: "`/`", action: "Filter cache entries (server-side)" },
+        Shortcut { tab: "Jobs (Cache)", key: "`[`/`]`", action: "Decrease/increase page limit by 500" },
+        Shortcut { tab: "Jobs (Cache)", key: "`,`/`.`", action: "Previous/next page" },
+        Shortcut { tab: "Jobs (Cache)", key: "`r`", action: "Refresh job cache" },
+        Shortcut { tab: "Jobs (Cache)", key: "`←`/`→`", action: "Switch focus between Live Jobs and Cache panels" },
+        Shortcut { tab: "Pulse", key: "`↑`/`↓`/`←`/`→`", action: "Navigate the minion grid" },
+        Shortcut { tab: "API", key: "`x`", action: "Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`)" },
+    ]),
+    ("Config Editor", &[
+        Shortcut { tab: "", key: "`↑`/`↓`", action: "Move between fields" },
+        Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Page through fields" },
+        Shortcut { tab: "", key: "`Home`/`End`", action: "First/last field" },
+        Shortcut { tab: "", key: "`Enter`", action: "Edit field / open picker (fixed-option fields) or file browser (path fields) / confirm picker selection" },
+        Shortcut { tab: "", key: "`Esc`", action: "Cancel edit or close the picker without changing the value" },
+        Shortcut { tab: "", key: "`s`", action: "Save all changes and apply them" },
+        Shortcut { tab: "", key: "`←` / `Backspace`", action: "Up one folder (file browser)" },
+        Shortcut { tab: "", key: "`.`", action: "Show/hide hidden files (file browser; while not typing a name)" },
+        Shortcut { tab: "", key: "`/`", action: "Type the path by hand (file browser)" },
+        Shortcut { tab: "", key: "letters, digits", action: "Jump to the first entry starting with what you type (file browser)" },
+    ]),
+    ("Popups", &[
+        Shortcut { tab: "", key: "`y`", action: "Copy to clipboard" },
+        Shortcut { tab: "", key: "`Y`", action: "Copy raw JSON (job detail)" },
+        Shortcut { tab: "", key: "`s`", action: "Save to file" },
+        Shortcut { tab: "", key: "`S`", action: "Save raw JSON to file (job detail)" },
+        Shortcut { tab: "", key: "`a`", action: "Save every return in the job to one file (job detail)" },
+        Shortcut { tab: "", key: "`A`", action: "Save every return as one JSON object (job detail)" },
+        Shortcut { tab: "", key: "`j`/`k`", action: "Next/previous return (job detail)" },
+        Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Jump 10 returns" },
+        Shortcut { tab: "", key: "`Home`/`End`", action: "First/last return (job detail)" },
+        Shortcut { tab: "", key: "`Enter`", action: "Enter scroll mode (event/job detail)" },
+        Shortcut { tab: "", key: "`Esc`", action: "Exit scroll mode" },
+        Shortcut { tab: "", key: "`Home`/`End`", action: "Jump to start/end of output (scroll mode)" },
+        Shortcut { tab: "", key: "`t`", action: "Toggle raw JSON / pretty view (event detail)" },
+        Shortcut { tab: "", key: "`h`", action: "Edit keyword filter (sniffer)" },
+        Shortcut { tab: "", key: "`p`", action: "Pause/resume (sniffer)" },
+        Shortcut { tab: "", key: "`g`", action: "Fetch grains for this minion (minion detail, admin mode only)" },
+    ]),
+];
+
+fn draw_help_overlay(f: &mut Frame, area: Rect, scroll: &mut u16) {
+    let key_style = Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD);
+    let mut lines = vec![
         Line::from(Span::styled("  Help", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", Style::default().fg(color::div_line()))),
+        Line::from(Span::styled("  \u{2500}".to_string() + &"\u{2500}".repeat(15), Style::default().fg(color::div_line()))),
         Line::from(Span::styled("  Most shortcuts are also shown live in the border of the panel they affect.", Style::default().fg(color::inactive_fg()))),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  q", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Quit", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  Tab", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Switch tab", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  1-7", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Jump to tab", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  \u{2191}\u{2193}", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Scroll", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  PgUp/PgDn", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Page scroll", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  Enter", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Show detail popup", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  Esc", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Close popup / help", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  +/-", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Adjust refresh interval", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  m", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Toggle sparkline style (Bars/Dots, Dashboard)", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  F4-F8", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Toggle CPU/Mem/ZMQ/Events/Minions graphs (Dashboard, saved on quit)", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  ?/F1", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Toggle this help", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  a", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Toggle admin mode", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  n", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Event sniffer (Events tab)", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  r", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Minion event history (Minions tab)", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  s", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Fleet scan (admin mode, Minions tab)", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  x", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Hide/show non-responsive minions (Minions tab)", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  o/O", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Sort by next column / reverse sort (list tables; or click a header)", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  v", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Choose and reorder the focused table's columns", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  \u{2191}\u{2193}\u{2190}\u{2192}", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  Navigate grid (Pulse tab)", Style::default().fg(color::main_fg())),
-        ]),
+    ];
+    let shown = |text: &str| text.replace('`', "");
+    for (group, shortcuts) in SHORTCUTS {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(format!("  {}", group), Style::default().fg(color::title()).add_modifier(Modifier::BOLD))));
+        let key_w = shortcuts.iter().map(|s| shown(s.key).chars().count()).max().unwrap_or(0);
+        for s in shortcuts.iter() {
+            let mut spans = vec![Span::styled(format!("  {:<w$}  ", shown(s.key), w = key_w), key_style)];
+            if !s.tab.is_empty() {
+                spans.push(Span::styled(format!("{}: ", s.tab), Style::default().fg(color::label_fg())));
+            }
+            spans.push(Span::styled(shown(s.action), Style::default().fg(color::main_fg())));
+            lines.push(Line::from(spans));
+        }
+    }
+    lines.extend([
         Line::from(""),
         Line::from(Span::styled("  Dashboard KPIs", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![
@@ -895,15 +914,87 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::inactive_fg()))),
         Line::from(Span::styled("  Read-only TUI. All data sourced from /proc, systemctl,", Style::default().fg(color::inactive_fg()))),
         Line::from(Span::styled("  and Salt's own APIs via the bundled Python agent.", Style::default().fg(color::inactive_fg()))),
-    ];
+    ]);
 
-    let block = Block::default()
+    let hints = [("\u{2191}\u{2193}/PgUp/PgDn", "scroll".to_string()), ("Esc", "close".to_string())];
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::border_focus()))
-        .style(Style::default().bg(color::popup_bg()));
+        .style(Style::default().bg(color::popup_bg()))
+        .title_bottom(border_hints(&hints, color::border_focus()).left_aligned());
     let inner = block.inner(area);
+    let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
+    *scroll = (*scroll).min(max_scroll);
+    if *scroll < max_scroll {
+        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::border_focus()))).right_aligned());
+    }
     f.render_widget(block, area);
-    f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::popup_bg())), inner);
+    f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::popup_bg())).scroll((*scroll, 0)), inner);
 }
 
 // ─── Sub-view modules ──────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+
+    #[test]
+    fn every_help_shortcut_is_a_readme_row() {
+        let readme = include_str!("../../README.md");
+        for (group, shortcuts) in SHORTCUTS {
+            for sc in shortcuts.iter() {
+                let row = if sc.tab.is_empty() {
+                    format!("| {} | {} |", sc.key, sc.action)
+                } else {
+                    format!("| {} | {} | {} |", sc.tab, sc.key, sc.action)
+                };
+                assert!(readme.contains(&row), "{}: README has no row {}", group, row);
+            }
+        }
+    }
+
+    #[test]
+    fn scroll_window_never_scrolls_a_list_that_fits() {
+        for sel in 0..15 {
+            assert_eq!(scroll_window(sel, 40, 15), (0, false, false));
+        }
+    }
+
+    #[test]
+    fn scroll_window_centers_then_clamps_at_the_end() {
+        assert_eq!(scroll_window(0, 10, 100), (0, false, true));
+        assert_eq!(scroll_window(50, 10, 100), (45, true, true));
+        assert_eq!(scroll_window(99, 10, 100), (90, true, false));
+    }
+
+    #[test]
+    fn gradient_hits_its_stops_and_blends_between_them() {
+        let t = color::Theme::DEFAULT;
+        assert_eq!(color::gradient(0.0), t.gradient_start);
+        assert_eq!(color::gradient(0.5), t.gradient_mid);
+        assert_eq!(color::gradient(0.75), t.gradient_high);
+        assert_eq!(color::gradient(1.0), t.gradient_end);
+        assert_eq!(color::gradient(-1.0), t.gradient_start);
+        assert_eq!(color::gradient(7.0), t.gradient_end);
+        assert_eq!(color::gradient(f64::NAN), t.gradient_start);
+        let (Color::Rgb(r0, ..), Color::Rgb(r1, ..), Color::Rgb(r, ..)) = (t.gradient_start, t.gradient_mid, color::gradient(0.25)) else { panic!() };
+        assert!(r0.min(r1) <= r && r <= r0.max(r1), "a quarter of the way is between start and mid");
+        assert_eq!(color::mem_gradient(0.0), t.mem_gradient_start);
+        assert_eq!(color::mem_gradient(1.0), t.mem_gradient_end);
+    }
+
+    #[test]
+    fn selected_row_lifts_dim_text_and_keeps_other_colors() {
+        let line = Line::from(vec![
+            Span::styled("dim", Style::default().fg(color::inactive_fg())),
+            Span::styled("ok", Style::default().fg(color::green())),
+        ]);
+        let row = color::selected_row(line);
+        assert_eq!(row.spans[0].style.fg, Some(color::hi_fg()));
+        assert_eq!(row.spans[1].style.fg, Some(color::green()));
+        assert_eq!(row.style.bg, Some(color::selected_bg()));
+        assert!(row.style.add_modifier.contains(Modifier::BOLD));
+    }
+}

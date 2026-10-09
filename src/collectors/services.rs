@@ -34,7 +34,7 @@ fn discover_salt_units() -> Vec<String> {
     for line in stdout.lines() {
         if line.trim().is_empty() { continue; }
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 1 {
+        if !parts.is_empty() {
             let unit_name = parts[0];
             if let Some(stripped) = unit_name.strip_suffix(".service") {
                 units.push(stripped.to_string());
@@ -83,7 +83,7 @@ fn find_running_salt_processes(units: &[String]) -> Vec<String> {
 
         // For salt-job-archive and other services, check if it's running
         for unit in units {
-            if !found.contains(&unit) {
+            if !found.contains(unit) {
                 let service_exe = unit.trim_start_matches("salt-");
                 let full_exe = format!("salt-{}", service_exe);
                 if cmdline.contains(&full_exe) {
@@ -96,8 +96,7 @@ fn find_running_salt_processes(units: &[String]) -> Vec<String> {
     found
 }
 
-fn check_unit(unit: &String, proc_running: bool) -> ServiceHealth {
-    let unit_str = unit.as_str();
+fn check_unit(unit_str: &str, proc_running: bool) -> ServiceHealth {
     // Try systemctl is-active
     let is_active = std::process::Command::new("systemctl")
         .arg("is-active")

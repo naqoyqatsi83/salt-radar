@@ -15,14 +15,13 @@ pub enum Tab {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum SparklineStyle {
     Bars,
+    #[default]
     Dots,
 }
 
-impl Default for SparklineStyle {
-    fn default() -> Self { Self::Dots }
-}
 
 impl Tab {
     pub fn next(&self) -> Self {
@@ -138,7 +137,8 @@ pub struct SaltProcess {
 pub enum SaltProcessRole {
     Master,
     Worker,
-    API,
+    #[serde(rename = "API")]
+    Api,
     Syndic,
     Minion,
     EventPublisher,
@@ -151,7 +151,7 @@ impl SaltProcessRole {
         match self {
             Self::Master => "salt-master",
             Self::Worker => "worker",
-            Self::API => "salt-api",
+            Self::Api => "salt-api",
             Self::Syndic => "salt-syndic",
             Self::Minion => "salt-minion",
             Self::EventPublisher => "EventPublisher",

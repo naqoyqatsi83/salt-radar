@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-09
+
+### Changed
+
+- Config Editor file browser: type the start of a name to jump to the first matching entry (case-insensitive, shown in the border; a one-second pause starts a new name); typing a path by hand moves from `e` to `/`, and `.` toggles hidden files only when not typing a name (#124)
+- Complete the help overlay (`?`): every shortcut from the README's keyboard tables, grouped the same way (General, Per tab, Config Editor, Popups) and scrollable — it was missing e.g. F2, F3, `/`, Home/End and the Job Cache and Config Editor keys; both are now built from one list, checked by a test (#123)
+- Save only the settings that differ from the defaults when the Config Editor (or quitting with toggled graphs) writes `salt-radar.toml`, instead of every setting — unchanged settings now follow future defaults instead of staying pinned to the ones of the version that saved the file; files written by older versions slim down to their real changes on the next save (#121)
+
+### Fixed
+
+- Fix the Live Jobs cursor jumping to a different job when new jobs arrive or old ones age out while it isn't following the newest job: it now stays on the same job (#122)
+- Fix the API request log showing an empty path, instead of `?`, for a request line it couldn't parse (found by the new unit tests, #119)
+
 ## [0.7.2] - 2026-10-09
 
 ### Added

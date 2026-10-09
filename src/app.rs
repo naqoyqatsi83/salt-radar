@@ -104,6 +104,8 @@ pub struct App {
     /// Tab where the current popup was opened (popup only shows on that tab)
     pub popup_tab: Option<Tab>,
     pub show_help: bool,
+    /// Help overlay scroll offset, clamped while drawing.
+    pub help_scroll: u16,
     /// The `(color_theme, theme_background)` currently installed via
     /// `color::set_theme`, so `sync_theme` only reloads on a change.
     applied_theme: Option<(String, bool)>,
@@ -544,6 +546,9 @@ pub struct PathBrowser {
     pub entries: Vec<BrowserEntry>,
     pub selected: usize,
     pub show_hidden: bool,
+    /// Type-ahead: the name typed so far, and when its last key came in.
+    pub typed: String,
+    pub typed_at: Option<Instant>,
 }
 
 impl PathBrowser {
@@ -561,7 +566,7 @@ impl PathBrowser {
             }
             (dir, name)
         };
-        let mut b = PathBrowser { kind, dir, entries: Vec::new(), selected: 0, show_hidden: false };
+        let mut b = PathBrowser { kind, dir, entries: Vec::new(), selected: 0, show_hidden: false, typed: String::new(), typed_at: None };
         b.load(select.as_deref());
         b
     }
@@ -588,6 +593,34 @@ impl PathBrowser {
         self.selected = select
             .and_then(|n| self.entries.iter().position(|e| matches!(e, BrowserEntry::Dir(d) | BrowserEntry::File(d) if d == n)))
             .unwrap_or(0);
+    }
+
+    /// Type-ahead: extends the typed name with `c` (starting over after a
+    /// pause of a second) and selects the first entry starting with it,
+    /// case-insensitively; if nothing matches, tries `c` on its own.
+    pub fn type_ahead(&mut self, c: char, now: Instant) {
+        if self.typed_at.is_none_or(|at| now.duration_since(at) > std::time::Duration::from_secs(1)) {
+            self.typed.clear();
+        }
+        self.typed_at = Some(now);
+        self.typed.push(c);
+        let find = |prefix: &str| {
+            let prefix = prefix.to_lowercase();
+            self.entries.iter().position(|e| matches!(e,
+                BrowserEntry::Dir(n) | BrowserEntry::File(n) if n.to_lowercase().starts_with(&prefix)))
+        };
+        if let Some(i) = find(&self.typed) {
+            self.selected = i;
+        } else if let Some(i) = find(&c.to_string()) {
+            self.typed = c.to_string();
+            self.selected = i;
+        }
+    }
+
+    /// Whether a type-ahead name is still being typed (its last key came in
+    /// under a second ago).
+    pub fn typing(&self, now: Instant) -> bool {
+        self.typed_at.is_some_and(|at| now.duration_since(at) <= std::time::Duration::from_secs(1))
     }
 
     fn go_up(&mut self) {
@@ -746,6 +779,7 @@ impl App {
             detail_popup: None,
             popup_tab: None,
             show_help: false,
+            help_scroll: 0,
             applied_theme: None,
 
             sniffer_input_active: false,
@@ -1554,6 +1588,7 @@ impl App {
 
     /// Fast poll between ticks
     pub fn fast_poll(&mut self) -> bool {
+        let live_job = self.selected_live_job();
         self.drain_agent_messages();
 
         // Timeout for stuck jid_lookup (agent subprocess may hang). The
@@ -1593,6 +1628,7 @@ impl App {
             }
         }
 
+        self.reselect_live_job(live_job);
         self.clamp_selection();
         if self.sniffer_dirty {
             self.sniffer_dirty = false;
@@ -1623,6 +1659,24 @@ impl App {
             // faster until drain_agent_messages() catches back up, instead
             // of leaving the excess queued for a full tick_interval_ms.
             || !self.agent_rx.lock().unwrap().is_empty()
+    }
+
+    /// JID of the selected Live Jobs row while the cursor isn't following the
+    /// newest job — what `reselect_live_job` puts the cursor back on after
+    /// new jobs arrive or old ones age out, which would otherwise leave the
+    /// row index pointing at a different job.
+    fn selected_live_job(&self) -> Option<String> {
+        if self.jobs_following && self.sort_of(TableId::LiveJobs).is_none() {
+            return None;
+        }
+        self.get_filtered_job(self.job_selected).map(|j| j.jid.clone())
+    }
+
+    fn reselect_live_job(&mut self, jid: Option<String>) {
+        let Some(jid) = jid else { return };
+        if let Some(pos) = self.filtered_jobs().iter().position(|j| j.jid == jid) {
+            self.job_selected = pos;
+        }
     }
 
     /// Clamp all cursor selections to valid bounds
@@ -1824,11 +1878,10 @@ impl App {
             return true;
         }
         // Show jobs targeting "*" when searching for a known minion
-        if known_minions.iter().any(|m| Self::host_matches_term(m, term)) {
-            if job.tgt == "*" {
+        if known_minions.iter().any(|m| Self::host_matches_term(m, term))
+            && job.tgt == "*" {
                 return true;
             }
-        }
         false
     }
 
@@ -2086,7 +2139,7 @@ impl App {
     fn parse_request_line(line: &str) -> (String, String) {
         let mut parts = line.split_whitespace();
         let method = parts.next().unwrap_or("?").to_string();
-        let path = parts.next().unwrap_or("?").split('?').next().unwrap_or("?").to_string();
+        let path = parts.next().and_then(|p| p.split('?').next()).unwrap_or("?").to_string();
         (method, path)
     }
 
@@ -2225,7 +2278,7 @@ impl App {
             return self.jobs.len();
         }
         let known = self.accepted_ids();
-        self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).count()
+        self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).count()
     }
 
     /// Live Jobs in display order: filtered, then sorted. Unsorted, they
@@ -2499,7 +2552,7 @@ impl App {
                 error_pct: 100.0 * errors as f64 / count as f64,
             }
         }).collect();
-        stats.sort_by(|a, b| b.count.cmp(&a.count));
+        stats.sort_by_key(|s| std::cmp::Reverse(s.count));
         stats
     }
 
@@ -2829,14 +2882,14 @@ impl App {
                 let last = b.entries.len().saturating_sub(1);
                 let mut picked: Option<String> = None;
                 match code {
-                    KeyCode::Up | KeyCode::Char('k') => b.selected = b.selected.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Char('j') => b.selected = (b.selected + 1).min(last),
+                    KeyCode::Up => b.selected = b.selected.saturating_sub(1),
+                    KeyCode::Down => b.selected = (b.selected + 1).min(last),
                     KeyCode::PageUp => b.selected = b.selected.saturating_sub(10),
                     KeyCode::PageDown => b.selected = (b.selected + 10).min(last),
                     KeyCode::Home => b.selected = 0,
                     KeyCode::End => b.selected = last,
-                    KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => b.go_up(),
-                    KeyCode::Char('.') => {
+                    KeyCode::Left | KeyCode::Backspace => b.go_up(),
+                    KeyCode::Char('.') if !b.typing(Instant::now()) => {
                         b.show_hidden = !b.show_hidden;
                         let keep = match b.entries.get(b.selected) {
                             Some(BrowserEntry::Dir(n)) | Some(BrowserEntry::File(n)) => Some(n.clone()),
@@ -2844,7 +2897,7 @@ impl App {
                         };
                         b.load(keep.as_deref());
                     }
-                    KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => match b.entries.get(b.selected).cloned() {
+                    KeyCode::Enter | KeyCode::Right => match b.entries.get(b.selected).cloned() {
                         Some(BrowserEntry::SelectHere) => picked = Some(b.dir.display().to_string()),
                         Some(BrowserEntry::Parent) => b.go_up(),
                         Some(BrowserEntry::Dir(name)) => {
@@ -2856,13 +2909,14 @@ impl App {
                         }
                         _ => {}
                     },
-                    KeyCode::Char('e') => {
+                    KeyCode::Char('/') => {
                         s.browser = None;
                         s.input = s.fields.get(s.selected).map(|f| f.label_value.clone()).unwrap_or_default();
                         s.editing = true;
                         return false;
                     }
-                    KeyCode::Esc | KeyCode::Char('q') => s.browser = None,
+                    KeyCode::Esc => s.browser = None,
+                    KeyCode::Char(c) if !c.is_control() => b.type_ahead(c, Instant::now()),
                     _ => {}
                 }
                 if let Some(path) = picked {
@@ -3299,7 +3353,7 @@ impl App {
         while let Some(c) = chars.next() {
             if c == '\x1b' {
                 // Consume until we hit 'm' (end of CSI sequence)
-                while let Some(n) = chars.next() {
+                for n in chars.by_ref() {
                     if n == 'm' { break; }
                 }
             } else {
@@ -3988,7 +4042,7 @@ impl App {
                 // xclip MUST stay alive as clipboard owner — spawn and
                 // forget. We can't use run_cmd_with_stdin() which enforces
                 // a timeout and kills the process.
-                let with_xa = xauth.as_ref().map(|s| s.as_str());
+                let with_xa = xauth.as_deref();
                 if Self::run_xclip_detached(with_xa, disp, text) {
                     ok_xclip = true;
                     xclip_log.push(format!("detached xclip(root) XA={:?}: OK", with_xa));
@@ -4392,6 +4446,7 @@ impl App {
     /// Called every tick (1s)
     pub fn update(&mut self) {
         // Drain agent messages (must happen every tick)
+        let live_job = self.selected_live_job();
         self.drain_agent_messages();
 
         // Process fleet scan returns from events buffer
@@ -4469,13 +4524,13 @@ impl App {
         // Refresh collectors at interval, not every tick
         if self.config_snapshot.is_some() {
             let interval = self.config.dashboard_secs.max(1);
-            if self.tick_count % interval == 0 {
+            if self.tick_count.is_multiple_of(interval) {
                 self.send_agent_cmd("minion_cache_list", None);
                 self.send_agent_cmd("list_keys", None);
                 self.send_agent_cmd("list_processes", None);
                 self.send_agent_cmd("list_services", None);
                 self.send_agent_cmd("get_system_info", None);
-                if self.processes.iter().any(|p| p.role == SaltProcessRole::API) {
+                if self.processes.iter().any(|p| p.role == SaltProcessRole::Api) {
                     let auth = if self.config.api_stats_auth_mode == "none" {
                         None
                     } else {
@@ -4570,7 +4625,7 @@ impl App {
         }
 
         // Alive detection every 5 ticks
-        if self.tick_count % 5 == 0 {
+        if self.tick_count.is_multiple_of(5) {
             self.send_agent_cmd("alive_check", None);
         }
 
@@ -4593,7 +4648,7 @@ impl App {
                 // round-trip, so starting the clock afterward could catch the
                 // job already returned in a fast/local fleet, always reading
                 // a flat ~0ms instead of the real round-trip time.
-                if self.job_ping_pending.is_none() && self.tick_count % 15 == 0 {
+                if self.job_ping_pending.is_none() && self.tick_count.is_multiple_of(15) {
                     self.job_ping_pending = Some((String::new(), Instant::now()));
                     self.send_agent_cmd("job_ping", None);
                 }
@@ -4712,6 +4767,7 @@ impl App {
         }
 
         // Clamp cursor selections to valid range
+        self.reselect_live_job(live_job);
         self.clamp_selection();
 
         // Clear transient clipboard message after 8 seconds
@@ -4764,6 +4820,12 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') | KeyCode::F(1) => {
                     self.show_help = false;
                 }
+                KeyCode::Up | KeyCode::Char('k') => self.help_scroll = self.help_scroll.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => self.help_scroll = self.help_scroll.saturating_add(1),
+                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+                KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(10),
+                KeyCode::Home => self.help_scroll = 0,
+                KeyCode::End => self.help_scroll = u16::MAX,
                 _ => {}
             }
             return false;
@@ -4849,10 +4911,7 @@ impl App {
             let popup_text_input = if sniffer_showing {
                 self.sniffer.as_ref().is_some_and(|s| s.highlight_input.is_some())
             } else {
-                match &self.detail_popup {
-                    Some(DetailPopup::JobDetail { return_is_filtering: true, .. }) => true,
-                    _ => false,
-                }
+                matches!(&self.detail_popup, Some(DetailPopup::JobDetail { return_is_filtering: true, .. }))
             };
             if !popup_text_input {
                 match code {
@@ -4873,6 +4932,7 @@ impl App {
                     }
                     KeyCode::Char('?') | KeyCode::F(1) => {
                         self.show_help = true;
+                        self.help_scroll = 0;
                         return false;
                     }
                     _ => {}
@@ -5894,6 +5954,7 @@ impl App {
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
                 self.show_help = true;
+                self.help_scroll = 0;
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 self.sparkline_style = match self.sparkline_style {
@@ -6144,7 +6205,7 @@ impl App {
             }
             Tab::Jobs => {
                 // 55/45 split: left = live jobs, right = cache
-                let col_split = (frame_size.width as u16 * 55 / 100) as usize;
+                let col_split = frame_size.width as usize * 55 / 100;
                 let live_click = (col as usize) < col_split;
 
                 if self.cache_focus == live_click {
@@ -6246,7 +6307,7 @@ impl App {
             let inner_x = col.saturating_sub(area.left() + 1);
             // "     [ OK ] Enter          [ Cancel ] Esc/q/a"
             //  [ OK ] at inner_x 5-11
-            if inner_x >= 5 && inner_x <= 11 {
+            if (5..=11).contains(&inner_x) {
                 self.admin_mode = true;
             }
             self.admin_mode_pending = false;
@@ -6292,7 +6353,7 @@ impl App {
 
         let content_h = (ih as usize).saturating_sub(4);
         let scroll = if sel > content_h / 2 {
-            sel.saturating_sub(content_h / 2).min(total.saturating_sub(1).saturating_sub(content_h / 2).max(0))
+            sel.saturating_sub(content_h / 2).min(total.saturating_sub(1).saturating_sub(content_h / 2))
         } else {
             0
         };
@@ -6514,7 +6575,7 @@ impl App {
             self.pulse_selected -= cols;
         } else {
             // wrap to bottom row at same column
-            let total_rows = (count + cols - 1) / cols;
+            let total_rows = count.div_ceil(cols);
             let last_row_start = (total_rows - 1) * cols;
             let col = self.pulse_selected;
             self.pulse_selected = (last_row_start + col).min(count - 1);
@@ -6751,16 +6812,8 @@ pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
         }
         serde_json::Value::Bool(b) => (0, *b),
         serde_json::Value::Null => (1, false),
-        serde_json::Value::String(s) => {
-            // Salt returns error strings starting with "ERROR:" for cmd.run etc.
-            if s.starts_with("ERROR:") || s.starts_with("error:") {
-                (1, false)
-            } else if s.trim().is_empty() {
-                (1, false)
-            } else {
-                (0, true)
-            }
-        }
+        // Salt returns error strings starting with "ERROR:" for cmd.run etc.
+        serde_json::Value::String(s) if s.starts_with("ERROR:") || s.starts_with("error:") || s.trim().is_empty() => (1, false),
         _ => (0, true),
     }
 }
@@ -6917,7 +6970,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
 
 fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
     if visible == 0 || total <= visible { return 0; }
-    let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+    let scroll = selected.saturating_sub(visible / 2);
     scroll.min(total.saturating_sub(visible))
 }
 
@@ -6960,3 +7013,106 @@ fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn filter_terms_split_on_commas_and_drop_blanks() {
+        assert_eq!(App::filter_terms("web1, web2,,  db* "), vec!["web1", "web2", "db*"]);
+        assert!(App::filter_terms(" , ").is_empty());
+    }
+
+    #[test]
+    fn host_terms_use_globs_only_when_they_contain_wildcards() {
+        assert!(App::host_matches_term("web01.prod", "web"), "plain terms are substrings");
+        assert!(App::host_matches_term("web01.prod", "WEB*"), "globs are case-insensitive");
+        assert!(!App::host_matches_term("db-web01", "web*"), "globs anchor to the whole id");
+        assert!(App::host_matches_term("web7", "web?"));
+        assert!(!App::host_matches_term("web17", "web?"));
+    }
+
+    #[test]
+    fn job_return_success_and_retcode() {
+        assert_eq!(derive_success_retcode(&json!(true)), (0, true));
+        assert_eq!(derive_success_retcode(&json!(false)), (0, false));
+        assert_eq!(derive_success_retcode(&json!(null)), (1, false));
+        assert_eq!(derive_success_retcode(&json!("ERROR: no such function")), (1, false));
+        assert_eq!(derive_success_retcode(&json!("  ")), (1, false));
+        assert_eq!(derive_success_retcode(&json!("15:01 up 3 days")), (0, true));
+        assert_eq!(derive_success_retcode(&json!({"retcode": 2, "stdout": ""})), (2, false));
+        let states_ok = json!({"file_|-a_|-/a_|-managed": {"result": true, "__run_num__": 0}});
+        let states_bad = json!({
+            "file_|-a_|-/a_|-managed": {"result": true, "__run_num__": 0},
+            "cmd_|-b_|-false_|-run": {"result": false, "__run_num__": 1},
+        });
+        assert_eq!(derive_success_retcode(&states_ok), (0, true));
+        assert_eq!(derive_success_retcode(&states_bad), (1, false), "one failed state fails the whole run");
+    }
+
+    #[test]
+    fn job_cache_keeps_the_agents_newest_first_order() {
+        let data = json!({"jobs": [
+            {"jid": "20261009120000000003", "fun": "test.ping", "start_epoch": 3.0},
+            {"jid": "20261009120000000002", "fun": "test.ping", "start_epoch": 3.0},
+            {"jid": "20261009120000000001", "fun": "test.ping", "start_epoch": 1.0},
+        ]});
+        let jids: Vec<String> = parse_cache_jobs(&data).into_iter().map(|j| j.jid).collect();
+        assert_eq!(jids, ["20261009120000000003", "20261009120000000002", "20261009120000000001"]);
+    }
+
+    #[test]
+    fn save_file_names_are_sanitized_and_keep_their_extension() {
+        let name = App::propose_save_filename("job 123/web:1", "json");
+        assert!(name.starts_with("job-123-web-1-"), "{}", name);
+        assert!(name.ends_with(".json"), "{}", name);
+        assert!(App::propose_save_filename("///", "txt").starts_with("salt-radar-"));
+    }
+
+    #[test]
+    fn request_line_splits_method_and_path_without_query() {
+        assert_eq!(App::parse_request_line("GET /jobs?limit=5 HTTP/1.1"), ("GET".into(), "/jobs".into()));
+        assert_eq!(App::parse_request_line(""), ("?".into(), "?".into()));
+    }
+
+    #[test]
+    fn path_browser_lists_dirs_first_and_opens_at_the_current_value() {
+        let dir = std::env::temp_dir().join(format!("salt-radar-test-browser-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("b.py"), "").unwrap();
+        std::fs::write(dir.join("a.conf"), "").unwrap();
+        std::fs::write(dir.join(".hidden"), "").unwrap();
+
+        let files = PathBrowser::open(PathKind::File, dir.join("b.py").to_str().unwrap());
+        assert_eq!(files.dir, dir);
+        assert_eq!(files.entries, vec![
+            BrowserEntry::Parent,
+            BrowserEntry::Dir("sub".into()),
+            BrowserEntry::File("a.conf".into()),
+            BrowserEntry::File("b.py".into()),
+        ]);
+        assert_eq!(files.entries[files.selected], BrowserEntry::File("b.py".into()), "opens with the current file selected");
+
+        let dirs = PathBrowser::open(PathKind::Dir, dir.join("typo/deeper").to_str().unwrap());
+        assert_eq!(dirs.dir, dir, "a missing path opens at its nearest existing ancestor");
+        assert_eq!(dirs.entries, vec![BrowserEntry::SelectHere, BrowserEntry::Parent, BrowserEntry::Dir("sub".into())]);
+
+        let mut jump = PathBrowser::open(PathKind::File, dir.join("a.conf").to_str().unwrap());
+        let t0 = Instant::now();
+        jump.type_ahead('B', t0);
+        assert_eq!(jump.entries[jump.selected], BrowserEntry::File("b.py".into()), "case-insensitive prefix");
+        jump.type_ahead('s', t0);
+        assert_eq!(jump.entries[jump.selected], BrowserEntry::Dir("sub".into()), "no 'bs...': start over from 's'");
+        jump.type_ahead('a', t0 + std::time::Duration::from_secs(2));
+        assert_eq!(jump.typed, "a", "a pause starts a new name");
+        assert_eq!(jump.entries[jump.selected], BrowserEntry::File("a.conf".into()));
+
+        assert!(PathKind::Dir.exists(dir.to_str().unwrap()));
+        assert!(PathKind::File.exists(dir.join("a.conf").to_str().unwrap()));
+        assert!(!PathKind::File.exists(dir.to_str().unwrap()));
+        assert!(!PathKind::Dir.exists(dir.join("nope").to_str().unwrap()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

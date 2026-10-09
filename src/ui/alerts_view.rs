@@ -72,7 +72,7 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &m
 
     // Filter bar
     if app.is_filtering {
-        let cursor = if app.filter_text.len() % 2 == 0 { '|' } else { ' ' };
+        let cursor = if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' };
         let filter_text = format!(" /{} {}", app.filter_text, cursor);
         lines.push(Line::from(vec![
             Span::styled(filter_text, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),

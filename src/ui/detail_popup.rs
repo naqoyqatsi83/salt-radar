@@ -295,9 +295,7 @@ fn grain_value_style(line: &str) -> Style {
         Style::default().fg(color::green())
     } else if trimmed == "false" {
         Style::default().fg(color::red())
-    } else if trimmed == "null" {
-        Style::default().fg(color::inactive_fg())
-    } else if matches!(trimmed, "[" | "]" | "{" | "}" | "[]" | "{}") {
+    } else if matches!(trimmed, "null" | "[" | "]" | "{" | "}" | "[]" | "{}") {
         Style::default().fg(color::inactive_fg())
     } else if trimmed.starts_with('"') {
         Style::default().fg(color::main_fg())
@@ -879,9 +877,9 @@ fn draw_job_detail(
     } else { String::new() };
     let returns_str = lookup.as_ref().map_or(String::new(), |l| format!("  Returns: {}", l.returns.len()));
     header_lines.push(Line::from(vec![
-        Span::styled(format!("  Fun: "), Style::default().fg(color::label_fg())),
+        Span::styled("  Fun: ".to_string(), Style::default().fg(color::label_fg())),
         Span::styled(job_fun.to_string(), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  Tgt: "), Style::default().fg(color::label_fg())),
+        Span::styled("  Tgt: ".to_string(), Style::default().fg(color::label_fg())),
         Span::styled(job_tgt.to_string(), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
         Span::styled(epoch_str, Style::default().fg(color::inactive_fg())),
         Span::styled(returns_str, Style::default().fg(color::label_fg())),
@@ -1338,8 +1336,7 @@ fn draw_event_sniffer(
         // the event rows below scroll.
         let pinned_header = lines.len();
 
-        for display_idx in 0..total {
-            let buf_idx = visible[display_idx];
+        for (display_idx, &buf_idx) in visible.iter().enumerate().take(total) {
             let evt = match state.buffer.get(buf_idx) {
                 Some(e) => e,
                 None => break,

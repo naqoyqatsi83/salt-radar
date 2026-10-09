@@ -108,3 +108,46 @@ pub fn hints(table: TableId) -> Vec<(&'static str, String)> {
     hints.push(("v", "columns".to_string()));
     hints
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cols(table: TableId) -> Vec<Column> {
+        Column::parse_list(table.default_columns(), table)
+    }
+
+    #[test]
+    fn column_widths_fill_the_available_width() {
+        for table in [TableId::LiveJobs, TableId::JobCache, TableId::Minions, TableId::Events, TableId::Alerts, TableId::ApiLog] {
+            let c = cols(table);
+            let natural: usize = c.iter().map(|c| c.width()).sum();
+            for avail in [natural, natural + 37] {
+                assert_eq!(column_widths(&c, avail).iter().sum::<usize>(), avail, "{:?} at {}", table, avail);
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_panels_shrink_text_columns_but_not_below_their_minimum() {
+        let c = cols(TableId::JobCache);
+        let natural: usize = c.iter().map(|c| c.width()).sum();
+        let w = column_widths(&c, natural - 10);
+        assert_eq!(w.iter().sum::<usize>(), natural - 10);
+        for (col, width) in c.iter().zip(&w) {
+            match col.min_width() {
+                Some(min) => assert!(*width >= min),
+                None => assert_eq!(*width, col.width(), "fixed-width columns never shrink"),
+            }
+        }
+    }
+
+    #[test]
+    fn fit_and_pad_truncate_with_dots() {
+        assert_eq!(fit("short", 10), "short");
+        assert_eq!(fit("state.apply", 8), "state...");
+        assert_eq!(fit("abc", 2), "ab");
+        assert_eq!(pad("ok", 5, false), "ok   ");
+        assert_eq!(pad("7", 4, true), "  7 ");
+    }
+}

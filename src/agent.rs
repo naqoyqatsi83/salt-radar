@@ -145,10 +145,8 @@ fn run_agent_once(
     let stderr = child.stderr.take().unwrap();
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            if let Ok(l) = line {
-                eprintln!("[salt-radar-agent] {}", l);
-            }
+        for l in reader.lines().map_while(Result::ok) {
+            eprintln!("[salt-radar-agent] {}", l);
         }
     });
 

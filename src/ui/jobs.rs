@@ -124,7 +124,7 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
 
     // Filter bar
     if app.is_filtering {
-        let cursor = if app.filter_text.len() % 2 == 0 { '|' } else { ' ' };
+        let cursor = if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' };
         lines.push(Line::from(vec![
             Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
@@ -152,8 +152,7 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
                 Style::default().fg(color::inactive_fg()),
             )));
         } else {
-            for idx in scroll..(scroll + visible).min(total) {
-                let job = filtered[idx];
+            for (idx, &job) in filtered.iter().enumerate().skip(scroll).take(visible) {
                 let mut row = vec![Span::raw("  ")];
                 for (&col, &w) in cols.iter().zip(&widths) {
                     row.extend(live_cells(job, col, w));
@@ -249,7 +248,7 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
 
     // Filter bar with total_count context
     if app.cache_is_filtering {
-        let cursor = if app.cache_filter_text.len() % 2 == 0 { '|' } else { ' ' };
+        let cursor = if app.cache_filter_text.len().is_multiple_of(2) { '|' } else { ' ' };
         lines.push(Line::from(vec![
             Span::styled(format!(" /{} {}", app.cache_filter_text, cursor), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),

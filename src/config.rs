@@ -503,162 +503,123 @@ struct DashboardConfig {
     show_salt_api: Option<bool>,
 }
 
+/// Converts a setting's value for the config file.
+trait ToToml {
+    fn to_toml(&self) -> toml::Value;
+}
+
+impl ToToml for String {
+    fn to_toml(&self) -> toml::Value { toml::Value::String(self.clone()) }
+}
+impl ToToml for bool {
+    fn to_toml(&self) -> toml::Value { toml::Value::Boolean(*self) }
+}
+impl ToToml for f64 {
+    fn to_toml(&self) -> toml::Value { toml::Value::Float(*self) }
+}
+impl ToToml for u64 {
+    fn to_toml(&self) -> toml::Value { toml::Value::Integer(*self as i64) }
+}
+impl ToToml for usize {
+    fn to_toml(&self) -> toml::Value { toml::Value::Integer(*self as i64) }
+}
+
+/// Every setting as (section, key, value), in file order — what
+/// `write_config` compares against the defaults.
+fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value)> {
+    vec![
+        ("salt", "agent_path", c.agent_path.to_toml()),
+        ("salt", "python_bin", c.python_bin.to_toml()),
+        ("salt", "master_config", c.master_config.to_toml()),
+        ("refresh", "dashboard_secs", c.dashboard_secs.to_toml()),
+        ("refresh", "minions_secs", c.minions_secs.to_toml()),
+        ("refresh", "config_secs", c.config_secs.to_toml()),
+        ("events", "buffer_size", c.event_buffer_size.to_toml()),
+        ("events", "sniffer_buffer_size", c.sniffer_buffer_size.to_toml()),
+        ("events", "event_columns", c.event_columns.to_toml()),
+        ("alerts", "stale_minion_secs", c.stale_minion_secs.to_toml()),
+        ("alerts", "pending_key_secs", c.pending_key_secs.to_toml()),
+        ("alerts", "job_straggler_secs", c.job_straggler_secs.to_toml()),
+        ("alerts", "disk_usage_pct", c.disk_usage_pct.to_toml()),
+        ("alerts", "auth_storm_rate_per_sec", c.auth_storm_rate_per_sec.to_toml()),
+        ("alerts", "worker_saturation_pct", c.worker_saturation_pct.to_toml()),
+        ("alerts", "pending_key_churn_per_min", c.pending_key_churn_per_min.to_toml()),
+        ("alerts", "service_flap_threshold_24h", c.service_flap_threshold_24h.to_toml()),
+        ("alerts", "service_mem_growth_mb_per_hour", c.service_mem_growth_mb_per_hour.to_toml()),
+        ("alerts", "service_mem_abs_threshold_mb", c.service_mem_abs_threshold_mb.to_toml()),
+        ("alerts", "service_mem_pct_threshold", c.service_mem_pct_threshold.to_toml()),
+        ("alerts", "api_auth_latency_warn_secs", c.api_auth_latency_warn_secs.to_toml()),
+        ("alerts", "service_mem_abs_threshold_master_mb", c.service_mem_abs_threshold_master_mb.to_toml()),
+        ("alerts", "service_mem_pct_threshold_master", c.service_mem_pct_threshold_master.to_toml()),
+        ("alerts", "service_mem_abs_threshold_minion_mb", c.service_mem_abs_threshold_minion_mb.to_toml()),
+        ("alerts", "service_mem_pct_threshold_minion", c.service_mem_pct_threshold_minion.to_toml()),
+        ("alerts", "service_mem_abs_threshold_api_mb", c.service_mem_abs_threshold_api_mb.to_toml()),
+        ("alerts", "service_mem_pct_threshold_api", c.service_mem_pct_threshold_api.to_toml()),
+        ("alerts", "service_mem_abs_threshold_syndic_mb", c.service_mem_abs_threshold_syndic_mb.to_toml()),
+        ("alerts", "service_mem_pct_threshold_syndic", c.service_mem_pct_threshold_syndic.to_toml()),
+        ("alerts", "alert_columns", c.alert_columns.to_toml()),
+        ("api", "stats_window", c.api_stats_window.to_toml()),
+        ("api", "log_cap", c.api_log_cap.to_toml()),
+        ("api", "log_max_age_secs", c.api_log_max_age_secs.to_toml()),
+        ("api", "hide_stats_polls", c.api_hide_stats_polls.to_toml()),
+        ("api", "stats_auth_mode", c.api_stats_auth_mode.to_toml()),
+        ("api", "stats_auth_eauth", c.api_stats_auth_eauth.to_toml()),
+        ("api", "stats_auth_username", c.api_stats_auth_username.to_toml()),
+        ("api", "stats_auth_password", c.api_stats_auth_password.to_toml()),
+        ("api", "stats_auth_username_pillar_path", c.api_stats_auth_username_pillar_path.to_toml()),
+        ("api", "stats_auth_password_pillar_path", c.api_stats_auth_password_pillar_path.to_toml()),
+        ("api", "request_columns", c.api_request_columns.to_toml()),
+        ("dashboard", "zmq_latency_source", c.zmq_latency_source.to_toml()),
+        ("dashboard", "zmq_latency_ceiling_ms", c.zmq_latency_ceiling_ms.to_toml()),
+        ("dashboard", "show_zmq_graph", c.show_zmq_graph.to_toml()),
+        ("dashboard", "show_events_graph", c.show_events_graph.to_toml()),
+        ("dashboard", "show_activity_graph", c.show_activity_graph.to_toml()),
+        ("dashboard", "show_cpu_graph", c.show_cpu_graph.to_toml()),
+        ("dashboard", "show_mem_graph", c.show_mem_graph.to_toml()),
+        ("dashboard", "graph_order", c.graph_order.to_toml()),
+        ("dashboard", "show_host_resources", c.show_host_resources.to_toml()),
+        ("dashboard", "show_services", c.show_services.to_toml()),
+        ("dashboard", "show_key_status", c.show_key_status.to_toml()),
+        ("dashboard", "show_event_types", c.show_event_types.to_toml()),
+        ("dashboard", "show_job_pulse", c.show_job_pulse.to_toml()),
+        ("dashboard", "show_salt_api", c.show_salt_api.to_toml()),
+        ("minions", "follow_filter", c.minions_follow_filter.to_toml()),
+        ("minions", "minion_columns", c.minion_columns.to_toml()),
+        ("export", "save_dir", c.save_dir.to_toml()),
+        ("jobs", "lookup_timeout_secs", c.lookup_timeout_secs.to_toml()),
+        ("jobs", "live_columns", c.jobs_live_columns.to_toml()),
+        ("jobs", "cache_columns", c.jobs_cache_columns.to_toml()),
+        ("ui", "color_theme", c.color_theme.to_toml()),
+        ("ui", "theme_background", c.theme_background.to_toml()),
+        ("ui", "popup_dim_pct", c.popup_dim_pct.to_toml()),
+    ]
+}
+
+/// Writes only the settings that differ from the built-in defaults, so the
+/// rest keep following future defaults instead of being pinned to whatever
+/// they were when the file was saved. (Files written by older versions held
+/// every setting; saving once slims them down to the real changes.)
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let toml = format!(
-        "[salt]\n\
-         agent_path = {:?}\n\
-         python_bin = {:?}\n\
-         master_config = {:?}\n\
-         \n\
-         [refresh]\n\
-         dashboard_secs = {}\n\
-         minions_secs = {}\n\
-         config_secs = {}\n\
-         \n\
-         [events]\n\
-         buffer_size = {}\n\
-         sniffer_buffer_size = {}\n\
-         event_columns = {:?}\n\
-         \n\
-         [alerts]\n\
-         stale_minion_secs = {}\n\
-         pending_key_secs = {}\n\
-         job_straggler_secs = {}\n\
-         disk_usage_pct = {}\n\
-         auth_storm_rate_per_sec = {}\n\
-         worker_saturation_pct = {}\n\
-         pending_key_churn_per_min = {}\n\
-         service_flap_threshold_24h = {}\n\
-         service_mem_growth_mb_per_hour = {}\n\
-         service_mem_abs_threshold_mb = {}\n\
-         service_mem_pct_threshold = {}\n\
-         api_auth_latency_warn_secs = {}\n\
-         service_mem_abs_threshold_master_mb = {}\n\
-         service_mem_pct_threshold_master = {}\n\
-         service_mem_abs_threshold_minion_mb = {}\n\
-         service_mem_pct_threshold_minion = {}\n\
-         service_mem_abs_threshold_api_mb = {}\n\
-         service_mem_pct_threshold_api = {}\n\
-         service_mem_abs_threshold_syndic_mb = {}\n\
-         service_mem_pct_threshold_syndic = {}\n\
-         alert_columns = {:?}\n\
-         \n\
-         [api]\n\
-         stats_window = {}\n\
-         log_cap = {}\n\
-         log_max_age_secs = {}\n\
-         hide_stats_polls = {}\n\
-         stats_auth_mode = {:?}\n\
-         stats_auth_eauth = {:?}\n\
-         stats_auth_username = {:?}\n\
-         stats_auth_password = {:?}\n\
-         stats_auth_username_pillar_path = {:?}\n\
-         stats_auth_password_pillar_path = {:?}\n\
-         request_columns = {:?}\n\
-         \n\
-         [dashboard]\n\
-         zmq_latency_source = {:?}\n\
-         zmq_latency_ceiling_ms = {}\n\
-         show_zmq_graph = {}\n\
-         show_events_graph = {}\n\
-         show_activity_graph = {}\n\
-         show_cpu_graph = {}\n\
-         show_mem_graph = {}\n\
-         graph_order = {:?}\n\
-         show_host_resources = {}\n\
-         show_services = {}\n\
-         show_key_status = {}\n\
-         show_event_types = {}\n\
-         show_job_pulse = {}\n\
-         show_salt_api = {}\n\
-         \n\
-         [minions]\n\
-         follow_filter = {}\n\
-         minion_columns = {:?}\n\
-         \n\
-         [export]\n\
-         save_dir = {:?}\n\
-         \n\
-         [jobs]\n\
-         lookup_timeout_secs = {}\n\
-         live_columns = {:?}\n\
-         cache_columns = {:?}\n\
-         \n\
-         [ui]\n\
-         color_theme = {:?}\n\
-         theme_background = {}\n\
-         popup_dim_pct = {}\n",
-        config.agent_path,
-        config.python_bin,
-        config.master_config,
-        config.dashboard_secs,
-        config.minions_secs,
-        config.config_secs,
-        config.event_buffer_size,
-        config.sniffer_buffer_size,
-        config.event_columns,
-        config.stale_minion_secs,
-        config.pending_key_secs,
-        config.job_straggler_secs,
-        config.disk_usage_pct,
-        config.auth_storm_rate_per_sec,
-        config.worker_saturation_pct,
-        config.pending_key_churn_per_min,
-        config.service_flap_threshold_24h,
-        config.service_mem_growth_mb_per_hour,
-        config.service_mem_abs_threshold_mb,
-        config.service_mem_pct_threshold,
-        config.api_auth_latency_warn_secs,
-        config.service_mem_abs_threshold_master_mb,
-        config.service_mem_pct_threshold_master,
-        config.service_mem_abs_threshold_minion_mb,
-        config.service_mem_pct_threshold_minion,
-        config.service_mem_abs_threshold_api_mb,
-        config.service_mem_pct_threshold_api,
-        config.service_mem_abs_threshold_syndic_mb,
-        config.service_mem_pct_threshold_syndic,
-        config.alert_columns,
-        config.api_stats_window,
-        config.api_log_cap,
-        config.api_log_max_age_secs,
-        config.api_hide_stats_polls,
-        config.api_stats_auth_mode,
-        config.api_stats_auth_eauth,
-        config.api_stats_auth_username,
-        config.api_stats_auth_password,
-        config.api_stats_auth_username_pillar_path,
-        config.api_stats_auth_password_pillar_path,
-        config.api_request_columns,
-        config.zmq_latency_source,
-        config.zmq_latency_ceiling_ms,
-        config.show_zmq_graph,
-        config.show_events_graph,
-        config.show_activity_graph,
-        config.show_cpu_graph,
-        config.show_mem_graph,
-        config.graph_order,
-        config.show_host_resources,
-        config.show_services,
-        config.show_key_status,
-        config.show_event_types,
-        config.show_job_pulse,
-        config.show_salt_api,
-        config.minions_follow_filter,
-        config.minion_columns,
-        config.save_dir,
-        config.lookup_timeout_secs,
-        config.jobs_live_columns,
-        config.jobs_cache_columns,
-        config.color_theme,
-        config.theme_background,
-        config.popup_dim_pct,
-    );
-    std::fs::write(path, toml)
+    let mut out = toml::Table::new();
+    for ((section, key, value), (_, _, default)) in config_entries(config).into_iter().zip(config_entries(&AppConfig::default())) {
+        if value == default {
+            continue;
+        }
+        if let toml::Value::Table(t) = out.entry(section).or_insert_with(|| toml::Value::Table(toml::Table::new())) {
+            t.insert(key.to_string(), value);
+        }
+    }
+    let body = toml::to_string(&out).map_err(std::io::Error::other)?;
+    std::fs::write(path, format!(
+        "# salt-radar settings: only values that differ from the defaults are stored.\n\
+         # See salt-radar.toml.example for every setting.\n\n{}",
+        body,
+    ))
 }
 
 pub fn load_config(path: &Path) -> AppConfig {
@@ -753,4 +714,179 @@ pub fn load_config(path: &Path) -> AppConfig {
         }
     }
     cfg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh, empty scratch directory under the system temp dir.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("salt-radar-test-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn theme_line_parses_btop_format() {
+        assert_eq!(parse_theme_line(r##"theme[main_bg]="#101010""##), Some(("main_bg", "#101010")));
+        assert_eq!(parse_theme_line(r##"  theme[ title ] = "#ff00ff" "##), Some(("title", "#ff00ff")));
+        assert_eq!(parse_theme_line(r##"theme[main_bg]="""##), Some(("main_bg", "")));
+        assert_eq!(parse_theme_line("# a comment"), None);
+        assert_eq!(parse_theme_line("main_bg=#101010"), None);
+    }
+
+    #[test]
+    fn theme_color_accepts_all_btop_value_forms() {
+        assert_eq!(parse_theme_color("#ff8000"), Some(Color::Rgb(255, 128, 0)));
+        assert_eq!(parse_theme_color("#80"), Some(Color::Rgb(128, 128, 128)));
+        assert_eq!(parse_theme_color("10 20 30"), Some(Color::Rgb(10, 20, 30)));
+        assert_eq!(parse_theme_color(""), Some(Color::Reset));
+        assert_eq!(parse_theme_color("#12345"), None);
+        assert_eq!(parse_theme_color("#gggggg"), None);
+        assert_eq!(parse_theme_color("10 20"), None);
+        assert_eq!(parse_theme_color("300 0 0"), None);
+        assert_eq!(parse_theme_color("red"), None);
+    }
+
+    #[test]
+    fn theme_file_overrides_keys_and_keeps_defaults_for_the_rest() {
+        let dir = scratch("theme");
+        let path = dir.join("test.theme");
+        std::fs::write(&path, concat!(
+            "# a partial theme\n",
+            "theme[main_bg]=\"#10\"\n",
+            "theme[main_fg]=\"200 201 202\"\n",
+            "theme[no_such_key]=\"#ffffff\"\n",
+            "theme[title]=\"not a color\"\n",
+        )).unwrap();
+        let theme = load_theme(path.to_str().unwrap());
+        assert_eq!(theme.main_bg, Color::Rgb(16, 16, 16));
+        assert_eq!(theme.main_fg, Color::Rgb(200, 201, 202));
+        assert_eq!(theme.title, Theme::DEFAULT.title, "an unparseable value keeps the default");
+        assert_eq!(theme.red, Theme::DEFAULT.red, "keys the file doesn't set keep the default");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_theme_name_falls_back_to_default() {
+        assert_eq!(load_theme("no-such-theme-anywhere"), Theme::DEFAULT);
+        assert_eq!(load_theme(DEFAULT_THEME), Theme::DEFAULT);
+    }
+
+    #[test]
+    fn config_file_values_are_read_and_clamped() {
+        let dir = scratch("config");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, concat!(
+            "[ui]\n",
+            "color_theme = \"nord\"\n",
+            "theme_background = false\n",
+            "popup_dim_pct = 250\n",
+            "[dashboard]\n",
+            "zmq_latency_ceiling_ms = -5.0\n",
+        )).unwrap();
+        let cfg = load_config(&path);
+        assert_eq!(cfg.color_theme, "nord");
+        assert!(!cfg.theme_background);
+        assert_eq!(cfg.popup_dim_pct, 100);
+        assert_eq!(cfg.zmq_latency_ceiling_ms, 0.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_config_file_gives_defaults() {
+        let cfg = load_config(Path::new("/nonexistent/salt-radar.toml"));
+        assert_eq!(cfg.color_theme, DEFAULT_THEME);
+        assert!(cfg.theme_background);
+        assert_eq!(cfg.popup_dim_pct, 70);
+    }
+
+    #[test]
+    fn zmq_ceiling_defaults_per_source_unless_set() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(cfg.zmq_latency_ceiling(), 100.0);
+        cfg.zmq_latency_source = "job_ping".into();
+        assert_eq!(cfg.zmq_latency_ceiling(), 1000.0);
+        cfg.zmq_latency_source = "master_stats".into();
+        assert_eq!(cfg.zmq_latency_ceiling(), 500.0);
+        cfg.zmq_latency_ceiling_ms = 42.0;
+        assert_eq!(cfg.zmq_latency_ceiling(), 42.0);
+    }
+
+    #[test]
+    fn saving_defaults_writes_no_settings() {
+        let dir = scratch("write-defaults");
+        let path = dir.join("salt-radar.toml");
+        write_config(&path, &AppConfig::default()).unwrap();
+        let table: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert!(table.is_empty(), "{:?}", table);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saving_writes_only_changed_settings() {
+        let dir = scratch("write-changed");
+        let path = dir.join("salt-radar.toml");
+        let cfg = AppConfig { popup_dim_pct: 40, show_cpu_graph: false, ..AppConfig::default() };
+        write_config(&path, &cfg).unwrap();
+        let table: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(table.len(), 2, "{:?}", table);
+        assert_eq!(table["ui"].as_table().unwrap().len(), 1);
+        assert_eq!(table["ui"]["popup_dim_pct"].as_integer(), Some(40));
+        assert_eq!(table["dashboard"]["show_cpu_graph"].as_bool(), Some(false));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saving_slims_an_old_full_file_down_to_its_changes() {
+        let dir = scratch("write-slim");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, "[ui]\ncolor_theme = \"nord\"\npopup_dim_pct = 70\n[refresh]\ndashboard_secs = 2\n").unwrap();
+        let cfg = load_config(&path);
+        write_config(&path, &cfg).unwrap();
+        let table: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(table.len(), 1, "{:?}", table);
+        assert_eq!(table["ui"].as_table().unwrap().len(), 1);
+        assert_eq!(table["ui"]["color_theme"].as_str(), Some("nord"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn every_setting_round_trips_through_the_file() {
+        let dir = scratch("write-roundtrip");
+        let path = dir.join("salt-radar.toml");
+        let cfg = AppConfig {
+            agent_path: "/opt/agent.py".into(),
+            dashboard_secs: 7,
+            event_buffer_size: 1234,
+            disk_usage_pct: 91.5,
+            api_hide_stats_polls: false,
+            api_stats_auth_mode: "pillar".into(),
+            zmq_latency_ceiling_ms: 250.0,
+            graph_order: "zmq,cpu".into(),
+            minions_follow_filter: false,
+            save_dir: "~/exports".into(),
+            jobs_cache_columns: "jid,fun".into(),
+            color_theme: "nord".into(),
+            theme_background: false,
+            popup_dim_pct: 33,
+            ..AppConfig::default()
+        };
+        write_config(&path, &cfg).unwrap();
+        let loaded = load_config(&path);
+        assert_eq!(config_entries(&loaded), config_entries(&cfg));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn expand_home_only_touches_a_leading_tilde() {
+        assert_eq!(expand_home("/etc/salt/master"), PathBuf::from("/etc/salt/master"));
+        assert_eq!(expand_home("relative/~/x"), PathBuf::from("relative/~/x"));
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(expand_home("~"), PathBuf::from(&home));
+            assert_eq!(expand_home("~/exports"), PathBuf::from(home).join("exports"));
+        }
+    }
 }
