@@ -55,6 +55,7 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
         ("PgUp/PgDn", "page".to_string()),
         ("Home/End", "top/bottom".to_string()),
         ("n", "sniffer".to_string()),
+        ("s/S", "save txt/json".to_string()),
     ];
     hints.extend(super::table::hints(TableId::Events));
     let block = super::list_block_hinted(

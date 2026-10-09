@@ -2738,6 +2738,41 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
 /// convention — regardless of whatever order the agent's `jobs.list_jobs`
 /// call happened to return. Otherwise the agent already applied the user's
 /// column sort across the whole cache, and its order is kept as-is.
+fn event_time_utc(evt: &SaltEvent) -> String {
+    chrono::DateTime::from_timestamp(evt.ts as i64, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| evt.ts.to_string())
+}
+
+/// Events as readable text — what the Events tab's `s` export and the Event
+/// Sniffer's copy/save produce.
+pub(crate) fn events_as_text<'a>(events: impl IntoIterator<Item = &'a SaltEvent>) -> String {
+    let mut text = String::new();
+    for (i, evt) in events.into_iter().enumerate() {
+        text.push_str(&format!(
+            "Event {}\nTag: {}\nTimestamp: {}\nData:\n{}\n\n",
+            i + 1,
+            evt.tag,
+            event_time_utc(evt),
+            serde_json::to_string_pretty(&evt.data).unwrap_or_default(),
+        ));
+    }
+    text
+}
+
+/// Events as NDJSON — one `{"tag", "ts", "time", "data"}` object per line,
+/// for `jq` and other tools (the `S` exports).
+pub(crate) fn events_as_ndjson<'a>(events: impl IntoIterator<Item = &'a SaltEvent>) -> String {
+    events.into_iter()
+        .map(|evt| serde_json::json!({
+            "tag": evt.tag,
+            "ts": evt.ts,
+            "time": event_time_utc(evt),
+            "data": evt.data,
+        }).to_string() + "\n")
+        .collect()
+}
+
 fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
     let mut result = Vec::new();
     if let Some(arr) = data["jobs"].as_array() {
@@ -2941,6 +2976,26 @@ mod tests {
         ]});
         let jids: Vec<String> = parse_cache_jobs(&data).into_iter().map(|j| j.jid).collect();
         assert_eq!(jids, ["20261009120000000003", "20261009120000000002", "20261009120000000001"]);
+    }
+
+    #[test]
+    fn events_export_as_text_and_ndjson() {
+        let events = [
+            SaltEvent { tag: "salt/job/1/new".into(), data: json!({"fun": "test.ping"}), ts: 0.0 },
+            SaltEvent { tag: "salt/job/1/ret/web01".into(), data: json!({"return": true}), ts: 60.0 },
+        ];
+        let text = events_as_text(&events);
+        assert!(text.starts_with("Event 1\nTag: salt/job/1/new\nTimestamp: 1970-01-01 00:00:00 UTC\nData:\n"), "{}", text);
+        assert!(text.contains("Event 2\nTag: salt/job/1/ret/web01\nTimestamp: 1970-01-01 00:01:00 UTC"));
+
+        let ndjson = events_as_ndjson(&events);
+        let lines: Vec<serde_json::Value> = ndjson.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1]["tag"], "salt/job/1/ret/web01");
+        assert_eq!(lines[1]["ts"], 60.0);
+        assert_eq!(lines[1]["time"], "1970-01-01 00:01:00 UTC");
+        assert_eq!(lines[1]["data"]["return"], true);
+        assert!(events_as_ndjson(&[]).is_empty());
     }
 
     #[test]

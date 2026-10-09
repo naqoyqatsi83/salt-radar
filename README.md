@@ -300,6 +300,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Tab | Key | Action |
 |-----|-----|--------|
 | Events | `n` | Launch event sniffer |
+| Events | `s` / `S` | Save the filtered event list to a file (text / NDJSON) |
 | Minions | `r` | Minion event/return history popup |
 | Minions | `s` | Fleet scan (admin mode only) |
 | Minions | `x` | Hide/show non-responsive minions |
@@ -337,7 +338,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `y` | Copy to clipboard |
 | `Y` | Copy raw JSON (job detail) |
 | `s` | Save to file |
-| `S` | Save raw JSON to file (job detail) |
+| `S` | Save raw JSON to file (job detail; NDJSON in the sniffer) |
 | `a` | Save every return in the job to one file (job detail) |
 | `A` | Save every return as one JSON object (job detail) |
 | `j`/`k` | Next/previous return (job detail) |

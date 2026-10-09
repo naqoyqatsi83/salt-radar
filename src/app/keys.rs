@@ -866,41 +866,20 @@ impl App {
                         state.highlight_input = Some(state.highlight_keywords.join(", "));
                     }
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        let mut text = String::new();
-                        for (i, &buf_idx) in visible.iter().enumerate() {
-                            let Some(evt) = state.buffer.get(buf_idx) else { continue };
-                            let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
-                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                                .unwrap_or_else(|| evt.ts.to_string());
-                            text.push_str(&format!(
-                                "Event {}\nTag: {}\nTimestamp: {}\nData:\n{}\n\n",
-                                i + 1,
-                                evt.tag,
-                                ts,
-                                serde_json::to_string_pretty(&evt.data).unwrap_or_default()
-                            ));
-                        }
+                        let text = events_as_text(visible.iter().filter_map(|&i| state.buffer.get(i)));
                         if !text.is_empty() {
                             clipboard_text = Some(text);
                         }
                     }
                     KeyCode::Char('s') | KeyCode::Char('S') => {
-                        let mut text = String::new();
-                        for (i, &buf_idx) in visible.iter().enumerate() {
-                            let Some(evt) = state.buffer.get(buf_idx) else { continue };
-                            let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
-                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                                .unwrap_or_else(|| evt.ts.to_string());
-                            text.push_str(&format!(
-                                "Event {}\nTag: {}\nTimestamp: {}\nData:\n{}\n\n",
-                                i + 1,
-                                evt.tag,
-                                ts,
-                                serde_json::to_string_pretty(&evt.data).unwrap_or_default()
-                            ));
-                        }
+                        let shown = visible.iter().filter_map(|&i| state.buffer.get(i));
+                        let (text, ext) = if code == KeyCode::Char('S') {
+                            (events_as_ndjson(shown), "json")
+                        } else {
+                            (events_as_text(shown), "txt")
+                        };
                         if !text.is_empty() {
-                            save_text = Some((text, format!("sniffer-{}", state.minion_ids.join("-")), "txt"));
+                            save_text = Some((text, format!("sniffer-{}", state.minion_ids.join("-")), ext));
                         }
                     }
                     _ => {}
@@ -1050,6 +1029,17 @@ impl App {
                     self.fleet_scan_started_at = None;
                     self.fleet_data = None;
                     self.send_agent_cmd("fleet_scan", None);
+                } else if self.current_tab == Tab::Events && self.detail_popup.is_none() && self.sniffer.is_none() && !self.is_filtering {
+                    let events = self.filtered_events();
+                    if !events.is_empty() {
+                        let (content, ext) = if code == KeyCode::Char('S') {
+                            (events_as_ndjson(events.iter().copied()), "json")
+                        } else {
+                            (events_as_text(events.iter().copied()), "txt")
+                        };
+                        let hint = if self.applied_filter.is_empty() { "events".to_string() } else { format!("events-{}", self.applied_filter) };
+                        self.open_save_prompt(content, &hint, ext);
+                    }
                 }
             }
             KeyCode::Char('x') | KeyCode::Char('X') => {

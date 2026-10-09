@@ -787,6 +787,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ]),
     ("Per tab", &[
         Shortcut { tab: "Events", key: "`n`", action: "Launch event sniffer" },
+        Shortcut { tab: "Events", key: "`s` / `S`", action: "Save the filtered event list to a file (text / NDJSON)" },
         Shortcut { tab: "Minions", key: "`r`", action: "Minion event/return history popup" },
         Shortcut { tab: "Minions", key: "`s`", action: "Fleet scan (admin mode only)" },
         Shortcut { tab: "Minions", key: "`x`", action: "Hide/show non-responsive minions" },
@@ -818,7 +819,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`y`", action: "Copy to clipboard" },
         Shortcut { tab: "", key: "`Y`", action: "Copy raw JSON (job detail)" },
         Shortcut { tab: "", key: "`s`", action: "Save to file" },
-        Shortcut { tab: "", key: "`S`", action: "Save raw JSON to file (job detail)" },
+        Shortcut { tab: "", key: "`S`", action: "Save raw JSON to file (job detail; NDJSON in the sniffer)" },
         Shortcut { tab: "", key: "`a`", action: "Save every return in the job to one file (job detail)" },
         Shortcut { tab: "", key: "`A`", action: "Save every return as one JSON object (job detail)" },
         Shortcut { tab: "", key: "`j`/`k`", action: "Next/previous return (job detail)" },
