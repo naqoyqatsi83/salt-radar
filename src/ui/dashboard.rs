@@ -1468,3 +1468,19 @@ fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], fill: GraphColor, m
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latency_scale_is_logarithmic_up_to_the_ceiling() {
+        assert_eq!(latency_level(0.0, 100.0), 0.0);
+        assert!((latency_level(1.0, 100.0) - 0.15).abs() < 0.01);
+        assert!((latency_level(10.0, 100.0) - 0.52).abs() < 0.01);
+        assert!((latency_level(50.0, 100.0) - 0.85).abs() < 0.01);
+        assert_eq!(latency_level(100.0, 100.0), 1.0);
+        assert_eq!(latency_level(5000.0, 100.0), 1.0, "slower than the ceiling clips to the top");
+        assert_eq!(latency_level(-3.0, 100.0), 0.0);
+    }
+}

@@ -754,3 +754,113 @@ pub fn load_config(path: &Path) -> AppConfig {
     }
     cfg
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh, empty scratch directory under the system temp dir.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("salt-radar-test-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn theme_line_parses_btop_format() {
+        assert_eq!(parse_theme_line(r##"theme[main_bg]="#101010""##), Some(("main_bg", "#101010")));
+        assert_eq!(parse_theme_line(r##"  theme[ title ] = "#ff00ff" "##), Some(("title", "#ff00ff")));
+        assert_eq!(parse_theme_line(r##"theme[main_bg]="""##), Some(("main_bg", "")));
+        assert_eq!(parse_theme_line("# a comment"), None);
+        assert_eq!(parse_theme_line("main_bg=#101010"), None);
+    }
+
+    #[test]
+    fn theme_color_accepts_all_btop_value_forms() {
+        assert_eq!(parse_theme_color("#ff8000"), Some(Color::Rgb(255, 128, 0)));
+        assert_eq!(parse_theme_color("#80"), Some(Color::Rgb(128, 128, 128)));
+        assert_eq!(parse_theme_color("10 20 30"), Some(Color::Rgb(10, 20, 30)));
+        assert_eq!(parse_theme_color(""), Some(Color::Reset));
+        assert_eq!(parse_theme_color("#12345"), None);
+        assert_eq!(parse_theme_color("#gggggg"), None);
+        assert_eq!(parse_theme_color("10 20"), None);
+        assert_eq!(parse_theme_color("300 0 0"), None);
+        assert_eq!(parse_theme_color("red"), None);
+    }
+
+    #[test]
+    fn theme_file_overrides_keys_and_keeps_defaults_for_the_rest() {
+        let dir = scratch("theme");
+        let path = dir.join("test.theme");
+        std::fs::write(&path, concat!(
+            "# a partial theme\n",
+            "theme[main_bg]=\"#10\"\n",
+            "theme[main_fg]=\"200 201 202\"\n",
+            "theme[no_such_key]=\"#ffffff\"\n",
+            "theme[title]=\"not a color\"\n",
+        )).unwrap();
+        let theme = load_theme(path.to_str().unwrap());
+        assert_eq!(theme.main_bg, Color::Rgb(16, 16, 16));
+        assert_eq!(theme.main_fg, Color::Rgb(200, 201, 202));
+        assert_eq!(theme.title, Theme::DEFAULT.title, "an unparseable value keeps the default");
+        assert_eq!(theme.red, Theme::DEFAULT.red, "keys the file doesn't set keep the default");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_theme_name_falls_back_to_default() {
+        assert_eq!(load_theme("no-such-theme-anywhere"), Theme::DEFAULT);
+        assert_eq!(load_theme(DEFAULT_THEME), Theme::DEFAULT);
+    }
+
+    #[test]
+    fn config_file_values_are_read_and_clamped() {
+        let dir = scratch("config");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, concat!(
+            "[ui]\n",
+            "color_theme = \"nord\"\n",
+            "theme_background = false\n",
+            "popup_dim_pct = 250\n",
+            "[dashboard]\n",
+            "zmq_latency_ceiling_ms = -5.0\n",
+        )).unwrap();
+        let cfg = load_config(&path);
+        assert_eq!(cfg.color_theme, "nord");
+        assert!(!cfg.theme_background);
+        assert_eq!(cfg.popup_dim_pct, 100);
+        assert_eq!(cfg.zmq_latency_ceiling_ms, 0.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_config_file_gives_defaults() {
+        let cfg = load_config(Path::new("/nonexistent/salt-radar.toml"));
+        assert_eq!(cfg.color_theme, DEFAULT_THEME);
+        assert!(cfg.theme_background);
+        assert_eq!(cfg.popup_dim_pct, 70);
+    }
+
+    #[test]
+    fn zmq_ceiling_defaults_per_source_unless_set() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(cfg.zmq_latency_ceiling(), 100.0);
+        cfg.zmq_latency_source = "job_ping".into();
+        assert_eq!(cfg.zmq_latency_ceiling(), 1000.0);
+        cfg.zmq_latency_source = "master_stats".into();
+        assert_eq!(cfg.zmq_latency_ceiling(), 500.0);
+        cfg.zmq_latency_ceiling_ms = 42.0;
+        assert_eq!(cfg.zmq_latency_ceiling(), 42.0);
+    }
+
+    #[test]
+    fn expand_home_only_touches_a_leading_tilde() {
+        assert_eq!(expand_home("/etc/salt/master"), PathBuf::from("/etc/salt/master"));
+        assert_eq!(expand_home("relative/~/x"), PathBuf::from("relative/~/x"));
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(expand_home("~"), PathBuf::from(&home));
+            assert_eq!(expand_home("~/exports"), PathBuf::from(home).join("exports"));
+        }
+    }
+}

@@ -2085,7 +2085,7 @@ impl App {
     fn parse_request_line(line: &str) -> (String, String) {
         let mut parts = line.split_whitespace();
         let method = parts.next().unwrap_or("?").to_string();
-        let path = parts.next().unwrap_or("?").split('?').next().unwrap_or("?").to_string();
+        let path = parts.next().and_then(|p| p.split('?').next()).unwrap_or("?").to_string();
         (method, path)
     }
 
@@ -6946,4 +6946,98 @@ fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
                 || alert.key.to_lowercase().contains(term)
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn filter_terms_split_on_commas_and_drop_blanks() {
+        assert_eq!(App::filter_terms("web1, web2,,  db* "), vec!["web1", "web2", "db*"]);
+        assert!(App::filter_terms(" , ").is_empty());
+    }
+
+    #[test]
+    fn host_terms_use_globs_only_when_they_contain_wildcards() {
+        assert!(App::host_matches_term("web01.prod", "web"), "plain terms are substrings");
+        assert!(App::host_matches_term("web01.prod", "WEB*"), "globs are case-insensitive");
+        assert!(!App::host_matches_term("db-web01", "web*"), "globs anchor to the whole id");
+        assert!(App::host_matches_term("web7", "web?"));
+        assert!(!App::host_matches_term("web17", "web?"));
+    }
+
+    #[test]
+    fn job_return_success_and_retcode() {
+        assert_eq!(derive_success_retcode(&json!(true)), (0, true));
+        assert_eq!(derive_success_retcode(&json!(false)), (0, false));
+        assert_eq!(derive_success_retcode(&json!(null)), (1, false));
+        assert_eq!(derive_success_retcode(&json!("ERROR: no such function")), (1, false));
+        assert_eq!(derive_success_retcode(&json!("  ")), (1, false));
+        assert_eq!(derive_success_retcode(&json!("15:01 up 3 days")), (0, true));
+        assert_eq!(derive_success_retcode(&json!({"retcode": 2, "stdout": ""})), (2, false));
+        let states_ok = json!({"file_|-a_|-/a_|-managed": {"result": true, "__run_num__": 0}});
+        let states_bad = json!({
+            "file_|-a_|-/a_|-managed": {"result": true, "__run_num__": 0},
+            "cmd_|-b_|-false_|-run": {"result": false, "__run_num__": 1},
+        });
+        assert_eq!(derive_success_retcode(&states_ok), (0, true));
+        assert_eq!(derive_success_retcode(&states_bad), (1, false), "one failed state fails the whole run");
+    }
+
+    #[test]
+    fn job_cache_keeps_the_agents_newest_first_order() {
+        let data = json!({"jobs": [
+            {"jid": "20261009120000000003", "fun": "test.ping", "start_epoch": 3.0},
+            {"jid": "20261009120000000002", "fun": "test.ping", "start_epoch": 3.0},
+            {"jid": "20261009120000000001", "fun": "test.ping", "start_epoch": 1.0},
+        ]});
+        let jids: Vec<String> = parse_cache_jobs(&data).into_iter().map(|j| j.jid).collect();
+        assert_eq!(jids, ["20261009120000000003", "20261009120000000002", "20261009120000000001"]);
+    }
+
+    #[test]
+    fn save_file_names_are_sanitized_and_keep_their_extension() {
+        let name = App::propose_save_filename("job 123/web:1", "json");
+        assert!(name.starts_with("job-123-web-1-"), "{}", name);
+        assert!(name.ends_with(".json"), "{}", name);
+        assert!(App::propose_save_filename("///", "txt").starts_with("salt-radar-"));
+    }
+
+    #[test]
+    fn request_line_splits_method_and_path_without_query() {
+        assert_eq!(App::parse_request_line("GET /jobs?limit=5 HTTP/1.1"), ("GET".into(), "/jobs".into()));
+        assert_eq!(App::parse_request_line(""), ("?".into(), "?".into()));
+    }
+
+    #[test]
+    fn path_browser_lists_dirs_first_and_opens_at_the_current_value() {
+        let dir = std::env::temp_dir().join(format!("salt-radar-test-browser-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("b.py"), "").unwrap();
+        std::fs::write(dir.join("a.conf"), "").unwrap();
+        std::fs::write(dir.join(".hidden"), "").unwrap();
+
+        let files = PathBrowser::open(PathKind::File, dir.join("b.py").to_str().unwrap());
+        assert_eq!(files.dir, dir);
+        assert_eq!(files.entries, vec![
+            BrowserEntry::Parent,
+            BrowserEntry::Dir("sub".into()),
+            BrowserEntry::File("a.conf".into()),
+            BrowserEntry::File("b.py".into()),
+        ]);
+        assert_eq!(files.entries[files.selected], BrowserEntry::File("b.py".into()), "opens with the current file selected");
+
+        let dirs = PathBrowser::open(PathKind::Dir, dir.join("typo/deeper").to_str().unwrap());
+        assert_eq!(dirs.dir, dir, "a missing path opens at its nearest existing ancestor");
+        assert_eq!(dirs.entries, vec![BrowserEntry::SelectHere, BrowserEntry::Parent, BrowserEntry::Dir("sub".into())]);
+
+        assert!(PathKind::Dir.exists(dir.to_str().unwrap()));
+        assert!(PathKind::File.exists(dir.join("a.conf").to_str().unwrap()));
+        assert!(!PathKind::File.exists(dir.to_str().unwrap()));
+        assert!(!PathKind::Dir.exists(dir.join("nope").to_str().unwrap()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

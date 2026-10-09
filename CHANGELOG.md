@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix the API request log showing an empty path, instead of `?`, for a request line it couldn't parse (found by the new unit tests, #119)
+
 ## [0.7.2] - 2026-10-09
 
 ### Added

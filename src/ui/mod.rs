@@ -907,3 +907,53 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
 }
 
 // ─── Sub-view modules ──────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+
+    #[test]
+    fn scroll_window_never_scrolls_a_list_that_fits() {
+        for sel in 0..15 {
+            assert_eq!(scroll_window(sel, 40, 15), (0, false, false));
+        }
+    }
+
+    #[test]
+    fn scroll_window_centers_then_clamps_at_the_end() {
+        assert_eq!(scroll_window(0, 10, 100), (0, false, true));
+        assert_eq!(scroll_window(50, 10, 100), (45, true, true));
+        assert_eq!(scroll_window(99, 10, 100), (90, true, false));
+    }
+
+    #[test]
+    fn gradient_hits_its_stops_and_blends_between_them() {
+        let t = color::Theme::DEFAULT;
+        assert_eq!(color::gradient(0.0), t.gradient_start);
+        assert_eq!(color::gradient(0.5), t.gradient_mid);
+        assert_eq!(color::gradient(0.75), t.gradient_high);
+        assert_eq!(color::gradient(1.0), t.gradient_end);
+        assert_eq!(color::gradient(-1.0), t.gradient_start);
+        assert_eq!(color::gradient(7.0), t.gradient_end);
+        assert_eq!(color::gradient(f64::NAN), t.gradient_start);
+        let (Color::Rgb(r0, ..), Color::Rgb(r1, ..), Color::Rgb(r, ..)) = (t.gradient_start, t.gradient_mid, color::gradient(0.25)) else { panic!() };
+        assert!(r0.min(r1) <= r && r <= r0.max(r1), "a quarter of the way is between start and mid");
+        assert_eq!(color::mem_gradient(0.0), t.mem_gradient_start);
+        assert_eq!(color::mem_gradient(1.0), t.mem_gradient_end);
+    }
+
+    #[test]
+    fn selected_row_lifts_dim_text_and_keeps_other_colors() {
+        let line = Line::from(vec![
+            Span::styled("dim", Style::default().fg(color::inactive_fg())),
+            Span::styled("ok", Style::default().fg(color::green())),
+        ]);
+        let row = color::selected_row(line);
+        assert_eq!(row.spans[0].style.fg, Some(color::hi_fg()));
+        assert_eq!(row.spans[1].style.fg, Some(color::green()));
+        assert_eq!(row.style.bg, Some(color::selected_bg()));
+        assert!(row.style.add_modifier.contains(Modifier::BOLD));
+    }
+}
