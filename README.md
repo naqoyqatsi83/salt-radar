@@ -197,7 +197,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 
 ### Clipboard and save-to-file
 
-Every popup with copy-to-clipboard (`y` / `Y`) also supports saving the same content to a file (`s` / `S`) — the app proposes a filename from what's being saved, lets you edit it, and warns before overwriting an existing file. Default save directory is `~` (the launching user's home), configurable as `save_dir` under `[export]` (or live, in the Config Editor).
+Every popup with copy-to-clipboard (`y` / `Y`) also supports saving the same content to a file (`s` / `S`) — a small dialog opens on top of the popup, proposing a filename from what's being saved; edit it, `Enter` saves (warning first if the file already exists), `Esc` cancels. JSON saves (`S`, and `A` for all of a job's returns) get a `.json` name, text saves `.txt`. Default save directory is `~` (the launching user's home), configurable as `save_dir` under `[export]` (or live, in the Config Editor).
 
 Copy-to-clipboard (`y` / `Y`) uses two methods:
 

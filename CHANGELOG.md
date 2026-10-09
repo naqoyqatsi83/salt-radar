@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.2] - 2026-10-08
+## [0.7.2] - 2026-10-09
 
 ### Added
 
@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Finish a fleet scan as soon as every expected minion has answered, instead of always waiting out its 60-second timeout (which still marks minions that never answer as timed out) (#116)
 - Keep the Live Jobs cursor on the newest job as new jobs arrive, like the Events tab: moving it elsewhere stops following and `End` resumes it; with a sort column active the cursor stays put (#117)
+- Dim the screen behind an open popup a little more strongly, so the popup stands out more
+- Show the save-to-file prompt (`s`/`S` in a popup) as its own small dialog on top of the popup — directory, file name and the "file exists" warning — instead of a line in the status bar, which the dimmed backdrop washed out
+- Propose a `.json` file name when saving JSON — Job Detail `S`/`A`, and Event Detail `S` in raw view — instead of `.txt` for everything
 
 ## [0.7.1] - 2026-10-08
 

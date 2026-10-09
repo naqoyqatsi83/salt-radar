@@ -3995,9 +3995,9 @@ impl App {
     /// Opens the "save to file" prompt (the 's'/'S' counterpart of 'y'/'Y'
     /// clipboard copy) with `content` and a filename proposed from
     /// `name_hint`, which the user can edit before confirming.
-    pub fn open_save_prompt(&mut self, content: String, name_hint: &str) {
+    pub fn open_save_prompt(&mut self, content: String, name_hint: &str, ext: &str) {
         self.save_prompt = Some(SaveFilePrompt {
-            filename: Self::propose_save_filename(name_hint),
+            filename: Self::propose_save_filename(name_hint, ext),
             content,
             confirm_overwrite: false,
         });
@@ -4006,7 +4006,7 @@ impl App {
     /// Turns a free-form hint (e.g. a job id, minion id, event tag) into a
     /// filesystem-safe proposed filename with a timestamp, so repeated
     /// saves of similar content don't silently collide.
-    fn propose_save_filename(hint: &str) -> String {
+    fn propose_save_filename(hint: &str, ext: &str) -> String {
         let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
         let clean: String = hint
             .chars()
@@ -4014,7 +4014,7 @@ impl App {
             .collect();
         let clean = clean.trim_matches('-');
         let clean = if clean.is_empty() { "salt-radar" } else { clean };
-        format!("{}-{}.txt", clean, ts)
+        format!("{}-{}.{}", clean, ts, ext)
     }
 
     /// Key handling for the active `save_prompt` overlay — text entry for
@@ -4694,7 +4694,8 @@ impl App {
         // Detail popup gets first crack
         let mut clipboard_text: Option<String> = None;
         // Sibling of clipboard_text for 's'/'S' ("save to file"): (content, filename hint)
-        let mut save_text: Option<(String, String)> = None;
+        // (content, filename hint, extension)
+        let mut save_text: Option<(String, String, &str)> = None;
         let had_popup = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
         // The sniffer lives outside `detail_popup` (see its field doc) so it
         // keeps running when you're elsewhere, but it still owns the Events
@@ -4894,7 +4895,7 @@ impl App {
                                         } else {
                                             Self::format_return_as_console(&ret.minion_id, &ret.full_return)
                                         };
-                                        save_text = Some((text, format!("job-{}-{}", jid, ret.minion_id)));
+                                        save_text = Some((text, format!("job-{}-{}", jid, ret.minion_id), "txt"));
                                     }
                                 }
                             }
@@ -4904,7 +4905,7 @@ impl App {
                                     if idx < l.returns.len() {
                                         let json = serde_json::to_string_pretty(&l.returns[idx].full_return)
                                             .unwrap_or_else(|_| l.returns[idx].summary.clone());
-                                        save_text = Some((json, format!("job-{}-{}", jid, l.returns[idx].minion_id)));
+                                        save_text = Some((json, format!("job-{}-{}", jid, l.returns[idx].minion_id), "json"));
                                     }
                                 }
                             }
@@ -4993,7 +4994,7 @@ impl App {
                                     } else {
                                         Self::format_return_as_console(&ret.minion_id, &ret.full_return)
                                     };
-                                    save_text = Some((text, format!("job-{}-{}", jid, ret.minion_id)));
+                                    save_text = Some((text, format!("job-{}-{}", jid, ret.minion_id), "txt"));
                                 }
                             }
                         }
@@ -5003,7 +5004,7 @@ impl App {
                                 if idx < l.returns.len() {
                                     let json = serde_json::to_string_pretty(&l.returns[idx].full_return)
                                         .unwrap_or_else(|_| l.returns[idx].summary.clone());
-                                    save_text = Some((json, format!("job-{}-{}", jid, l.returns[idx].minion_id)));
+                                    save_text = Some((json, format!("job-{}-{}", jid, l.returns[idx].minion_id), "json"));
                                 }
                             }
                         }
@@ -5011,7 +5012,7 @@ impl App {
                             if let Some(ref l) = lookup {
                                 if !l.returns.is_empty() {
                                     let text = Self::format_all_returns_console(jid, l);
-                                    save_text = Some((text, format!("job-{}-all", jid)));
+                                    save_text = Some((text, format!("job-{}-all", jid), "txt"));
                                 }
                             }
                         }
@@ -5019,7 +5020,7 @@ impl App {
                             if let Some(ref l) = lookup {
                                 if !l.returns.is_empty() {
                                     let text = Self::format_all_returns_json(l);
-                                    save_text = Some((text, format!("job-{}-all", jid)));
+                                    save_text = Some((text, format!("job-{}-all", jid), "json"));
                                 }
                             }
                         }
@@ -5104,12 +5105,13 @@ impl App {
                                 ts,
                                 event_body_as_copied_text(evt, *pretty, pretty_fetch),
                             );
-                            save_text = Some((text, format!("event-{}", evt.tag)));
+                            save_text = Some((text, format!("event-{}", evt.tag), "txt"));
                         }
                         KeyCode::Char('S') => {
                             save_text = Some((
                                 event_body_as_copied_text(evt, *pretty, pretty_fetch),
                                 format!("event-{}", evt.tag),
+                                if *pretty { "txt" } else { "json" },
                             ));
                         }
                         KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -5175,7 +5177,7 @@ impl App {
                                     text.push_str(&format!("  {}\n", d));
                                 }
                             }
-                            save_text = Some((text, format!("alert-{}", alert.key)));
+                            save_text = Some((text, format!("alert-{}", alert.key), "txt"));
                         }
                         _ => {}
                     }
@@ -5221,7 +5223,7 @@ impl App {
                             clipboard_text = Some(mid.clone());
                         }
                         KeyCode::Char('s') | KeyCode::Char('S') => {
-                            save_text = Some((mid.clone(), format!("minion-{}", mid)));
+                            save_text = Some((mid.clone(), format!("minion-{}", mid), "txt"));
                         }
                         _ => {}
                     }
@@ -5340,17 +5342,17 @@ impl App {
                                         MinionActivityItem::Event(_, evt) => {
                                             let text = serde_json::to_string_pretty(&evt.data)
                                                 .unwrap_or_else(|_| evt.tag.clone());
-                                            save_text = Some((text, format!("event-{}", evt.tag)));
+                                            save_text = Some((text, format!("event-{}", evt.tag), "txt"));
                                         }
                                         MinionActivityItem::CacheJob(job) => {
                                             let text = format!("{} {} {} {}",
                                                 job.jid, job.fun, job.tgt, job.start_time);
-                                            save_text = Some((text, format!("job-{}-{}", job.jid, minion_id)));
+                                            save_text = Some((text, format!("job-{}-{}", job.jid, minion_id), "txt"));
                                         }
                                         MinionActivityItem::Alert(alert) => {
                                             let text = format!("[{}] {}: {}",
                                                 alert.severity.label(), alert.rule, alert.description);
-                                            save_text = Some((text, format!("alert-{}", alert.key)));
+                                            save_text = Some((text, format!("alert-{}", alert.key), "txt"));
                                         }
                                     }
                                 }
@@ -5381,7 +5383,7 @@ impl App {
                                 entry.raw_request_line, entry.client,
                                 entry.response_status, entry.processing_time_secs,
                             );
-                            save_text = Some((text, format!("api-request-{}", entry.client)));
+                            save_text = Some((text, format!("api-request-{}", entry.client), "txt"));
                         }
                         _ => {}
                     }
@@ -5394,8 +5396,8 @@ impl App {
             self.clipboard_at = Some(Instant::now());
             return false;
         }
-        if let Some((content, hint)) = save_text {
-            self.open_save_prompt(content, &hint);
+        if let Some((content, hint, ext)) = save_text {
+            self.open_save_prompt(content, &hint, ext);
             return false;
         }
         } else if sniffer_showing {
@@ -5506,7 +5508,7 @@ impl App {
                             ));
                         }
                         if !text.is_empty() {
-                            save_text = Some((text, format!("sniffer-{}", state.minion_ids.join("-"))));
+                            save_text = Some((text, format!("sniffer-{}", state.minion_ids.join("-")), "txt"));
                         }
                     }
                     _ => {}
@@ -5517,8 +5519,8 @@ impl App {
                 self.clipboard_at = Some(Instant::now());
                 return false;
             }
-            if let Some((content, hint)) = save_text {
-                self.open_save_prompt(content, &hint);
+            if let Some((content, hint, ext)) = save_text {
+                self.open_save_prompt(content, &hint, ext);
                 return false;
             }
         }
