@@ -67,15 +67,30 @@ Kubernetes.  This is NOT the deployment target — it's only for development.
 
 ## Releases
 
-1. Update version in `Cargo.toml` and `DEBIAN/control`
+1. Update `version` in `Cargo.toml` (building updates `Cargo.lock`; commit both)
 2. Move `[Unreleased]` entries under a new dated `## [version]` heading in CHANGELOG.md
 3. Commit with message: `chore: release v<version>`
 4. Tag: `git tag v<version>`
 5. Push commit and tag: `git push origin dev && git push origin v<version>`
-6. Merge `dev` into `main` with `--no-ff`, push `main`
+6. Merge `dev` into `main` with `--no-ff`, push `main` (this closes issues referenced as `Closes #N`)
+
+Pushing the tag runs the **Release** workflow (`.github/workflows/release.yml`):
+it builds the static musl binary and publishes a GitHub release with a
+`.deb`, an `.rpm` and a `.tar.gz`. The `.deb`/`.rpm` install the binary, the
+agent (`/usr/share/salt-radar/salt_radar_agent.py`) and the bundled themes
+(`/usr/share/salt-radar/themes/`); the `.tar.gz` holds the same files for a
+manual install. There is no local packaging step — the
+package metadata (version, control file, RPM spec) is generated in the
+workflow from `Cargo.toml`. After a release, check that the workflow passed
+and that all three assets contain the themes.
 
 ## Building
 
 - Debug: `cargo build`
 - Release: `cargo build --release`
-- Debian packaging from `/tmp/salt-radar-deb/` (copy binary, call dpkg-deb)
+- Static binary for the test pod: see "Testing on Kubernetes" above (musl target)
+- Tests: `cargo test`; lints: `cargo clippy --all-targets -- -D warnings`.
+  The **CI** workflow (`.github/workflows/ci.yml`) runs both on every push and
+  pull request to `dev`/`main` — keep them passing.
+- Minimum Rust version: 1.88 (`rust-version` in `Cargo.toml`, set by the
+  locked dependencies)
