@@ -1554,6 +1554,7 @@ impl App {
 
     /// Fast poll between ticks
     pub fn fast_poll(&mut self) -> bool {
+        let live_job = self.selected_live_job();
         self.drain_agent_messages();
 
         // Timeout for stuck jid_lookup (agent subprocess may hang). The
@@ -1593,6 +1594,7 @@ impl App {
             }
         }
 
+        self.reselect_live_job(live_job);
         self.clamp_selection();
         if self.sniffer_dirty {
             self.sniffer_dirty = false;
@@ -1623,6 +1625,24 @@ impl App {
             // faster until drain_agent_messages() catches back up, instead
             // of leaving the excess queued for a full tick_interval_ms.
             || !self.agent_rx.lock().unwrap().is_empty()
+    }
+
+    /// JID of the selected Live Jobs row while the cursor isn't following the
+    /// newest job — what `reselect_live_job` puts the cursor back on after
+    /// new jobs arrive or old ones age out, which would otherwise leave the
+    /// row index pointing at a different job.
+    fn selected_live_job(&self) -> Option<String> {
+        if self.jobs_following && self.sort_of(TableId::LiveJobs).is_none() {
+            return None;
+        }
+        self.get_filtered_job(self.job_selected).map(|j| j.jid.clone())
+    }
+
+    fn reselect_live_job(&mut self, jid: Option<String>) {
+        let Some(jid) = jid else { return };
+        if let Some(pos) = self.filtered_jobs().iter().position(|j| j.jid == jid) {
+            self.job_selected = pos;
+        }
     }
 
     /// Clamp all cursor selections to valid bounds
@@ -4391,6 +4411,7 @@ impl App {
     /// Called every tick (1s)
     pub fn update(&mut self) {
         // Drain agent messages (must happen every tick)
+        let live_job = self.selected_live_job();
         self.drain_agent_messages();
 
         // Process fleet scan returns from events buffer
@@ -4711,6 +4732,7 @@ impl App {
         }
 
         // Clamp cursor selections to valid range
+        self.reselect_live_job(live_job);
         self.clamp_selection();
 
         // Clear transient clipboard message after 8 seconds

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fix the Live Jobs cursor jumping to a different job when new jobs arrive or old ones age out while it isn't following the newest job: it now stays on the same job (#122)
 - Fix the API request log showing an empty path, instead of `?`, for a request line it couldn't parse (found by the new unit tests, #119)
 
 ## [0.7.2] - 2026-10-09
