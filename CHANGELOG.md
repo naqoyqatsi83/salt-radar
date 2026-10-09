@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a file browser to the Config Editor for settings that must point at an existing path — `agent_path`, `python_bin`, `master_config` (files) and `save_dir` (a directory) — instead of free-text entry, starting at the current value or its nearest existing folder; `e` still allows typing a path, and paths that don't exist are flagged `✗ not found`
+
 ## [0.7.2] - 2026-10-09
 
 ### Added

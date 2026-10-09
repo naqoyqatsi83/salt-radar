@@ -447,6 +447,10 @@ pub enum ConfigFieldKind {
     /// `color_theme`: a `Choice` over the themes found on disk
     /// (`ConfigEditorState::themes`) rather than a fixed list.
     Theme,
+    /// A path expected to exist — picked with a file browser
+    /// (`PathBrowser`) instead of typed, so it can't be mistyped; `e` in the
+    /// browser still allows typing one (e.g. a directory to be created).
+    Path(PathKind),
     SaveButton,
 }
 
@@ -505,6 +509,96 @@ pub struct SaveFilePrompt {
     pub confirm_overwrite: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PathKind {
+    File,
+    Dir,
+}
+
+impl PathKind {
+    /// Whether `raw` (a config value, `~` allowed) names an existing path
+    /// of this kind.
+    pub fn exists(self, raw: &str) -> bool {
+        let p = crate::config::expand_home(raw.trim());
+        match self {
+            PathKind::File => p.is_file(),
+            PathKind::Dir => p.is_dir(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BrowserEntry {
+    /// Directory pickers only: choose the directory being shown.
+    SelectHere,
+    Parent,
+    Dir(String),
+    File(String),
+}
+
+/// File browser for a `ConfigFieldKind::Path` field.
+#[derive(Clone, Debug)]
+pub struct PathBrowser {
+    pub kind: PathKind,
+    pub dir: std::path::PathBuf,
+    pub entries: Vec<BrowserEntry>,
+    pub selected: usize,
+    pub show_hidden: bool,
+}
+
+impl PathBrowser {
+    /// Opens at the field's current value — its directory, with the file
+    /// itself selected — or the nearest existing ancestor if it's missing.
+    pub fn open(kind: PathKind, value: &str) -> Self {
+        let target = crate::config::expand_home(value.trim());
+        let (dir, select) = if target.is_dir() {
+            (target.clone(), None)
+        } else {
+            let name = target.file_name().map(|n| n.to_string_lossy().into_owned());
+            let mut dir = target.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| "/".into());
+            while !dir.is_dir() {
+                dir = dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| "/".into());
+            }
+            (dir, name)
+        };
+        let mut b = PathBrowser { kind, dir, entries: Vec::new(), selected: 0, show_hidden: false };
+        b.load(select.as_deref());
+        b
+    }
+
+    /// Lists `dir` (directories first, then files for file pickers),
+    /// selecting the entry named `select` if present.
+    pub fn load(&mut self, select: Option<&str>) {
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&self.dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if !self.show_hidden && name.starts_with('.') { continue; }
+                if e.path().is_dir() { dirs.push(name); } else { files.push(name); }
+            }
+        }
+        dirs.sort();
+        files.sort();
+        self.entries.clear();
+        if self.kind == PathKind::Dir { self.entries.push(BrowserEntry::SelectHere); }
+        if self.dir.parent().is_some() { self.entries.push(BrowserEntry::Parent); }
+        self.entries.extend(dirs.into_iter().map(BrowserEntry::Dir));
+        if self.kind == PathKind::File { self.entries.extend(files.into_iter().map(BrowserEntry::File)); }
+        self.selected = select
+            .and_then(|n| self.entries.iter().position(|e| matches!(e, BrowserEntry::Dir(d) | BrowserEntry::File(d) if d == n)))
+            .unwrap_or(0);
+    }
+
+    fn go_up(&mut self) {
+        if let Some(parent) = self.dir.parent().map(|p| p.to_path_buf()) {
+            let from = self.dir.file_name().map(|n| n.to_string_lossy().into_owned());
+            self.dir = parent;
+            self.load(from.as_deref());
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ConfigEditorState {
     pub fields: Vec<ConfigField>,
@@ -524,6 +618,8 @@ pub struct ConfigEditorState {
     pub confirm_discard: bool,
     /// Theme names offered by the `color_theme` picker.
     pub themes: Vec<String>,
+    /// Open file browser for the selected `Path` field.
+    pub browser: Option<PathBrowser>,
 }
 
 impl ConfigEditorState {
@@ -2514,9 +2610,9 @@ impl App {
         self.detail_popup = Some(DetailPopup::ConfigEditor(ConfigEditorState {
             fields: vec![
                 ConfigField { label: "[salt]", label_value: String::new(), kind: ConfigFieldKind::Section },
-                ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: ConfigFieldKind::Str },
-                ConfigField { label: "python_bin", label_value: cfg.python_bin.clone(), kind: ConfigFieldKind::Str },
-                ConfigField { label: "master_config", label_value: cfg.master_config.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
+                ConfigField { label: "python_bin", label_value: cfg.python_bin.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
+                ConfigField { label: "master_config", label_value: cfg.master_config.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
                 ConfigField { label: "[refresh]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "dashboard_secs", label_value: cfg.dashboard_secs.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "minions_secs", label_value: cfg.minions_secs.to_string(), kind: ConfigFieldKind::U64 },
@@ -2578,7 +2674,7 @@ impl App {
                 ConfigField { label: "follow_filter", label_value: on_off(cfg.minions_follow_filter), kind: ConfigFieldKind::Choice(ON_OFF) },
                 self.columns_field(TableId::Minions),
                 ConfigField { label: "[export]", label_value: String::new(), kind: ConfigFieldKind::Section },
-                ConfigField { label: "save_dir", label_value: cfg.save_dir.clone(), kind: ConfigFieldKind::Str },
+                ConfigField { label: "save_dir", label_value: cfg.save_dir.clone(), kind: ConfigFieldKind::Path(PathKind::Dir) },
                 ConfigField { label: "[jobs]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "lookup_timeout_secs", label_value: cfg.lookup_timeout_secs.to_string(), kind: ConfigFieldKind::U64 },
                 self.columns_field(TableId::LiveJobs),
@@ -2598,6 +2694,7 @@ impl App {
             original: Vec::new(),
             confirm_discard: false,
             themes: crate::config::theme_names(),
+            browser: None,
         }));
         if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
             s.original = s.fields.iter().map(|f| f.label_value.clone()).collect();
@@ -2614,7 +2711,7 @@ impl App {
         let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         for f in fields {
             match f.kind {
-                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order | ConfigFieldKind::Columns(_) | ConfigFieldKind::Theme => {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order | ConfigFieldKind::Columns(_) | ConfigFieldKind::Theme | ConfigFieldKind::Path(_) => {
                     vals.insert(f.label, f.label_value.as_str());
                 }
                 _ => {}
@@ -2728,6 +2825,54 @@ impl App {
     fn handle_config_editor_key(&mut self, code: KeyCode) -> bool {
         // --- Editing mode (borrow state) ---
         if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+            if let Some(ref mut b) = s.browser {
+                let last = b.entries.len().saturating_sub(1);
+                let mut picked: Option<String> = None;
+                match code {
+                    KeyCode::Up | KeyCode::Char('k') => b.selected = b.selected.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => b.selected = (b.selected + 1).min(last),
+                    KeyCode::PageUp => b.selected = b.selected.saturating_sub(10),
+                    KeyCode::PageDown => b.selected = (b.selected + 10).min(last),
+                    KeyCode::Home => b.selected = 0,
+                    KeyCode::End => b.selected = last,
+                    KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => b.go_up(),
+                    KeyCode::Char('.') => {
+                        b.show_hidden = !b.show_hidden;
+                        let keep = match b.entries.get(b.selected) {
+                            Some(BrowserEntry::Dir(n)) | Some(BrowserEntry::File(n)) => Some(n.clone()),
+                            _ => None,
+                        };
+                        b.load(keep.as_deref());
+                    }
+                    KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => match b.entries.get(b.selected).cloned() {
+                        Some(BrowserEntry::SelectHere) => picked = Some(b.dir.display().to_string()),
+                        Some(BrowserEntry::Parent) => b.go_up(),
+                        Some(BrowserEntry::Dir(name)) => {
+                            b.dir = b.dir.join(name);
+                            b.load(None);
+                        }
+                        Some(BrowserEntry::File(name)) if code == KeyCode::Enter => {
+                            picked = Some(b.dir.join(name).display().to_string());
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Char('e') => {
+                        s.browser = None;
+                        s.input = s.fields.get(s.selected).map(|f| f.label_value.clone()).unwrap_or_default();
+                        s.editing = true;
+                        return false;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => s.browser = None,
+                    _ => {}
+                }
+                if let Some(path) = picked {
+                    if let Some(field) = s.fields.get_mut(s.selected) {
+                        field.label_value = path;
+                    }
+                    s.browser = None;
+                }
+                return false;
+            }
             if s.editing {
                 // Choice fields are edited via an inline picker (arrow keys +
                 // Enter over the option list) instead of free-text entry.
@@ -2972,7 +3117,7 @@ impl App {
                     Some(DetailPopup::ConfigEditor(ref s)) => {
                         match s.fields.get(s.selected).map(|f| &f.kind) {
                             Some(ConfigFieldKind::SaveButton) => Some("save"),
-                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) | Some(ConfigFieldKind::Order) | Some(ConfigFieldKind::Columns(_)) | Some(ConfigFieldKind::Theme) => {
+                            Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) | Some(ConfigFieldKind::Order) | Some(ConfigFieldKind::Columns(_)) | Some(ConfigFieldKind::Theme) | Some(ConfigFieldKind::Path(_)) => {
                                 Some("edit")
                             }
                             _ => None,
@@ -2991,6 +3136,10 @@ impl App {
                         };
                         if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
                             if let Some((val, kind)) = field_info {
+                                if let ConfigFieldKind::Path(path_kind) = kind {
+                                    s.browser = Some(PathBrowser::open(path_kind, &val));
+                                    return false;
+                                }
                                 if let Some(options) = s.options(kind) {
                                     s.choice_idx = options.iter().position(|o| *o == val).unwrap_or(0);
                                 } else if let ConfigFieldKind::Order | ConfigFieldKind::Columns(_) = kind {
@@ -3981,17 +4130,7 @@ impl App {
     /// changing $HOME between launches takes effect immediately.
     pub fn resolved_save_dir(&self) -> std::path::PathBuf {
         let raw = self.config.save_dir.trim();
-        let raw = if raw.is_empty() { "~" } else { raw };
-        let home = || std::env::var_os("HOME").map(std::path::PathBuf::from);
-        if raw == "~" {
-            return home().unwrap_or_else(|| std::path::PathBuf::from("/root"));
-        }
-        if let Some(rest) = raw.strip_prefix("~/") {
-            if let Some(h) = home() {
-                return h.join(rest);
-            }
-        }
-        std::path::PathBuf::from(raw)
+        crate::config::expand_home(if raw.is_empty() { "~" } else { raw })
     }
 
     /// Opens the "save to file" prompt (the 's'/'S' counterpart of 'y'/'Y'

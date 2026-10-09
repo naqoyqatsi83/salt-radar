@@ -190,6 +190,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 ### Config Editor
 - `F3` opens an in-app editor for every setting in `salt-radar.toml`, grouped by section
 - Free-text fields edit inline; fields with a fixed set of valid values (e.g. `zmq_latency_source`) open an inline picker — arrow keys to move, `Enter` to confirm
+- Settings that must point at something existing — `agent_path`, `python_bin`, `master_config` (files) and `save_dir` (a directory) — open a file browser instead of free text, starting at the current value (or the nearest folder that exists): `↑↓` to move, `Enter`/`→` to open a folder or pick a file, `←`/`Backspace` up a level, `.` to show hidden files, and for `save_dir` a "select this directory" entry; `e` still lets you type a path by hand. A path that doesn't exist is flagged `✗ not found` in the editor, so typos stand out
 - `color_theme` opens a picker of every theme found (see [Themes](#themes)) and previews each one live as you move through the list; `Esc`, or closing without saving, puts the saved theme back
 - `graph_order` opens as a reorderable list instead of free text — `↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts — since hand-typing a comma-separated list makes it easy to typo or drop a panel
 - The `*_columns` settings open the same way, plus `Space` to show/hide a column (hidden columns are listed unchecked below the shown ones)
@@ -318,7 +319,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Key | Action |
 |-----|--------|
 | `↑`/`↓` | Move between fields |
-| `Enter` | Edit field / open picker (fixed-option fields) / confirm picker selection |
+| `Enter` | Edit field / open picker (fixed-option fields) or file browser (path fields) / confirm picker selection |
 | `Esc` | Cancel edit or close the picker without changing the value |
 | `s` | Save all changes and apply them |
 

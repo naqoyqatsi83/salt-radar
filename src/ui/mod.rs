@@ -450,7 +450,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 /// terminal-default and palette colors can't be blended (their real value
 /// depends on the terminal's theme), so their foreground falls back to
 /// `Modifier::DIM`.
-fn dim_background(f: &mut Frame, dim_pct: u64) {
+pub(crate) fn dim_background(f: &mut Frame, dim_pct: u64) {
     if dim_pct == 0 { return; }
     let keep = 100 - dim_pct.min(100) as u16;
     let (tr, tg, tb) = match color::main_bg() {

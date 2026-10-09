@@ -32,6 +32,20 @@ fn user_config_dir() -> Option<PathBuf> {
         .map(|dir| dir.join("salt-radar"))
 }
 
+/// Expands a leading `~` / `~/` against $HOME, as the shell would.
+pub fn expand_home(raw: &str) -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    if raw == "~" {
+        return home().unwrap_or_else(|| PathBuf::from("/root"));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(h) = home() {
+            return h.join(rest);
+        }
+    }
+    PathBuf::from(raw)
+}
+
 pub const DEFAULT_THEME: &str = "Default";
 
 /// Where `*.theme` files are looked up, lowest priority first: the
