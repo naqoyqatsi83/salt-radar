@@ -433,6 +433,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         f.render_widget(Clear, help_area);
         draw_help_overlay(f, help_area);
     }
+
+    // Save-to-file prompt: opened from inside a popup, so it's the top layer.
+    if app.save_prompt.is_some() {
+        dim_background(f);
+        detail_popup::draw_save_prompt(f, app);
+    }
 }
 
 /// Fades everything already drawn toward the theme's background so the
@@ -443,7 +449,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 /// (their real value depends on the terminal's theme), so their foreground
 /// falls back to `Modifier::DIM`.
 fn dim_background(f: &mut Frame) {
-    const KEEP: u16 = 60;
+    const KEEP: u16 = 50;
     let (tr, tg, tb) = match color::main_bg() {
         Color::Rgb(r, g, b) => (r, g, b),
         _ => (0, 0, 0),
@@ -584,37 +590,6 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
 // ─── Key hints ─────────────────────────────────────────────────────────────
 
 fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
-    if let Some(ref prompt) = app.save_prompt {
-        let cursor = if prompt.filename.len() % 2 == 0 { '|' } else { ' ' };
-        let dir = app.resolved_save_dir();
-        let exists = !prompt.filename.trim().is_empty() && dir.join(&prompt.filename).exists();
-        let k1 = key::render("Esc", "Cancel");
-        let k2 = key::render("Enter", if exists && !prompt.confirm_overwrite { "Confirm overwrite" } else { "Save" });
-        let mut all_spans: Vec<Span<'static>> = Vec::new();
-        all_spans.extend(k1);
-        all_spans.extend(k2);
-        all_spans.push(Span::styled(
-            format!("  save to {}/: {}{}", dir.display(), prompt.filename, cursor),
-            Style::default()
-                .fg(if exists { color::red() } else { color::yellow() })
-                .add_modifier(Modifier::BOLD),
-        ));
-        if exists {
-            all_spans.push(Span::styled(
-                if prompt.confirm_overwrite {
-                    "  \u{26a0} file exists -- Enter again to overwrite"
-                } else {
-                    "  \u{26a0} file already exists"
-                },
-                Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
-            ));
-        }
-        let paragraph = Paragraph::new(Line::from(all_spans))
-            .style(Style::default().bg(color::bar_bg()));
-        f.render_widget(paragraph, area);
-        return;
-    }
-
     if app.sniffer_input_active {
         let cursor = if app.sniffer_input_text.len() % 2 == 0 { '|' } else { ' ' };
         let k1 = key::render("Esc", "Cancel");

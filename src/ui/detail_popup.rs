@@ -67,6 +67,53 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// The save-to-file prompt (`s`/`S` in a popup): a small window of its own on
+/// top of the popup it was opened from, rather than a status-bar line that
+/// the dimmed backdrop would wash out.
+pub fn draw_save_prompt(f: &mut Frame, app: &App) {
+    let Some(ref prompt) = app.save_prompt else { return };
+    let dir = app.resolved_save_dir();
+    let exists = !prompt.filename.trim().is_empty() && dir.join(&prompt.filename).exists();
+    let cursor = if prompt.filename.len() % 2 == 0 { '|' } else { ' ' };
+    let screen = f.area();
+    let width = (dir.display().to_string().len().max(prompt.filename.len()) as u16 + 20)
+        .clamp(60, screen.width.saturating_sub(4).max(20));
+    let height = 9.min(screen.height);
+    let area = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let mut lines = vec![
+        Line::from(Span::styled("  Save to file", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Directory  ", Style::default().fg(color::label_fg())),
+            Span::styled(dir.display().to_string(), Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  File name  ", Style::default().fg(color::label_fg())),
+            Span::styled(format!("{}{}", prompt.filename, cursor),
+                Style::default().fg(if exists { color::red() } else { color::yellow() }).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+    ];
+    if exists {
+        lines.push(Line::from(Span::styled(
+            if prompt.confirm_overwrite {
+                "  \u{26a0} File exists \u{2014} Enter again to overwrite it"
+            } else {
+                "  \u{26a0} File already exists"
+            },
+            Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
+        )));
+    }
+    let save_hint = if exists && !prompt.confirm_overwrite { "overwrite" } else { "save" };
+    let hints = [("Enter", save_hint.to_string()), ("Esc", "cancel".to_string())];
+    render_popup(f, area, &lines, &hints, None, (false, false), 0, 0);
+}
+
 /// The sniffer isn't a `detail_popup` variant (see its field doc in
 /// `app.rs`) so it gets its own draw entry point instead of a match arm here.
 pub fn draw_sniffer_overlay(f: &mut Frame, app: &App) {
