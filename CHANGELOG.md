@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Event Sniffer: `S` now saves the shown events as NDJSON (it saved the same text as `s`), and text exports label their timestamps as UTC
+- Event Sniffer: `S` now saves the shown events as NDJSON (it saved the same text as `s`), shown in its hints as `s/S:save txt/json`, with its own actions listed before the standard paging keys so a narrow popup cuts the least useful hints; text exports label their timestamps as UTC
 - Split the 7,100-line `src/app.rs` into modules — key handling, agent messages, the Config Editor and clipboard — without behavior changes (#125)
 
 ## [0.7.3] - 2026-10-09
