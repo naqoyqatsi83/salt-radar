@@ -11,14 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Add `popup_dim_pct` under `[ui]` (also in the Config Editor): how strongly the screen behind a popup is dimmed, 0–100% — default 50%, `0` turns dimming off
+- Add `popup_dim_pct` under `[ui]` (also in the Config Editor): how strongly the screen behind a popup is dimmed, 0–100% — default 70%, `0` turns dimming off
 - Add `mem_gradient_start`/`mem_gradient_mid`/`mem_gradient_high`/`mem_gradient_end` theme keys: the Memory graph, its headline figure and the Host Resources and Services memory meters get their own level gradient — cyan → blue → amber → red by default, so memory reads blue again while it's calm; the bundled btop ports take it from btop's own memory (`used_*`) gradient (#115)
 
 ### Changed
 
 - Finish a fleet scan as soon as every expected minion has answered, instead of always waiting out its 60-second timeout (which still marks minions that never answer as timed out) (#116)
 - Keep the Live Jobs cursor on the newest job as new jobs arrive, like the Events tab: moving it elsewhere stops following and `End` resumes it; with a sort column active the cursor stays put (#117)
-- Dim the screen behind an open popup a little more strongly, so the popup stands out more
+- Dim the screen behind an open popup more strongly by default (70%, was 40%), so the popup stands out more
 - Show the save-to-file prompt (`s`/`S` in a popup) as its own small dialog on top of the popup — directory, file name and the "file exists" warning — instead of a line in the status bar, which the dimmed backdrop washed out
 - Propose a `.json` file name when saving JSON — Job Detail `S`/`A`, and Event Detail `S` in raw view — instead of `.txt` for everything
 

@@ -366,7 +366,7 @@ impl Default for AppConfig {
             api_request_columns: TableId::ApiLog.default_columns().into(),
             color_theme: DEFAULT_THEME.into(),
             theme_background: true,
-            popup_dim_pct: 50,
+            popup_dim_pct: 70,
         }
     }
 }

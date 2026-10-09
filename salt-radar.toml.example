@@ -245,4 +245,4 @@
 
 # How strongly the screen behind a popup is dimmed (faded toward the theme's
 # background), 0-100%. 0 turns dimming off.
-# popup_dim_pct = 50
+# popup_dim_pct = 70
