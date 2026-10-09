@@ -258,11 +258,14 @@ fn draw_path_browser(f: &mut Frame, b: &PathBrowser, label: &str) {
         ("Enter", if b.kind == PathKind::File { "open/pick" } else { "open" }.to_string()),
         ("\u{2190}", "up".to_string()),
         (".", if b.show_hidden { "hide hidden" } else { "show hidden" }.to_string()),
-        ("e", "type path".to_string()),
+        ("/", "type path".to_string()),
         ("Esc", "cancel".to_string()),
     ];
-    let block = super::titled_block(format!(" {}: select a {} ", label, what), Style::default().fg(color::border_focus()), color::popup_bg())
+    let mut block = super::titled_block(format!(" {}: select a {} ", label, what), Style::default().fg(color::border_focus()), color::popup_bg())
         .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned());
+    if b.typing(std::time::Instant::now()) {
+        block = block.title_top(super::border_info(format!("jump: {}", b.typed), color::border_focus()).right_aligned());
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
 

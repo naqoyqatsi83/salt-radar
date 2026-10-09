@@ -546,6 +546,9 @@ pub struct PathBrowser {
     pub entries: Vec<BrowserEntry>,
     pub selected: usize,
     pub show_hidden: bool,
+    /// Type-ahead: the name typed so far, and when its last key came in.
+    pub typed: String,
+    pub typed_at: Option<Instant>,
 }
 
 impl PathBrowser {
@@ -563,7 +566,7 @@ impl PathBrowser {
             }
             (dir, name)
         };
-        let mut b = PathBrowser { kind, dir, entries: Vec::new(), selected: 0, show_hidden: false };
+        let mut b = PathBrowser { kind, dir, entries: Vec::new(), selected: 0, show_hidden: false, typed: String::new(), typed_at: None };
         b.load(select.as_deref());
         b
     }
@@ -590,6 +593,34 @@ impl PathBrowser {
         self.selected = select
             .and_then(|n| self.entries.iter().position(|e| matches!(e, BrowserEntry::Dir(d) | BrowserEntry::File(d) if d == n)))
             .unwrap_or(0);
+    }
+
+    /// Type-ahead: extends the typed name with `c` (starting over after a
+    /// pause of a second) and selects the first entry starting with it,
+    /// case-insensitively; if nothing matches, tries `c` on its own.
+    pub fn type_ahead(&mut self, c: char, now: Instant) {
+        if self.typed_at.is_none_or(|at| now.duration_since(at) > std::time::Duration::from_secs(1)) {
+            self.typed.clear();
+        }
+        self.typed_at = Some(now);
+        self.typed.push(c);
+        let find = |prefix: &str| {
+            let prefix = prefix.to_lowercase();
+            self.entries.iter().position(|e| matches!(e,
+                BrowserEntry::Dir(n) | BrowserEntry::File(n) if n.to_lowercase().starts_with(&prefix)))
+        };
+        if let Some(i) = find(&self.typed) {
+            self.selected = i;
+        } else if let Some(i) = find(&c.to_string()) {
+            self.typed = c.to_string();
+            self.selected = i;
+        }
+    }
+
+    /// Whether a type-ahead name is still being typed (its last key came in
+    /// under a second ago).
+    pub fn typing(&self, now: Instant) -> bool {
+        self.typed_at.is_some_and(|at| now.duration_since(at) <= std::time::Duration::from_secs(1))
     }
 
     fn go_up(&mut self) {
@@ -2851,14 +2882,14 @@ impl App {
                 let last = b.entries.len().saturating_sub(1);
                 let mut picked: Option<String> = None;
                 match code {
-                    KeyCode::Up | KeyCode::Char('k') => b.selected = b.selected.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Char('j') => b.selected = (b.selected + 1).min(last),
+                    KeyCode::Up => b.selected = b.selected.saturating_sub(1),
+                    KeyCode::Down => b.selected = (b.selected + 1).min(last),
                     KeyCode::PageUp => b.selected = b.selected.saturating_sub(10),
                     KeyCode::PageDown => b.selected = (b.selected + 10).min(last),
                     KeyCode::Home => b.selected = 0,
                     KeyCode::End => b.selected = last,
-                    KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => b.go_up(),
-                    KeyCode::Char('.') => {
+                    KeyCode::Left | KeyCode::Backspace => b.go_up(),
+                    KeyCode::Char('.') if !b.typing(Instant::now()) => {
                         b.show_hidden = !b.show_hidden;
                         let keep = match b.entries.get(b.selected) {
                             Some(BrowserEntry::Dir(n)) | Some(BrowserEntry::File(n)) => Some(n.clone()),
@@ -2866,7 +2897,7 @@ impl App {
                         };
                         b.load(keep.as_deref());
                     }
-                    KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => match b.entries.get(b.selected).cloned() {
+                    KeyCode::Enter | KeyCode::Right => match b.entries.get(b.selected).cloned() {
                         Some(BrowserEntry::SelectHere) => picked = Some(b.dir.display().to_string()),
                         Some(BrowserEntry::Parent) => b.go_up(),
                         Some(BrowserEntry::Dir(name)) => {
@@ -2878,13 +2909,14 @@ impl App {
                         }
                         _ => {}
                     },
-                    KeyCode::Char('e') => {
+                    KeyCode::Char('/') => {
                         s.browser = None;
                         s.input = s.fields.get(s.selected).map(|f| f.label_value.clone()).unwrap_or_default();
                         s.editing = true;
                         return false;
                     }
-                    KeyCode::Esc | KeyCode::Char('q') => s.browser = None,
+                    KeyCode::Esc => s.browser = None,
+                    KeyCode::Char(c) if !c.is_control() => b.type_ahead(c, Instant::now()),
                     _ => {}
                 }
                 if let Some(path) = picked {
@@ -7066,6 +7098,16 @@ mod tests {
         let dirs = PathBrowser::open(PathKind::Dir, dir.join("typo/deeper").to_str().unwrap());
         assert_eq!(dirs.dir, dir, "a missing path opens at its nearest existing ancestor");
         assert_eq!(dirs.entries, vec![BrowserEntry::SelectHere, BrowserEntry::Parent, BrowserEntry::Dir("sub".into())]);
+
+        let mut jump = PathBrowser::open(PathKind::File, dir.join("a.conf").to_str().unwrap());
+        let t0 = Instant::now();
+        jump.type_ahead('B', t0);
+        assert_eq!(jump.entries[jump.selected], BrowserEntry::File("b.py".into()), "case-insensitive prefix");
+        jump.type_ahead('s', t0);
+        assert_eq!(jump.entries[jump.selected], BrowserEntry::Dir("sub".into()), "no 'bs...': start over from 's'");
+        jump.type_ahead('a', t0 + std::time::Duration::from_secs(2));
+        assert_eq!(jump.typed, "a", "a pause starts a new name");
+        assert_eq!(jump.entries[jump.selected], BrowserEntry::File("a.conf".into()));
 
         assert!(PathKind::Dir.exists(dir.to_str().unwrap()));
         assert!(PathKind::File.exists(dir.join("a.conf").to_str().unwrap()));

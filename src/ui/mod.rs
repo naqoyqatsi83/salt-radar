@@ -810,8 +810,9 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`Esc`", action: "Cancel edit or close the picker without changing the value" },
         Shortcut { tab: "", key: "`s`", action: "Save all changes and apply them" },
         Shortcut { tab: "", key: "`←` / `Backspace`", action: "Up one folder (file browser)" },
-        Shortcut { tab: "", key: "`.`", action: "Show/hide hidden files (file browser)" },
-        Shortcut { tab: "", key: "`e`", action: "Type the path by hand (file browser)" },
+        Shortcut { tab: "", key: "`.`", action: "Show/hide hidden files (file browser; while not typing a name)" },
+        Shortcut { tab: "", key: "`/`", action: "Type the path by hand (file browser)" },
+        Shortcut { tab: "", key: "letters, digits", action: "Jump to the first entry starting with what you type (file browser)" },
     ]),
     ("Popups", &[
         Shortcut { tab: "", key: "`y`", action: "Copy to clipboard" },
