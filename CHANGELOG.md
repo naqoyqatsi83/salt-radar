@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-10-10
+
 ### Added
 
 - Add saving the Events tab's filtered event list to a file: `s` as readable text, `S` as NDJSON (one `{"tag", "ts", "time", "data"}` object per line, ready for `jq`), through the same save dialog as the popups, with the active filter in the proposed file name (#4)
