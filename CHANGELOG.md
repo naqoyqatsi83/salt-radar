@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Save only the settings that differ from the defaults when the Config Editor (or quitting with toggled graphs) writes `salt-radar.toml`, instead of every setting — unchanged settings now follow future defaults instead of staying pinned to the ones of the version that saved the file; files written by older versions slim down to their real changes on the next save (#121)
+
 ### Fixed
 
 - Fix the Live Jobs cursor jumping to a different job when new jobs arrive or old ones age out while it isn't following the newest job: it now stays on the same job (#122)

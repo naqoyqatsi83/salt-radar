@@ -194,7 +194,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 - `color_theme` opens a picker of every theme found (see [Themes](#themes)) and previews each one live as you move through the list; `Esc`, or closing without saving, puts the saved theme back
 - `graph_order` opens as a reorderable list instead of free text — `↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts — since hand-typing a comma-separated list makes it easy to typo or drop a panel
 - The `*_columns` settings open the same way, plus `Space` to show/hide a column (hidden columns are listed unchecked below the shown ones)
-- `Save & Restart` (or `s` from anywhere in the editor) writes the TOML file and applies the new config immediately, no process restart needed. Confirming a field with `Enter` only stages it — the title shows `● unsaved changes` until saved, and closing with unsaved changes asks first (`Esc`/`q` again discards)
+- `Save & Restart` (or `s` from anywhere in the editor) writes the TOML file and applies the new config immediately, no process restart needed. Only settings that differ from the defaults are written, so everything you haven't changed keeps following the defaults of future versions (a file saved by an older version, which held every setting, slims down on its next save). Confirming a field with `Enter` only stages it — the title shows `● unsaved changes` until saved, and closing with unsaved changes asks first (`Esc`/`q` again discards)
 
 ### Clipboard and save-to-file
 
