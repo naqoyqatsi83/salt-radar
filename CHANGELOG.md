@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Show the save-to-file prompt (`s`/`S` in a popup) as its own small dialog on top of the popup — directory, file name and the "file exists" warning — instead of a line in the status bar, which the dimmed backdrop washed out
 - Propose a `.json` file name when saving JSON — Job Detail `S`/`A`, and Event Detail `S` in raw view — instead of `.txt` for everything
 
+### Fixed
+
+- Fix the Host Resources panel showing `Mem: 0 MB / 0 MB (100%)` as a full red memory bar (and a made-up `1-core host`) while the agent hasn't reported yet — e.g. it's down or still starting: it now reads "waiting for agent…" with empty `n/a` meters, and the Services, CPU and Memory headlines show `n/a`; the Services memory figure also follows the memory gradient now instead of fixed thresholds (#118)
+
 ## [0.7.1] - 2026-10-08
 
 ### Added
