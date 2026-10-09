@@ -250,7 +250,7 @@ pub fn scroll_window(selected: usize, visible: usize, total: usize) -> (usize, b
     if visible == 0 || total <= visible {
         return (0, false, false);
     }
-    let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+    let scroll = selected.saturating_sub(visible / 2);
     let scroll = scroll.min(total.saturating_sub(visible));
     (scroll, scroll > 0, scroll + visible < total)
 }
@@ -594,7 +594,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     if app.sniffer_input_active {
-        let cursor = if app.sniffer_input_text.len() % 2 == 0 { '|' } else { ' ' };
+        let cursor = if app.sniffer_input_text.len().is_multiple_of(2) { '|' } else { ' ' };
         let k1 = key::render("Esc", "Cancel");
         let k2 = key::render("Enter", "Start");
         let mut all_spans: Vec<Span<'static>> = Vec::new();
@@ -618,7 +618,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         let mut all_spans: Vec<Span<'static>> = Vec::new();
         for s in spans { all_spans.extend(s); }
         all_spans.push(Span::styled(
-            format!("  filter: /{} {}", app.filter_text, if app.filter_text.len() % 2 == 0 { '|' } else { ' ' }),
+            format!("  filter: /{} {}", app.filter_text, if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' }),
             Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         ));
         let paragraph = Paragraph::new(Line::from(all_spans))

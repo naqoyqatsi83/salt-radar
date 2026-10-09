@@ -29,7 +29,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
 
     // ── Filter bar ────────────────────────────────────────────────────────
     if app.is_filtering {
-        let cursor = if app.filter_text.len() % 2 == 0 { '|' } else { ' ' };
+        let cursor = if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' };
         lines.push(Line::from(vec![
             Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),

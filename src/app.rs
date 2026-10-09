@@ -1824,11 +1824,10 @@ impl App {
             return true;
         }
         // Show jobs targeting "*" when searching for a known minion
-        if known_minions.iter().any(|m| Self::host_matches_term(m, term)) {
-            if job.tgt == "*" {
+        if known_minions.iter().any(|m| Self::host_matches_term(m, term))
+            && job.tgt == "*" {
                 return true;
             }
-        }
         false
     }
 
@@ -2225,7 +2224,7 @@ impl App {
             return self.jobs.len();
         }
         let known = self.accepted_ids();
-        self.jobs.iter().filter(|j| Self::matches_job(j, pat, &known)).count()
+        self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).count()
     }
 
     /// Live Jobs in display order: filtered, then sorted. Unsorted, they
@@ -2499,7 +2498,7 @@ impl App {
                 error_pct: 100.0 * errors as f64 / count as f64,
             }
         }).collect();
-        stats.sort_by(|a, b| b.count.cmp(&a.count));
+        stats.sort_by_key(|s| std::cmp::Reverse(s.count));
         stats
     }
 
@@ -3299,7 +3298,7 @@ impl App {
         while let Some(c) = chars.next() {
             if c == '\x1b' {
                 // Consume until we hit 'm' (end of CSI sequence)
-                while let Some(n) = chars.next() {
+                for n in chars.by_ref() {
                     if n == 'm' { break; }
                 }
             } else {
@@ -3988,7 +3987,7 @@ impl App {
                 // xclip MUST stay alive as clipboard owner — spawn and
                 // forget. We can't use run_cmd_with_stdin() which enforces
                 // a timeout and kills the process.
-                let with_xa = xauth.as_ref().map(|s| s.as_str());
+                let with_xa = xauth.as_deref();
                 if Self::run_xclip_detached(with_xa, disp, text) {
                     ok_xclip = true;
                     xclip_log.push(format!("detached xclip(root) XA={:?}: OK", with_xa));
@@ -4469,13 +4468,13 @@ impl App {
         // Refresh collectors at interval, not every tick
         if self.config_snapshot.is_some() {
             let interval = self.config.dashboard_secs.max(1);
-            if self.tick_count % interval == 0 {
+            if self.tick_count.is_multiple_of(interval) {
                 self.send_agent_cmd("minion_cache_list", None);
                 self.send_agent_cmd("list_keys", None);
                 self.send_agent_cmd("list_processes", None);
                 self.send_agent_cmd("list_services", None);
                 self.send_agent_cmd("get_system_info", None);
-                if self.processes.iter().any(|p| p.role == SaltProcessRole::API) {
+                if self.processes.iter().any(|p| p.role == SaltProcessRole::Api) {
                     let auth = if self.config.api_stats_auth_mode == "none" {
                         None
                     } else {
@@ -4570,7 +4569,7 @@ impl App {
         }
 
         // Alive detection every 5 ticks
-        if self.tick_count % 5 == 0 {
+        if self.tick_count.is_multiple_of(5) {
             self.send_agent_cmd("alive_check", None);
         }
 
@@ -4593,7 +4592,7 @@ impl App {
                 // round-trip, so starting the clock afterward could catch the
                 // job already returned in a fast/local fleet, always reading
                 // a flat ~0ms instead of the real round-trip time.
-                if self.job_ping_pending.is_none() && self.tick_count % 15 == 0 {
+                if self.job_ping_pending.is_none() && self.tick_count.is_multiple_of(15) {
                     self.job_ping_pending = Some((String::new(), Instant::now()));
                     self.send_agent_cmd("job_ping", None);
                 }
@@ -4849,10 +4848,7 @@ impl App {
             let popup_text_input = if sniffer_showing {
                 self.sniffer.as_ref().is_some_and(|s| s.highlight_input.is_some())
             } else {
-                match &self.detail_popup {
-                    Some(DetailPopup::JobDetail { return_is_filtering: true, .. }) => true,
-                    _ => false,
-                }
+                matches!(&self.detail_popup, Some(DetailPopup::JobDetail { return_is_filtering: true, .. }))
             };
             if !popup_text_input {
                 match code {
@@ -6144,7 +6140,7 @@ impl App {
             }
             Tab::Jobs => {
                 // 55/45 split: left = live jobs, right = cache
-                let col_split = (frame_size.width as u16 * 55 / 100) as usize;
+                let col_split = frame_size.width as usize * 55 / 100;
                 let live_click = (col as usize) < col_split;
 
                 if self.cache_focus == live_click {
@@ -6246,7 +6242,7 @@ impl App {
             let inner_x = col.saturating_sub(area.left() + 1);
             // "     [ OK ] Enter          [ Cancel ] Esc/q/a"
             //  [ OK ] at inner_x 5-11
-            if inner_x >= 5 && inner_x <= 11 {
+            if (5..=11).contains(&inner_x) {
                 self.admin_mode = true;
             }
             self.admin_mode_pending = false;
@@ -6292,7 +6288,7 @@ impl App {
 
         let content_h = (ih as usize).saturating_sub(4);
         let scroll = if sel > content_h / 2 {
-            sel.saturating_sub(content_h / 2).min(total.saturating_sub(1).saturating_sub(content_h / 2).max(0))
+            sel.saturating_sub(content_h / 2).min(total.saturating_sub(1).saturating_sub(content_h / 2))
         } else {
             0
         };
@@ -6514,7 +6510,7 @@ impl App {
             self.pulse_selected -= cols;
         } else {
             // wrap to bottom row at same column
-            let total_rows = (count + cols - 1) / cols;
+            let total_rows = count.div_ceil(cols);
             let last_row_start = (total_rows - 1) * cols;
             let col = self.pulse_selected;
             self.pulse_selected = (last_row_start + col).min(count - 1);
@@ -6751,16 +6747,8 @@ pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
         }
         serde_json::Value::Bool(b) => (0, *b),
         serde_json::Value::Null => (1, false),
-        serde_json::Value::String(s) => {
-            // Salt returns error strings starting with "ERROR:" for cmd.run etc.
-            if s.starts_with("ERROR:") || s.starts_with("error:") {
-                (1, false)
-            } else if s.trim().is_empty() {
-                (1, false)
-            } else {
-                (0, true)
-            }
-        }
+        // Salt returns error strings starting with "ERROR:" for cmd.run etc.
+        serde_json::Value::String(s) if s.starts_with("ERROR:") || s.starts_with("error:") || s.trim().is_empty() => (1, false),
         _ => (0, true),
     }
 }
@@ -6917,7 +6905,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
 
 fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
     if visible == 0 || total <= visible { return 0; }
-    let scroll = if selected > visible / 2 { selected - visible / 2 } else { 0 };
+    let scroll = selected.saturating_sub(visible / 2);
     scroll.min(total.saturating_sub(visible))
 }
 
@@ -6959,4 +6947,3 @@ fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
         }
     })
 }
-

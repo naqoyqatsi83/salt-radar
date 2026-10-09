@@ -84,7 +84,7 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 if is_sel { sel_line = lines.len(); }
                 lines.push(Line::from(
                     Span::styled(
-                        format!("  \u{25B8} Save & Restart"),
+                        "  \u{25B8} Save & Restart".to_string(),
                         Style::default().fg(color::green()).add_modifier(Modifier::BOLD),
                     ),
                 ).style(sel_style));

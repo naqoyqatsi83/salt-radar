@@ -145,8 +145,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
             .unwrap_or(0.0);
         let stale_threshold = 300.0;
 
-        for idx in 0..total {
-            let item = &items[idx];
+        for (idx, item) in items.iter().enumerate().take(total) {
             let is_sel = idx == sel;
             let sel_bg = if is_sel { color::select_bg().bg } else { None };
             let span_style = |s: Style| -> Style {

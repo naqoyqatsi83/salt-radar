@@ -36,7 +36,7 @@ pub fn collect_processes() -> Vec<SaltProcess> {
                 SaltProcessRole::ReqServer
             }
             _ if cmdline.contains("salt-master") => SaltProcessRole::Worker,
-            _ if cmdline.contains("salt-api") => SaltProcessRole::API,
+            _ if cmdline.contains("salt-api") => SaltProcessRole::Api,
             _ if cmdline.contains("salt-syndic") => SaltProcessRole::Syndic,
             _ => continue,
         };
@@ -64,7 +64,7 @@ fn read_rss_from_status(pid: u32) -> u64 {
     for line in status.lines() {
         if let Some(val) = line.strip_prefix("VmRSS:") {
             // Format: "VmRSS:   12345 kB"
-            let parts: Vec<&str> = val.trim().split_whitespace().collect();
+            let parts: Vec<&str> = val.split_whitespace().collect();
             if let Some(kb) = parts.first().and_then(|s| s.parse::<u64>().ok()) {
                 return kb;
             }

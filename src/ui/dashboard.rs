@@ -192,7 +192,7 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
     // salt-api gets a row only when it's actually present on this master —
     // most masters don't run it, and reserving space for an always-empty
     // panel would just shrink everything else for no reason.
-    let show_api_row = app.config.show_salt_api && app.processes.iter().any(|p| p.role == SaltProcessRole::API);
+    let show_api_row = app.config.show_salt_api && app.processes.iter().any(|p| p.role == SaltProcessRole::Api);
 
     let mut constraints = vec![];
     if app.config.show_host_resources {
@@ -273,7 +273,7 @@ fn draw_dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     let proc_rows = proc_rows_for(&group_processes(&app.processes), area.width.saturating_sub(2));
     let services_height = 4 + proc_rows + app.services.len() as u16;
     let panels = enabled_spark_panels(app);
-    let show_api_row = app.config.show_salt_api && app.processes.iter().any(|p| p.role == SaltProcessRole::API);
+    let show_api_row = app.config.show_salt_api && app.processes.iter().any(|p| p.role == SaltProcessRole::Api);
 
     let mut constraints = vec![];
     if app.config.show_host_resources {
@@ -471,7 +471,7 @@ fn group_processes(processes: &[crate::types::SaltProcess]) -> Vec<(String, u64,
         // process on the host that must not be counted as "Salt RSS".
         let label = match p.role {
             crate::types::SaltProcessRole::Master => "Master",
-            crate::types::SaltProcessRole::API => "API",
+            crate::types::SaltProcessRole::Api => "API",
             crate::types::SaltProcessRole::Worker => "Worker",
             crate::types::SaltProcessRole::Syndic => "Syndic",
             crate::types::SaltProcessRole::Minion => "Minion",
@@ -1041,7 +1041,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         let last_str = if app.last_activity_minion.is_empty() {
             "waiting...".to_string()
         } else {
-            format!("{}", app.last_activity_minion)
+            app.last_activity_minion.to_string()
         };
         Line::from(vec![
             Span::styled(" Minions ", Style::default().fg(color::title())),
@@ -1431,7 +1431,7 @@ fn render_sparkline(f: &mut Frame, area: Rect, data: &[u64], fill: GraphColor, m
                 let mut line = String::with_capacity(ncols);
                 let row_from_bottom = (area.height - 1 - br) as u32;
                 for &v in data.iter().take(ncols) {
-                    let threshold = ((v.min(100) as u32).saturating_mul(total_pixels) + 99) / 100;
+                    let threshold = (v.min(100) as u32).saturating_mul(total_pixels).div_ceil(100);
                     let mut bits = 0u8;
                     // Braille bit->dot layout is (bit0 bit3 / bit1 bit4 / bit2 bit5 / bit6 bit7),
                     // i.e. row 0 (top) = bits 0,3 through row 3 (bottom) = bits 6,7. Filling bits
