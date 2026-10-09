@@ -1495,6 +1495,7 @@ fn sniffer_hints(state: &SnifferState) -> Vec<(&'static str, String)> {
         ("p", if state.paused { "resume".to_string() } else { "pause".to_string() }),
         ("y", "copy".to_string()),
         ("s", "save".to_string()),
+        ("S", "save json".to_string()),
     ]
 }
 

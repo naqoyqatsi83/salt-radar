@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Event Sniffer: show the `S` (save as NDJSON) shortcut in its border hints, next to `s`
+
 ## [0.7.4] - 2026-10-10
 
 ### Added
