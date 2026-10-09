@@ -1484,18 +1484,19 @@ fn sniffer_status(
     clipboard_status(clipboard_at, save_at, clipboard_warning)
 }
 
+/// The sniffer's own actions come first and the standard paging keys last,
+/// so a popup too narrow for the whole line cuts the hints least needed.
 fn sniffer_hints(state: &SnifferState) -> Vec<(&'static str, String)> {
     vec![
         ("q/Esc", "close".to_string()),
-        ("\u{2191}\u{2193}", "navigate".to_string()),
-        ("PgUp/PgDn", "page".to_string()),
-        ("Home/End", "top/bottom".to_string()),
+        ("\u{2191}\u{2193}", "move".to_string()),
         ("Enter", "detail".to_string()),
         ("h", "filter".to_string()),
         ("p", if state.paused { "resume".to_string() } else { "pause".to_string() }),
         ("y", "copy".to_string()),
-        ("s", "save".to_string()),
-        ("S", "save json".to_string()),
+        ("s/S", "save txt/json".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("Home/End", "top/bottom".to_string()),
     ]
 }
 

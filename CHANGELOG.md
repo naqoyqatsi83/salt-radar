@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Event Sniffer: show the `S` (save as NDJSON) shortcut in its border hints, next to `s`
+- Event Sniffer: show the `S` (save as NDJSON) shortcut in its border hints (as `s/S:save txt/json`), and list its own actions before the standard paging keys so a narrow popup cuts the least useful hints
 
 ## [0.7.4] - 2026-10-10
 
