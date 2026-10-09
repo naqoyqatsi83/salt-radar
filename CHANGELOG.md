@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-09
+
 ### Changed
 
 - Config Editor file browser: type the start of a name to jump to the first matching entry (case-insensitive, shown in the border; a one-second pause starts a new name); typing a path by hand moves from `e` to `/`, and `.` toggles hidden files only when not typing a name (#124)
