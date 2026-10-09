@@ -420,7 +420,12 @@ cargo build --release
 ```
 src/
 ├── main.rs              # Terminal setup, event loop, tick scheduling
-├── app.rs               # Application state, key handling, clipboard
+├── app/                 # Application state and behavior
+│   ├── mod.rs           # App state, tick/update loop, filtering and sorting, job tracking
+│   ├── keys.rs          # Keyboard and mouse input for tabs, lists and every popup
+│   ├── messages.rs      # Agent results/events in, agent commands out, fleet scan
+│   ├── config_editor.rs # Config Editor: field model, path browser, saving, theme preview
+│   └── clipboard.rs     # Clipboard (tmux/OSC 52, X11 via xclip) and save-to-file
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management
