@@ -7,14 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Add a file browser to the Config Editor for settings that must point at an existing path — `agent_path`, `python_bin`, `master_config` (files) and `save_dir` (a directory) — instead of free-text entry, starting at the current value or its nearest existing folder; `e` still allows typing a path, and paths that don't exist are flagged `✗ not found`
-
 ## [0.7.2] - 2026-10-09
 
 ### Added
 
+- Add a file browser to the Config Editor for settings that must point at an existing path — `agent_path`, `python_bin`, `master_config` (files) and `save_dir` (a directory) — instead of free-text entry, starting at the current value or its nearest existing folder; `e` still allows typing a path, and paths that don't exist are flagged `✗ not found`
 - Add `popup_dim_pct` under `[ui]` (also in the Config Editor): how strongly the screen behind a popup is dimmed, 0–100% — default 70%, `0` turns dimming off
 - Add `mem_gradient_start`/`mem_gradient_mid`/`mem_gradient_high`/`mem_gradient_end` theme keys: the Memory graph, its headline figure and the Host Resources and Services memory meters get their own level gradient — cyan → blue → amber → red by default, so memory reads blue again while it's calm; the bundled btop ports take it from btop's own memory (`used_*`) gradient (#115)
 
