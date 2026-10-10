@@ -170,7 +170,7 @@ impl App {
                             _ => {}
                         }
                         if let Some(ref l) = lookup {
-                            crate::app::snap_to_matching_return(&l.returns, selected_return, return_filter);
+                            crate::app::snap_to_matching_return(l, selected_return, return_filter);
                         }
                         return false;
                     }
@@ -374,8 +374,8 @@ impl App {
                         KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j')
                         | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => {
                             if let Some(ref l) = lookup {
-                                let visible: Vec<usize> = (0..l.returns.len())
-                                    .filter(|&i| crate::app::return_matches(&l.returns[i].minion_id, return_filter))
+                                let visible: Vec<usize> = (0..l.entry_count())
+                                    .filter(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter)))
                                     .collect();
                                 if !visible.is_empty() {
                                     let cur = selected_return.unwrap_or(0);
@@ -727,14 +727,14 @@ impl App {
                                 let mid = minion_id.clone();
                                 items.get(*selected).and_then(|item| match item {
                                     MinionActivityItem::Event(_, evt) => match self.return_event_job(evt) {
-                                        Some((jid, fun, tgt, start)) => {
-                                            self.open_job_detail(jid, fun, tgt, start, Some(mid));
+                                        Some((jid, header)) => {
+                                            self.open_job_detail(jid, header, Some(mid));
                                             None
                                         }
                                         None => Some(evt.clone()),
                                     },
                                     MinionActivityItem::CacheJob(job) => {
-                                        self.open_job_detail(job.jid.clone(), job.fun.clone(), job.tgt.clone(), job.start_epoch, Some(mid));
+                                        self.open_job_detail(job.jid.clone(), cache_job_header(job), Some(mid));
                                         None
                                     }
                                     MinionActivityItem::Alert(alert) => {
@@ -1592,13 +1592,13 @@ impl App {
                         MinionActivityItem::Event(_, evt) => {
                             self.return_to_minion_events = Some((mid.clone(), item_idx));
                             match self.return_event_job(evt) {
-                                Some((jid, fun, tgt, start)) => self.open_job_detail(jid, fun, tgt, start, Some(mid)),
+                                Some((jid, header)) => self.open_job_detail(jid, header, Some(mid)),
                                 None => self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle }),
                             }
                         }
                         MinionActivityItem::CacheJob(job) => {
                             self.return_to_minion_events = Some((mid.clone(), item_idx));
-                            self.open_job_detail(job.jid.clone(), job.fun.clone(), job.tgt.clone(), job.start_epoch, Some(mid));
+                            self.open_job_detail(job.jid.clone(), cache_job_header(job), Some(mid));
                         }
                         MinionActivityItem::Alert(alert) => {
                             self.return_to_minion_events = Some((mid, item_idx));
@@ -1614,7 +1614,7 @@ impl App {
 
     /// Opens Job Detail and starts its lookup; `select_minion` picks that
     /// minion's return once the data arrives.
-    pub(crate) fn open_job_detail(&mut self, jid: String, fun: String, tgt: String, start_epoch: f64, select_minion: Option<String>) {
+    pub(crate) fn open_job_detail(&mut self, jid: String, job: JobHeader, select_minion: Option<String>) {
         let req_id = self.send_jid_lookup(&jid);
         self.pending_jid_lookup = Some((req_id, jid.clone()));
         self.pending_jid_lookup_at = Some(Instant::now());
@@ -1623,9 +1623,7 @@ impl App {
             jid,
             lookup: None,
             selected_return: None,
-            job_fun: fun,
-            job_tgt: tgt,
-            job_start_epoch: start_epoch,
+            job,
             return_filter: String::new(),
             return_is_filtering: false,
             panel_focus: false,
@@ -1635,15 +1633,17 @@ impl App {
         self.popup_tab = Some(self.current_tab);
     }
 
-    /// The job behind a return event, as `(jid, fun, target, start)`. Return
-    /// events carry no target, so it comes from Live Jobs when the job is there.
-    fn return_event_job(&self, evt: &SaltEvent) -> Option<(String, String, String, f64)> {
+    /// The job behind a return event. Return events carry no target, so the
+    /// header comes from Live Jobs when the job is there.
+    fn return_event_job(&self, evt: &SaltEvent) -> Option<(String, JobHeader)> {
         let jid = return_event_jid(evt)?.to_string();
+        if let Some(live) = self.jobs.iter().find(|j| j.jid == jid) {
+            return Some((jid, live_job_header(live)));
+        }
         let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
-        let live = self.jobs.iter().find(|j| j.jid == jid);
-        let tgt = live.map_or_else(|| evt.data["id"].as_str().unwrap_or("").to_string(), |j| j.tgt.clone());
-        let start = live.map_or(evt.ts, |j| j.created_epoch);
-        Some((jid, fun, tgt, start))
+        let (args, test_run) = format_job_args(&fun, &evt.data["fun_args"]);
+        let tgt = evt.data["id"].as_str().unwrap_or("").to_string();
+        Some((jid, JobHeader { fun, tgt, args, test_run, start_epoch: evt.ts }))
     }
 
     pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -1773,25 +1773,18 @@ impl App {
             Tab::Jobs => {
                 if self.cache_focus {
                     let cache_idx = self.cache_selected;
-                    let (jid, fun, tgt, start_epoch, exists) = match self.get_filtered_cache_job(cache_idx) {
-                        Some(job) => (job.jid.clone(), job.fun.clone(), job.tgt.clone(), job.start_epoch, true),
-                        None => (String::new(), String::new(), String::new(), 0.0, false),
-                    };
-                    if exists {
-                        self.open_job_detail(jid, fun, tgt, start_epoch, None);
+                    if let Some(job) = self.get_filtered_cache_job(cache_idx) {
+                        let header = JobHeader {
+                            fun: job.fun.clone(), tgt: job.tgt.clone(), args: job.args.clone(),
+                            test_run: job.test_run, start_epoch: job.start_epoch,
+                        };
+                        self.open_job_detail(job.jid.clone(), header, None);
                     }
                 } else {
-                    let (jid, fun, tgt, start_epoch, exists) = {
-                        let job = self.get_filtered_job(self.job_selected);
-                        match job {
-                            Some(job) => {
-                                (job.jid.clone(), job.fun.clone(), job.tgt.clone(), job.created_epoch, true)
-                            }
-                            None => (String::new(), String::new(), String::new(), 0.0, false),
-                        }
-                    };
-                    if exists {
-                        self.open_job_detail(jid, fun, tgt, start_epoch, None);
+                    if let Some(job) = self.get_filtered_job(self.job_selected) {
+                        let jid = job.jid.clone();
+                        let header = live_job_header(job);
+                        self.open_job_detail(jid, header, None);
                     }
                 }
             }
@@ -1825,5 +1818,19 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+fn live_job_header(job: &JobEntry) -> JobHeader {
+    JobHeader {
+        fun: job.fun.clone(), tgt: job.tgt.clone(), args: job.args.clone(),
+        test_run: job.test_run, start_epoch: job.created_epoch,
+    }
+}
+
+fn cache_job_header(job: &CacheJobEntry) -> JobHeader {
+    JobHeader {
+        fun: job.fun.clone(), tgt: job.tgt.clone(), args: job.args.clone(),
+        test_run: job.test_run, start_epoch: job.start_epoch,
     }
 }

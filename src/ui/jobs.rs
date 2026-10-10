@@ -42,8 +42,9 @@ fn live_cells(job: &JobEntry, col: Column, w: usize) -> Vec<Span<'static>> {
     let right = col.right_aligned();
     let dim = Style::default().fg(color::inactive_fg());
     let count = |n: usize, hot: Style| {
+        // Runner and wheel jobs target no minions, so their counts don't apply.
         if job.target_count == 0 {
-            cell("?", w, right, Style::default().fg(color::orange()).add_modifier(Modifier::BOLD))
+            cell("?", w, right, dim)
         } else {
             cell(&n.to_string(), w, right, if n > 0 { hot } else { dim })
         }
@@ -61,9 +62,9 @@ fn live_cells(job: &JobEntry, col: Column, w: usize) -> Vec<Span<'static>> {
             }
         }
         Column::Targeted => count(job.target_count, Style::default().fg(color::main_fg())),
-        Column::Ok => count(job.succeeded, Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
-        Column::Fail => count(job.failed, Style::default().fg(color::red()).add_modifier(Modifier::BOLD)),
-        Column::Wait => count(job.target_count.saturating_sub(job.returned), Style::default().fg(color::orange())),
+        Column::Ok => count(job.succeeded, Style::default().fg(color::outcome_ok()).add_modifier(Modifier::BOLD)),
+        Column::Fail => count(job.failed, Style::default().fg(color::outcome_failed()).add_modifier(Modifier::BOLD)),
+        Column::Wait => count(job.target_count.saturating_sub(job.returned), Style::default().fg(color::outcome_missing()).add_modifier(Modifier::BOLD)),
         Column::Started => cell(&format_started(job.created_epoch), w, right, dim),
         _ => cell("", w, right, dim),
     };

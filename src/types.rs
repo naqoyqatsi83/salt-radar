@@ -779,6 +779,9 @@ pub struct JidLookup {
     pub tgt: String,
     pub start_time: String,
     pub returns: Vec<JidReturn>,
+    /// Targeted minions that haven't returned. Job Detail lists them after
+    /// the returns, so entry `i` past `returns.len()` is one of these.
+    pub missing: Vec<String>,
     /// How long the agent's `salt-run jobs.lookup_jid` subprocess call and
     /// its own post-processing each took — shown in the popup header so a
     /// slow lookup is visible right there instead of needing to go dig
@@ -798,9 +801,22 @@ impl JidLookup {
             tgt: String::new(),
             start_time: String::new(),
             returns: Vec::new(),
+            missing: Vec::new(),
             subprocess_secs: 0.0,
             postprocess_secs: 0.0,
             error,
+        }
+    }
+
+    /// Rows in Job Detail's returns list: the returns, then the missing minions.
+    pub fn entry_count(&self) -> usize {
+        self.returns.len() + self.missing.len()
+    }
+
+    pub fn entry_id(&self, i: usize) -> Option<&str> {
+        match self.returns.get(i) {
+            Some(r) => Some(&r.minion_id),
+            None => self.missing.get(i - self.returns.len()).map(String::as_str),
         }
     }
 }

@@ -1096,6 +1096,22 @@ def cmd_minion_grains(opts, req):
     result(req["id"], "minion_grains", data={"minion_id": mid, "grains": pairs})
 
 
+def _cached_job_targets(opts, jid):
+    """The minions a job was published to, from the local_cache job load
+    (empty for other job-cache backends or when it can't be read)."""
+    returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
+    if returner != "local_cache":
+        return []
+    try:
+        import salt.returners.local_cache as local_cache_mod
+
+        local_cache_mod.__opts__ = opts
+        return [str(m) for m in (local_cache_mod.get_load(jid) or {}).get("Minions", [])]
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        return []
+
+
 def _cached_job_outcomes(opts, jid):
     """Each minion's stored `(retcode, success)` for a job, read from the
     local_cache job directory. `jobs.lookup_jid` returns only the return
@@ -1361,12 +1377,16 @@ def cmd_jid_lookup(opts, req):
             "formatted_text": _extract_section(mid),
         })
 
+    returned = {r["minion_id"] for r in returns}
     data = {
         "found": True,
         "fun": "",
         "tgt": "",
         "start_time": "",
         "returns": returns,
+        # Targeted minions with no return (yet): still running, down, or
+        # never received the job.
+        "missing": sorted(m for m in set(_cached_job_targets(opts, jid)) if m not in returned),
         "subprocess_secs": round(t1 - t0, 2),
         "postprocess_secs": round(time.time() - t1, 2),
     }

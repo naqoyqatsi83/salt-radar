@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Job Detail: show the job's arguments in the header and mark test runs with a `TEST RUN` badge, so a run whose states all read `Result: None` is recognizable as `test=True`
+- Job Detail: list targeted minions that haven't returned as `NO RETURN` rows after the returns (selectable and filterable, with an explanation in the output pane), and show them in the header (`Returns: 42/43 (3 failed, 1 no return)`); the target list comes from the job cache
+
+### Changed
+
+- Use one set of outcome colors everywhere a job result is shown (Live Jobs, Job Detail, the minion activity popup, `Fail%`): matching Salt's own highstate output: green succeeded, cyan changed, yellow would change (a `test=True` run's `result: None`), red failed, plus orange for no return / still waiting and dimmed for zero or not applicable — so the `Chg` count reads cyan for a real run and yellow for a test run, Job Detail's header colors `failed` and `no return` separately, `Fail%` is red for any failure instead of yellow below 25%, and runner jobs' `?` counts are dimmed instead of orange
+- Job Detail: lay the returns list out as an aligned table with a header row — minion, status, then right-aligned `ok`/`chg`/`fail` counts for state runs (each column as wide as the job's largest number) or the retcode for other jobs; the list widens to fit it, up to 45% of the popup, and names that still don't fit are shortened in the middle (`web-prod-…b-node-17`) so their distinguishing end stays visible
+
 ### Fixed
 
+- Job Detail: update the open job as its returns arrive — a return for it on the event bus triggers a fresh lookup a second later (one per burst), keeping the selected minion, filter and scroll; a refresh that fails leaves the data already shown
+- Job Detail: shorten a long target (a minion list, a compound match) in the header so the return counts after it stay on screen
 - Job Detail: count a minion as failed when its command exited non-zero even though the output looks normal (e.g. `/bin/sh: uptime: not found`, rc 127) — the lookup now uses the retcode Salt stored in the job cache, so Job Detail's failed count matches Live Jobs
 
 ## [0.7.5] - 2026-10-10

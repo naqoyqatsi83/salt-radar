@@ -140,6 +140,17 @@ pub mod color {
         Style::default().bg(selected_bg()).add_modifier(Modifier::BOLD)
     }
 
+    // Job outcome colors, the same wherever a result is shown (Live Jobs,
+    // Job Detail, the minion activity popup, Fail%), following Salt's own
+    // highstate output: a zero or a value that doesn't apply is dimmed.
+    pub fn outcome_ok() -> Color { green() }
+    pub fn outcome_changed() -> Color { cyan() }
+    /// A `test=True` run's "would change" (`result: None`).
+    pub fn outcome_pending() -> Color { yellow() }
+    pub fn outcome_failed() -> Color { red() }
+    /// Targeted but no return (yet).
+    pub fn outcome_missing() -> Color { orange() }
+
     /// Styles a list row as the cursor row. Dim/label text is lifted to
     /// normal text, since those colors sit too close to the selection
     /// background to stay readable on it.

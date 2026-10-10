@@ -344,20 +344,31 @@ impl App {
                                 if id == pending_id {
                                     self.pending_jid_lookup = None;
                                     self.pending_jid_lookup_at = None;
-                                    if let Some(DetailPopup::JobDetail { ref mut lookup, .. }) = self.detail_popup {
-                                        *lookup = Some(jid_data.clone());
+                                    // On a refresh, stay on the minion that was selected; a refresh
+                                    // that fails keeps what's already on screen.
+                                    let mut keep_minion: Option<String> = None;
+                                    if let Some(DetailPopup::JobDetail { ref mut lookup, selected_return, .. }) = self.detail_popup {
+                                        let refresh_failed = jid_data.entry_count() == 0 && !jid_data.error.is_empty();
+                                        match lookup {
+                                            Some(prev) if prev.entry_count() > 0 && refresh_failed => {}
+                                            Some(prev) => {
+                                                keep_minion = prev.entry_id(selected_return.unwrap_or(0)).map(String::from);
+                                                *lookup = Some(jid_data.clone());
+                                            }
+                                            None => *lookup = Some(jid_data.clone()),
+                                        }
                                     }
-                                    let select_minion = self.job_detail_select_minion.take();
+                                    let select_minion = self.job_detail_select_minion.take().or(keep_minion);
                                     // Opened from a minion's activity: select that minion's return.
                                     // Otherwise snap to the first filter match if one was committed before data arrived.
                                     if let Some(DetailPopup::JobDetail { ref return_filter, ref mut selected_return, ref lookup, .. }) = self.detail_popup {
                                         if let (Some(mid), Some(l)) = (select_minion, lookup) {
-                                            if let Some(idx) = l.returns.iter().position(|ret| ret.minion_id == mid) {
+                                            if let Some(idx) = (0..l.entry_count()).find(|&i| l.entry_id(i) == Some(mid.as_str())) {
                                                 *selected_return = Some(idx);
                                             }
                                         } else if !return_filter.is_empty() {
                                             if let Some(ref l) = lookup {
-                                                let first = l.returns.iter().position(|ret| crate::app::return_matches(&ret.minion_id, return_filter));
+                                                let first = (0..l.entry_count()).find(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter)));
                                                 if let Some(idx) = first {
                                                     *selected_return = Some(idx);
                                                 }
@@ -454,6 +465,7 @@ impl App {
                     // ── Normal event processing ─────────────────────────
                     // Track return events for activity matrix
                     if tag.contains("/ret/") {
+                        self.note_return_for_open_job(&tag);
                         self.current_sec_returns += 1;
                         let success = data["success"].as_bool()
                             .unwrap_or_else(|| derive_success_retcode(&data["return"]).1);

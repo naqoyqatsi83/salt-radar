@@ -378,6 +378,9 @@ pub struct App {
     pub job_focus_line: Option<usize>,
     /// Minion whose return Job Detail selects once its lookup arrives.
     pub job_detail_select_minion: Option<String>,
+    /// When to look the open Job Detail's job up again: set when a return for
+    /// it arrives, a moment later so a burst of returns costs one lookup.
+    job_detail_refresh_at: Option<Instant>,
     /// Each minion's latest return outcomes, for its health summary and the
     /// Minions Fail% column. Kept apart from the event buffer so busy fleets
     /// don't evict a quiet minion's history.
@@ -533,7 +536,7 @@ impl MinionHealth {
 pub struct ReturnResult {
     pub success: bool,
     pub retcode: i64,
-    pub counts: Option<(usize, usize, usize)>,
+    pub counts: Option<StateCounts>,
 }
 
 /// The JID of a `salt/job/<jid>/ret/<minion>` event.
@@ -568,6 +571,17 @@ pub fn cache_job_targets(job: &CacheJobEntry, minion_id: &str) -> bool {
     }
 }
 
+/// What Job Detail's header shows about the job, taken from wherever it was
+/// opened (Live Jobs, Job Cache, a minion's activity).
+#[derive(Clone, Debug, Default)]
+pub struct JobHeader {
+    pub fun: String,
+    pub tgt: String,
+    pub args: String,
+    pub test_run: bool,
+    pub start_epoch: f64,
+}
+
 /// A single item in the unified per-minion activity view.
 #[derive(Clone, Debug)]
 pub enum MinionActivityItem {
@@ -600,7 +614,7 @@ impl MinionActivityItem {
 pub enum DetailPopup {
     Minion(String, PingState, Option<Vec<(String, String)>>, usize),
     SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch },
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job_fun: String, job_tgt: String, job_start_epoch: f64, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
     ConfigEditor(ConfigEditorState),
@@ -694,6 +708,7 @@ impl App {
             job_fail_lines: Vec::new(),
             job_focus_line: None,
             job_detail_select_minion: None,
+            job_detail_refresh_at: None,
             minion_returns: HashMap::new(),
             jobs_failed_only: false,
             minion_events_filter: String::new(),
@@ -839,6 +854,30 @@ impl App {
             .collect();
     }
 
+    /// Delay between a new return for the open job and looking it up again.
+    const JOB_DETAIL_REFRESH_DELAY: Duration = Duration::from_millis(1000);
+
+    /// A return arrived for the job open in Job Detail: schedule a refresh.
+    pub(crate) fn note_return_for_open_job(&mut self, tag: &str) {
+        let Some(DetailPopup::JobDetail { ref jid, lookup: Some(_), .. }) = self.detail_popup else { return };
+        if self.job_detail_refresh_at.is_none() && tag.split('/').nth(2) == Some(jid.as_str()) {
+            self.job_detail_refresh_at = Some(Instant::now() + Self::JOB_DETAIL_REFRESH_DELAY);
+        }
+    }
+
+    fn refresh_job_detail_if_due(&mut self) {
+        let Some(due) = self.job_detail_refresh_at else { return };
+        if Instant::now() < due || self.pending_jid_lookup.is_some() {
+            return;
+        }
+        self.job_detail_refresh_at = None;
+        let Some(DetailPopup::JobDetail { ref jid, lookup: Some(_), .. }) = self.detail_popup else { return };
+        let jid = jid.clone();
+        let req_id = self.send_jid_lookup(&jid);
+        self.pending_jid_lookup = Some((req_id, jid));
+        self.pending_jid_lookup_at = Some(Instant::now());
+    }
+
     /// Fast poll between ticks
     pub fn fast_poll(&mut self) -> bool {
         let live_job = self.selected_live_job();
@@ -863,6 +902,8 @@ impl App {
                 }
             }
         }
+
+        self.refresh_job_detail_if_due();
 
         // Timeout for Event Detail's own pretty-view fetch -- falls back to
         // the client-side approximation rather than closing the popup, since
@@ -2768,6 +2809,7 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
         tgt,
         start_time: String::new(),
         returns,
+        missing: Vec::new(),
         subprocess_secs: 0.0,
         postprocess_secs: 0.0,
         error: String::new(),
@@ -2797,36 +2839,56 @@ pub fn return_matches(minion_id: &str, filter: &str) -> bool {
     minion_id.to_ascii_lowercase().contains(&filter.to_ascii_lowercase())
 }
 
-/// Moves the selection to the nearest return matching `filter`, looking
-/// forward from the current one first.
-pub fn snap_to_matching_return(returns: &[crate::types::JidReturn], selected: &mut Option<usize>, filter: &str) {
+/// Moves the selection to the nearest returns-list entry matching `filter`,
+/// looking forward from the current one first.
+pub fn snap_to_matching_return(lookup: &JidLookup, selected: &mut Option<usize>, filter: &str) {
     if filter.is_empty() { return; }
-    let cur = selected.unwrap_or(0).min(returns.len().saturating_sub(1));
-    let hit = (cur..returns.len()).find(|&i| return_matches(&returns[i].minion_id, filter))
-        .or_else(|| (0..cur).rev().find(|&i| return_matches(&returns[i].minion_id, filter)));
+    let n = lookup.entry_count();
+    let matches = |i: usize| lookup.entry_id(i).is_some_and(|id| return_matches(id, filter));
+    let cur = selected.unwrap_or(0).min(n.saturating_sub(1));
+    let hit = (cur..n).find(|&i| matches(i)).or_else(|| (0..cur).rev().find(|&i| matches(i)));
     if hit.is_some() { *selected = hit; }
 }
 
-/// `(ok, changed, failed)` state counts for a state.apply-style return (a
-/// dict keyed by state ID); `None` for any other kind of return.
-pub fn state_counts(full_return: &serde_json::Value) -> Option<(usize, usize, usize)> {
+/// Per-state outcomes of one state run, split the way Salt's highstate
+/// output colors them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StateCounts {
+    /// Succeeded without changes.
+    pub ok: usize,
+    /// Succeeded and changed something.
+    pub changed: usize,
+    /// `result: None`: a `test=True` run's "would change".
+    pub pending: usize,
+    pub failed: usize,
+}
+
+impl StateCounts {
+    /// What the `Chg` column shows: real changes, or a test run's would-be ones.
+    pub fn chg(&self) -> usize {
+        self.changed + self.pending
+    }
+}
+
+/// State counts for a state.apply-style return (a dict keyed by state ID);
+/// `None` for any other kind of return.
+pub fn state_counts(full_return: &serde_json::Value) -> Option<StateCounts> {
     let obj = full_return.as_object()?;
     if obj.is_empty() || obj.contains_key("result") || !obj.values().all(|v| {
         v.as_object().is_some_and(|s| s.contains_key("result") || s.contains_key("__run_num__"))
     }) {
         return None;
     }
-    let (mut ok, mut changed, mut failed) = (0, 0, 0);
+    let mut counts = StateCounts::default();
     for state in obj.values() {
-        if state.get("result").and_then(|r| r.as_bool()) == Some(false) {
-            failed += 1;
-        } else if state.get("changes").and_then(|c| c.as_object()).is_some_and(|c| !c.is_empty()) {
-            changed += 1;
-        } else {
-            ok += 1;
+        match state.get("result").and_then(|r| r.as_bool()) {
+            Some(false) => counts.failed += 1,
+            None => counts.pending += 1,
+            Some(true) if state.get("changes").and_then(|c| c.as_object()).is_some_and(|c| !c.is_empty()) => counts.changed += 1,
+            Some(true) => counts.ok += 1,
         }
     }
-    Some((ok, changed, failed))
+    Some(counts)
 }
 
 pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
@@ -2885,6 +2947,9 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
         tgt: data["tgt"].as_str().unwrap_or("").to_string(),
         start_time: data["start_time"].as_str().unwrap_or("").to_string(),
         returns: Vec::new(),
+        missing: data["missing"].as_array()
+            .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
         subprocess_secs: data["subprocess_secs"].as_f64().unwrap_or(0.0),
         postprocess_secs: data["postprocess_secs"].as_f64().unwrap_or(0.0),
         error: data["error"].as_str().unwrap_or("").to_string(),
@@ -3153,6 +3218,20 @@ mod tests {
     }
 
     #[test]
+    fn jid_lookup_lists_missing_minions_after_the_returns() {
+        let l = parse_jid_lookup(&json!({
+            "found": true,
+            "returns": [{"minion_id": "web01", "success": true, "retcode": 0, "full_return": true}],
+            "missing": ["db01", "web02"],
+        }));
+        assert_eq!(l.entry_count(), 3);
+        assert_eq!((l.entry_id(0), l.entry_id(1), l.entry_id(2), l.entry_id(3)), (Some("web01"), Some("db01"), Some("web02"), None));
+        let mut sel = Some(0);
+        snap_to_matching_return(&l, &mut sel, "web02");
+        assert_eq!(sel, Some(2), "the filter can land on a missing minion");
+    }
+
+    #[test]
     fn lookup_outcome_trusts_the_stored_retcode_and_the_return_data() {
         let out = |entry: serde_json::Value| lookup_return_outcome(&entry, &entry["full_return"]);
         assert_eq!(out(json!({"success": true, "retcode": 0, "full_return": "up 3 days"})), (true, 0));
@@ -3207,7 +3286,7 @@ mod tests {
             "a": {"result": true, "changes": {}, "__run_num__": 0},
             "b": {"result": false, "changes": {}, "__run_num__": 1},
         }}));
-        assert_eq!(state, ReturnResult { success: false, retcode: 1, counts: Some((1, 0, 1)) });
+        assert_eq!(state, ReturnResult { success: false, retcode: 1, counts: Some(StateCounts { ok: 1, failed: 1, ..Default::default() }) });
     }
 
     #[test]
@@ -3218,7 +3297,8 @@ mod tests {
             "service_|-nginx_|-nginx_|-running": {"result": false, "changes": {}, "__run_num__": 2},
             "cmd_|-check_|-true_|-run": {"result": null, "changes": {}, "__run_num__": 3},
         });
-        assert_eq!(state_counts(&ret), Some((2, 1, 1)));
+        assert_eq!(state_counts(&ret), Some(StateCounts { ok: 1, changed: 1, pending: 1, failed: 1 }),
+            "result: null is a test run's would-change, not a success");
         assert_eq!(state_counts(&json!({"result": true})), None);
         assert_eq!(state_counts(&json!("output")), None);
         assert_eq!(state_counts(&json!({})), None);
