@@ -169,36 +169,83 @@ impl App {
                                 *return_is_filtering = false;
                                 return_filter.clear();
                             }
-                            KeyCode::Enter => {
-                                *return_is_filtering = false;
-                                // Snap selection to nearest matching entry
-                                if !return_filter.is_empty() {
-                                    if let Some(ref l) = lookup {
-                                        let cur = selected_return.unwrap_or(0);
-                                        // Try forward from current position
-                                        let next = (cur..l.returns.len())
-                                            .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
-                                        if let Some(idx) = next {
-                                            *selected_return = Some(idx);
-                                        } else {
-                                            // Try backward from current position
-                                            let prev = (0..cur).rev()
-                                                .find(|&i| l.returns[i].minion_id.contains(&*return_filter));
-                                            if let Some(idx) = prev {
-                                                *selected_return = Some(idx);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            KeyCode::Enter => { *return_is_filtering = false; }
                             KeyCode::Backspace => { return_filter.pop(); }
                             KeyCode::Char(c) => { return_filter.push(c); }
                             _ => {}
                         }
+                        if let Some(ref l) = lookup {
+                            crate::app::snap_to_matching_return(&l.returns, selected_return, return_filter);
+                        }
                         return false;
                     }
                     // Right panel (content preview) focused
+                    let jump_ready = match code {
+                        KeyCode::Char('n') | KeyCode::Char('N') => !self.job_search_matches.is_empty(),
+                        KeyCode::Char('f') | KeyCode::Char('F') => !self.job_fail_lines.is_empty(),
+                        _ => false,
+                    };
+                    if !*panel_focus && jump_ready && lookup.is_some() {
+                        *panel_focus = true;
+                        *content_scroll_mode = false;
+                        *content_scroll = 0;
+                    }
                     if *panel_focus {
+                        if self.job_searching {
+                            match code {
+                                KeyCode::Esc => {
+                                    self.job_searching = false;
+                                    self.job_search.clear();
+                                }
+                                KeyCode::Enter => {
+                                    self.job_searching = false;
+                                    if let Some(&line) = self.job_search_matches.iter().find(|&&l| l >= *content_scroll)
+                                        .or(self.job_search_matches.first())
+                                    {
+                                        self.job_focus_line = Some(line);
+                                        *content_scroll = line.saturating_sub(2).min(self.job_detail_scroll_max);
+                                    }
+                                }
+                                KeyCode::Backspace => { self.job_search.pop(); }
+                                KeyCode::Char(c) => { self.job_search.push(c); }
+                                _ => {}
+                            }
+                            return false;
+                        }
+                        match code {
+                            KeyCode::Char('/') => {
+                                self.job_searching = true;
+                                self.job_search.clear();
+                                self.job_focus_line = None;
+                                return false;
+                            }
+                            KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::Char('n') | KeyCode::Char('N') if jump_ready => {
+                                // A failure lands 4 lines down, on its state's `----------` separator.
+                                let (m, context) = if matches!(code, KeyCode::Char('f') | KeyCode::Char('F')) {
+                                    (&self.job_fail_lines, 4)
+                                } else {
+                                    (&self.job_search_matches, 2)
+                                };
+                                let cur = self.job_focus_line.filter(|l| m.contains(l));
+                                let line = if matches!(code, KeyCode::Char('f') | KeyCode::Char('n')) {
+                                    match cur {
+                                        Some(c) => m.iter().find(|&&l| l > c),
+                                        None => m.iter().find(|&&l| l >= *content_scroll),
+                                    }.or(m.first())
+                                } else {
+                                    match cur {
+                                        Some(c) => m.iter().rev().find(|&&l| l < c),
+                                        None => m.iter().rev().find(|&&l| l < *content_scroll),
+                                    }.or(m.last())
+                                }.copied();
+                                if let Some(line) = line {
+                                    self.job_focus_line = Some(line);
+                                    *content_scroll = line.saturating_sub(context).min(self.job_detail_scroll_max);
+                                }
+                                return false;
+                            }
+                            _ => {}
+                        }
                         // self.job_detail_scroll_max is the true viewport-aware
                         // last-scroll-position for the return preview, recomputed
                         // and written back every render (see draw_job_detail) —
@@ -306,7 +353,9 @@ impl App {
                         // Don't return false — let clipboard_text/save_text flow through
                     } else {
                     // Left panel (return list) focused
+                    self.job_focus_line = None;
                     match code {
+                        KeyCode::Esc if !return_filter.is_empty() => { return_filter.clear(); }
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             if let Some((mid, sel)) = self.return_to_minion_events.take() {
                                 self.detail_popup = Some(DetailPopup::MinionEvents {
@@ -331,7 +380,7 @@ impl App {
                         | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => {
                             if let Some(ref l) = lookup {
                                 let visible: Vec<usize> = (0..l.returns.len())
-                                    .filter(|&i| return_filter.is_empty() || l.returns[i].minion_id.contains(&*return_filter))
+                                    .filter(|&i| crate::app::return_matches(&l.returns[i].minion_id, return_filter))
                                     .collect();
                                 if !visible.is_empty() {
                                     let cur = selected_return.unwrap_or(0);
@@ -1048,6 +1097,9 @@ impl App {
                     self.clamp_selection();
                 } else if self.current_tab == Tab::Api {
                     self.config.api_hide_stats_polls = !self.config.api_hide_stats_polls;
+                } else if self.current_tab == Tab::Jobs && !self.cache_focus {
+                    self.jobs_failed_only = !self.jobs_failed_only;
+                    self.job_selected = 0;
                 }
             }
             KeyCode::Char('z') | KeyCode::Char('Z') => {

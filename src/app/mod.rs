@@ -367,6 +367,16 @@ pub struct App {
     /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
     /// content preview (right panel).
     pub job_detail_scroll_max: usize,
+    /// Job Detail output search: the query, whether it's being typed, and the
+    /// matching line numbers (written back every render, like the scroll max).
+    pub job_search: String,
+    pub job_searching: bool,
+    pub job_search_matches: Vec<usize>,
+    /// Lines of the Job Detail output holding a failed state (`f`/`F`).
+    pub job_fail_lines: Vec<usize>,
+    /// The output line the last `n`/`N`/`f`/`F` jump landed on, marked in the pane.
+    pub job_focus_line: Option<usize>,
+    pub jobs_failed_only: bool,
     /// Filter state for MinionEvents popup
     pub minion_events_filter: String,
     pub minion_events_is_filtering: bool,
@@ -602,6 +612,12 @@ impl App {
             return_to_minion_detail: None,
             event_detail_scroll_max: 0,
             job_detail_scroll_max: 0,
+            job_search: String::new(),
+            job_searching: false,
+            job_search_matches: Vec::new(),
+            job_fail_lines: Vec::new(),
+            job_focus_line: None,
+            jobs_failed_only: false,
             minion_events_filter: String::new(),
             minion_events_is_filtering: false,
             hide_timed_out: false,
@@ -1433,11 +1449,15 @@ impl App {
 
     pub fn filtered_jobs_len(&self) -> usize {
         let pat = self.filter_text_for(Tab::Jobs);
-        if pat.is_empty() {
+        if pat.is_empty() && !self.jobs_failed_only {
             return self.jobs.len();
         }
         let known = self.accepted_ids();
-        self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).count()
+        self.jobs.iter().filter(|j| self.job_shown(j, pat, known)).count()
+    }
+
+    fn job_shown(&self, job: &JobEntry, pat: &str, known: &HashSet<String>) -> bool {
+        (!self.jobs_failed_only || job.failed > 0) && (pat.is_empty() || Self::matches_job(job, pat, known))
     }
 
     /// Live Jobs in display order: filtered, then sorted. Unsorted, they
@@ -1445,12 +1465,8 @@ impl App {
     /// event-arrival order, which a late or reordered `/new` can scramble.
     pub fn filtered_jobs(&self) -> Vec<&JobEntry> {
         let pat = self.filter_text_for(Tab::Jobs);
-        let mut jobs: Vec<&JobEntry> = if pat.is_empty() {
-            self.jobs.iter().collect()
-        } else {
-            let known = self.accepted_ids();
-            self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).collect()
-        };
+        let known = self.accepted_ids();
+        let mut jobs: Vec<&JobEntry> = self.jobs.iter().filter(|j| self.job_shown(j, pat, known)).collect();
         jobs.sort_by(|a, b| a.jid.cmp(&b.jid));
         if let Some((col, desc)) = self.sort_of(TableId::LiveJobs) {
             jobs.sort_by(|a, b| {
@@ -2664,6 +2680,43 @@ fn event_body_as_copied_text(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate
     }
 }
 
+/// Job Detail's returns-list filter: case-insensitive substring of the minion ID.
+pub fn return_matches(minion_id: &str, filter: &str) -> bool {
+    minion_id.to_ascii_lowercase().contains(&filter.to_ascii_lowercase())
+}
+
+/// Moves the selection to the nearest return matching `filter`, looking
+/// forward from the current one first.
+pub fn snap_to_matching_return(returns: &[crate::types::JidReturn], selected: &mut Option<usize>, filter: &str) {
+    if filter.is_empty() { return; }
+    let cur = selected.unwrap_or(0).min(returns.len().saturating_sub(1));
+    let hit = (cur..returns.len()).find(|&i| return_matches(&returns[i].minion_id, filter))
+        .or_else(|| (0..cur).rev().find(|&i| return_matches(&returns[i].minion_id, filter)));
+    if hit.is_some() { *selected = hit; }
+}
+
+/// `(ok, changed, failed)` state counts for a state.apply-style return (a
+/// dict keyed by state ID); `None` for any other kind of return.
+pub fn state_counts(full_return: &serde_json::Value) -> Option<(usize, usize, usize)> {
+    let obj = full_return.as_object()?;
+    if obj.is_empty() || obj.contains_key("result") || !obj.values().all(|v| {
+        v.as_object().is_some_and(|s| s.contains_key("result") || s.contains_key("__run_num__"))
+    }) {
+        return None;
+    }
+    let (mut ok, mut changed, mut failed) = (0, 0, 0);
+    for state in obj.values() {
+        if state.get("result").and_then(|r| r.as_bool()) == Some(false) {
+            failed += 1;
+        } else if state.get("changes").and_then(|c| c.as_object()).is_some_and(|c| !c.is_empty()) {
+            changed += 1;
+        } else {
+            ok += 1;
+        }
+    }
+    Some((ok, changed, failed))
+}
+
 pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
     match full_return {
         serde_json::Value::Object(obj) => {
@@ -2976,6 +3029,20 @@ mod tests {
         ]});
         let jids: Vec<String> = parse_cache_jobs(&data).into_iter().map(|j| j.jid).collect();
         assert_eq!(jids, ["20261009120000000003", "20261009120000000002", "20261009120000000001"]);
+    }
+
+    #[test]
+    fn state_counts_split_ok_changed_failed() {
+        let ret = json!({
+            "pkg_|-nginx_|-nginx_|-installed": {"result": true, "changes": {}, "__run_num__": 0},
+            "file_|-conf_|-/etc/nginx.conf_|-managed": {"result": true, "changes": {"diff": "x"}, "__run_num__": 1},
+            "service_|-nginx_|-nginx_|-running": {"result": false, "changes": {}, "__run_num__": 2},
+            "cmd_|-check_|-true_|-run": {"result": null, "changes": {}, "__run_num__": 3},
+        });
+        assert_eq!(state_counts(&ret), Some((2, 1, 1)));
+        assert_eq!(state_counts(&json!({"result": true})), None);
+        assert_eq!(state_counts(&json!("output")), None);
+        assert_eq!(state_counts(&json!({})), None);
     }
 
     #[test]

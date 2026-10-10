@@ -111,11 +111,12 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
 
     let hints = panel_hints(TableId::LiveJobs, focused, &[
         ("/", "filter"),
+        ("x", if app.jobs_failed_only { "all" } else { "failed only" }),
         ("Enter", "detail"),
         ("PgUp/PgDn", "page"),
         ("Home/End", "top/bottom"),
     ], ("\u{2192}", "cache"));
-    let block = super::list_block_hinted(format!(" Live Jobs ({}) ", app.jobs.len()), border_style, color::main_bg(), has_more_above, has_more_below, &hints);
+    let block = super::list_block_hinted(if app.jobs_failed_only { format!(" Live Jobs (failed only: {}/{}) ", total, app.jobs.len()) } else { format!(" Live Jobs ({}) ", app.jobs.len()) }, border_style, color::main_bg(), has_more_above, has_more_below, &hints);
 
     let inner = block.inner(area);
     f.render_widget(block, area);

@@ -351,7 +351,7 @@ impl App {
                                     if let Some(DetailPopup::JobDetail { ref return_filter, ref mut selected_return, ref lookup, .. }) = self.detail_popup {
                                         if !return_filter.is_empty() {
                                             if let Some(ref l) = lookup {
-                                                let first = l.returns.iter().position(|ret| ret.minion_id.contains(return_filter));
+                                                let first = l.returns.iter().position(|ret| crate::app::return_matches(&ret.minion_id, return_filter));
                                                 if let Some(idx) = first {
                                                     *selected_return = Some(idx);
                                                 }

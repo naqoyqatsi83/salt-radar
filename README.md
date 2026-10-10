@@ -308,6 +308,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Minions | `f` | Toggle whether the Fleet Overview breakdown follows the active list filter |
 | Minions, Jobs, Alerts, API | `o` / `O` | Sort by the next column / reverse the sort (also: click a column header) |
 | Minions, Events, Jobs, Alerts, API | `v` | Choose which columns the focused table shows, and their order |
+| Jobs (Live) | `x` | Show only failed jobs / all jobs |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
 | Jobs (Cache) | `,`/`.` | Previous/next page |
@@ -345,6 +346,9 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `PgUp`/`PgDn` | Jump 10 returns |
 | `Home`/`End` | First/last return (job detail) |
 | `Enter` | Enter scroll mode (event/job detail) |
+| `/` | Search the return output, matches highlighted (job detail, output pane) |
+| `n`/`N` | Next/previous search match, marked in the output (job detail; also from the returns list) |
+| `f`/`F` | Next/previous failed state, marked in the output (job detail; also from the returns list) |
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |
 | `t` | Toggle raw JSON / pretty view (event detail) |
