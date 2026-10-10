@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-10-10
+
 ### Added
 
 - Job Detail: show the job's arguments in the header and mark test runs with a `TEST RUN` badge, so a run whose states all read `Result: None` is recognizable as `test=True`
