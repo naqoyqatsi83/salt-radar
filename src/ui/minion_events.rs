@@ -76,13 +76,21 @@ fn ago(secs: f64) -> String {
 /// The Result cell of a job return: state counts for state runs, else OK or
 /// FAIL with the retcode.
 fn result_cell(r: &ReturnResult) -> (String, Color) {
-    let color = if !r.success { color::red() } else { color::green() };
+    let color = if !r.success { color::outcome_failed() } else { color::outcome_ok() };
     match r.counts {
-        Some((ok, changed, failed)) => {
-            let mut text = format!("{} ok", ok);
-            if changed > 0 { text.push_str(&format!(" {} chg", changed)); }
-            if failed > 0 { text.push_str(&format!(" {} fail", failed)); }
-            let color = if failed > 0 || !r.success { color::red() } else if changed > 0 { color::yellow() } else { color::green() };
+        Some(c) => {
+            let mut text = format!("{} ok", c.ok);
+            if c.chg() > 0 { text.push_str(&format!(" {} chg", c.chg())); }
+            if c.failed > 0 { text.push_str(&format!(" {} fail", c.failed)); }
+            let color = if c.failed > 0 || !r.success {
+                color::outcome_failed()
+            } else if c.pending > 0 {
+                color::outcome_pending()
+            } else if c.changed > 0 {
+                color::outcome_changed()
+            } else {
+                color::outcome_ok()
+            };
             (text, color)
         }
         None if r.success => ("OK".to_string(), color),
@@ -100,7 +108,7 @@ fn health_line(app: &App, minion_id: &str, now: f64) -> Line<'static> {
     let (returns, failed) = (h.recent.len(), h.failed());
     let mut spans = vec![
         Span::styled(format!("  Last {} returns: ", returns), Style::default().fg(color::label_fg())),
-        Span::styled(format!("{} OK", returns - failed), Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{} OK", returns - failed), Style::default().fg(color::outcome_ok()).add_modifier(Modifier::BOLD)),
     ];
     if failed == 0 {
         spans.push(Span::styled(" \u{b7} no failures", Style::default().fg(color::inactive_fg())));
@@ -108,7 +116,7 @@ fn health_line(app: &App, minion_id: &str, now: f64) -> Line<'static> {
         spans.push(Span::styled(" \u{b7} ", Style::default().fg(color::inactive_fg())));
         spans.push(Span::styled(
             format!("{} FAIL ({:.0}%)", failed, (failed as f64 * 100.0 / returns as f64).round().max(1.0)),
-            Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
+            Style::default().fg(color::outcome_failed()).add_modifier(Modifier::BOLD),
         ));
         if let Some((ts, what)) = &h.last_failure {
             spans.push(Span::styled(format!(" \u{b7} last failure {} ago: ", ago(now - ts)), Style::default().fg(color::label_fg())));

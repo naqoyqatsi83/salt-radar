@@ -30,13 +30,13 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
             draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, clipboard_at, save_at, clipboard_msg, highlight);
         }
-        DetailPopup::JobDetail { jid, lookup, selected_return, job_fun, job_tgt, job_start_epoch, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
+        DetailPopup::JobDetail { jid, lookup, selected_return, job, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
             f.render_widget(Clear, area);
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job_fun, job_tgt, *job_start_epoch, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &app.job_search, app.job_searching, &mut app.job_search_matches, &mut app.job_fail_lines, app.job_focus_line, clipboard_at, save_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &app.job_search, app.job_searching, &mut app.job_search_matches, &mut app.job_fail_lines, app.job_focus_line, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -824,9 +824,7 @@ fn draw_job_detail(
     jid: &str,
     lookup: &Option<crate::types::JidLookup>,
     selected_return: Option<usize>,
-    job_fun: &str,
-    job_tgt: &str,
-    job_start_epoch: f64,
+    job: &crate::app::JobHeader,
     return_filter: &str,
     return_is_filtering: bool,
     panel_focus: bool,
@@ -871,27 +869,58 @@ fn draw_job_detail(
     }
     let mut header_lines: Vec<Line<'static>> = vec![Line::from(jid_line)];
     header_lines.push(Line::from(""));
-    let epoch_str = if job_start_epoch > 0.0 {
+    let epoch_str = if job.start_epoch > 0.0 {
         use chrono::{DateTime, Local};
-        if let Some(utc) = DateTime::from_timestamp(job_start_epoch as i64, 0) {
+        if let Some(utc) = DateTime::from_timestamp(job.start_epoch as i64, 0) {
             let local: DateTime<Local> = utc.into();
             format!(" UTC {}  local {}", utc.format("%H:%M:%S"), local.format("%H:%M:%S"))
         } else { String::new() }
     } else { String::new() };
-    let returns_str = lookup.as_ref().map_or(String::new(), |l| format!("  Returns: {}", l.returns.len()));
-    let failed_returns = lookup.as_ref().map_or(0, |l| {
-        l.returns.iter().filter(|r| !crate::app::derive_success_retcode(&r.full_return).1).count()
+    let returns_str = lookup.as_ref().map_or(String::new(), |l| if l.missing.is_empty() {
+        format!("  Returns: {}", l.returns.len())
+    } else {
+        format!("  Returns: {}/{}", l.returns.len(), l.entry_count())
     });
-    let failed_str = if failed_returns > 0 { format!(" ({} failed)", failed_returns) } else { String::new() };
-    header_lines.push(Line::from(vec![
+    let mut outcome_spans: Vec<Span<'static>> = Vec::new();
+    if let Some(l) = lookup.as_ref() {
+        let failed = l.returns.iter().filter(|r| !r.success).count();
+        let mut parts: Vec<(String, Color)> = Vec::new();
+        if failed > 0 { parts.push((format!("{} failed", failed), color::outcome_failed())); }
+        if !l.missing.is_empty() { parts.push((format!("{} no return", l.missing.len()), color::outcome_missing())); }
+        if !parts.is_empty() {
+            let punct = Style::default().fg(color::label_fg());
+            outcome_spans.push(Span::styled(" (", punct));
+            for (i, (text, fg)) in parts.into_iter().enumerate() {
+                if i > 0 { outcome_spans.push(Span::styled(", ", punct)); }
+                outcome_spans.push(Span::styled(text, Style::default().fg(fg).add_modifier(Modifier::BOLD)));
+            }
+            outcome_spans.push(Span::styled(")", punct));
+        }
+    }
+    // A long target (a list of minions, a compound match) is shortened so the
+    // return counts after it stay on screen.
+    let mut job_spans = vec![
         Span::styled("  Fun: ".to_string(), Style::default().fg(color::label_fg())),
-        Span::styled(job_fun.to_string(), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+        Span::styled(job.fun.clone(), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+    ];
+    if !job.args.is_empty() {
+        job_spans.push(Span::styled("  Args: ".to_string(), Style::default().fg(color::label_fg())));
+        job_spans.push(Span::styled(job.args.clone(), Style::default().fg(color::main_fg())));
+    }
+    if job.test_run {
+        job_spans.push(Span::raw("  "));
+        job_spans.push(Span::styled(" TEST RUN ".to_string(), Style::default().fg(color::popup_bg()).bg(color::outcome_pending()).add_modifier(Modifier::BOLD)));
+    }
+    let fixed_w = job_spans.iter().map(|s| s.content.chars().count()).sum::<usize>() + "  Tgt: ".len()
+        + epoch_str.chars().count() + returns_str.chars().count()
+        + outcome_spans.iter().map(|s| s.content.chars().count()).sum::<usize>();
+    let tgt_w = (outer_inner.width as usize).saturating_sub(fixed_w).max(12);
+    header_lines.push(Line::from(job_spans.into_iter().chain([
         Span::styled("  Tgt: ".to_string(), Style::default().fg(color::label_fg())),
-        Span::styled(job_tgt.to_string(), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+        Span::styled(shorten_middle(&job.tgt, tgt_w), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
         Span::styled(epoch_str, Style::default().fg(color::inactive_fg())),
         Span::styled(returns_str, Style::default().fg(color::label_fg())),
-        Span::styled(failed_str, Style::default().fg(color::red()).add_modifier(Modifier::BOLD)),
-    ]));
+    ]).chain(outcome_spans).collect::<Vec<_>>()));
     let header_h = (header_lines.len() + 1) as u16; // +1 for spacing after header
 
     // ── Layout: header / body / status (only when there's something transient to show) ──
@@ -908,18 +937,23 @@ fn draw_job_detail(
         vert[0],
     );
 
-    // ── Split body: left (returns list) / right (preview) ──
+    // ── Returns table layout: one column per field, sized to this job ──
+    let table = lookup.as_ref().map(ReturnsTable::new);
+    // The list grows to fit its table (borders + content), between a quarter
+    // and 45% of the popup, so long minion names aren't cut needlessly.
+    let body_w = vert[1].width as usize;
+    let left_w = table.as_ref().map_or(body_w / 4, |t| (t.width() + 2).clamp(body_w / 4, body_w * 45 / 100));
     let horiz = Layout::horizontal([
-        Constraint::Ratio(25, 100),
-        Constraint::Ratio(75, 100),
+        Constraint::Length(left_w as u16),
+        Constraint::Min(1),
     ])
     .split(vert[1]);
 
-    // ── Build LEFT panel: compact return list ──
+    // ── Build LEFT panel: returns table ──
     let left_border_color = if !panel_focus { color::border_focus() } else { color::border() };
-    let total_returns = lookup.as_ref().map_or(0, |l| l.returns.len());
+    let total_returns = lookup.as_ref().map_or(0, |l| l.entry_count());
     let shown_returns = lookup.as_ref().map_or(0, |l| {
-        l.returns.iter().filter(|r| crate::app::return_matches(&r.minion_id, return_filter)).count()
+        (0..l.entry_count()).filter(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter))).count()
     });
     let returns_title = if return_filter.is_empty() {
         format!("Returns ({})", total_returns)
@@ -944,10 +978,25 @@ fn draw_job_detail(
     f.render_widget(&left_block, horiz[0]);
 
     let mut left_lines: Vec<Line<'static>> = Vec::new();
-    if let Some(ref l) = lookup {
+    if let (Some(l), Some(t)) = (lookup.as_ref(), table.as_ref()) {
+        // The minion column takes whatever the other columns leave, which keeps
+        // them flush with the panel's right edge.
+        let id_w = (left_inner.width as usize).saturating_sub(t.width() - t.id_w);
         let mut sel_shown = false;
-        let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
-        if l.returns.is_empty() && !l.error.is_empty() {
+        let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
+        let (header_area, list_area) = if l.entry_count() > 0 {
+            let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(left_inner);
+            (Some(rows[0]), rows[1])
+        } else {
+            (None, left_inner)
+        };
+        if let Some(area) = header_area {
+            f.render_widget(
+                Paragraph::new(t.header(id_w)).style(Style::default().bg(color::popup_bg())),
+                area,
+            );
+        }
+        if l.entry_count() == 0 && !l.error.is_empty() {
             left_lines.push(Line::from(Span::styled(
                 "  Lookup failed:",
                 Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
@@ -956,46 +1005,25 @@ fn draw_job_detail(
                 format!("  {}", l.error),
                 Style::default().fg(color::red()),
             )));
-        } else if l.returns.is_empty() {
+        } else if l.entry_count() == 0 {
             left_lines.push(Line::from(Span::styled(
                 "  No returns yet.",
                 Style::default().fg(color::inactive_fg()),
             )));
         } else {
-            for (i, ret) in l.returns.iter().enumerate() {
-                if !crate::app::return_matches(&ret.minion_id, return_filter) {
+            for i in 0..l.entry_count() {
+                let Some(id) = l.entry_id(i) else { continue };
+                if !crate::app::return_matches(id, return_filter) {
                     continue;
                 }
-                let cursor = if i == sel { "\u{25b6}" } else { " " };
-                let (live_retcode, live_success) = crate::app::derive_success_retcode(&ret.full_return);
-                let status = if live_success { "OK" } else { "FAIL" };
-                let sc = if live_success { color::green() } else { color::red() };
-                let id_style = Style::default().fg(if i == sel { color::cyan() } else { color::main_fg() })
-                    .add_modifier(if i == sel { Modifier::BOLD } else { Modifier::empty() });
-                let (id_line, _) = highlight_matches(vec![Line::from(Span::styled(ret.minion_id.clone(), id_style))], return_filter);
-                let mut spans = vec![Span::styled(format!(" {} ", cursor), id_style)];
-                spans.extend(id_line.into_iter().flat_map(|l| l.spans));
-                spans.push(Span::styled(": ", id_style));
-                spans.push(Span::styled(status, Style::default().fg(sc).add_modifier(Modifier::BOLD)));
-                match crate::app::state_counts(&ret.full_return) {
-                    Some((ok, changed, failed)) => {
-                        spans.push(Span::styled(format!(" {} ok", ok), Style::default().fg(color::inactive_fg())));
-                        if changed > 0 {
-                            spans.push(Span::styled(format!(" {} chg", changed), Style::default().fg(color::yellow())));
-                        }
-                        if failed > 0 {
-                            spans.push(Span::styled(format!(" {} fail", failed), Style::default().fg(color::red())));
-                        }
-                    }
-                    None => spans.push(Span::styled(format!(" (retcode={})", live_retcode), Style::default().fg(color::inactive_fg()))),
-                }
-                let line = Line::from(spans);
+                let line = t.row(l, i, i == sel, id_w, return_filter);
                 sel_shown |= i == sel;
                 left_lines.push(if i == sel { color::selected_row(line) } else { line });
             }
         }
-        let sel_vis_idx = l.returns.iter().take(sel + 1)
-            .filter(|ret| crate::app::return_matches(&ret.minion_id, return_filter)).count().saturating_sub(1);
+        let sel_vis_idx = (0..=sel)
+            .filter(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter)))
+            .count().saturating_sub(1);
         if left_lines.is_empty() {
             left_lines.push(Line::from(Span::styled(
                 "  No matching hosts.",
@@ -1003,18 +1031,18 @@ fn draw_job_detail(
             )));
         }
         // The filter bar overlays the panel's last row while typing.
-        let left_list_h = (left_inner.height as usize).saturating_sub(return_is_filtering as usize);
+        let left_list_h = (list_area.height as usize).saturating_sub(return_is_filtering as usize);
         let (left_scroll, _, _) = super::scroll_window(sel_vis_idx, left_list_h, left_lines.len());
         f.render_widget(
             Paragraph::new(left_lines)
                 .scroll((left_scroll as u16, 0))
                 .style(Style::default().bg(color::popup_bg())),
-            left_inner,
+            list_area,
         );
         // The row's own style only covers its text; extend the cursor bar
         // across the panel like the padded table rows.
         if sel_shown && sel_vis_idx >= left_scroll && sel_vis_idx < left_scroll + left_list_h {
-            let row = Rect { y: left_inner.y + (sel_vis_idx - left_scroll) as u16, height: 1, ..left_inner };
+            let row = Rect { y: list_area.y + (sel_vis_idx - left_scroll) as u16, height: 1, ..list_area };
             f.buffer_mut().set_style(row, color::select_bg());
         }
     } else {
@@ -1045,17 +1073,36 @@ fn draw_job_detail(
     // ── Build RIGHT panel: return content preview ──
     let right_border_color = if panel_focus { color::border_focus() } else { color::border() };
     let right_border_style = Style::default().fg(right_border_color);
-    let right_title_text = if let Some(ref l) = lookup {
-        let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
-        if sel < l.returns.len() {
-            format!("Return from {}", l.returns[sel].minion_id)
-        } else { "Preview".to_string() }
-    } else { "Preview".to_string() };
+    let right_title_text = match lookup {
+        Some(l) => {
+            let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
+            match l.entry_id(sel) {
+                Some(id) if sel < l.returns.len() => format!("Return from {}", id),
+                Some(id) => format!("No return from {}", id),
+                None => "Preview".to_string(),
+            }
+        }
+        None => "Preview".to_string(),
+    };
 
     let mut right_lines: Vec<Line<'static>> = Vec::new();
     if let Some(ref l) = lookup {
-        let sel = selected_return.unwrap_or(0).min(l.returns.len().saturating_sub(1));
-        if sel < l.returns.len() {
+        let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
+        if let Some(mid) = sel.checked_sub(l.returns.len()).and_then(|k| l.missing.get(k)) {
+            right_lines.push(Line::from(Span::styled(
+                format!("  {} was targeted by this job but hasn't returned.", mid),
+                Style::default().fg(color::outcome_missing()).add_modifier(Modifier::BOLD),
+            )));
+            right_lines.push(Line::from(""));
+            right_lines.push(Line::from(Span::styled(
+                "  It may still be running, or the minion is down or never received the job.",
+                Style::default().fg(color::inactive_fg()),
+            )));
+            right_lines.push(Line::from(Span::styled(
+                "  Reopen this job later to see whether a return arrived.",
+                Style::default().fg(color::inactive_fg()),
+            )));
+        } else if sel < l.returns.len() {
             let ret = &l.returns[sel];
             if !ret.formatted_text.is_empty() {
                 right_lines.extend(crate::app::App::ansi_text_to_lines(&ret.formatted_text, Style::default().fg(color::main_fg())));
@@ -1192,6 +1239,112 @@ fn draw_job_detail(
             Paragraph::new(status_line).style(Style::default().bg(color::popup_bg())),
             vert[2],
         );
+    }
+}
+
+/// Fits `s` into `w` characters by cutting out its middle: long hostnames
+/// usually differ at the end (`...-node-17` vs `...-node-18`), so the end is
+/// kept along with the start.
+fn shorten_middle(s: &str, w: usize) -> String {
+    let n = s.chars().count();
+    if n <= w {
+        return s.to_string();
+    }
+    let keep = w.saturating_sub(1);
+    let tail = keep / 2;
+    let head: String = s.chars().take(keep - tail).collect();
+    let end: String = s.chars().skip(n - tail).collect();
+    format!("{}\u{2026}{}", head, end)
+}
+
+const NO_RETURN: &str = "NO RETURN";
+
+/// Column layout of Job Detail's returns list. State runs get right-aligned
+/// `ok`/`chg`/`fail` count columns, each as wide as this job's largest number
+/// (formulas can run hundreds of states); other jobs get a `rc` column.
+struct ReturnsTable {
+    id_w: usize,
+    /// Wide enough for `NO RETURN` only when some minion hasn't returned.
+    status_w: usize,
+    /// `(ok, chg, fail)` column widths; `None` when no return is a state run.
+    counts: Option<(usize, usize, usize)>,
+    rc_w: usize,
+}
+
+impl ReturnsTable {
+    fn new(l: &crate::types::JidLookup) -> Self {
+        let id_w = (0..l.entry_count()).filter_map(|i| l.entry_id(i)).map(|id| id.chars().count()).max().unwrap_or(0).max(6);
+        let digits = |n: usize| n.to_string().len();
+        let all: Vec<_> = l.returns.iter().filter_map(|r| crate::app::state_counts(&r.full_return)).collect();
+        let counts = (!all.is_empty()).then(|| {
+            let w = |label: usize, pick: fn(&crate::app::StateCounts) -> usize| all.iter().map(|c| digits(pick(c))).max().unwrap_or(1).max(label);
+            (w(2, |c| c.ok), w(3, |c| c.chg()), w(4, |c| c.failed))
+        });
+        let rc_w = l.returns.iter().map(|r| digits(r.retcode.unsigned_abs() as usize) + (r.retcode < 0) as usize).max().unwrap_or(1).max(2);
+        let status_w = if l.missing.is_empty() { 4 } else { NO_RETURN.len() };
+        Self { id_w, status_w, counts, rc_w }
+    }
+
+    /// Characters a full row takes: cursor, id, status, then the counts or rc.
+    fn width(&self) -> usize {
+        let tail = match self.counts {
+            Some((ok, chg, fail)) => ok + chg + fail + 6,
+            None => self.rc_w + 2,
+        };
+        3 + self.id_w + 2 + self.status_w + tail
+    }
+
+    fn header(&self, id_w: usize) -> Line<'static> {
+        let label = Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD);
+        let mut text = format!("   {:<id_w$}  {:<sw$}", "Minion", "", sw = self.status_w);
+        match self.counts {
+            Some((ok, chg, fail)) => text.push_str(&format!("  {:>ok$}  {:>chg$}  {:>fail$}", "OK", "Chg", "Fail")),
+            None => text.push_str(&format!("  {:>w$}", "RC", w = self.rc_w)),
+        }
+        Line::from(Span::styled(text, label))
+    }
+
+    fn row(&self, l: &crate::types::JidLookup, i: usize, selected: bool, id_w: usize, filter: &str) -> Line<'static> {
+        let id = l.entry_id(i).unwrap_or("");
+        let returned = l.returns.get(i);
+        let id_fg = match (selected, returned.is_some()) {
+            (true, _) => color::cyan(),
+            (false, true) => color::main_fg(),
+            (false, false) => color::inactive_fg(),
+        };
+        let id_style = Style::default().fg(id_fg).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() });
+        let shown = shorten_middle(id, id_w);
+        let pad = id_w.saturating_sub(shown.chars().count());
+        let (id_line, _) = highlight_matches(vec![Line::from(Span::styled(shown, id_style))], filter);
+        let mut spans = vec![Span::styled(format!(" {} ", if selected { "\u{25b6}" } else { " " }), id_style)];
+        spans.extend(id_line.into_iter().flat_map(|l| l.spans));
+        spans.push(Span::raw(" ".repeat(pad + 2)));
+
+        let Some(ret) = returned else {
+            spans.push(Span::styled(NO_RETURN, Style::default().fg(color::outcome_missing()).add_modifier(Modifier::BOLD)));
+            return Line::from(spans);
+        };
+        let (status, status_fg) = if ret.success { ("OK", color::outcome_ok()) } else { ("FAIL", color::outcome_failed()) };
+        spans.push(Span::styled(format!("{:<sw$}", status, sw = self.status_w), Style::default().fg(status_fg).add_modifier(Modifier::BOLD)));
+        let dim = Style::default().fg(color::inactive_fg());
+        let num = |n: usize, w: usize, fg: Color| {
+            Span::styled(format!("  {:>w$}", n), if n == 0 { dim } else { Style::default().fg(fg) })
+        };
+        match (self.counts, crate::app::state_counts(&ret.full_return)) {
+            (Some((ok_w, chg_w, fail_w)), Some(c)) => {
+                let chg_fg = if c.pending > 0 { color::outcome_pending() } else { color::outcome_changed() };
+                spans.push(num(c.ok, ok_w, color::outcome_ok()));
+                spans.push(num(c.chg(), chg_w, chg_fg));
+                spans.push(num(c.failed, fail_w, color::outcome_failed()));
+            }
+            // A state job whose return isn't a state dict (render error, "already running").
+            (Some(_), None) => spans.push(Span::styled(format!("  rc={}", ret.retcode), dim)),
+            (None, _) => spans.push(Span::styled(
+                format!("  {:>w$}", ret.retcode, w = self.rc_w),
+                if ret.retcode == 0 { dim } else { Style::default().fg(color::outcome_failed()) },
+            )),
+        }
+        Line::from(spans)
     }
 }
 
@@ -1684,6 +1837,41 @@ fn format_ts(ts: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_names_are_cut_in_the_middle() {
+        assert_eq!(shorten_middle("web01", 10), "web01");
+        assert_eq!(shorten_middle("web-prod-eu-west-1-node-17", 18), "web-prod-\u{2026}-node-17");
+        assert_eq!(shorten_middle("web-prod-eu-west-1-node-17", 18).chars().count(), 18);
+        assert_ne!(shorten_middle("web-prod-eu-west-1-node-17", 12), shorten_middle("web-prod-eu-west-1-node-18", 12));
+    }
+
+    #[test]
+    fn returns_table_aligns_columns_across_name_lengths_and_big_counts() {
+        use crate::types::{JidLookup, JidReturn};
+        let states = |ok: usize, failed: usize| {
+            let mut m = serde_json::Map::new();
+            for i in 0..ok { m.insert(format!("ok{}", i), serde_json::json!({"result": true, "changes": {}, "__run_num__": i})); }
+            for i in 0..failed { m.insert(format!("bad{}", i), serde_json::json!({"result": false, "changes": {}, "__run_num__": ok + i})); }
+            serde_json::Value::Object(m)
+        };
+        let ret = |id: &str, full_return: serde_json::Value, success: bool| JidReturn {
+            minion_id: id.into(), success, retcode: if success { 0 } else { 2 },
+            summary: String::new(), full_return, formatted_text: String::new(),
+        };
+        let mut l = JidLookup::failed(String::new());
+        l.returns = vec![ret("db1", states(120, 0), true), ret("ubuntu2404-3006-16-0", states(3, 105), false)];
+        l.missing = vec!["web7".into()];
+        let t = ReturnsTable::new(&l);
+        assert_eq!(t.counts, Some((3, 3, 4)), "ok grows to 3 digits; chg/fail keep their label width");
+        let text = |line: Line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let rows: Vec<String> = (0..3).map(|i| text(t.row(&l, i, false, t.id_w, ""))).collect();
+        let col = |row: &str, needle: &str| row.find(needle).unwrap();
+        assert_eq!(col(&rows[0], "OK"), col(&rows[1], "FAIL"), "status column lines up: {:?}", rows);
+        assert_eq!(col(&rows[0], "OK"), col(&rows[2], "NO RETURN"));
+        assert_eq!(rows[0].len(), rows[1].len(), "count columns end at the same place: {:?}", rows);
+        assert!(rows[1].ends_with("    3    0   105"), "{:?}", rows[1]);
+    }
 
     #[test]
     fn search_highlights_matches_case_insensitively() {

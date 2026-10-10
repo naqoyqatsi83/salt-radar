@@ -185,7 +185,7 @@ fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize
         Column::FailPct => match fail_ratio {
             None => cell("\u{2014}", w, right, dim),
             Some(r) => {
-                let fg = if r == 0.0 { color::inactive_fg() } else if r < 0.25 { color::yellow() } else { color::red() };
+                let fg = if r == 0.0 { color::inactive_fg() } else { color::outcome_failed() };
                 // Any failure reads as at least 1%, so it never rounds away to 0%.
                 let pct = if r == 0.0 { 0.0 } else { (r * 100.0).round().max(1.0) };
                 cell(&format!("{:.0}%", pct), w, right, Style::default().fg(fg))
