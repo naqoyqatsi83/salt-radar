@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-10
+
 ### Added
 
 - Minion activity popup (`r` on Minions): show each job's function, args, result and full JID, one row per job (a live return replaces its Job Cache entry), Job Cache entries targeted by glob or list, and a summary of the minion's last 50 returns since salt-radar started, with its latest failure (#130)
