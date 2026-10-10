@@ -880,7 +880,7 @@ fn draw_job_detail(
     } else { String::new() };
     let returns_str = lookup.as_ref().map_or(String::new(), |l| format!("  Returns: {}", l.returns.len()));
     let failed_returns = lookup.as_ref().map_or(0, |l| {
-        l.returns.iter().filter(|r| !crate::app::derive_success_retcode(&r.full_return).1).count()
+        l.returns.iter().filter(|r| !r.success).count()
     });
     let failed_str = if failed_returns > 0 { format!(" ({} failed)", failed_returns) } else { String::new() };
     header_lines.push(Line::from(vec![
@@ -967,7 +967,7 @@ fn draw_job_detail(
                     continue;
                 }
                 let cursor = if i == sel { "\u{25b6}" } else { " " };
-                let (live_retcode, live_success) = crate::app::derive_success_retcode(&ret.full_return);
+                let (live_retcode, live_success) = (ret.retcode, ret.success);
                 let status = if live_success { "OK" } else { "FAIL" };
                 let sc = if live_success { color::green() } else { color::red() };
                 let id_style = Style::default().fg(if i == sel { color::cyan() } else { color::main_fg() })

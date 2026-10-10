@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Job Detail: count a minion as failed when its command exited non-zero even though the output looks normal (e.g. `/bin/sh: uptime: not found`, rc 127) — the lookup now uses the retcode Salt stored in the job cache, so Job Detail's failed count matches Live Jobs
+
 ## [0.7.5] - 2026-10-10
 
 ### Added

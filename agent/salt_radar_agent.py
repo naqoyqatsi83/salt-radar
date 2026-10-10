@@ -1096,6 +1096,37 @@ def cmd_minion_grains(opts, req):
     result(req["id"], "minion_grains", data={"minion_id": mid, "grains": pairs})
 
 
+def _cached_job_outcomes(opts, jid):
+    """Each minion's stored `(retcode, success)` for a job, read from the
+    local_cache job directory. `jobs.lookup_jid` returns only the return
+    data, so a command that printed its error and exited non-zero (e.g.
+    `/bin/sh: uptime: not found`, rc 127) would otherwise read as a success.
+    Empty for other job-cache backends or when the files can't be read."""
+    returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
+    if returner != "local_cache":
+        return {}
+    try:
+        import salt.payload
+        import salt.returners.local_cache as local_cache_mod
+        import salt.utils.jid as jid_mod
+
+        local_cache_mod.__opts__ = opts
+        jid_dir = jid_mod.jid_dir(jid, local_cache_mod._job_dir(), opts["hash_type"])
+        outcomes = {}
+        for mid in os.listdir(jid_dir):
+            path = os.path.join(jid_dir, mid, local_cache_mod.RETURN_P)
+            if not os.path.isfile(path):
+                continue
+            with open(path, "rb") as fh:
+                stored = salt.payload.load(fh)
+            if isinstance(stored, dict):
+                outcomes[mid] = (stored.get("retcode"), stored.get("success"))
+        return outcomes
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        return {}
+
+
 def cmd_jid_lookup(opts, req):
     """Look up a specific job's per-minion returns.
 
@@ -1301,10 +1332,16 @@ def cmd_jid_lookup(opts, req):
         raw_start, raw_end = bounds
         return raw_output[raw_start:raw_end].strip()
 
+    outcomes = _cached_job_outcomes(opts, jid)
     returns = []
     for mid, ret_val in lookup_data.items():
         mid = str(mid)
         retcode, success = _derive_retcode_and_success(ret_val)
+        stored_rc, stored_success = outcomes.get(mid, (None, None))
+        if isinstance(stored_rc, int) and stored_rc != 0:
+            retcode, success = stored_rc, False
+        elif stored_success is False:
+            retcode, success = retcode or 1, False
 
         # Already plain JSON types -- it came straight from json.loads above.
         clean_return = ret_val

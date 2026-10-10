@@ -2864,8 +2864,18 @@ pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
     }
 }
 
-fn write_jid_debug(full_return: &serde_json::Value, success: bool, retcode: i64, minion_id: &str) {
-    let _ = (full_return, success, retcode, minion_id);
+/// A looked-up return's outcome: the agent's verdict (which includes the
+/// retcode Salt stored in the job cache) combined with what the return data
+/// itself shows, so neither a non-zero exit nor a failed state is missed.
+fn lookup_return_outcome(entry: &serde_json::Value, full_return: &serde_json::Value) -> (bool, i64) {
+    let (derived_rc, derived_ok) = derive_success_retcode(full_return);
+    let agent_ok = entry["success"].as_bool().unwrap_or(true);
+    let agent_rc = entry["retcode"].as_i64().unwrap_or(0);
+    if agent_ok && derived_ok && agent_rc == 0 {
+        (true, 0)
+    } else {
+        (false, [agent_rc, derived_rc, 1].into_iter().find(|&rc| rc != 0).unwrap_or(1))
+    }
 }
 
 fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
@@ -2882,13 +2892,11 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     if let Some(arr) = data["returns"].as_array() {
         for entry in arr {
             let full_return = entry["full_return"].clone();
-            let (derived_retcode, derived_success) = derive_success_retcode(&full_return);
-            write_jid_debug(&full_return, derived_success, derived_retcode,
-                entry["minion_id"].as_str().unwrap_or("?"));
+            let (success, retcode) = lookup_return_outcome(entry, &full_return);
             result.returns.push(JidReturn {
                 minion_id: entry["minion_id"].as_str().unwrap_or("?").to_string(),
-                success: derived_success,
-                retcode: derived_retcode,
+                success,
+                retcode,
                 summary: entry["summary"].as_str().unwrap_or("").to_string(),
                 full_return,
                 formatted_text: entry["formatted_text"].as_str().unwrap_or("").to_string(),
@@ -3142,6 +3150,17 @@ mod tests {
         ]});
         let jids: Vec<String> = parse_cache_jobs(&data).into_iter().map(|j| j.jid).collect();
         assert_eq!(jids, ["20261009120000000003", "20261009120000000002", "20261009120000000001"]);
+    }
+
+    #[test]
+    fn lookup_outcome_trusts_the_stored_retcode_and_the_return_data() {
+        let out = |entry: serde_json::Value| lookup_return_outcome(&entry, &entry["full_return"]);
+        assert_eq!(out(json!({"success": true, "retcode": 0, "full_return": "up 3 days"})), (true, 0));
+        assert_eq!(out(json!({"success": false, "retcode": 127, "full_return": "/bin/sh: uptime: not found"})), (false, 127),
+            "an exit code the output text doesn't show");
+        assert_eq!(out(json!({"success": true, "retcode": 0, "full_return": "ERROR: boom"})), (false, 1),
+            "an error the agent missed");
+        assert_eq!(out(json!({"full_return": "up 3 days"})), (true, 0), "missing fields default to success");
     }
 
     #[test]
