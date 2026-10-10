@@ -367,6 +367,22 @@ pub struct App {
     /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
     /// content preview (right panel).
     pub job_detail_scroll_max: usize,
+    /// Job Detail output search: the query, whether it's being typed, and the
+    /// matching line numbers (written back every render, like the scroll max).
+    pub job_search: String,
+    pub job_searching: bool,
+    pub job_search_matches: Vec<usize>,
+    /// Lines of the Job Detail output holding a failed state (`f`/`F`).
+    pub job_fail_lines: Vec<usize>,
+    /// The output line the last `n`/`N`/`f`/`F` jump landed on, marked in the pane.
+    pub job_focus_line: Option<usize>,
+    /// Minion whose return Job Detail selects once its lookup arrives.
+    pub job_detail_select_minion: Option<String>,
+    /// Each minion's latest return outcomes, for its health summary and the
+    /// Minions Fail% column. Kept apart from the event buffer so busy fleets
+    /// don't evict a quiet minion's history.
+    pub minion_returns: HashMap<String, MinionHealth>,
+    pub jobs_failed_only: bool,
     /// Filter state for MinionEvents popup
     pub minion_events_filter: String,
     pub minion_events_is_filtering: bool,
@@ -480,6 +496,76 @@ pub struct SaveFilePrompt {
     /// and pressed Enter again to proceed. Reset by any further edit to
     /// `filename`, so a changed name is re-checked from scratch.
     pub confirm_overwrite: bool,
+}
+
+/// How many of a minion's latest returns the health summary covers.
+pub const MINION_HEALTH_WINDOW: usize = 50;
+
+/// Rows above the list in the minion events popup: title, health summary,
+/// rule, column header, rule.
+pub const MINION_EVENTS_HEADER_ROWS: u16 = 5;
+
+#[derive(Debug, Default, PartialEq)]
+pub struct MinionHealth {
+    /// Outcomes of the latest returns, oldest first; `true` = success.
+    pub recent: VecDeque<bool>,
+    /// When the newest failure happened, and the job's function and args.
+    pub last_failure: Option<(f64, String)>,
+}
+
+impl MinionHealth {
+    fn record(&mut self, ok: bool, ts: f64, failure: Option<String>) {
+        self.recent.push_back(ok);
+        if self.recent.len() > MINION_HEALTH_WINDOW { self.recent.pop_front(); }
+        if let Some(what) = failure { self.last_failure = Some((ts, what)); }
+    }
+
+    pub fn failed(&self) -> usize {
+        self.recent.iter().filter(|ok| !**ok).count()
+    }
+
+    pub fn fail_ratio(&self) -> Option<f64> {
+        (!self.recent.is_empty()).then(|| self.failed() as f64 / self.recent.len() as f64)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ReturnResult {
+    pub success: bool,
+    pub retcode: i64,
+    pub counts: Option<(usize, usize, usize)>,
+}
+
+/// The JID of a `salt/job/<jid>/ret/<minion>` event.
+pub fn return_event_jid(evt: &SaltEvent) -> Option<&str> {
+    let mut parts = evt.tag.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("salt"), Some("job"), Some(jid), Some("ret")) => Some(jid),
+        _ => None,
+    }
+}
+
+/// Outcome of a job return event: Salt's own `success`/`retcode` when the
+/// event carries them, and what the return data itself says (a failed state
+/// inside a state run, an `ERROR:` string, ...).
+pub fn return_event_result(data: &serde_json::Value) -> ReturnResult {
+    let ret = &data["return"];
+    let (derived_rc, derived_ok) = derive_success_retcode(ret);
+    let retcode = data["retcode"].as_i64().unwrap_or(derived_rc);
+    let success = data["success"].as_bool().unwrap_or(true) && derived_ok && retcode == 0;
+    ReturnResult { success, retcode: if success { 0 } else { retcode.max(1) }, counts: state_counts(ret) }
+}
+
+/// Whether a Job Cache entry targeted this minion. Only targets that can be
+/// decided from the ID alone (glob, list) are matched; grain, pillar and
+/// compound targets need the minion's data, so those jobs show up through
+/// their return events instead.
+pub fn cache_job_targets(job: &CacheJobEntry, minion_id: &str) -> bool {
+    match job.tgt_type.as_str() {
+        "list" => job.tgt.split(',').any(|t| t.trim() == minion_id),
+        "glob" | "" => App::glob_match(minion_id, &job.tgt),
+        _ => job.tgt == "*" || job.tgt == minion_id,
+    }
 }
 
 /// A single item in the unified per-minion activity view.
@@ -602,6 +688,14 @@ impl App {
             return_to_minion_detail: None,
             event_detail_scroll_max: 0,
             job_detail_scroll_max: 0,
+            job_search: String::new(),
+            job_searching: false,
+            job_search_matches: Vec::new(),
+            job_fail_lines: Vec::new(),
+            job_focus_line: None,
+            job_detail_select_minion: None,
+            minion_returns: HashMap::new(),
+            jobs_failed_only: false,
             minion_events_filter: String::new(),
             minion_events_is_filtering: false,
             hide_timed_out: false,
@@ -1240,17 +1334,22 @@ impl App {
     }
 
     /// Unified activity list for a minion: events + cache jobs + alerts.
+    /// Filtered by the popup's `/` filter, so drawing, keys and clicks all see
+    /// the same rows.
     pub fn minion_activity(&self, minion_id: &str) -> Vec<MinionActivityItem> {
         let mut items: Vec<MinionActivityItem> = Vec::new();
+        let mut returned_jids: HashSet<String> = HashSet::new();
 
-        // Events from event buffer
         for (idx, evt) in self.events_for_minion(minion_id) {
+            if let Some(jid) = return_event_jid(&evt) {
+                returned_jids.insert(jid.to_string());
+            }
             items.push(MinionActivityItem::Event(idx, evt));
         }
 
-        // Cache jobs targeting this minion
+        // A job whose return is already listed would only repeat it, minus the result.
         for job in &self.jobs_cache {
-            if job.tgt == "*" || job.tgt == minion_id {
+            if !returned_jids.contains(&job.jid) && cache_job_targets(job, minion_id) {
                 items.push(MinionActivityItem::CacheJob(job.clone()));
             }
         }
@@ -1262,9 +1361,33 @@ impl App {
             }
         }
 
+        if !self.minion_events_filter.is_empty() {
+            let pat = self.minion_events_filter.to_lowercase();
+            items.retain(|item| matches_filter(item, &pat));
+        }
+
         // Sort by timestamp descending (alerts with ts=0.0 fall to end)
         items.sort_by(|a, b| b.ts().partial_cmp(&a.ts()).unwrap_or(std::cmp::Ordering::Equal));
         items
+    }
+
+    pub fn minion_health(&self, minion_id: &str) -> Option<&MinionHealth> {
+        self.minion_returns.get(minion_id)
+    }
+
+    /// Share of the minion's latest returns that failed, 0.0–1.0.
+    pub fn minion_fail_ratio(&self, minion_id: &str) -> Option<f64> {
+        self.minion_health(minion_id).and_then(MinionHealth::fail_ratio)
+    }
+
+    fn record_minion_return(&mut self, minion_id: &str, ts: f64, data: &serde_json::Value) {
+        let ok = return_event_result(data).success;
+        let failure = (!ok).then(|| {
+            let fun = data["fun"].as_str().unwrap_or("?");
+            let (args, _) = format_job_args(fun, &data["fun_args"]);
+            format!("{} {}", fun, args).trim_end().to_string()
+        });
+        self.minion_returns.entry(minion_id.to_string()).or_default().record(ok, ts, failure);
     }
 
     /// Rolling percentage of job returns with success == true, over the last
@@ -1433,11 +1556,15 @@ impl App {
 
     pub fn filtered_jobs_len(&self) -> usize {
         let pat = self.filter_text_for(Tab::Jobs);
-        if pat.is_empty() {
+        if pat.is_empty() && !self.jobs_failed_only {
             return self.jobs.len();
         }
         let known = self.accepted_ids();
-        self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).count()
+        self.jobs.iter().filter(|j| self.job_shown(j, pat, known)).count()
+    }
+
+    fn job_shown(&self, job: &JobEntry, pat: &str, known: &HashSet<String>) -> bool {
+        (!self.jobs_failed_only || job.failed > 0) && (pat.is_empty() || Self::matches_job(job, pat, known))
     }
 
     /// Live Jobs in display order: filtered, then sorted. Unsorted, they
@@ -1445,12 +1572,8 @@ impl App {
     /// event-arrival order, which a late or reordered `/new` can scramble.
     pub fn filtered_jobs(&self) -> Vec<&JobEntry> {
         let pat = self.filter_text_for(Tab::Jobs);
-        let mut jobs: Vec<&JobEntry> = if pat.is_empty() {
-            self.jobs.iter().collect()
-        } else {
-            let known = self.accepted_ids();
-            self.jobs.iter().filter(|j| Self::matches_job(j, pat, known)).collect()
-        };
+        let known = self.accepted_ids();
+        let mut jobs: Vec<&JobEntry> = self.jobs.iter().filter(|j| self.job_shown(j, pat, known)).collect();
         jobs.sort_by(|a, b| a.jid.cmp(&b.jid));
         if let Some((col, desc)) = self.sort_of(TableId::LiveJobs) {
             jobs.sort_by(|a, b| {
@@ -1728,6 +1851,11 @@ impl App {
                     Column::Arch => a.cpuarch.cmp(&b.cpuarch),
                     // Most recently seen first, matching the Seen column's text.
                     Column::LastSeen => b.last_seen_epoch.cmp(&a.last_seen_epoch),
+                    // Worst first; minions with no returns yet go last.
+                    Column::FailPct => {
+                        let ratio = |m: &MinionInfo| self.minion_fail_ratio(&m.id).unwrap_or(-1.0);
+                        ratio(b).total_cmp(&ratio(a))
+                    }
                     _ => a.id.cmp(&b.id),
                 };
                 if desc { ord.reverse() } else { ord }
@@ -2664,6 +2792,43 @@ fn event_body_as_copied_text(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate
     }
 }
 
+/// Job Detail's returns-list filter: case-insensitive substring of the minion ID.
+pub fn return_matches(minion_id: &str, filter: &str) -> bool {
+    minion_id.to_ascii_lowercase().contains(&filter.to_ascii_lowercase())
+}
+
+/// Moves the selection to the nearest return matching `filter`, looking
+/// forward from the current one first.
+pub fn snap_to_matching_return(returns: &[crate::types::JidReturn], selected: &mut Option<usize>, filter: &str) {
+    if filter.is_empty() { return; }
+    let cur = selected.unwrap_or(0).min(returns.len().saturating_sub(1));
+    let hit = (cur..returns.len()).find(|&i| return_matches(&returns[i].minion_id, filter))
+        .or_else(|| (0..cur).rev().find(|&i| return_matches(&returns[i].minion_id, filter)));
+    if hit.is_some() { *selected = hit; }
+}
+
+/// `(ok, changed, failed)` state counts for a state.apply-style return (a
+/// dict keyed by state ID); `None` for any other kind of return.
+pub fn state_counts(full_return: &serde_json::Value) -> Option<(usize, usize, usize)> {
+    let obj = full_return.as_object()?;
+    if obj.is_empty() || obj.contains_key("result") || !obj.values().all(|v| {
+        v.as_object().is_some_and(|s| s.contains_key("result") || s.contains_key("__run_num__"))
+    }) {
+        return None;
+    }
+    let (mut ok, mut changed, mut failed) = (0, 0, 0);
+    for state in obj.values() {
+        if state.get("result").and_then(|r| r.as_bool()) == Some(false) {
+            failed += 1;
+        } else if state.get("changes").and_then(|c| c.as_object()).is_some_and(|c| !c.is_empty()) {
+            changed += 1;
+        } else {
+            ok += 1;
+        }
+    }
+    Some((ok, changed, failed))
+}
+
 pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
     match full_return {
         serde_json::Value::Object(obj) => {
@@ -2921,6 +3086,7 @@ fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
         MinionActivityItem::CacheJob(job) => {
             job.jid.to_lowercase().contains(term)
                 || job.fun.to_lowercase().contains(term)
+                || job.args.to_lowercase().contains(term)
         }
         MinionActivityItem::Alert(alert) => {
             alert.description.to_lowercase().contains(term)
@@ -2976,6 +3142,67 @@ mod tests {
         ]});
         let jids: Vec<String> = parse_cache_jobs(&data).into_iter().map(|j| j.jid).collect();
         assert_eq!(jids, ["20261009120000000003", "20261009120000000002", "20261009120000000001"]);
+    }
+
+    #[test]
+    fn minion_health_keeps_a_window_and_the_latest_failure() {
+        let mut h = MinionHealth::default();
+        assert_eq!(h.fail_ratio(), None);
+        h.record(false, 1.0, Some("cmd.run exit 3".into()));
+        for i in 0..MINION_HEALTH_WINDOW {
+            h.record(i % 10 != 0, 2.0 + i as f64, (i % 10 == 0).then(|| format!("job {}", i)));
+        }
+        assert_eq!(h.recent.len(), MINION_HEALTH_WINDOW, "the oldest outcome drops out");
+        assert_eq!(h.failed(), MINION_HEALTH_WINDOW / 10);
+        assert_eq!(h.fail_ratio(), Some(0.1));
+        assert_eq!(h.last_failure, Some((42.0, "job 40".to_string())));
+    }
+
+    #[test]
+    fn cache_jobs_match_glob_and_list_targets() {
+        let job = |tgt: &str, tgt_type: &str| CacheJobEntry {
+            jid: "1".into(), fun: "test.ping".into(), tgt: tgt.into(), tgt_type: tgt_type.into(),
+            user: "root".into(), start_time: String::new(), start_epoch: 0.0, args: String::new(), test_run: false,
+        };
+        assert!(cache_job_targets(&job("*", "glob"), "web01"));
+        assert!(cache_job_targets(&job("web*", "glob"), "web01"));
+        assert!(!cache_job_targets(&job("db*", "glob"), "web01"));
+        assert!(cache_job_targets(&job("db01,web01", "list"), "web01"));
+        assert!(!cache_job_targets(&job("db01,web011", "list"), "web01"));
+        assert!(cache_job_targets(&job("web01", "grain"), "web01"));
+        assert!(!cache_job_targets(&job("os:Debian", "grain"), "web01"));
+    }
+
+    #[test]
+    fn return_events_report_jid_and_outcome() {
+        let evt = SaltEvent { tag: "salt/job/2026/ret/web01".into(), data: json!({}), ts: 0.0 };
+        assert_eq!(return_event_jid(&evt), Some("2026"));
+        let new = SaltEvent { tag: "salt/job/2026/new".into(), data: json!({}), ts: 0.0 };
+        assert_eq!(return_event_jid(&new), None);
+
+        let ok = return_event_result(&json!({"return": true, "retcode": 0, "success": true}));
+        assert_eq!(ok, ReturnResult { success: true, retcode: 0, counts: None });
+        let failed_rc = return_event_result(&json!({"return": "boom", "retcode": 2, "success": true}));
+        assert_eq!((failed_rc.success, failed_rc.retcode), (false, 2));
+        let state = return_event_result(&json!({"retcode": 0, "return": {
+            "a": {"result": true, "changes": {}, "__run_num__": 0},
+            "b": {"result": false, "changes": {}, "__run_num__": 1},
+        }}));
+        assert_eq!(state, ReturnResult { success: false, retcode: 1, counts: Some((1, 0, 1)) });
+    }
+
+    #[test]
+    fn state_counts_split_ok_changed_failed() {
+        let ret = json!({
+            "pkg_|-nginx_|-nginx_|-installed": {"result": true, "changes": {}, "__run_num__": 0},
+            "file_|-conf_|-/etc/nginx.conf_|-managed": {"result": true, "changes": {"diff": "x"}, "__run_num__": 1},
+            "service_|-nginx_|-nginx_|-running": {"result": false, "changes": {}, "__run_num__": 2},
+            "cmd_|-check_|-true_|-run": {"result": null, "changes": {}, "__run_num__": 3},
+        });
+        assert_eq!(state_counts(&ret), Some((2, 1, 1)));
+        assert_eq!(state_counts(&json!({"result": true})), None);
+        assert_eq!(state_counts(&json!("output")), None);
+        assert_eq!(state_counts(&json!({})), None);
     }
 
     #[test]

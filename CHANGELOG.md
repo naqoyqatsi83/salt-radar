@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-10
+
+### Added
+
+- Minion activity popup (`r` on Minions): show each job's function, args, result and full JID, one row per job (a live return replaces its Job Cache entry), Job Cache entries targeted by glob or list, and a summary of the minion's last 50 returns since salt-radar started, with its latest failure (#130)
+- Minions: optional `Fail%` column (`fail_pct`) showing the share of each minion's last 50 returns that failed, yellow below 25% and red above, sortable worst first; the activity popup's summary uses the same per-minion history, which no longer depends on the event buffer (#131)
+- Minion activity popup: `Enter` on a job return opens Job Detail with that minion's return selected, like Job Cache rows, instead of the raw event
+- Job Detail: search the return output with `/`; matches are highlighted, the pane's border shows the match count, and `n`/`N` jump to the next/previous one, marking its line (`match 2 of 5`) and working from the returns list too (#128); the border hints show `n/N` and `f/F` only when there is a match or failed state to jump to, and label `/` as "filter hosts" or "search output" depending on the pane
+- Surface failures (#127): Job Detail lists each minion's state counts (`12 ok 3 chg 1 fail`) for state runs, the header counts failed returns, `f`/`F` jump between failed states in the output (marked, with `failed state 1 of 2` in the border), and `x` on Live Jobs shows only jobs with a failed return
+- Job Detail: the returns-list filter (`/`) now narrows the list as you type, ignores case, highlights the matching part of each minion ID, and stays visible once confirmed (`Returns (3/12)` and `/web: 3 of 12` in the panel border); `Esc` clears it before closing the popup
+
+### Fixed
+
+- Minion activity popup: make the `/` filter filter the list shown, so `Enter`, copy and clicks act on the highlighted row
+
 ## [0.7.4] - 2026-10-10
 
 ### Added
