@@ -543,7 +543,7 @@ impl TableId {
         match self {
             Self::LiveJobs => &["jid", "fun", "args", "target", "source", "tgt", "ok", "fail", "wait", "started"],
             Self::JobCache => &["jid", "user", "started", "target", "fun", "args"],
-            Self::Minions => &["id", "key", "os", "salt", "arch", "seen"],
+            Self::Minions => &["id", "key", "os", "salt", "arch", "seen", "fail_pct"],
             Self::Events => &["local", "utc", "tag", "minion"],
             Self::Alerts => &["severity", "rule", "description", "since", "count"],
             Self::ApiLog => &["age", "method", "client", "path", "status", "time"],
@@ -599,6 +599,7 @@ pub enum Column {
     SaltVersion,
     Arch,
     LastSeen,
+    FailPct,
     Local,
     Utc,
     Tag,
@@ -634,6 +635,7 @@ const COLUMN_KEYS: &[(&str, Column)] = &[
     ("salt", Column::SaltVersion),
     ("arch", Column::Arch),
     ("seen", Column::LastSeen),
+    ("fail_pct", Column::FailPct),
     ("local", Column::Local),
     ("utc", Column::Utc),
     ("tag", Column::Tag),
@@ -679,6 +681,7 @@ impl Column {
             Self::SaltVersion => "Salt",
             Self::Arch => "Arch",
             Self::LastSeen => "Seen",
+            Self::FailPct => "Fail%",
             Self::Local => "Local",
             Self::Utc => "UTC",
             Self::Tag => "Tag",
@@ -705,6 +708,7 @@ impl Column {
                 | Self::MinionId | Self::EventMinion | Self::Started => 21,
             Self::Source | Self::Method | Self::Time => 8,
             Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count => 6,
+            Self::FailPct => 7,
             Self::User => 13,
             Self::KeyStatus | Self::Severity | Self::Arch => 10,
             Self::LastSeen | Self::Since => 13,
@@ -729,7 +733,7 @@ impl Column {
     }
 
     pub fn right_aligned(self) -> bool {
-        matches!(self, Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count | Self::Time)
+        matches!(self, Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count | Self::Time | Self::FailPct)
     }
 
     /// Parses a comma-separated column list from the config, keeping only

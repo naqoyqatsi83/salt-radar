@@ -98,7 +98,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
                         ];
                         let ks = key_map.get(minion.id.as_str()).copied().or(minion.key_status);
                         for (&col, &w) in cols.iter().zip(&widths) {
-                            spans.push(minion_cell(minion, ks, col, w, now));
+                            spans.push(minion_cell(minion, ks, col, w, now, app.minion_fail_ratio(&minion.id)));
                         }
                         lines.push(select(Line::from(spans)));
                     }
@@ -150,7 +150,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
     );
 }
 
-fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize, now: u64) -> Span<'static> {
+fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize, now: u64, fail_ratio: Option<f64>) -> Span<'static> {
     let right = col.right_aligned();
     let dim = Style::default().fg(color::inactive_fg());
     // A timed-out minion's grains are stale/unknown, so its detail columns
@@ -182,6 +182,15 @@ fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize
             };
             cell(&seen, w, right, dim)
         }
+        Column::FailPct => match fail_ratio {
+            None => cell("\u{2014}", w, right, dim),
+            Some(r) => {
+                let fg = if r == 0.0 { color::inactive_fg() } else if r < 0.25 { color::yellow() } else { color::red() };
+                // Any failure reads as at least 1%, so it never rounds away to 0%.
+                let pct = if r == 0.0 { 0.0 } else { (r * 100.0).round().max(1.0) };
+                cell(&format!("{:.0}%", pct), w, right, Style::default().fg(fg))
+            }
+        },
         _ => cell("", w, right, dim),
     }
 }

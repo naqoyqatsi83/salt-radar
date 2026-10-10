@@ -347,9 +347,15 @@ impl App {
                                     if let Some(DetailPopup::JobDetail { ref mut lookup, .. }) = self.detail_popup {
                                         *lookup = Some(jid_data.clone());
                                     }
-                                    // Snap to first filter match if filter was committed before data arrived
+                                    let select_minion = self.job_detail_select_minion.take();
+                                    // Opened from a minion's activity: select that minion's return.
+                                    // Otherwise snap to the first filter match if one was committed before data arrived.
                                     if let Some(DetailPopup::JobDetail { ref return_filter, ref mut selected_return, ref lookup, .. }) = self.detail_popup {
-                                        if !return_filter.is_empty() {
+                                        if let (Some(mid), Some(l)) = (select_minion, lookup) {
+                                            if let Some(idx) = l.returns.iter().position(|ret| ret.minion_id == mid) {
+                                                *selected_return = Some(idx);
+                                            }
+                                        } else if !return_filter.is_empty() {
                                             if let Some(ref l) = lookup {
                                                 let first = l.returns.iter().position(|ret| crate::app::return_matches(&ret.minion_id, return_filter));
                                                 if let Some(idx) = first {
@@ -455,6 +461,7 @@ impl App {
                         if self.job_returns_window.len() > JOB_STATS_WINDOW { self.job_returns_window.pop_front(); }
                         if let Some(mid) = tag.rsplit('/').next() {
                             if !mid.is_empty() {
+                                self.record_minion_return(mid, ts, &data);
                                 self.last_activity_minion = mid.to_string();
                                 self.last_activity_fun = data["fun"].as_str().unwrap_or("?").to_string();
                                 self.last_activity_at = Instant::now();

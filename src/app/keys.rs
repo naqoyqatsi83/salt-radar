@@ -138,12 +138,7 @@ impl App {
         // Pre-compute events for MinionEvents popup to avoid borrow conflict
         let mut minion_events_cache: Option<(String, Vec<MinionActivityItem>)> = None;
         if let Some(DetailPopup::MinionEvents { ref minion_id, .. }) = self.detail_popup {
-            let mut items = self.minion_activity(minion_id);
-            // Apply filter if set
-            if !self.minion_events_filter.is_empty() {
-                let pat = self.minion_events_filter.to_lowercase();
-                items.retain(|item| matches_filter(item, &pat));
-            }
+            let items = self.minion_activity(minion_id);
             if self.popup_tab == Some(self.current_tab) {
                 minion_events_cache = Some((minion_id.clone(), items));
             }
@@ -729,27 +724,17 @@ impl App {
                             }
                             KeyCode::Enter => {
                                 self.return_to_minion_events = Some((minion_id.clone(), *selected));
+                                let mid = minion_id.clone();
                                 items.get(*selected).and_then(|item| match item {
-                                    MinionActivityItem::Event(_, evt) => Some(evt.clone()),
+                                    MinionActivityItem::Event(_, evt) => match self.return_event_job(evt) {
+                                        Some((jid, fun, tgt, start)) => {
+                                            self.open_job_detail(jid, fun, tgt, start, Some(mid));
+                                            None
+                                        }
+                                        None => Some(evt.clone()),
+                                    },
                                     MinionActivityItem::CacheJob(job) => {
-                                        let jid = job.jid.clone();
-                                        let req_id = self.send_jid_lookup(&jid);
-                                        self.pending_jid_lookup = Some((req_id, jid.clone()));
-                                        self.pending_jid_lookup_at = Some(Instant::now());
-                                        self.detail_popup = Some(DetailPopup::JobDetail {
-                                            jid,
-                                            lookup: None,
-                                            selected_return: None,
-                                            job_fun: job.fun.clone(),
-                                            job_tgt: job.tgt.clone(),
-                                            job_start_epoch: job.start_epoch,
-                                            return_filter: String::new(),
-                                            return_is_filtering: false,
-                                            panel_focus: false,
-                                            content_scroll: 0,
-                                            content_scroll_mode: false,
-                                        });
-                                        self.popup_tab = Some(self.current_tab);
+                                        self.open_job_detail(job.jid.clone(), job.fun.clone(), job.tgt.clone(), job.start_epoch, Some(mid));
                                         None
                                     }
                                     MinionActivityItem::Alert(alert) => {
@@ -1569,8 +1554,9 @@ impl App {
             return false;
         }
 
+        let header = MINION_EVENTS_HEADER_ROWS as usize;
         let para_row = (row - iy) as usize;
-        if para_row < 4 {
+        if para_row < header {
             return false;
         }
 
@@ -1583,15 +1569,10 @@ impl App {
             _ => return false,
         };
         let sel = current_sel.min(total.saturating_sub(1));
+        let list_h = (ih as usize).saturating_sub(header + self.minion_events_is_filtering as usize);
+        let (scroll, _, _) = crate::ui::scroll_window(sel, list_h, total);
 
-        let content_h = (ih as usize).saturating_sub(4);
-        let scroll = if sel > content_h / 2 {
-            sel.saturating_sub(content_h / 2).min(total.saturating_sub(1).saturating_sub(content_h / 2))
-        } else {
-            0
-        };
-
-        let item_idx = scroll + para_row - 4;
+        let item_idx = scroll + para_row - header;
         if item_idx >= total { return false; }
 
         if let Some(DetailPopup::MinionEvents { ref mut selected, .. }) = self.detail_popup {
@@ -1609,29 +1590,15 @@ impl App {
                 if let Some(item) = items.get(item_idx) {
                     match item {
                         MinionActivityItem::Event(_, evt) => {
-                            self.return_to_minion_events = Some((mid, item_idx));
-                            self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
+                            self.return_to_minion_events = Some((mid.clone(), item_idx));
+                            match self.return_event_job(evt) {
+                                Some((jid, fun, tgt, start)) => self.open_job_detail(jid, fun, tgt, start, Some(mid)),
+                                None => self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle }),
+                            }
                         }
                         MinionActivityItem::CacheJob(job) => {
-                            self.return_to_minion_events = Some((mid, item_idx));
-                            let jid = job.jid.clone();
-                            let req_id = self.send_jid_lookup(&jid);
-                            self.pending_jid_lookup = Some((req_id, jid.clone()));
-                            self.pending_jid_lookup_at = Some(Instant::now());
-                            self.detail_popup = Some(DetailPopup::JobDetail {
-                                jid,
-                                lookup: None,
-                                selected_return: None,
-                                job_fun: job.fun.clone(),
-                                job_tgt: job.tgt.clone(),
-                                job_start_epoch: job.start_epoch,
-                                return_filter: String::new(),
-                                return_is_filtering: false,
-                                panel_focus: false,
-                                content_scroll: 0,
-                                content_scroll_mode: false,
-                            });
-                            self.popup_tab = Some(self.current_tab);
+                            self.return_to_minion_events = Some((mid.clone(), item_idx));
+                            self.open_job_detail(job.jid.clone(), job.fun.clone(), job.tgt.clone(), job.start_epoch, Some(mid));
                         }
                         MinionActivityItem::Alert(alert) => {
                             self.return_to_minion_events = Some((mid, item_idx));
@@ -1643,6 +1610,40 @@ impl App {
         }
 
         false
+    }
+
+    /// Opens Job Detail and starts its lookup; `select_minion` picks that
+    /// minion's return once the data arrives.
+    pub(crate) fn open_job_detail(&mut self, jid: String, fun: String, tgt: String, start_epoch: f64, select_minion: Option<String>) {
+        let req_id = self.send_jid_lookup(&jid);
+        self.pending_jid_lookup = Some((req_id, jid.clone()));
+        self.pending_jid_lookup_at = Some(Instant::now());
+        self.job_detail_select_minion = select_minion;
+        self.detail_popup = Some(DetailPopup::JobDetail {
+            jid,
+            lookup: None,
+            selected_return: None,
+            job_fun: fun,
+            job_tgt: tgt,
+            job_start_epoch: start_epoch,
+            return_filter: String::new(),
+            return_is_filtering: false,
+            panel_focus: false,
+            content_scroll: 0,
+            content_scroll_mode: false,
+        });
+        self.popup_tab = Some(self.current_tab);
+    }
+
+    /// The job behind a return event, as `(jid, fun, target, start)`. Return
+    /// events carry no target, so it comes from Live Jobs when the job is there.
+    fn return_event_job(&self, evt: &SaltEvent) -> Option<(String, String, String, f64)> {
+        let jid = return_event_jid(evt)?.to_string();
+        let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
+        let live = self.jobs.iter().find(|j| j.jid == jid);
+        let tgt = live.map_or_else(|| evt.data["id"].as_str().unwrap_or("").to_string(), |j| j.tgt.clone());
+        let start = live.map_or(evt.ts, |j| j.created_epoch);
+        Some((jid, fun, tgt, start))
     }
 
     pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -1777,23 +1778,7 @@ impl App {
                         None => (String::new(), String::new(), String::new(), 0.0, false),
                     };
                     if exists {
-                        let req_id = self.send_jid_lookup(&jid);
-                        self.pending_jid_lookup = Some((req_id, jid.clone()));
-                        self.pending_jid_lookup_at = Some(Instant::now());
-                        self.detail_popup = Some(DetailPopup::JobDetail {
-                            jid,
-                            lookup: None,
-                            selected_return: None,
-                            job_fun: fun,
-                            job_tgt: tgt,
-                            job_start_epoch: start_epoch,
-                            return_filter: String::new(),
-                            return_is_filtering: false,
-                            panel_focus: false,
-                            content_scroll: 0,
-                            content_scroll_mode: false,
-                        });
-                        self.popup_tab = Some(self.current_tab);
+                        self.open_job_detail(jid, fun, tgt, start_epoch, None);
                     }
                 } else {
                     let (jid, fun, tgt, start_epoch, exists) = {
@@ -1806,23 +1791,7 @@ impl App {
                         }
                     };
                     if exists {
-                        let req_id = self.send_jid_lookup(&jid);
-                        self.pending_jid_lookup = Some((req_id, jid.clone()));
-                        self.pending_jid_lookup_at = Some(Instant::now());
-                        self.detail_popup = Some(DetailPopup::JobDetail {
-                            jid,
-                            lookup: None,
-                            selected_return: None,
-                            job_fun: fun,
-                            job_tgt: tgt,
-                            job_start_epoch: start_epoch,
-                            return_filter: String::new(),
-                            return_is_filtering: false,
-                            panel_focus: false,
-                            content_scroll: 0,
-                            content_scroll_mode: false,
-                        });
-                        self.popup_tab = Some(self.current_tab);
+                        self.open_job_detail(jid, fun, tgt, start_epoch, None);
                     }
                 }
             }
