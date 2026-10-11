@@ -22,9 +22,18 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         vec![
             ("Esc", "cancel".to_string()),
             ("\u{2191}\u{2193}", "select".to_string()),
+            ("PgUp/PgDn", "page".to_string()),
             ("+/-", "move column".to_string()),
             ("Space", "show/hide".to_string()),
             ("Enter", if state.quick { "save" } else { "confirm" }.to_string()),
+        ]
+    } else if let Some(ConfigFieldKind::Choice(_) | ConfigFieldKind::Theme) = editing_kind {
+        vec![
+            ("Esc", "cancel".to_string()),
+            ("\u{2191}\u{2193}", "select".to_string()),
+            ("PgUp/PgDn", "page".to_string()),
+            ("Home/End", "first/last".to_string()),
+            ("Enter", "pick".to_string()),
         ]
     } else if let Some(ConfigFieldKind::Order) = editing_kind {
         vec![

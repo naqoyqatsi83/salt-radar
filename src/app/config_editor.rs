@@ -198,6 +198,10 @@ impl ConfigEditorState {
     }
 }
 
+/// Rows PageUp/PageDown move in the Config Editor's pickers, the same step
+/// as in its settings list.
+const PICKER_PAGE: usize = 5;
+
 impl App {
     /// Installs the theme to draw with: the configured one, or while the
     /// Config Editor is open, whatever its theme fields currently hold —
@@ -530,6 +534,10 @@ impl App {
                         KeyCode::Down | KeyCode::Char('j') => {
                             if s.choice_idx + 1 < options.len() { s.choice_idx += 1; }
                         }
+                        KeyCode::PageUp => s.choice_idx = s.choice_idx.saturating_sub(PICKER_PAGE),
+                        KeyCode::PageDown => s.choice_idx = (s.choice_idx + PICKER_PAGE).min(options.len().saturating_sub(1)),
+                        KeyCode::Home => s.choice_idx = 0,
+                        KeyCode::End => s.choice_idx = options.len().saturating_sub(1),
                         KeyCode::Enter => {
                             if let Some(opt) = options.get(s.choice_idx) {
                                 if let Some(field) = s.fields.get_mut(s.selected) {
@@ -555,6 +563,10 @@ impl App {
                             KeyCode::Down | KeyCode::Char('j') => {
                                 if i + 1 < items.len() { s.choice_idx = i + 1; }
                             }
+                            KeyCode::PageUp => s.choice_idx = i.saturating_sub(PICKER_PAGE),
+                            KeyCode::PageDown => s.choice_idx = (i + PICKER_PAGE).min(items.len().saturating_sub(1)),
+                            KeyCode::Home => s.choice_idx = 0,
+                            KeyCode::End => s.choice_idx = items.len().saturating_sub(1),
                             KeyCode::Char('+') | KeyCode::Char('=') if i > 0 && i < shown => {
                                 items.swap(i, i - 1);
                                 field.label_value = items[..shown].join(",");
