@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Per-user config under sudo (#160): when salt-radar runs as root with `SUDO_USER` set, it uses the invoking user's config (starting from root's until their first save), personal themes, "updated to vX" marker and home for `~` (the default export directory), and hands what it creates there — config, marker, exports — over to them, instead of every sudo user sharing root's. The README has a note on running through sudo and on several users at once
+- A `1337` theme: near-black with the bright accents of the 1337 color scheme — lime for success, cyan for changes, amber and orange for warnings, red for failures (#161)
 - Job Cache filter: the same terms as every other filter (#149) — comma-separated (any may match), globs (`*`, `?`, `[…]`) matched against the target, and `/regex/` / `/regex/i` terms, applied by the agent across the whole cache (noted in help's **Filter and search terms**); it was a single plain substring
 - Regex terms in every list filter and in the output searches (#148): a filter term wrapped in slashes is a regex (`/web-0[1-5]$/`, `/…/i` ignores case; commas inside it belong to it) on Events, Minions, Live Jobs, Alerts, API, the minion activity popup and Job Detail's host filter — which also gains comma-separated and glob terms like the other filters. Job Detail's output search and the help search take a whole query wrapped in slashes as a regex. Text that isn't a complete `/…/` stays plain, so a filter being typed never errors and `/etc/salt/minion` still searches for the path. Help has a new **Filter and search terms** section with examples
 - Text inputs have a real cursor: every filter, search, sniffer prompt, Config Editor field and the save prompt shows where you are (the character under the cursor in reverse video) and edits there — `←`/`→`, `Home`/`End`, `Delete` and `Backspace` — instead of only appending and deleting at the end behind a `|` that blinked with the text length
@@ -19,11 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Themes `nord`, `adwaita-dark`, `twilight` and `orange`: the status, pulse and highlight colors salt-radar adds (which btop themes don't define) come from each theme's own palette — Nord's aurora and frost, GNOME's palette, TextMate Twilight's — instead of the generic defaults every port shared; `orange` is monochrome like `greyscale`, its statuses amber shades getting brighter with severity (part of #145)
 - Help has three pages, `Keys ├┤ Guide ├┤ What's new`: Keys lists only the shortcuts, and the new Guide page holds the filter, search and sniffer syntax and the notes on what panels show, which used to follow the shortcuts; `Tab` / `←→` cycle the pages, `w` jumps to What's new, and `F1` from the sniffer prompts opens the Guide at the sniffer section; the help window is the size of the Job Detail popup (85% of the screen) instead of 60% × 65%
 - Filter and sniffer highlighting gives each term of a search its own color in the order typed (six before any repeats, a glob's minions sharing their term's), instead of picking from four colors by a hash of the text, which often gave two terms of one search the same color
 
 ### Fixed
 
+- Config saves are atomic (a temp file renamed into place), so two instances saving at the same moment can't leave a torn file
 - Events filter: a glob's minions are highlighted in the glob's one color, instead of a color per minion that reshuffled every few seconds as the minion list refreshed
 - Globs take `[…]` character classes like Salt's own targeting (`debian[12]*`, `web-[1-3]`, `[!0-9]`), in every filter and the sniffer — the bracket was matched literally, so such a glob matched nothing
 - Show an active filter as `filter: web*` and a search as `search …: match 1 of 4` instead of wrapping them in slashes (`/web*/`), which now reads as a regex
