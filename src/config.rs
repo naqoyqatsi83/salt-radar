@@ -922,6 +922,65 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Every bundled theme keeps job outcomes and highlighted terms apart
+    /// and its colored text and search highlights readable.
+    #[test]
+    fn bundled_themes_keep_status_colors_apart_and_text_readable() {
+        // A transparent background is the terminal's own; assume a dark one.
+        let rgb = |c: Color| match c {
+            Color::Rgb(r, g, b) => (r as f64, g as f64, b as f64),
+            _ => (24.0, 24.0, 24.0),
+        };
+        // "redmean" weighted RGB distance, a cheap perceptual approximation
+        let dist = |a: Color, b: Color| {
+            let ((r1, g1, b1), (r2, g2, b2)) = (rgb(a), rgb(b));
+            let r = (r1 + r2) / 2.0;
+            ((2.0 + r / 256.0) * (r1 - r2).powi(2) + 4.0 * (g1 - g2).powi(2) + (2.0 + (255.0 - r) / 256.0) * (b1 - b2).powi(2)).sqrt()
+        };
+        let lum = |c: Color| {
+            let ch = |v: f64| { let v = v / 255.0; if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
+            let (r, g, b) = rgb(c);
+            0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+        };
+        let contrast = |a: Color, b: Color| {
+            let (x, y) = (lum(a), lum(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/themes");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let t = load_theme(path.to_str().unwrap());
+            let status = [("green", t.green), ("cyan", t.cyan), ("yellow", t.yellow), ("red", t.red), ("orange", t.orange)];
+            let highlights = [("highlight_1", t.highlight_1), ("highlight_2", t.highlight_2), ("highlight_3", t.highlight_3), ("highlight_4", t.highlight_4)];
+            // Greyscale tells its states apart by brightness alone, by design.
+            if name != "greyscale" {
+                for (i, (a, ca)) in status.iter().enumerate() {
+                    for (b, cb) in &status[i + 1..] {
+                        assert!(dist(*ca, *cb) >= 50.0, "{name}: {a} and {b} are too close");
+                    }
+                }
+                for (i, (a, ca)) in highlights.iter().enumerate() {
+                    for (b, cb) in &highlights[i + 1..] {
+                        assert!(dist(*ca, *cb) >= 50.0, "{name}: {a} and {b} are too close");
+                    }
+                    for (b, cb) in status.iter().filter(|(n, _)| *n != "cyan") {
+                        assert!(dist(*ca, *cb) >= 50.0, "{name}: {a} looks like the {b} status");
+                    }
+                }
+            }
+            for (a, c) in status.iter().chain(&highlights).chain(&[("purple", t.purple)]) {
+                assert!(contrast(*c, t.popup_bg) >= 2.5, "{name}: {a} is hard to read on popup_bg");
+            }
+            let current_fg = if t.popup_bg == Color::Reset { Color::Black } else { t.popup_bg };
+            assert!(contrast(current_fg, t.yellow) >= 3.0, "{name}: the current search match is hard to read");
+            assert!(contrast(t.hi_fg, t.badge_bg) >= 3.0, "{name}: search matches are hard to read");
+            checked += 1;
+        }
+        assert!(checked > 40, "only {checked} themes found");
+    }
+
     #[test]
     fn greyscale_theme_sets_every_role_to_a_grey() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/themes/greyscale.theme");

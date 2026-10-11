@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-11
+
+### Fixed
+
+- Theme colors (#162): in `horizon`, `night-owl` and `everforest-light-medium` a highlighted filter or sniffer term was the exact color of an OK result, and in `adapta` two of the term colors were near-identical purples; non-current search matches in `flat-remix-light` and the current match in `paper` and `solarized_light` had too little contrast; and in themes with a transparent background (`adapta`, `flat-remix`, `matcha-dark-sea`) the current search match was drawn in the terminal's own text color on yellow. A test now checks every bundled theme for distinct status and term colors and readable text
+
 ## [0.8.0] - 2026-10-11
 
 ### Added

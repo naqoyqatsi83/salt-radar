@@ -149,7 +149,13 @@ pub mod color {
     }
 
     pub fn search_current() -> Style {
-        Style::default().fg(popup_bg()).bg(yellow()).add_modifier(Modifier::BOLD)
+        // A theme with a transparent background has no popup_bg color, which
+        // would leave the terminal's own (usually light) text on yellow.
+        let fg = match popup_bg() {
+            Color::Reset => Color::Black,
+            c => c,
+        };
+        Style::default().fg(fg).bg(yellow()).add_modifier(Modifier::BOLD)
     }
 
     // Job outcome colors, the same wherever a result is shown (Live Jobs,
