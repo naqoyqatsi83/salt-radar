@@ -126,14 +126,14 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
 
     // Filter bar
     if app.is_filtering {
-        let cursor = if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' };
-        lines.push(Line::from(vec![
-            Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+        let mut spans = super::input_spans(" filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
+        spans.extend([
             Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
-        ]));
+        ]);
+        lines.push(Line::from(spans));
     } else if !app.filter_text_for(Tab::Jobs).is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.filter_text_for(Tab::Jobs)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" filter: {} ", app.filter_text_for(Tab::Jobs)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     }
@@ -250,14 +250,14 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
 
     // Filter bar with total_count context
     if app.cache_is_filtering {
-        let cursor = if app.cache_filter_text.len().is_multiple_of(2) { '|' } else { ' ' };
-        lines.push(Line::from(vec![
-            Span::styled(format!(" /{} {}", app.cache_filter_text, cursor), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+        let mut spans = super::input_spans(" filter: ", &app.cache_filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
+        spans.extend([
             Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
-        ]));
+        ]);
+        lines.push(Line::from(spans));
     } else if !app.cache_server_filter.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.cache_server_filter), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" filter: {} ", app.cache_server_filter), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items (of {} total)", total, app.cache_total_count), Style::default().fg(color::inactive_fg())),
         ]));
     }

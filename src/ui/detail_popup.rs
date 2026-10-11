@@ -36,7 +36,7 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &app.job_search, app.job_searching, &mut app.job_search_matches, &mut app.job_fail_lines, app.job_focus_line, clipboard_at, save_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -50,9 +50,6 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
         }
         DetailPopup::MinionEvents { minion_id, selected } => {
             super::minion_events::draw_minion_events(f, f.area(), app, minion_id, *selected);
-        }
-        DetailPopup::ConfigEditor(_) => {
-            super::config_editor::draw_config_editor(f, app);
         }
         DetailPopup::ApiRequest(entry) => {
             let area = centered_rect(65, 40, f.area());
@@ -74,7 +71,6 @@ pub fn draw_save_prompt(f: &mut Frame, app: &App) {
     let Some(ref prompt) = app.save_prompt else { return };
     let dir = app.resolved_save_dir();
     let exists = !prompt.filename.trim().is_empty() && dir.join(&prompt.filename).exists();
-    let cursor = if prompt.filename.len() % 2 == 0 { '|' } else { ' ' };
     let screen = f.area();
     let width = (dir.display().to_string().len().max(prompt.filename.len()) as u16 + 20)
         .clamp(60, screen.width.saturating_sub(4).max(20));
@@ -92,11 +88,11 @@ pub fn draw_save_prompt(f: &mut Frame, app: &App) {
             Span::styled("  Directory  ", Style::default().fg(color::label_fg())),
             Span::styled(dir.display().to_string(), Style::default().fg(color::main_fg())),
         ]),
-        Line::from(vec![
-            Span::styled("  File name  ", Style::default().fg(color::label_fg())),
-            Span::styled(format!("{}{}", prompt.filename, cursor),
+        Line::from([
+            vec![Span::styled("  File name  ", Style::default().fg(color::label_fg()))],
+            super::input_spans("", &prompt.filename, app.input_cursor,
                 Style::default().fg(if exists { color::red() } else { color::yellow() }).add_modifier(Modifier::BOLD)),
-        ]),
+        ].concat()),
         Line::from(""),
     ];
     if exists {
@@ -120,7 +116,7 @@ pub fn draw_sniffer_overlay(f: &mut Frame, app: &App) {
     let Some(ref state) = app.sniffer else { return };
     let area = centered_rect(80, 85, f.area());
     f.render_widget(Clear, area);
-    draw_event_sniffer(f, area, state, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+    draw_event_sniffer(f, area, state, app.input_cursor, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
 }
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -834,8 +830,10 @@ fn draw_job_detail(
     search: &str,
     searching: bool,
     search_matches: &mut Vec<usize>,
+    search_focus: Option<usize>,
     fail_lines: &mut Vec<usize>,
     focus_line: Option<usize>,
+    input_cursor: Option<usize>,
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
     clipboard_warning: Option<&str>,
@@ -970,7 +968,7 @@ fn draw_job_detail(
         .style(Style::default().bg(color::popup_bg()));
     if !return_filter.is_empty() && !return_is_filtering {
         left_block = left_block.title_bottom(Line::from(Span::styled(
-            format!(" /{}: {} ", return_filter, if shown_returns == 0 { "no matches".to_string() } else { format!("{} of {}", shown_returns, total_returns) }),
+            format!(" filter {}: {} ", return_filter, if shown_returns == 0 { "no matches".to_string() } else { format!("{} of {}", shown_returns, total_returns) }),
             Style::default().fg(if shown_returns == 0 { color::red() } else { color::yellow() }),
         )).left_aligned());
     }
@@ -1059,8 +1057,10 @@ fn draw_job_detail(
 
     // Filter bar overlay if active
     if return_is_filtering {
-        let filter_bar = Paragraph::new(Line::from(Span::styled(
-            format!("  Filter: {}_", return_filter),
+        let filter_bar = Paragraph::new(Line::from(super::input_spans(
+            "  Filter: ",
+            return_filter,
+            input_cursor,
             Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         )))
         .style(Style::default().bg(color::popup_bg()));
@@ -1136,8 +1136,19 @@ fn draw_job_detail(
         })
         .map(|(i, _)| i)
         .collect();
-    let (right_lines, matches) = highlight_matches(right_lines, search);
+    let (mut right_lines, matches) = highlight_matches(right_lines, search, search_focus);
     *search_matches = matches;
+    let search_focus = search_focus.filter(|&i| i < search_matches.len());
+    // A failed state `f`/`F` landed on: tint the line, but only where nothing
+    // (a search match, say) has its own background.
+    let focus_line = focus_line.filter(|l| fail_lines.contains(l));
+    if let Some(line) = focus_line.and_then(|l| right_lines.get_mut(l)) {
+        for span in &mut line.spans {
+            if span.style.bg.is_none() {
+                span.style = span.style.patch(color::select_bg());
+            }
+        }
+    }
 
     // Viewport-aware max scroll — a `Borders::ALL` block always insets 1 on
     // each side, so this matches what `right_block.inner()` will produce
@@ -1165,21 +1176,20 @@ fn draw_job_detail(
     if more_below {
         right_block = right_block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(right_border_color))).right_aligned());
     }
-    let focus_line = focus_line.filter(|l| search_matches.contains(l) || fail_lines.contains(l));
-    let position = |lines: &[usize], what: &str| match focus_line.and_then(|f| lines.iter().position(|&l| l == f)) {
-        Some(i) => format!("{} {} of {}", what, i + 1, lines.len()),
-        None if lines.len() == 1 => format!("1 {}", what),
-        None => format!("{} {}s", lines.len(), what),
+    let position = |at: Option<usize>, n: usize, what: &str, whats: &str| match at {
+        Some(i) => format!("{} {} of {}", what, i + 1, n),
+        None if n == 1 => format!("1 {}", what),
+        None => format!("{} {}", n, whats),
     };
     let mut status_spans = Vec::new();
     if !search.is_empty() && !searching {
         status_spans.push(Span::styled(
-            format!(" /{}: {} ", search, if search_matches.is_empty() { "no matches".to_string() } else { position(search_matches, "match") }),
+            format!(" search {}: {} ", search, if search_matches.is_empty() { "no matches".to_string() } else { position(search_focus, search_matches.len(), "match", "matches") }),
             Style::default().fg(if search_matches.is_empty() { color::red() } else { color::yellow() }),
         ));
     }
     if !fail_lines.is_empty() {
-        status_spans.push(Span::styled(format!(" {} ", position(fail_lines, "failed state")), Style::default().fg(color::red())));
+        status_spans.push(Span::styled(format!(" {} ", position(focus_line.and_then(|f| fail_lines.iter().position(|&l| l == f)), fail_lines.len(), "failed state", "failed states")), Style::default().fg(color::red())));
     }
     if !status_spans.is_empty() {
         right_block = right_block.title_bottom(Line::from(status_spans).left_aligned());
@@ -1193,19 +1203,15 @@ fn draw_job_detail(
             .style(Style::default().bg(color::popup_bg())),
         right_inner,
     );
-    if let Some(line) = focus_line {
-        if line >= effective_scroll && line < effective_scroll + right_inner.height as usize {
-            let row = Rect { y: right_inner.y + (line - effective_scroll) as u16, height: 1, ..right_inner };
-            f.buffer_mut().set_style(row, color::select_bg());
-        }
-    }
 
     if searching {
         let bar = Rect { y: right_inner.y + right_inner.height.saturating_sub(1), height: 1.min(right_inner.height), ..right_inner };
         f.render_widget(Clear, bar);
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("  Search: {}_", search),
+            Paragraph::new(Line::from(super::input_spans(
+                "  Search: ",
+                search,
+                input_cursor,
                 Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
             ))).style(Style::default().bg(color::popup_bg())),
             bar,
@@ -1315,9 +1321,10 @@ impl ReturnsTable {
         let id_style = Style::default().fg(id_fg).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() });
         let shown = shorten_middle(id, id_w);
         let pad = id_w.saturating_sub(shown.chars().count());
-        let (id_line, _) = highlight_matches(vec![Line::from(Span::styled(shown, id_style))], filter);
+        let ranges = crate::app::filter_match_ranges(&shown, filter);
+        let id_line = style_ranges(Line::from(Span::styled(shown, id_style)), &ranges, |_| color::search_match());
         let mut spans = vec![Span::styled(format!(" {} ", if selected { "\u{25b6}" } else { " " }), id_style)];
-        spans.extend(id_line.into_iter().flat_map(|l| l.spans));
+        spans.extend(id_line.spans);
         spans.push(Span::raw(" ".repeat(pad + 2)));
 
         let Some(ret) = returned else {
@@ -1351,39 +1358,66 @@ impl ReturnsTable {
 /// Highlights case-insensitive (ASCII) occurrences of `query` and returns the
 /// numbers of the lines that contain one. A match split across two styled
 /// spans isn't found.
-fn highlight_matches(lines: Vec<Line<'static>>, query: &str) -> (Vec<Line<'static>>, Vec<usize>) {
-    if query.is_empty() {
+/// Highlights every case-insensitive occurrence of `query`, the `current`-th
+/// one (counting from the top) more strongly, and returns the line of each
+/// occurrence, in order.
+pub(super) fn highlight_matches(lines: Vec<Line<'static>>, query: &str, current: Option<usize>) -> (Vec<Line<'static>>, Vec<usize>) {
+    if query.trim().is_empty() {
         return (lines, Vec::new());
     }
-    let q = query.to_ascii_lowercase();
-    let hl = Style::default().fg(color::popup_bg()).bg(color::yellow());
+    // The whole query is one term: a `/regex/` when wrapped in slashes,
+    // otherwise plain text (a path like `/etc/salt/minion` included).
+    let query = query.trim();
     let mut matches = Vec::new();
     let out = lines.into_iter().enumerate().map(|(i, line)| {
-        let mut spans = Vec::with_capacity(line.spans.len());
-        for span in line.spans {
-            let lower = span.content.to_ascii_lowercase();
-            if !lower.contains(&q) {
-                spans.push(span);
-                continue;
-            }
-            let mut last = 0;
-            for (pos, _) in lower.match_indices(&q) {
-                if pos > last {
-                    spans.push(Span::styled(span.content[last..pos].to_string(), span.style));
-                }
-                spans.push(Span::styled(span.content[pos..pos + q.len()].to_string(), span.style.patch(hl)));
-                last = pos + q.len();
-            }
-            if last < span.content.len() {
-                spans.push(Span::styled(span.content[last..].to_string(), span.style));
-            }
-            if matches.last() != Some(&i) {
-                matches.push(i);
-            }
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let ranges = crate::sniff::term_ranges(&text, query);
+        if ranges.is_empty() {
+            return line;
         }
-        Line { spans, ..line }
+        let first = matches.len();
+        matches.extend(std::iter::repeat_n(i, ranges.len()));
+        style_ranges(line, &ranges, |n| if current == Some(first + n) { color::search_current() } else { color::search_match() })
     }).collect();
     (out, matches)
+}
+
+/// Restyles the parts of `line` within `ranges` (byte offsets into the
+/// line's whole text, sorted, possibly overlapping) by patching each with
+/// `style(index of the range)`, splitting spans where needed, so a match can
+/// run across differently colored spans.
+pub(super) fn style_ranges(line: Line<'static>, ranges: &[(usize, usize)], style: impl Fn(usize) -> Style) -> Line<'static> {
+    let mut spans = Vec::with_capacity(line.spans.len() + ranges.len() * 2);
+    let mut offset = 0;
+    for span in line.spans {
+        let (start, end) = (offset, offset + span.content.len());
+        offset = end;
+        let mut cuts: Vec<(usize, usize, Option<usize>)> = Vec::new();
+        let mut pos = start;
+        for (n, &(rs, re)) in ranges.iter().enumerate() {
+            let (s, e) = (rs.max(pos), re.min(end));
+            if s >= e {
+                continue;
+            }
+            if s > pos {
+                cuts.push((pos, s, None));
+            }
+            cuts.push((s, e, Some(n)));
+            pos = e;
+        }
+        if cuts.is_empty() {
+            spans.push(span);
+            continue;
+        }
+        if pos < end {
+            cuts.push((pos, end, None));
+        }
+        for (s, e, hit) in cuts {
+            let text = span.content[s - start..e - start].to_string();
+            spans.push(Span::styled(text, hit.map_or(span.style, |n| span.style.patch(style(n)))));
+        }
+    }
+    Line { spans, ..line }
 }
 
 /// What the keyboard can do right now in the Job Detail popup. `n/N` and
@@ -1561,23 +1595,18 @@ fn draw_event_sniffer(
     f: &mut Frame,
     area: Rect,
     state: &SnifferState,
+    input_cursor: Option<usize>,
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
     clipboard_warning: Option<&str>,
 ) {
-    let ids_str = state.minion_ids.join(", ");
-    let title = if ids_str.len() > 50 {
-        format!(" Event Sniffer: {}... ", &ids_str[..47])
-    } else {
-        format!(" Event Sniffer: {} ", ids_str)
-    };
+    let title = format!(" Event Sniffer: {} ", shorten_middle(&state.query, 50));
 
     let mut lines = header_lines(&title, area.width);
     let visible = state.filtered_indices();
-    // Coloring uses both the sniff target's own terms (always on, cosmetic
-    // only) and any additional `h` search terms (which also narrow `visible`
-    // above) — see `SnifferState::color_terms` for why these stay separate.
-    let color_terms: Vec<String> = state.color_terms.iter().chain(state.highlight_keywords.iter()).cloned().collect();
+    // Both the sniff terms and any `h` terms (which also narrow `visible`
+    // above) color their matches.
+    let color_terms: Vec<crate::sniff::SniffTerm> = state.terms.iter().chain(state.highlight_terms.iter()).cloned().collect();
 
     // Status bar
     let (status_label, status_color) = if state.paused {
@@ -1595,9 +1624,9 @@ fn draw_event_sniffer(
             Style::default().fg(color::inactive_fg()),
         ),
     ];
-    if !state.highlight_keywords.is_empty() {
+    if !state.highlight_terms.is_empty() {
         status_spans.push(Span::styled(
-            format!("  Shown: {} (highlight filter active)", visible.len()),
+            format!("  Shown: {} (filter: {})", visible.len(), state.highlight_query),
             Style::default().fg(color::yellow()),
         ));
     }
@@ -1680,14 +1709,13 @@ fn draw_event_sniffer(
             // plain CYAN in favor of an all-TEXT-colored tag that looks
             // unstyled.
             let padded_tag = format!("{:<jw$}", tag_disp, jw = jid_w);
-            let lower_tag = padded_tag.to_lowercase();
-            let tag_has_hit = color_terms.iter().any(|t| lower_tag.contains(&t.to_lowercase()));
+            let tag_has_hit = color_terms.iter().any(|t| !t.find_in(&padded_tag).is_empty());
             let mut header_spans = vec![
                 Span::styled(format!("  {:>nw$} ", event_num, nw = num_w - 3), Style::default().fg(color::inactive_fg())),
                 Span::styled(format!("{:<tw$}", t, tw = time_w), Style::default().fg(color::inactive_fg())),
             ];
             if tag_has_hit {
-                header_spans.extend(super::highlight_keywords(&padded_tag, &color_terms));
+                header_spans.extend(super::highlight_terms(&padded_tag, &color_terms));
             } else {
                 header_spans.push(Span::styled(padded_tag, Style::default().fg(color::cyan())));
             }
@@ -1708,7 +1736,7 @@ fn draw_event_sniffer(
             if !color_terms.is_empty() {
                 for raw_line in json_str.lines() {
                     let text = format!("{}{}", indent, raw_line);
-                    let mut spans = super::highlight_keywords(&text, &color_terms);
+                    let mut spans = super::highlight_terms(&text, &color_terms);
                     if is_sel {
                         let pad = inner_w.saturating_sub(text.len());
                         if pad > 0 {
@@ -1750,14 +1778,14 @@ fn draw_event_sniffer(
         let more_below = (scroll as usize) + scrollable_height < event_only_len;
 
         let hints = sniffer_hints(state);
-        let status = sniffer_status(clipboard_at, save_at, state, clipboard_warning);
+        let status = sniffer_status(input_cursor, clipboard_at, save_at, state, clipboard_warning);
         render_popup(f, area, &lines, &hints, status, (more_above, more_below), scroll, pinned_header);
         return;
     }
 
     lines.push(Line::from(""));
     let hints = sniffer_hints(state);
-    let status = sniffer_status(clipboard_at, save_at, state, clipboard_warning);
+    let status = sniffer_status(input_cursor, clipboard_at, save_at, state, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
 
@@ -1771,22 +1799,23 @@ fn sniffer_format_ts(ts: f64) -> String {
 /// Live-typed highlight-keyword buffer, or the shared copy/warning status —
 /// the only things a static border hint can't show.
 fn sniffer_status(
+    input_cursor: Option<usize>,
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
     state: &SnifferState,
     clipboard_warning: Option<&str>,
 ) -> Option<Line<'static>> {
     if let Some(ref buf) = state.highlight_input {
-        let cursor = if buf.len() % 2 == 0 { '|' } else { ' ' };
-        let display = if buf.is_empty() {
-            String::from("  Filter keywords (comma-separated, Enter=confirm, Esc=cancel): ")
-        } else {
-            format!("  Filter keywords: {} {}", buf, cursor)
-        };
-        return Some(Line::from(Span::styled(
-            display,
+        let mut spans = super::input_spans(
+            "  Show only (keyword or /regex/, comma-separated; empty = all; F1: examples): ",
+            buf,
+            input_cursor,
             Style::default().fg(super::color::yellow()).add_modifier(Modifier::BOLD),
-        )));
+        );
+        if let Some(ref err) = state.highlight_error {
+            spans.push(Span::styled(format!("  \u{2717} {err}"), Style::default().fg(super::color::red()).add_modifier(Modifier::BOLD)));
+        }
+        return Some(Line::from(spans));
     }
     clipboard_status(clipboard_at, save_at, clipboard_warning)
 }
@@ -1874,17 +1903,46 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_across_colored_spans_and_takes_a_regex() {
+        let result = |v: &'static str| Line::from(vec![
+            Span::styled("Result: ", Style::default().fg(color::label_fg())),
+            Span::styled(v, Style::default().fg(color::red())),
+        ]);
+        let (out, m) = highlight_matches(vec![result("False")], "result: false", None);
+        assert_eq!(m, vec![0]);
+        let texts: Vec<&str> = out[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, ["Result: ", "False"]);
+        assert!(out[0].spans.iter().all(|s| s.style.bg == color::search_match().bg));
+        let (_, m) = highlight_matches(vec![result("False"), result("True"), result("None")], "/Result: (False|None)/", None);
+        assert_eq!(m, vec![0, 2]);
+        let (_, m) = highlight_matches(vec![Line::from("cat /etc/salt/minion")], "/etc/salt/minion", None);
+        assert_eq!(m, vec![0], "a path is plain text");
+    }
+
+    #[test]
+    fn style_ranges_splits_only_the_matched_part() {
+        let line = Line::from(vec![Span::raw("web-01"), Span::raw(" ok")]);
+        let out = style_ranges(line, &[(4, 8)], |_| color::search_match());
+        let texts: Vec<&str> = out.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, ["web-", "01", " o", "k"]);
+        assert_eq!(out.spans[0].style.bg, None);
+        assert_eq!(out.spans[3].style.bg, None);
+    }
+
+    #[test]
     fn search_highlights_matches_case_insensitively() {
         let lines = vec![
             Line::from(vec![Span::raw("ID: pkg_nginx"), Span::raw(" Result: False")]),
             Line::from("nothing here"),
             Line::from("Comment: NGINX failed, nginx"),
         ];
-        let (out, matches) = highlight_matches(lines, "nginx");
-        assert_eq!(matches, vec![0, 2]);
+        let (out, matches) = highlight_matches(lines, "nginx", Some(2));
+        assert_eq!(matches, vec![0, 2, 2]);
         let texts: Vec<&str> = out[2].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, vec!["Comment: ", "NGINX", " failed, ", "nginx"]);
+        assert_eq!(out[2].spans[1].style.bg, color::search_match().bg);
+        assert_eq!(out[2].spans[3].style.bg, color::search_current().bg);
         assert_eq!(out[1].spans.len(), 1);
-        assert!(highlight_matches(vec![Line::from("x")], "").1.is_empty());
+        assert!(highlight_matches(vec![Line::from("x")], "", None).1.is_empty());
     }
 }

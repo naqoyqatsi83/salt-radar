@@ -8,8 +8,10 @@ Reads JSON-command lines from stdin, writes NDJSON responses to stdout.
 
 from __future__ import print_function
 
+import fnmatch
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -1661,7 +1663,8 @@ def cmd_jobs_list(opts, req):
     other backend, or if the fast path fails for any reason.
 
     Optional request fields:
-      - filter_text (str): search across jid/fun/tgt/user/args on the full cache
+      - filter_text (str): search the full cache by comma-separated terms
+        (see `_filter_terms` / `_term_matcher`), any of which may match
       - max_results (int): max items to return (default 500)
       - offset (int): skip N entries in sort order (for pagination)
       - sort_key (str): jid/user/started/target/fun/args -- sort the full
@@ -1694,7 +1697,7 @@ def cmd_jobs_list(opts, req):
             result(req["id"], "jobs_list", ok=False, data={"error": "failed to parse output: {}".format(str(exc))})
             return
 
-    filter_text = req.get("filter_text", "")
+    matchers = [_term_matcher(t) for t in _filter_terms(req.get("filter_text", ""))]
     max_results = req.get("max_results", 500)
     offset = req.get("offset", 0)
 
@@ -1720,10 +1723,9 @@ def cmd_jobs_list(opts, req):
         args, test_run = _format_job_args(fun, info.get("Arguments", info.get("arg", [])))
 
         # Apply filter across full cache (server-side search)
-        if filter_text:
-            ft = filter_text.lower()
-            fields_to_search = [str(jid).lower(), str(fun).lower(), str(tgt).lower(), str(user).lower(), args.lower()]
-            if not any(ft in f for f in fields_to_search):
+        if matchers:
+            fields = [str(jid), str(fun), str(tgt), str(user), args]
+            if not any(m(fields, str(tgt)) for m in matchers):
                 continue
         jobs.append({
             "jid": str(jid),
@@ -1752,6 +1754,80 @@ def cmd_jobs_list(opts, req):
         "total_count": total_matching,
         "returned_count": len(jobs),
     })
+
+
+def _filter_terms(text):
+    """Split a filter into its comma-separated terms the way salt-radar's own
+    filters do: a term wrapped in slashes is a regex (a comma inside it
+    belongs to it), and a `/` that never closes is plain text."""
+    terms, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "," or c.isspace():
+            i += 1
+            continue
+        start = i
+        if c == "/":
+            j, end = i + 1, None
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "/" and _ends_regex(text[j + 1:]):
+                    end = j + 1
+                    break
+                j += 1
+            if end is not None:
+                if end < n and text[end] == "i":
+                    end += 1
+                terms.append(text[start:end])
+                i = end
+                continue
+        end = text.find(",", start)
+        end = n if end < 0 else end
+        term = text[start:end].strip()
+        if term:
+            terms.append(term)
+        i = end
+    return terms
+
+
+def _ends_regex(rest):
+    """Whether what follows a `/` closes a regex: an optional `i` flag, then
+    only whitespace up to a comma or the end."""
+    if rest.startswith("i"):
+        rest = rest[1:]
+    rest = rest.lstrip()
+    return rest == "" or rest.startswith(",")
+
+
+def _term_matcher(term):
+    """A predicate `(fields, tgt) -> bool` for one filter term: a `/regex/`
+    (`/.../i` ignores case) searched in every field, a glob (`*`, `?`,
+    `[...]`) matched against the whole target like Salt's targeting, or a
+    case-insensitive substring of any field. A regex that doesn't compile is
+    plain text."""
+    if len(term) >= 3 and term.startswith("/"):
+        body, flags = None, 0
+        if term.endswith("/i") and len(term) > 3:
+            body, flags = term[1:-2], re.IGNORECASE
+        elif term.endswith("/"):
+            body = term[1:-1]
+        if body:
+            try:
+                rx = re.compile(body.replace("\\/", "/"), flags)
+                return lambda fields, tgt: any(rx.search(f) for f in fields)
+            except re.error:
+                pass
+    low = term.lower()
+    glob = any(ch in term for ch in "*?[")
+
+    def match(fields, tgt):
+        if glob and fnmatch.fnmatchcase(tgt.lower(), low):
+            return True
+        return any(low in f.lower() for f in fields)
+
+    return match
 
 
 # ── Command dispatcher ──────────────────────────────────────────────────────

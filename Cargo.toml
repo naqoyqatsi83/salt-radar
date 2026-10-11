@@ -1,6 +1,6 @@
 [package]
 name = "salt-radar"
-version = "0.7.6"
+version = "0.8.0"
 edition = "2021"
 rust-version = "1.88"
 description = "A non-intrusive, read-only TUI for monitoring a Salt Master"
@@ -15,6 +15,7 @@ chrono = "0.4"
 toml = { version = "0.8", features = ["preserve_order"] }
 base64 = "0.22"
 libc = "0.2"
+regex = "1"
 
 [lints.clippy]
 # The large panel/popup draw functions take their inputs explicitly; bundling

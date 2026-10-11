@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-11
+
+### Added
+
+- Per-user config under sudo (#160): when salt-radar runs as root with `SUDO_USER` set, it uses the invoking user's config (starting from root's until their first save), personal themes, "updated to vX" marker and home for `~` (the default export directory), and hands what it creates there — config, marker, exports — over to them, instead of every sudo user sharing root's. The README has a note on running through sudo and on several users at once
+- A `1337` theme: near-black with the bright accents of the 1337 color scheme — lime for success, cyan for changes, amber and orange for warnings, red for failures (#161)
+- Job Cache filter: the same terms as every other filter (#149) — comma-separated (any may match), globs (`*`, `?`, `[…]`) matched against the target, and `/regex/` / `/regex/i` terms, applied by the agent across the whole cache (noted in help's **Filter and search terms**); it was a single plain substring
+- Regex terms in every list filter and in the output searches (#148): a filter term wrapped in slashes is a regex (`/web-0[1-5]$/`, `/…/i` ignores case; commas inside it belong to it) on Events, Minions, Live Jobs, Alerts, API, the minion activity popup and Job Detail's host filter — which also gains comma-separated and glob terms like the other filters. Job Detail's output search and the help search take a whole query wrapped in slashes as a regex. Text that isn't a complete `/…/` stays plain, so a filter being typed never errors and `/etc/salt/minion` still searches for the path. Help has a new **Filter and search terms** section with examples
+- Text inputs have a real cursor: every filter, search, sniffer prompt, Config Editor field and the save prompt shows where you are (the character under the cursor in reverse video) and edits there — `←`/`→`, `Home`/`End`, `Delete` and `Backspace` — instead of only appending and deleting at the end behind a `|` that blinked with the text length
+- Help: an **Event Sniffer terms** section with an example of each kind of term (minion, glob, keyword, regex, regex ignoring case, several, `h`); `F1` in the sniffer prompts opens help right at it
+- Event Sniffer: capture by minions, globs, keywords or `/regex/` terms (#146) — the prompt now reads `Sniff for (minion, glob, keyword or /regex/, comma-separated)`; a term wrapped in slashes is a regex (`/…/i` ignores case, commas and slashes inside it are part of it) and an invalid one keeps the prompt open with the error shown; a term that names known minions (an ID or a glob) captures events from or about them, including jobs targeting them by `*`, glob, list or the master's resolved minion list; any other term is a keyword matched anywhere in the tag or data, ignoring case. Keywords and regexes match the event as shown (tag and pretty JSON, line by line), so every match is colored. The `h` filter takes the same keyword and `/regex/` terms, and empty input clears it
+- Config Editor: preview `popup_dim_pct` live — once a new value is confirmed with `Enter`, the dimming behind the editor uses it; cancelling or discarding the edit reverts it, like the theme preview
+- Show the changelog in the app: the help overlay (`F1`) has a **What's new** page (`Tab` switches to it), built into the binary and searchable like Job Detail's output (`/`, then `n`/`N`, on either help page); after an upgrade the title bar says `updated to vX.Y.Z · F1: what's new` and `F1` opens straight on it. The changelog is also installed to `/usr/share/doc/salt-radar/` by the `.deb` and `.rpm` and included in the `.tar.gz` (#139)
+
+### Changed
+
+- Themes `nord`, `adwaita-dark`, `twilight` and `orange`: the status, pulse and highlight colors salt-radar adds (which btop themes don't define) come from each theme's own palette — Nord's aurora and frost, GNOME's palette, TextMate Twilight's — instead of the generic defaults every port shared; `orange` is monochrome like `greyscale`, its statuses amber shades getting brighter with severity (part of #145)
+- Help has three pages, `Keys ├┤ Guide ├┤ What's new`: Keys lists only the shortcuts, and the new Guide page holds the filter, search and sniffer syntax and the notes on what panels show, which used to follow the shortcuts; `Tab` / `←→` cycle the pages, `w` jumps to What's new, and `F1` from the sniffer prompts opens the Guide at the sniffer section; the help window is the size of the Job Detail popup (85% of the screen) instead of 60% × 65%
+- Filter and sniffer highlighting gives each term of a search its own color in the order typed (six before any repeats, a glob's minions sharing their term's), instead of picking from four colors by a hash of the text, which often gave two terms of one search the same color
+
+### Fixed
+
+- Config saves are atomic (a temp file renamed into place), so two instances saving at the same moment can't leave a torn file
+- Events filter: a glob's minions are highlighted in the glob's one color, instead of a color per minion that reshuffled every few seconds as the minion list refreshed
+- Globs take `[…]` character classes like Salt's own targeting (`debian[12]*`, `web-[1-3]`, `[!0-9]`), in every filter and the sniffer — the bracket was matched literally, so such a glob matched nothing
+- Show an active filter as `filter: web*` and a search as `search …: match 1 of 4` instead of wrapping them in slashes (`/web*/`), which now reads as a regex
+- Search highlighting finds matches that span differently colored parts of a line — `Result: False` in Salt's colored output was never found, as each colored piece was searched on its own
+- `/` on the Dashboard no longer opens a filter prompt whose input went nowhere — like Pulse, the Dashboard has nothing to filter
+- Event Sniffer: a glob such as `web-*` now captures those minions' events (it only colored them, capturing little more than jobs targeting `*`), capture ignores case like the coloring does, and a keyword no longer captures every job targeting `*`
+- Config Editor: `PgUp`/`PgDn` and `Home`/`End` work in the theme and other choice pickers and in the columns picker (paging by 5, like the settings list), and the choice picker's hints show its own keys instead of the settings list's
+- Themes: color Salt's own colored output (ANSI codes in job returns) with the theme's colors instead of the terminal's palette, and make the `greyscale` theme grey throughout — its status, pulse and highlight colors were the port's colorful defaults; now the more attention a state needs, the brighter its grey
+- Search in Job Detail output and help: `n`/`N` step through each match instead of each matching line (two matches on one line are two stops); the current match is a solid block and the others are tinted, in colors taken from the theme so they read on dark and light themes alike, instead of marking the whole line with the selection color, which turned the matches on it into dark text on blue; `Enter` on a pasted query jumps to the first match; the border no longer says `4 matchs`
+- Ignore clicks on the Events list while the event sniffer is shown over it, so a stray click no longer opens an event from the list behind the sniffer
+- Help overlay with the mouse on: a right-click closes it like other popups, clicking `Keys` / `What's new` in its border switches pages, and clicks no longer reach the tab behind it
+- Keep the open popup when the Config Editor (`F3`) is opened over it: closing the editor returns to the popup as it was (selection, filter, scroll), and the popup keeps updating underneath; clicks no longer reach the tab behind the editor
+
 ## [0.7.6] - 2026-10-10
 
 ### Added

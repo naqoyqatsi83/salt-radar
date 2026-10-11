@@ -36,6 +36,17 @@ Kubernetes.  This is NOT the deployment target — it's only for development.
 ## Versioning & tags
 
 - **Format**: `v<major>.<minor>.<patch>` for releases (e.g. `v0.5.0`)
+- **Choosing the number** (decide it yourself when asked to tag or release —
+  don't ask): follow [SemVer](https://semver.org/) read through
+  [PrideVer](https://pridever.org/) (`PROUD.DEFAULT.SHAME`), based on what's
+  queued under `[Unreleased]` in CHANGELOG.md:
+  - **major** is reserved for the user — stay on `0.x.y` until they say
+    otherwise; never bump it yourself, even for breaking changes
+  - **minor** (`x`, DEFAULT): any `### Added`, `### Changed` or `### Removed`
+    entry — a new feature or a change in behavior; resets patch to 0
+  - **patch** (`y`, SHAME): only `### Fixed` entries — fixes for things that
+    were broken
+  - e.g. `0.7.6` + a queue with an Added entry → `0.8.0`; with only Fixed → `0.7.7`
 - **Release candidates**: use `-rc<N>` suffix (e.g. `v0.5.1-rc1`, `v0.5.1-rc2`) when a build is needed for testing but the feature set isn't final
 - Tags are pushed to GitHub: `git push origin <tagname>`
 - The `main` branch always reflects the latest stable release

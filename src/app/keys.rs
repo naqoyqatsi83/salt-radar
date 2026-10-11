@@ -4,26 +4,98 @@
 use super::*;
 
 impl App {
+    /// Opens help on the key reference, or on "What's new" right after an
+    /// upgrade, which the title bar is pointing at.
+    fn open_help(&mut self) {
+        self.show_help = true;
+        self.help_scroll = 0;
+        self.help_page = if self.upgraded_from.take().is_some() { HelpPage::WhatsNew } else { HelpPage::Keys };
+        self.help_search.clear();
+        self.help_searching = false;
+        self.help_search_focus = None;
+    }
+
+    /// Opens help on its Guide page, scrolled to the section titled `title`.
+    fn open_help_at(&mut self, title: &str) {
+        self.open_help();
+        self.help_page = HelpPage::Guide;
+        self.help_scroll = crate::ui::guide_section_line(title).unwrap_or(0) as u16;
+    }
+
+    fn handle_help_key(&mut self, code: KeyCode) {
+        if self.help_searching {
+            match code {
+                KeyCode::Esc => {
+                    self.help_searching = false;
+                    self.help_search.clear();
+                }
+                KeyCode::Enter => {
+                    self.help_searching = false;
+                    self.help_search_jump = true;
+                }
+                _ => { line_edit::edit(&mut self.help_search, &mut self.input_cursor, code); }
+            }
+            return;
+        }
+        match code {
+            KeyCode::Esc if !self.help_search.is_empty() => {
+                self.help_search.clear();
+                self.help_search_focus = None;
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') | KeyCode::F(1) => {
+                self.show_help = false;
+            }
+            KeyCode::Char('/') => {
+                self.help_searching = true;
+                self.help_search.clear();
+                self.input_cursor = None;
+                self.help_search_focus = None;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => self.step_help_match(code == KeyCode::Char('n')),
+            KeyCode::Tab | KeyCode::Right => self.show_help_page(self.help_page.step(true)),
+            KeyCode::BackTab | KeyCode::Left => self.show_help_page(self.help_page.step(false)),
+            KeyCode::Char('w') | KeyCode::Char('W') => self.show_help_page(HelpPage::WhatsNew),
+            KeyCode::Up | KeyCode::Char('k') => self.help_scroll = self.help_scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.help_scroll = self.help_scroll.saturating_add(1),
+            KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+            KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(10),
+            KeyCode::Home => self.help_scroll = 0,
+            KeyCode::End => self.help_scroll = u16::MAX,
+            _ => {}
+        }
+    }
+
+    fn show_help_page(&mut self, page: HelpPage) {
+        if self.help_page == page {
+            return;
+        }
+        self.help_page = page;
+        self.help_scroll = 0;
+        self.help_search_focus = None;
+        if page == HelpPage::WhatsNew {
+            self.upgraded_from = None;
+        }
+    }
+
+    /// Moves to the next/previous help search match and scrolls its line
+    /// into view a couple of lines from the top (the draw clamps the scroll).
+    fn step_help_match(&mut self, forward: bool) {
+        let m = &self.help_search_matches;
+        if let Some(i) = step_match(m, self.help_search_focus, self.help_scroll as usize, forward) {
+            self.help_scroll = help_scroll_to(m[i]);
+            self.help_search_focus = Some(i);
+        }
+    }
+
     pub fn handle_key(&mut self, code: KeyCode) -> bool {
         // Help overlay handles its own dismiss
         if self.show_help {
-            match code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') | KeyCode::F(1) => {
-                    self.show_help = false;
-                }
-                KeyCode::Up | KeyCode::Char('k') => self.help_scroll = self.help_scroll.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => self.help_scroll = self.help_scroll.saturating_add(1),
-                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
-                KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(10),
-                KeyCode::Home => self.help_scroll = 0,
-                KeyCode::End => self.help_scroll = u16::MAX,
-                _ => {}
-            }
+            self.handle_help_key(code);
             return false;
         }
 
         // Config editor is a global overlay — handle it early regardless of tab
-        if matches!(self.detail_popup, Some(DetailPopup::ConfigEditor(_))) {
+        if self.config_editor.is_some() {
             return self.handle_config_editor_key(code);
         }
 
@@ -38,49 +110,39 @@ impl App {
                 KeyCode::Esc => {
                     self.sniffer_input_active = false;
                     self.sniffer_input_text.clear();
+                    self.sniffer_input_error = None;
                 }
+                KeyCode::F(1) => self.open_help_at(crate::ui::SNIFFER_HELP_TITLE),
                 KeyCode::Enter => {
-                    let ids: Vec<String> = self.sniffer_input_text
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    if !ids.is_empty() {
-                        let sniffer_max = self.config.sniffer_buffer_size;
-                        // Color occurrences of the just-entered minion
-                        // target(s) within captured content (glob-resolved,
-                        // same as the Events tab's own filter terms) --
-                        // purely cosmetic, not a second filter on top of
-                        // `minion_ids`'s own broader relevance matching. See
-                        // `SnifferState::color_terms` doc for why: a
-                        // wildcard-targeted job relevant to a sniffed minion
-                        // doesn't literally contain that minion's name
-                        // anywhere in its JSON, so re-filtering display by
-                        // literal text match on these same terms would hide
-                        // legitimate, already-captured traffic.
-                        let color_terms = self.resolve_host_terms(ids.iter().map(|s| s.as_str()));
-                        self.sniffer = Some(crate::types::SnifferState {
-                            minion_ids: ids.clone(),
-                            buffer: std::collections::VecDeque::with_capacity(sniffer_max),
-                            max_size: sniffer_max,
-                            paused: false,
-                            selected: 0,
-                            following: true,
-                            color_terms,
-                            highlight_keywords: Vec::new(),
-                            highlight_input: None,
-                        });
+                    match crate::sniff::parse_terms(&self.sniffer_input_text, |t| self.minions_for_term(t)) {
+                        Err(e) => self.sniffer_input_error = Some(e),
+                        Ok(terms) => {
+                            if !terms.is_empty() {
+                                let sniffer_max = self.config.sniffer_buffer_size;
+                                self.sniffer = Some(crate::types::SnifferState {
+                                    query: self.sniffer_input_text.trim().to_string(),
+                                    terms,
+                                    buffer: std::collections::VecDeque::with_capacity(sniffer_max),
+                                    max_size: sniffer_max,
+                                    paused: false,
+                                    selected: 0,
+                                    following: true,
+                                    highlight_query: String::new(),
+                                    highlight_terms: Vec::new(),
+                                    highlight_input: None,
+                                    highlight_error: None,
+                                });
+                            }
+                            self.sniffer_input_active = false;
+                            self.sniffer_input_text.clear();
+                        }
                     }
-                    self.sniffer_input_active = false;
-                    self.sniffer_input_text.clear();
                 }
-                KeyCode::Backspace => {
-                    self.sniffer_input_text.pop();
+                _ => {
+                    if line_edit::edit(&mut self.sniffer_input_text, &mut self.input_cursor, code) {
+                        self.sniffer_input_error = None;
+                    }
                 }
-                KeyCode::Char(c) => {
-                    self.sniffer_input_text.push(c);
-                }
-                _ => {}
             }
             return false;
         }
@@ -122,8 +184,7 @@ impl App {
                         return false;
                     }
                     KeyCode::Char('?') | KeyCode::F(1) => {
-                        self.show_help = true;
-                        self.help_scroll = 0;
+                        self.open_help();
                         return false;
                     }
                     _ => {}
@@ -165,9 +226,7 @@ impl App {
                                 return_filter.clear();
                             }
                             KeyCode::Enter => { *return_is_filtering = false; }
-                            KeyCode::Backspace => { return_filter.pop(); }
-                            KeyCode::Char(c) => { return_filter.push(c); }
-                            _ => {}
+                            _ => { line_edit::edit(return_filter, &mut self.input_cursor, code); }
                         }
                         if let Some(ref l) = lookup {
                             crate::app::snap_to_matching_return(l, selected_return, return_filter);
@@ -194,16 +253,13 @@ impl App {
                                 }
                                 KeyCode::Enter => {
                                     self.job_searching = false;
-                                    if let Some(&line) = self.job_search_matches.iter().find(|&&l| l >= *content_scroll)
-                                        .or(self.job_search_matches.first())
-                                    {
-                                        self.job_focus_line = Some(line);
-                                        *content_scroll = line.saturating_sub(2).min(self.job_detail_scroll_max);
+                                    if let Some(i) = step_match(&self.job_search_matches, None, *content_scroll, true) {
+                                        self.job_search_focus = Some(i);
+                                        self.job_focus_line = None;
+                                        *content_scroll = self.job_search_matches[i].saturating_sub(2).min(self.job_detail_scroll_max);
                                     }
                                 }
-                                KeyCode::Backspace => { self.job_search.pop(); }
-                                KeyCode::Char(c) => { self.job_search.push(c); }
-                                _ => {}
+                                _ => { line_edit::edit(&mut self.job_search, &mut self.input_cursor, code); }
                             }
                             return false;
                         }
@@ -211,18 +267,24 @@ impl App {
                             KeyCode::Char('/') => {
                                 self.job_searching = true;
                                 self.job_search.clear();
-                                self.job_focus_line = None;
+                                self.input_cursor = None;
+                                self.job_search_focus = None;
                                 return false;
                             }
-                            KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::Char('n') | KeyCode::Char('N') if jump_ready => {
+                            KeyCode::Char('n') | KeyCode::Char('N') if jump_ready => {
+                                let m = &self.job_search_matches;
+                                if let Some(i) = step_match(m, self.job_search_focus, *content_scroll, code == KeyCode::Char('n')) {
+                                    *content_scroll = m[i].saturating_sub(2).min(self.job_detail_scroll_max);
+                                    self.job_search_focus = Some(i);
+                                    self.job_focus_line = None;
+                                }
+                                return false;
+                            }
+                            KeyCode::Char('f') | KeyCode::Char('F') if jump_ready => {
                                 // A failure lands 4 lines down, on its state's `----------` separator.
-                                let (m, context) = if matches!(code, KeyCode::Char('f') | KeyCode::Char('F')) {
-                                    (&self.job_fail_lines, 4)
-                                } else {
-                                    (&self.job_search_matches, 2)
-                                };
+                                let (m, context) = (&self.job_fail_lines, 4);
                                 let cur = self.job_focus_line.filter(|l| m.contains(l));
-                                let line = if matches!(code, KeyCode::Char('f') | KeyCode::Char('n')) {
+                                let line = if code == KeyCode::Char('f') {
                                     match cur {
                                         Some(c) => m.iter().find(|&&l| l > c),
                                         None => m.iter().find(|&&l| l >= *content_scroll),
@@ -235,6 +297,7 @@ impl App {
                                 }.copied();
                                 if let Some(line) = line {
                                     self.job_focus_line = Some(line);
+                                    self.job_search_focus = None;
                                     *content_scroll = line.saturating_sub(context).min(self.job_detail_scroll_max);
                                 }
                                 return false;
@@ -349,6 +412,7 @@ impl App {
                     } else {
                     // Left panel (return list) focused
                     self.job_focus_line = None;
+                    self.job_search_focus = None;
                     match code {
                         KeyCode::Esc if !return_filter.is_empty() => { return_filter.clear(); }
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -370,6 +434,7 @@ impl App {
                         KeyCode::Char('/') => {
                             *return_is_filtering = true;
                             return_filter.clear();
+                            self.input_cursor = None;
                         }
                         KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j')
                         | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => {
@@ -682,13 +747,7 @@ impl App {
                                 self.minion_events_is_filtering = false;
                                 *selected = 0;
                             }
-                            KeyCode::Backspace => {
-                                self.minion_events_filter.pop();
-                            }
-                            KeyCode::Char(c) if !c.is_control() => {
-                                self.minion_events_filter.push(c);
-                            }
-                            _ => {}
+                            _ => { line_edit::edit(&mut self.minion_events_filter, &mut self.input_cursor, code); }
                         }
                     } else {
                         let evt_enter = match code {
@@ -720,6 +779,7 @@ impl App {
                             KeyCode::Char('/') => {
                                 self.minion_events_is_filtering = true;
                                 self.minion_events_filter.clear();
+                                self.input_cursor = None;
                                 None
                             }
                             KeyCode::Enter => {
@@ -814,7 +874,6 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::ConfigEditor(_) => {}
             }
         }
         if let Some(text) = clipboard_text {
@@ -831,22 +890,28 @@ impl App {
                 // Highlight keyword input mode
                 if let Some(ref mut buf) = state.highlight_input {
                     match code {
-                        KeyCode::Enter => {
-                            let keywords: Vec<String> = buf.split(',')
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect();
-                            if !keywords.is_empty() {
-                                state.highlight_keywords = keywords;
+                        KeyCode::Enter => match crate::sniff::parse_terms(buf, |_| Vec::new()) {
+                            Ok(terms) => {
+                                state.highlight_query = buf.trim().to_string();
+                                state.highlight_terms = terms;
+                                state.highlight_input = None;
+                                state.highlight_error = None;
                             }
-                            state.highlight_input = None;
-                        }
+                            Err(e) => state.highlight_error = Some(e),
+                        },
                         KeyCode::Esc => {
                             state.highlight_input = None;
+                            state.highlight_error = None;
                         }
-                        KeyCode::Backspace => { buf.pop(); }
-                        KeyCode::Char(c) => { buf.push(c); }
-                        _ => {}
+                        KeyCode::F(1) => {
+                            self.open_help_at(crate::ui::SNIFFER_HELP_TITLE);
+                            return false;
+                        }
+                        _ => {
+                            if line_edit::edit(buf, &mut self.input_cursor, code) {
+                                state.highlight_error = None;
+                            }
+                        }
                     }
                     return false;
                 }
@@ -897,7 +962,8 @@ impl App {
                         state.paused = !state.paused;
                     }
                     KeyCode::Char('h') | KeyCode::Char('H') => {
-                        state.highlight_input = Some(state.highlight_keywords.join(", "));
+                        state.highlight_input = Some(state.highlight_query.clone());
+                        self.input_cursor = None;
                     }
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         let text = events_as_text(visible.iter().filter_map(|&i| state.buffer.get(i)));
@@ -913,7 +979,7 @@ impl App {
                             (events_as_text(shown), "txt")
                         };
                         if !text.is_empty() {
-                            save_text = Some((text, format!("sniffer-{}", state.minion_ids.join("-")), ext));
+                            save_text = Some((text, format!("sniffer-{}", state.query), ext));
                         }
                     }
                     _ => {}
@@ -979,27 +1045,18 @@ impl App {
                     }
                     self.clamp_selection();
                 }
-                KeyCode::Backspace => {
-                    self.filter_text.pop();
+                _ => {
                     // Events applies its filter on Enter (see above), not per
                     // keystroke -- `self.applied_filter` doesn't change here,
                     // so re-clamping/re-following against it on every
                     // character is wasted work (and was the direct cause of
                     // typing itself stalling the TUI on masters with large
                     // event buffers). Other tabs still filter live.
-                    if self.current_tab != Tab::Events {
+                    if line_edit::edit(&mut self.filter_text, &mut self.input_cursor, code) && self.current_tab != Tab::Events {
                         self.clamp_active_filter_selection();
                         self.follow_events_tail_if_filtering();
                     }
                 }
-                KeyCode::Char(c) => {
-                    self.filter_text.push(c);
-                    if self.current_tab != Tab::Events {
-                        self.clamp_active_filter_selection();
-                        self.follow_events_tail_if_filtering();
-                    }
-                }
-                _ => {}
             }
             return false;
         }
@@ -1024,15 +1081,11 @@ impl App {
                     let ft = self.cache_server_filter.clone();
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, true);
                 }
-                KeyCode::Backspace => {
-                    self.cache_filter_text.pop();
-                    self.clamp_active_filter_selection();
+                _ => {
+                    if line_edit::edit(&mut self.cache_filter_text, &mut self.input_cursor, code) {
+                        self.clamp_active_filter_selection();
+                    }
                 }
-                KeyCode::Char(c) => {
-                    self.cache_filter_text.push(c);
-                    self.clamp_active_filter_selection();
-                }
-                _ => {}
             }
             return false;
         }
@@ -1102,6 +1155,8 @@ impl App {
                 if self.current_tab == Tab::Events && self.detail_popup.is_none() && self.sniffer.is_none() && !self.is_filtering {
                     self.sniffer_input_active = true;
                     self.sniffer_input_text.clear();
+                    self.input_cursor = None;
+                    self.sniffer_input_error = None;
                 }
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
@@ -1171,8 +1226,7 @@ impl App {
                 }
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
-                self.show_help = true;
-                self.help_scroll = 0;
+                self.open_help();
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 self.sparkline_style = match self.sparkline_style {
@@ -1181,20 +1235,23 @@ impl App {
                 };
             }
             KeyCode::Char('/') => {
-                if self.current_tab == Tab::Pulse {
-                    // Pulse tab has no filter
+                if matches!(self.current_tab, Tab::Dashboard | Tab::Pulse) {
+                    // Nothing to filter on these tabs
                 } else if self.current_tab == Tab::Jobs {
                     if self.cache_focus {
                         self.cache_is_filtering = true;
                         self.cache_filter_text.clear();
+                        self.input_cursor = None;
                         self.cache_server_filter.clear();
                     } else {
                         self.is_filtering = true;
                         self.filter_text.clear();
+                        self.input_cursor = None;
                     }
                 } else {
                     self.is_filtering = true;
                     self.filter_text.clear();
+                    self.input_cursor = None;
                     if self.current_tab == Tab::Events {
                         self.applied_filter.clear();
                         self.filtered_events_cache.clear();
@@ -1280,6 +1337,18 @@ impl App {
     pub fn handle_mouse_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
         let h = frame_size.height as usize;
 
+        if self.config_editor.is_some() || self.save_prompt.is_some() {
+            return false;
+        }
+        if self.show_help {
+            if let Some(&(_, _, _, page)) = self.help_page_hits.iter().find(|&&(y, x0, x1, _)| y == row && (x0..x1).contains(&col)) {
+                if !self.help_searching {
+                    self.show_help_page(page);
+                }
+            }
+            return false;
+        }
+
         // Popup showing — AdminConfirm and MinionEvents handle left-click
         if self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab) {
             if matches!(self.detail_popup, Some(DetailPopup::AdminConfirm)) {
@@ -1303,6 +1372,12 @@ impl App {
             if let Some(tab) = Self::tab_at_col(col) {
                 self.current_tab = tab;
             }
+            return false;
+        }
+
+        // The sniffer overlays the Events list: a click there would open an
+        // event from the list behind it.
+        if self.current_tab == Tab::Events && self.sniffer.is_some() {
             return false;
         }
 

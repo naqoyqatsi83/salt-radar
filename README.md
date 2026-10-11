@@ -119,13 +119,13 @@ Live overview of your Salt Master with real-time sparkline panels:
 ### Events
 - Live event stream from the Salt event bus (via ZMQ)
 - Full date/time in local and UTC columns, plus an optional Minion column (the event's minion ID)
-- Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax. Matched terms are colored consistently (same term, same color, everywhere) from a small high-contrast palette, hashed from the term text
+- Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax, or a regex wrapped in slashes (`/web-0[1-5]$/`, `/…/i` ignores case; a regex is matched against the event's pretty JSON line by line). Each term of the filter is colored in its own color, in the order typed, from the theme's highlight palette (six colors before any repeat)
 - Event detail popup:
   - `t` toggles between raw JSON and a **pretty view** for job-return events — the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output (same subprocess call Job Detail uses), so formatting and colors are authoritative Salt output, not an approximation. Falls back to a client-side rendering only when no live fetch is possible (non-job-return events) or after a fetch failure/timeout
   - Copy to clipboard (`y` = tag/timestamp + body, `Y` = body only) matches whatever's currently on screen — pretty or raw
-- Advanced **Event Sniffer** (`n` key) — filter events by minion ID/glob, same syntax as the main filter:
-  - Sniffed minion IDs are colored wherever they occur in captured content (tag and JSON body), same hashed palette as the main filter
-  - `h` sets an additional keyword search *within* what's already being sniffed — unlike the minion-ID coloring above, this one also narrows the displayed list to matches
+- Advanced **Event Sniffer** (`n` key) — capture events by comma-separated terms: a minion ID or glob (events from or about those minions, including the jobs that target them), a keyword (anywhere in the tag or data, ignoring case) or a `/regex/` (`/…/i` ignores case; commas and slashes inside it are part of it), e.g. `web-*, nginx, /ret/(db|web)\d+/`; each term colors its matches:
+  - An invalid regex keeps the prompt open and says what's wrong
+  - `h` narrows the shown list to events matching further keywords or `/regex/` terms (empty input shows everything again)
   - Pause/resume live capture (`p`)
   - Navigate events with full pretty-printed JSON body
   - Open event detail from sniffer (`Enter`), return to sniffer on close
@@ -133,7 +133,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 
 ### Jobs
 - Split panel: **Live Jobs** (left) from event bus and **Job Cache** (right) from Salt's master job cache
-- Job cache supports pagination (`[`/`]` adjust limit, `,`/`.` page navigation) and server-side search
+- Job cache supports pagination (`[`/`]` adjust limit, `,`/`.` page navigation) and server-side search — the same terms as the other filters (comma-separated, globs matched against the target, `/regex/`), applied by the agent across the whole cache; its regexes use Python's `re`, which differs slightly from the other filters' regex dialect (e.g. lookarounds work only here)
 - **Args** column shows what a job was run with: for `state.apply`/`state.sls` the requested formula (e.g. `apache.install`), `highstate` when none was named, and a dimmed `(test)` marker for `test=True` dry runs; for other functions their arguments (e.g. `uptime` for `cmd.run`). The `/` filter matches it too
 - Sortable and configurable columns (see [Columns and sorting](#columns-and-sorting)) — the Job Cache is sorted across the whole cache by the agent, not just the page on screen
 - Default order (no sort column picked): Live Jobs run oldest to newest by JID, tail-style like Events — the cursor stays on the newest job as new ones arrive, until you move it (`End` resumes following); the Job Cache lists newest first
@@ -212,7 +212,7 @@ If DISPLAY and XAUTHORITY can't be resolved, a transient yellow hint is shown in
 ### Everywhere
 - **Color themes** — btop++-style `.theme` files (see below); the screen behind any popup is dimmed so the popup stands out — how strongly is `popup_dim_pct` in `[ui]` (default 70%, `0` turns it off)
 - **Clipboard integration** — tmux load-buffer + xclip via X11 forwarding. DISPLAY and XAUTHORITY are auto-resolved from the process environment or the tmux session's global environment — no manual configuration needed even when running under `sudo`
-- Filter-as-you-type with `/` on all list tabs — each tab keeps its own filter independently, comma-separated terms (each optionally a glob) are OR'd together, and matched terms are consistently colored
+- Filter-as-you-type with `/` on all list tabs — each tab keeps its own filter independently, comma-separated terms (each optionally a glob, or a `/regex/`) are OR'd together, and matched terms are colored, each in its own color; text that isn't a complete `/…/` is plain, so a filter being typed never errors. Job Detail's output search and the help search take a whole-query `/regex/` the same way (`/etc/salt/minion` stays a plain path search), and a match may span differently colored parts of a line
 - Keyboard-driven navigation with `?` for help
 
 ## Installation
@@ -269,9 +269,15 @@ service_mem_abs_threshold_mb = 2048.0
 zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 ```
 
+#### Running through sudo, and several users at once
+
+salt-radar needs root (or the Salt user) to read the master's PKI and job cache, so it's often started with `sudo`. sudo resets `HOME` to root's, which would make every user share root's config — so when salt-radar runs as root with `SUDO_USER` set, it uses the invoking user's files instead: their `~/.config/salt-radar/salt-radar.toml` (a user without one yet starts from root's config, or the defaults, and their first save creates their own), their `~/.config/salt-radar/themes/`, their "updated to vX" marker, and their home for `~` (e.g. the default export directory). Whatever salt-radar creates in their home is owned by them. `./salt-radar.toml` in the current directory still wins, and `sudo -i` or a real root login behave as before. Config saves are atomic (a temp file renamed into place).
+
+Several users can run salt-radar on the same master at the same time: each instance starts its own agent and talks only to it, and nothing is locked or written into Salt's directories. What adds up is load — each agent takes about 60 MB and runs its own polling (`systemctl`, `/proc`, keys, salt-api `/stats`), plus Job Cache loads and Job Detail lookups when someone uses them. The only things that reach minions are admin-mode actions (fleet scan, minion ping, grains) and the opt-in `job_ping` latency source (a `test.ping` to every minion every few seconds), so with several users keep `zmq_latency_source` on its default. Each instance's Job Detail lookups are real runner jobs (`jobs.lookup_jid`), so users see each other's in Live Jobs and Events.
+
 ### Themes
 
-Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in the Config Editor, which previews each theme live as you scroll the list, like btop's options menu). The built-in theme is `Default`; the package also ships ports of all of btop++'s bundled themes (Nord, Dracula, Gruvbox, Tokyo Night, Solarized, Everforest, Kanagawa, … and `btop` itself) in `/usr/share/salt-radar/themes/`, and your own `*.theme` files go in `~/.config/salt-radar/themes/` (the user's copy wins on a name clash), and `color_theme` can also be a path to a theme file. The format is the same as btop++'s — `theme[key]="#RRGGBB"` lines, and any key a theme leaves out keeps its Default color. [`salt-radar.theme.example`](salt-radar.theme.example) is the Default theme with every key documented; copy it to `~/.config/salt-radar/themes/<name>.theme` to start your own. Set `theme_background = false` to keep your terminal's own (e.g. transparent) background instead of the theme's.
+Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in the Config Editor, which previews each theme live as you scroll the list, like btop's options menu). The built-in theme is `Default`; the package also ships ports of all of btop++'s bundled themes (Nord, Dracula, Gruvbox, Tokyo Night, Solarized, Everforest, Kanagawa, … and `btop` itself), plus `1337` (from the 1337 color scheme), in `/usr/share/salt-radar/themes/`, and your own `*.theme` files go in `~/.config/salt-radar/themes/` (the user's copy wins on a name clash), and `color_theme` can also be a path to a theme file. The format is the same as btop++'s — `theme[key]="#RRGGBB"` lines, and any key a theme leaves out keeps its Default color. [`salt-radar.theme.example`](salt-radar.theme.example) is the Default theme with every key documented; copy it to `~/.config/salt-radar/themes/<name>.theme` to start your own. Set `theme_background = false` to keep your terminal's own (e.g. transparent) background instead of the theme's.
 
 ## Keyboard Shortcuts
 
@@ -287,7 +293,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | `Esc` | Close popup / help |
 | `/` | Filter (current tab) |
 | `a` | Toggle admin mode |
-| `?` / `F1` | Help overlay |
+| `?` / `F1` | Help overlay; `Tab` cycles its pages: Keys, Guide (filter, search and sniffer syntax, panel notes) and What's new (the changelog) |
 | `F2` | Toggle mouse mode |
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval |
@@ -347,13 +353,13 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `PgUp`/`PgDn` | Jump 10 returns |
 | `Home`/`End` | First/last return (job detail) |
 | `Enter` | Enter scroll mode (event/job detail) |
-| `/` | Search the return output, matches highlighted (job detail, output pane) |
-| `n`/`N` | Next/previous search match, marked in the output (job detail; also from the returns list) |
+| `/` | Search the return output (job detail, output pane) or the help pages, matches highlighted |
+| `n`/`N` | Next/previous search match, marked in place (job detail, also from the returns list; help) |
 | `f`/`F` | Next/previous failed state, marked in the output (job detail; also from the returns list) |
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |
 | `t` | Toggle raw JSON / pretty view (event detail) |
-| `h` | Edit keyword filter (sniffer) |
+| `h` | Show only events matching keywords or `/regex/` terms (sniffer) |
 | `p` | Pause/resume (sniffer) |
 | `g` | Fetch grains for this minion (minion detail, admin mode only) |
 
@@ -465,7 +471,7 @@ salt-radar.theme.example # The Default theme with every key documented
 
 salt-radar stands on the shoulders of other people's work:
 
-- **[btop++](https://github.com/aristocratos/btop)** by Jakob P. Liljenberg ([aristocratos](https://github.com/aristocratos)) — a huge thank-you for the inspiration and for such great work. A lot of salt-radar's look and feel comes straight from btop: shortcut hints living in the panel borders, braille sparklines, graphs colored by level, and the whole theme system — the `.theme` file format is btop's, and the bundled themes are ports of btop's own (Apache-2.0). If you like salt-radar, go give btop a star.
+- **[btop++](https://github.com/aristocratos/btop)** by Jakob P. Liljenberg ([aristocratos](https://github.com/aristocratos)) — a huge thank-you for the inspiration and for such great work. A lot of salt-radar's look and feel comes straight from btop: shortcut hints living in the panel borders, braille sparklines, graphs colored by level, and the whole theme system — the `.theme` file format is btop's, and the bundled themes are ports of btop's own (Apache-2.0) — all but `1337`, made from the palette of the 1337 color scheme ([IntelliJ port](https://github.com/2chevskii/intellij-theme-1337)). If you like salt-radar, go give btop a star.
 - **The theme authors** — every bundled theme is a port of a btop theme and keeps its original author's credit at the top of the file, and most of them carry a well-known color scheme by its own designers (Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Everforest, Kanagawa, Flexoki and more).
 - **[psnet](https://github.com/psmux/psnet)** — salt-radar's original dark palette, its ratatui TUI style, and its `/proc` / `/proc/net/tcp` collection approach were modeled on psnet.
 - **[ratatui](https://github.com/ratatui/ratatui)** and **[crossterm](https://github.com/crossterm-rs/crossterm)**, which do the heavy lifting of drawing to the terminal, plus serde, serde_json, toml, chrono, base64 and libc.

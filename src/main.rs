@@ -5,6 +5,7 @@ mod alerts;
 mod app;
 mod config;
 mod collectors;
+mod sniff;
 mod types;
 mod ui;
 
@@ -149,6 +150,14 @@ fn main() -> io::Result<()> {
                                 // Click hit-testing reads the last drawn
                                 // layout, so redraw before the next one.
                                 break;
+                            }
+                            MouseEventKind::Down(MouseButton::Right) if app.show_help => {
+                                app.show_help = false;
+                                need_redraw = true;
+                            }
+                            MouseEventKind::Down(MouseButton::Right) if app.config_editor.is_some() => {
+                                if app.handle_key(KeyCode::Esc) { break 'main; }
+                                need_redraw = true;
                             }
                             MouseEventKind::Down(MouseButton::Right) => {
                                 app.detail_popup = None;

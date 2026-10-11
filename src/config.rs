@@ -1,4 +1,6 @@
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use ratatui::style::Color;
 
@@ -24,17 +26,125 @@ pub fn resolve_config_path() -> PathBuf {
     }
 }
 
-/// `$XDG_CONFIG_HOME/salt-radar`, falling back to `~/.config/salt-radar`.
+/// The user who started salt-radar through `sudo`, when it runs as root that
+/// way: their config, themes and files are used instead of root's, which
+/// every sudo user would otherwise share (sudo resets `HOME` to root's and
+/// drops `XDG_*`). Only `SUDO_USER` is followed; no sudo, `sudo -i` or a
+/// real root login leave this `None`.
+pub struct SudoUser {
+    pub home: PathBuf,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+pub fn sudo_user() -> Option<&'static SudoUser> {
+    static USER: OnceLock<Option<SudoUser>> = OnceLock::new();
+    USER.get_or_init(|| {
+        // SAFETY: geteuid can't fail; getpwnam runs once, here, before any
+        // other thread could call it, and its result is copied out at once.
+        if unsafe { libc::geteuid() } != 0 {
+            return None;
+        }
+        let name = std::env::var("SUDO_USER").ok().filter(|n| !n.is_empty() && n != "root")?;
+        let name = std::ffi::CString::new(name).ok()?;
+        let pw = unsafe { libc::getpwnam(name.as_ptr()) };
+        if pw.is_null() {
+            return None;
+        }
+        let (dir, uid, gid) = unsafe { ((*pw).pw_dir, (*pw).pw_uid, (*pw).pw_gid) };
+        if dir.is_null() {
+            return None;
+        }
+        let home = PathBuf::from(unsafe { std::ffi::CStr::from_ptr(dir) }.to_string_lossy().into_owned());
+        (home.is_absolute() && home != Path::new("/")).then_some(SudoUser { home, uid, gid })
+    }).as_ref()
+}
+
+/// The invoking user's home: the sudo user's, or `$HOME`.
+fn home_dir() -> Option<PathBuf> {
+    match sudo_user() {
+        Some(u) => Some(u.home.clone()),
+        None => std::env::var_os("HOME").map(PathBuf::from),
+    }
+}
+
+/// `$XDG_CONFIG_HOME/salt-radar`, falling back to `~/.config/salt-radar` —
+/// the sudo user's under sudo (their environment's `XDG_*` is gone).
 fn user_config_dir() -> Option<PathBuf> {
+    match sudo_user() {
+        Some(u) => Some(u.home.join(".config/salt-radar")),
+        None => own_config_dir(),
+    }
+}
+
+/// The config dir of the account salt-radar runs as (root's under sudo).
+fn own_config_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .map(|dir| dir.join("salt-radar"))
 }
 
-/// Expands a leading `~` / `~/` against $HOME, as the shell would.
+/// `$XDG_STATE_HOME/salt-radar/last-version`, falling back to
+/// `~/.local/state/salt-radar/last-version` (the sudo user's under sudo).
+fn last_version_path() -> Option<PathBuf> {
+    let state = match sudo_user() {
+        Some(u) => Some(u.home.join(".local/state")),
+        None => std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state"))),
+    };
+    state.map(|dir| dir.join("salt-radar").join("last-version"))
+}
+
+/// Hands a file or directory salt-radar created over to the user who ran it
+/// through sudo, when it's in their home — so their home doesn't fill up
+/// with root-owned files they can't edit.
+pub fn give_to_sudo_user(path: &Path) {
+    let Some(u) = sudo_user() else { return };
+    if !path.starts_with(&u.home) {
+        return;
+    }
+    if let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
+        // SAFETY: a valid NUL-terminated path; a failure just leaves root as owner.
+        unsafe { libc::chown(c.as_ptr(), u.uid, u.gid) };
+    }
+}
+
+/// `create_dir_all`, giving the directories it creates to the sudo user
+/// (see `give_to_sudo_user`).
+pub fn create_dir_all_owned(dir: &Path) -> std::io::Result<()> {
+    let missing: Vec<PathBuf> = dir.ancestors().take_while(|a| !a.as_os_str().is_empty() && !a.exists()).map(Path::to_path_buf).collect();
+    std::fs::create_dir_all(dir)?;
+    for d in missing.iter().rev() {
+        give_to_sudo_user(d);
+    }
+    Ok(())
+}
+
+/// Records the running version as the last one seen and returns the version
+/// seen before it, if that was a different one. A first run returns `None`:
+/// nothing was upgraded.
+pub fn note_version_seen() -> Option<String> {
+    let path = last_version_path()?;
+    let current = env!("CARGO_PKG_VERSION");
+    let previous = std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string());
+    if previous.as_deref() == Some(current) {
+        return None;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = create_dir_all_owned(dir);
+    }
+    if std::fs::write(&path, format!("{current}\n")).is_ok() {
+        give_to_sudo_user(&path);
+    }
+    previous.filter(|p| !p.is_empty())
+}
+
+/// Expands a leading `~` / `~/` against the invoking user's home, as the
+/// shell would (the sudo user's under sudo).
 pub fn expand_home(raw: &str) -> PathBuf {
-    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    let home = home_dir;
     if raw == "~" {
         return home().unwrap_or_else(|| PathBuf::from("/root"));
     }
@@ -49,10 +159,16 @@ pub fn expand_home(raw: &str) -> PathBuf {
 pub const DEFAULT_THEME: &str = "Default";
 
 /// Where `*.theme` files are looked up, lowest priority first: the
-/// packaged themes, then the user's own (which win on a name clash).
+/// packaged themes, then the user's own (which win on a name clash) — under
+/// sudo, root's and then the sudo user's.
 fn theme_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![PathBuf::from("/usr/share/salt-radar/themes")];
-    dirs.extend(user_config_dir().map(|d| d.join("themes")));
+    for dir in [own_config_dir(), user_config_dir()].into_iter().flatten() {
+        let themes = dir.join("themes");
+        if !dirs.contains(&themes) {
+            dirs.push(themes);
+        }
+    }
     dirs
 }
 
@@ -599,10 +715,13 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
 /// rest keep following future defaults instead of being pinned to whatever
 /// they were when the file was saved. (Files written by older versions held
 /// every setting; saving once slims them down to the real changes.)
+/// Writes the settings that differ from the defaults, atomically (a temp
+/// file renamed over the old one), so two instances saving at once can't
+/// leave a torn file. Under sudo, a config in the user's home stays theirs.
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
+            create_dir_all_owned(parent)?;
         }
     }
     let mut out = toml::Table::new();
@@ -615,11 +734,31 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
         }
     }
     let body = toml::to_string(&out).map_err(std::io::Error::other)?;
-    std::fs::write(path, format!(
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, format!(
         "# salt-radar settings: only values that differ from the defaults are stored.\n\
          # See salt-radar.toml.example for every setting.\n\n{}",
         body,
-    ))
+    ))?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    give_to_sudo_user(path);
+    Ok(())
+}
+
+/// `load_config`, but under sudo a user without a config of their own yet
+/// starts from root's — their first save then writes their own file.
+pub fn load_config_or_fallback(path: &Path) -> AppConfig {
+    if !path.exists() && sudo_user().is_some() {
+        if let Some(own) = own_config_dir().map(|d| d.join("salt-radar.toml")).filter(|p| p.is_file()) {
+            return load_config(&own);
+        }
+    }
+    load_config(path)
 }
 
 pub fn load_config(path: &Path) -> AppConfig {
@@ -721,6 +860,20 @@ mod tests {
     use super::*;
 
     /// A fresh, empty scratch directory under the system temp dir.
+    #[test]
+    fn config_save_is_atomic_and_creates_its_directories() {
+        let dir = scratch("atomic");
+        let path = dir.join("a/b/salt-radar.toml");
+        let cfg = AppConfig { popup_dim_pct: 40, ..AppConfig::default() };
+        write_config(&path, &cfg).unwrap();
+        write_config(&path, &cfg).unwrap();
+        assert_eq!(load_config(&path).popup_dim_pct, 40);
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap()
+            .filter_map(|e| e.ok()).map(|e| e.file_name()).filter(|n| n != "salt-radar.toml").collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("salt-radar-test-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -767,6 +920,21 @@ mod tests {
         assert_eq!(theme.title, Theme::DEFAULT.title, "an unparseable value keeps the default");
         assert_eq!(theme.red, Theme::DEFAULT.red, "keys the file doesn't set keep the default");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn greyscale_theme_sets_every_role_to_a_grey() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/themes/greyscale.theme");
+        let text = std::fs::read_to_string(path).unwrap();
+        let theme = load_theme(path);
+        for key in Theme::KEYS {
+            assert!(text.contains(&format!("theme[{key}]=")), "greyscale.theme doesn't set {key}");
+            let mut t = theme;
+            match t.slot(key) {
+                Some(Color::Rgb(r, g, b)) => assert!(r == g && g == b, "{key} is not grey"),
+                other => panic!("{key}: {other:?}"),
+            }
+        }
     }
 
     #[test]

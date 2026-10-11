@@ -7,6 +7,7 @@ mod pulse;
 mod minion_events;
 mod api_view;
 mod table;
+mod whats_new;
 
 pub mod config_editor;
 pub mod detail_popup;
@@ -18,7 +19,6 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::app::DetailPopup;
 use crate::types::Tab;
 
 // ─── Theme colors ──────────────────────────────────────────────────────────
@@ -140,6 +140,18 @@ pub mod color {
         Style::default().bg(selected_bg()).add_modifier(Modifier::BOLD)
     }
 
+    // Search matches: every match softly tinted, the one `n`/`N` is on as a
+    // solid block. Built from theme roles that hold in dark and light themes
+    // alike: badge_bg is a muted amber meant for hi_fg text on top, and
+    // popup_bg text on yellow is the strongest contrast a theme defines.
+    pub fn search_match() -> Style {
+        Style::default().fg(hi_fg()).bg(badge_bg())
+    }
+
+    pub fn search_current() -> Style {
+        Style::default().fg(popup_bg()).bg(yellow()).add_modifier(Modifier::BOLD)
+    }
+
     // Job outcome colors, the same wherever a result is shown (Live Jobs,
     // Job Detail, the minion activity popup, Fail%), following Salt's own
     // highstate output: a zero or a value that doesn't apply is dimmed.
@@ -164,48 +176,74 @@ pub mod color {
         line.style(select_bg())
     }
 
-    /// Deterministic color for a filter/highlight term — same term always
-    /// gets the same color (everywhere, every session), via a simple FNV-1a
-    /// hash of the lowercased text rather than assignment order, so it
-    /// doesn't shift depending on typing order or which terms are active.
-    /// The `highlight_*` colors are kept apart from green/red/yellow/orange,
-    /// which already carry pass/fail/warn meaning — a term-colored hostname
-    /// shouldn't read as a status indicator.
-    pub fn term_color(term: &str) -> Color {
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for b in term.trim().to_lowercase().bytes() {
-            hash ^= b as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
+    /// Highlight colors for the terms of one search: each distinct term
+    /// (ignoring case) takes the next color in the order the terms were
+    /// typed, so terms of one search only share a color past the palette's
+    /// six. The `highlight_*` colors come first; green/red/yellow/orange are
+    /// left out, as they already carry pass/fail/warn meaning — a
+    /// term-colored hostname shouldn't read as a status indicator.
+    pub fn term_colors<'a>(terms: impl IntoIterator<Item = &'a str>) -> std::collections::HashMap<String, Color> {
+        let palette = [highlight_1(), highlight_2(), highlight_3(), highlight_4(), cyan(), purple()];
+        let mut colors = std::collections::HashMap::new();
+        for term in terms {
+            let key = term.trim().to_lowercase();
+            if !key.is_empty() && !colors.contains_key(&key) {
+                let color = palette[colors.len() % palette.len()];
+                colors.insert(key, color);
+            }
         }
-        let palette = [highlight_1(), highlight_2(), highlight_3(), highlight_4()];
-        palette[(hash as usize) % palette.len()]
+        colors
+    }
+
+    /// A term's color from `term_colors`.
+    pub fn term_color_in(colors: &std::collections::HashMap<String, Color>, term: &str) -> Color {
+        colors.get(&term.trim().to_lowercase()).copied().unwrap_or_else(highlight_1)
     }
 }
 
 /// Colors every occurrence of any `keywords` entry within `text`, each
-/// keyword getting its own stable `color::term_color`; overlapping matches
+/// keyword in its own color (`color::term_colors`); overlapping matches
 /// keep the earlier (by start position) keyword's color rather than
-/// splitting further. Shared by the Event Sniffer's keyword highlighting and
-/// the Events list's filter-term highlighting so both stay visually
-/// consistent — the same term is always the same color in both places.
-pub fn highlight_keywords(text: &str, keywords: &[String]) -> Vec<Span<'static>> {
-    if keywords.is_empty() {
-        return vec![Span::styled(text.to_string(), Style::default().fg(color::main_fg()))];
-    }
-    let lower_text = text.to_lowercase();
-    let mut matches: Vec<(usize, usize, Color)> = Vec::new();
-    for kw in keywords {
-        if kw.is_empty() { continue; }
-        let lower_kw = kw.to_lowercase();
-        let kw_color = color::term_color(kw);
-        let mut start = 0;
-        while let Some(pos) = lower_text[start..].find(&lower_kw) {
-            let abs_start = start + pos;
-            let abs_end = abs_start + kw.len();
-            matches.push((abs_start, abs_end, kw_color));
-            start = abs_end;
-        }
-    }
+/// splitting further. Used for the Events list's filter terms.
+pub fn highlight_keywords(text: &str, terms: &[crate::app::HighlightTerm]) -> Vec<Span<'static>> {
+    let colors = color::term_colors(terms.iter().map(|t| t.term.as_str()));
+    let matches = terms.iter()
+        .flat_map(|t| {
+            let c = color::term_color_in(&colors, &t.term);
+            t.ranges(text).into_iter().map(move |(s, e)| (s, e, c))
+        })
+        .collect();
+    colored_ranges(text, matches)
+}
+
+/// A text input's `prefix` and content with its cursor: the character under
+/// it, or a space past the end, in reverse video (readable in any theme).
+pub fn input_spans(prefix: &str, text: &str, cursor: Option<usize>, style: Style) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let at = cursor.unwrap_or(chars.len()).min(chars.len());
+    let under = chars.get(at).map_or_else(|| " ".to_string(), |c| c.to_string());
+    vec![
+        Span::styled(format!("{prefix}{}", chars[..at].iter().collect::<String>()), style),
+        Span::styled(under, style.add_modifier(Modifier::REVERSED)),
+        Span::styled(chars.get(at + 1..).unwrap_or_default().iter().collect::<String>(), style),
+    ]
+}
+
+/// `highlight_keywords` for the Event Sniffer's terms: each minion, keyword
+/// or regex match in its term's color (`color::term_colors`, in the order of
+/// the terms).
+pub fn highlight_terms(text: &str, terms: &[crate::sniff::SniffTerm]) -> Vec<Span<'static>> {
+    let colors = color::term_colors(terms.iter().map(|t| t.color_key()));
+    let matches = terms.iter()
+        .flat_map(|t| {
+            let c = color::term_color_in(&colors, t.color_key());
+            t.find_in(text).into_iter().map(move |(s, e)| (s, e, c))
+        })
+        .collect();
+    colored_ranges(text, matches)
+}
+
+fn colored_ranges(text: &str, mut matches: Vec<(usize, usize, Color)>) -> Vec<Span<'static>> {
     if matches.is_empty() {
         return vec![Span::styled(text.to_string(), Style::default().fg(color::main_fg()))];
     }
@@ -401,7 +439,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_title_frame(f, main_layout[0], app);
 
-    // A popup (including the globally-triggered Config Editor) steals focus
+    // A popup (or the globally-triggered Config Editor) steals focus
     // from whatever tab is behind it, so that tab's normally-always-bright
     // navigable panel should dim back to the same color as its non-navigable
     // neighbors instead of still reading as the focused element. `popup_tab`
@@ -409,14 +447,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // closes (closing just sets `detail_popup` back to `None`), so it must
     // be gated on `detail_popup.is_some()` too — otherwise a tab that ever
     // had a popup opened on it reads as permanently unfocused afterward.
-    let popup_active = app.detail_popup.is_some()
-        && (app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))));
+    let popup_active = app.detail_popup.is_some() && app.popup_tab == Some(app.current_tab);
     // The sniffer lives outside `detail_popup` (it keeps running when you
     // leave Events) so it isn't covered by `popup_active` above, but it
     // still overlays/steals focus from the Events tab whenever it's the
     // thing on screen there (i.e. no other Events-tab popup on top of it).
     let sniffer_active = !popup_active && app.current_tab == Tab::Events && app.sniffer.is_some();
-    let tab_focused = !popup_active && !sniffer_active && !app.show_help;
+    let tab_focused = !popup_active && !sniffer_active && !app.show_help && app.config_editor.is_none();
 
     let mut hits = Vec::new();
     match app.current_tab {
@@ -433,17 +470,23 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_key_hints(f, main_layout[2], app);
 
     // Detail popup overlay
-    let dim = app.config.popup_dim_pct;
+    let dim = app.popup_dim_pct();
     if popup_active || sniffer_active { dim_background(f, dim); }
     if popup_active { detail_popup::draw_detail_popup(f, app); }
     else if sniffer_active { detail_popup::draw_sniffer_overlay(f, app); }
 
+    if app.config_editor.is_some() {
+        dim_background(f, dim);
+        config_editor::draw_config_editor(f, app);
+    }
+
     // Help overlay
     if app.show_help {
         dim_background(f, dim);
-        let help_area = detail_popup::centered_rect(60, 65, f.area());
+        // The same size as Job Detail, the largest popup.
+        let help_area = detail_popup::centered_rect(85, 85, f.area());
         f.render_widget(Clear, help_area);
-        draw_help_overlay(f, help_area, &mut app.help_scroll);
+        draw_help_overlay(f, help_area, app);
     }
 
     // Save-to-file prompt: opened from inside a popup, so it's the top layer.
@@ -548,6 +591,14 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         .title_top(center_title.centered())
         .title_top(right_title.right_aligned())
         .title_bottom(global_hints.right_aligned());
+    let block = match &app.upgraded_from {
+        Some(_) => block.title_bottom(Line::from(vec![
+            Span::styled("\u{2524}", Style::default().fg(color::border())),
+            Span::styled(format!(" updated to v{version} \u{00B7} F1: what's new "), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("\u{251C}", Style::default().fg(color::border())),
+        ]).left_aligned()),
+        None => block,
+    };
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -605,16 +656,22 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     if app.sniffer_input_active {
-        let cursor = if app.sniffer_input_text.len().is_multiple_of(2) { '|' } else { ' ' };
         let k1 = key::render("Esc", "Cancel");
         let k2 = key::render("Enter", "Start");
         let mut all_spans: Vec<Span<'static>> = Vec::new();
         all_spans.extend(k1);
         all_spans.extend(k2);
-        all_spans.push(Span::styled(
-            format!("  Minion IDs (comma-separated): {} {}", app.sniffer_input_text, cursor),
+        all_spans.extend(input_spans(
+            "  Sniff for (minion, glob, keyword or /regex/, comma-separated): ",
+            &app.sniffer_input_text,
+            app.input_cursor,
             Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         ));
+        if let Some(ref err) = app.sniffer_input_error {
+            all_spans.push(Span::styled(format!("  \u{2717} {err}"), Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
+        } else if app.sniffer_input_text.is_empty() {
+            all_spans.push(Span::styled("  e.g. web-*, nginx, /ret/(db|web)\\d+/i  \u{00B7}  F1: examples", Style::default().fg(color::inactive_fg())));
+        }
         let paragraph = Paragraph::new(Line::from(all_spans))
             .style(Style::default().bg(color::bar_bg()));
         f.render_widget(paragraph, area);
@@ -628,10 +685,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         ];
         let mut all_spans: Vec<Span<'static>> = Vec::new();
         for s in spans { all_spans.extend(s); }
-        all_spans.push(Span::styled(
-            format!("  filter: /{} {}", app.filter_text, if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' }),
-            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
-        ));
+        all_spans.extend(input_spans("  filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)));
         let paragraph = Paragraph::new(Line::from(all_spans))
             .style(Style::default().bg(color::bar_bg()));
         f.render_widget(paragraph, area);
@@ -703,9 +757,9 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 spans.push(Span::styled(format!(" {}/{} ", cur, total), Style::default().fg(color::cyan())));
             }
             if app.cache_focus && !app.cache_filter_text.is_empty() {
-                spans.push(Span::styled(format!(" filtered: /{}/ ", app.cache_filter_text), Style::default().fg(color::yellow())));
+                spans.push(Span::styled(format!(" filter: {} ", app.cache_filter_text), Style::default().fg(color::yellow())));
             } else if !app.cache_focus && !app.filter_text_for(Tab::Jobs).is_empty() {
-                spans.push(Span::styled(format!(" filtered: /{}/ ", app.filter_text_for(Tab::Jobs)), Style::default().fg(color::yellow())));
+                spans.push(Span::styled(format!(" filter: {} ", app.filter_text_for(Tab::Jobs)), Style::default().fg(color::yellow())));
             }
         }
         _ => {
@@ -727,7 +781,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 _ => "",
             };
             if !active_filter.is_empty() {
-                spans.push(Span::styled(format!(" filtered: /{}/ ", active_filter), Style::default().fg(color::yellow())));
+                spans.push(Span::styled(format!(" filter: {} ", active_filter), Style::default().fg(color::yellow())));
             }
         }
     }
@@ -789,7 +843,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`Esc`", action: "Close popup / help" },
         Shortcut { tab: "", key: "`/`", action: "Filter (current tab)" },
         Shortcut { tab: "", key: "`a`", action: "Toggle admin mode" },
-        Shortcut { tab: "", key: "`?` / `F1`", action: "Help overlay" },
+        Shortcut { tab: "", key: "`?` / `F1`", action: "Help overlay; `Tab` cycles its pages: Keys, Guide (filter, search and sniffer syntax, panel notes) and What's new (the changelog)" },
         Shortcut { tab: "", key: "`F2`", action: "Toggle mouse mode" },
         Shortcut { tab: "", key: "`F3`", action: "Open Config Editor" },
         Shortcut { tab: "", key: "`+`/`-`", action: "Adjust refresh interval" },
@@ -838,22 +892,191 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Jump 10 returns" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last return (job detail)" },
         Shortcut { tab: "", key: "`Enter`", action: "Enter scroll mode (event/job detail)" },
-        Shortcut { tab: "", key: "`/`", action: "Search the return output, matches highlighted (job detail, output pane)" },
-        Shortcut { tab: "", key: "`n`/`N`", action: "Next/previous search match, marked in the output (job detail; also from the returns list)" },
+        Shortcut { tab: "", key: "`/`", action: "Search the return output (job detail, output pane) or the help pages, matches highlighted" },
+        Shortcut { tab: "", key: "`n`/`N`", action: "Next/previous search match, marked in place (job detail, also from the returns list; help)" },
         Shortcut { tab: "", key: "`f`/`F`", action: "Next/previous failed state, marked in the output (job detail; also from the returns list)" },
         Shortcut { tab: "", key: "`Esc`", action: "Exit scroll mode" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "Jump to start/end of output (scroll mode)" },
         Shortcut { tab: "", key: "`t`", action: "Toggle raw JSON / pretty view (event detail)" },
-        Shortcut { tab: "", key: "`h`", action: "Edit keyword filter (sniffer)" },
+        Shortcut { tab: "", key: "`h`", action: "Show only events matching keywords or `/regex/` terms (sniffer)" },
         Shortcut { tab: "", key: "`p`", action: "Pause/resume (sniffer)" },
         Shortcut { tab: "", key: "`g`", action: "Fetch grains for this minion (minion detail, admin mode only)" },
     ]),
 ];
 
-fn draw_help_overlay(f: &mut Frame, area: Rect, scroll: &mut u16) {
+fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
+    use crate::app::HelpPage;
+    let border = Style::default().fg(color::border_focus());
+    // `┤ Keys ├┤ Guide ├┤ What's new ├` like the hints in the border, each
+    // label clickable. A left-aligned title starts right after the corner.
+    let mut spans = vec![Span::styled("\u{2524}", border)];
+    let mut x = area.x + 2;
+    app.help_page_hits.clear();
+    for (i, page) in HelpPage::ALL.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("\u{251C}\u{2524}", border));
+            x += 2;
+        }
+        let label = format!(" {} ", page.title());
+        let w = label.chars().count() as u16;
+        app.help_page_hits.push((area.y, x, x + w, page));
+        x += w;
+        spans.push(if page == app.help_page {
+            Span::styled(label, Style::default().fg(color::title()).add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled(label, Style::default().fg(color::inactive_fg()))
+        });
+    }
+    spans.push(Span::styled("\u{251C}", border));
+    let pages = Line::from(spans);
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::border_focus()))
+        .style(Style::default().bg(color::popup_bg()))
+        .title_top(pages.left_aligned());
+    let inner = block.inner(area);
+    let lines = match app.help_page {
+        HelpPage::Keys => keys_help_lines(),
+        HelpPage::Guide => guide_help_lines(),
+        HelpPage::WhatsNew => whats_new::lines(inner.width.saturating_sub(1) as usize),
+    };
+    if std::mem::take(&mut app.help_search_jump) {
+        let (_, matches) = detail_popup::highlight_matches(lines.clone(), &app.help_search, None);
+        if let Some(i) = crate::app::step_match(&matches, None, app.help_scroll as usize, true) {
+            app.help_search_focus = Some(i);
+            app.help_scroll = crate::app::help_scroll_to(matches[i]);
+        }
+    }
+    let (lines, matches) = detail_popup::highlight_matches(lines, &app.help_search, app.help_search_focus);
+    app.help_search_matches = matches;
+    let matches = &app.help_search_matches;
+    let focus = app.help_search_focus.filter(|&i| i < matches.len());
+
+    let hints = if app.help_searching {
+        vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())]
+    } else {
+        let mut h = vec![("\u{2191}\u{2193}/PgUp/PgDn", "scroll".to_string()), ("/", "search".to_string())];
+        if !matches.is_empty() {
+            h.push(("n/N", "next/prev".to_string()));
+        }
+        h.push(("Tab", "next page".to_string()));
+        h.push(("Esc", if app.help_search.is_empty() { "close" } else { "clear search" }.to_string()));
+        h
+    };
+    block = block.title_bottom(border_hints(&hints, color::border_focus()).left_aligned());
+    if !app.help_search.is_empty() && !app.help_searching {
+        let status = match (focus, matches.len()) {
+            (_, 0) => "no matches".to_string(),
+            (Some(i), n) => format!("match {} of {}", i + 1, n),
+            (None, 1) => "1 match".to_string(),
+            (None, n) => format!("{n} matches"),
+        };
+        block = block.title_top(Line::from(Span::styled(
+            format!(" search {}: {} ", app.help_search, status),
+            Style::default().fg(if matches.is_empty() { color::red() } else { color::yellow() }),
+        )).right_aligned());
+    }
+    let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
+    app.help_scroll = app.help_scroll.min(max_scroll);
+    let scroll = app.help_scroll;
+    if scroll < max_scroll {
+        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::border_focus()))).right_aligned());
+    }
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::popup_bg())).scroll((scroll, 0)), inner);
+    if app.help_searching {
+        let bar = Rect { y: inner.y + inner.height.saturating_sub(1), height: 1.min(inner.height), ..inner };
+        f.render_widget(Clear, bar);
+        f.render_widget(
+            Paragraph::new(Line::from(input_spans(
+                "  Search: ",
+                &app.help_search,
+                app.input_cursor,
+                Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
+            ))).style(Style::default().bg(color::popup_bg())),
+            bar,
+        );
+    }
+}
+
+/// Heading of the help section `F1` jumps to from the sniffer's prompts.
+pub const SNIFFER_HELP_TITLE: &str = "Event Sniffer terms";
+
+/// The help Guide page's line holding a section's heading.
+pub fn guide_section_line(title: &str) -> Option<usize> {
+    guide_help_lines().iter().position(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim() == title)
+}
+
+/// A help section explaining a kind of input: a heading, an intro line, one
+/// `kind  example  meaning` row per kind of term, then notes.
+fn term_help_section(title: &str, intro: &str, rows: &[(&str, &str, &str)], notes: &[&str]) -> Vec<Line<'static>> {
+    let kind_w = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
+    let example_w = rows.iter().map(|r| r.1.chars().count()).max().unwrap_or(0);
+    let note = |text: &str| Line::from(Span::styled(format!("  {text}"), Style::default().fg(color::inactive_fg())));
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(format!("  {title}"), Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        note(intro),
+    ];
+    for (kind, example, what) in rows {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {kind:<kind_w$}  "), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{example:<example_w$}  "), Style::default().fg(color::cyan())),
+            Span::styled(what.to_string(), Style::default().fg(color::main_fg())),
+        ]));
+    }
+    lines.extend(notes.iter().map(|n| note(n)));
+    lines
+}
+
+/// What the list filters (`/`) and the output / help searches take.
+fn filter_help_lines() -> Vec<Line<'static>> {
+    term_help_section(
+        "Filter and search terms",
+        "/ on a list filters it by comma-separated terms; a row matching any term stays.",
+        &[
+            ("plain", "nginx", "the text anywhere, any case"),
+            ("glob", "web-*  db?", "a whole minion ID, like Salt's targeting"),
+            ("regex", "/web-0[1-5]$/", "a regex; /…/i ignores case"),
+            ("several", "web-*, /^db-0[0-9]$/", "any of the terms matches"),
+            ("search", "/Result: (False|None)/", "output and help search: one query"),
+        ],
+        &[
+            "Text that isn't a complete /…/ is plain, so /etc/salt/minion finds the path.",
+            "Filter terms get a color each; search matches are tinted, the current one solid.",
+            "Job Cache filters on the master: globs match the target, regexes use Python's re.",
+        ],
+    )
+}
+
+/// What can be typed when starting the sniffer (`n`) or narrowing it (`h`),
+/// one example per kind of term.
+fn sniffer_help_lines() -> Vec<Line<'static>> {
+    term_help_section(
+        SNIFFER_HELP_TITLE,
+        "n on Events starts the sniffer; it captures events matching any term.",
+        &[
+            ("minion", "web01", "its events, returns and the jobs targeting it"),
+            ("glob", "web-*  db?", "the same for each known minion it matches"),
+            ("keyword", "nginx", "anywhere in the tag or JSON, any case"),
+            ("regex", r"/salt/job/\d+/ret/db\d+/", "a tag or JSON line matching it"),
+            ("regex (i)", "/error|timed out/i", "the same, ignoring case"),
+            ("several", "web-*, nginx, /fail(ed)?/i", "any of the terms matches"),
+            ("h (narrow)", "/rocky9-1[0-9]/, timeout", "in a running sniffer: show only matches"),
+        ],
+        &[
+            "Keywords and regexes match the tag and pretty JSON line by line.",
+            "Inside /…/, commas and slashes belong to the regex. Empty h shows all.",
+            "Each term colors its matches; an invalid regex shows its error.",
+        ],
+    )
+}
+
+/// The help Keys page: every keyboard shortcut, grouped.
+fn keys_help_lines() -> Vec<Line<'static>> {
     let key_style = Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD);
     let mut lines = vec![
-        Line::from(Span::styled("  Help", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("  Keys", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(Span::styled("  \u{2500}".to_string() + &"\u{2500}".repeat(15), Style::default().fg(color::div_line()))),
         Line::from(Span::styled("  Most shortcuts are also shown live in the border of the panel they affect.", Style::default().fg(color::inactive_fg()))),
     ];
@@ -871,6 +1094,19 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, scroll: &mut u16) {
             lines.push(Line::from(spans));
         }
     }
+    lines
+}
+
+/// The help Guide page: the syntax of filters, searches and the sniffer,
+/// then notes on what some panels show.
+fn guide_help_lines() -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(Span::styled("  Guide", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("  \u{2500}".to_string() + &"\u{2500}".repeat(15), Style::default().fg(color::div_line()))),
+        Line::from(Span::styled("  What filters, searches and the sniffer take, and what some panels show.", Style::default().fg(color::inactive_fg()))),
+    ];
+    lines.extend(filter_help_lines());
+    lines.extend(sniffer_help_lines());
     lines.extend([
         Line::from(""),
         Line::from(Span::styled("  Dashboard KPIs", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
@@ -931,21 +1167,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, scroll: &mut u16) {
         Line::from(Span::styled("  Read-only TUI. All data sourced from /proc, systemctl,", Style::default().fg(color::inactive_fg()))),
         Line::from(Span::styled("  and Salt's own APIs via the bundled Python agent.", Style::default().fg(color::inactive_fg()))),
     ]);
-
-    let hints = [("\u{2191}\u{2193}/PgUp/PgDn", "scroll".to_string()), ("Esc", "close".to_string())];
-    let mut block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::border_focus()))
-        .style(Style::default().bg(color::popup_bg()))
-        .title_bottom(border_hints(&hints, color::border_focus()).left_aligned());
-    let inner = block.inner(area);
-    let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
-    *scroll = (*scroll).min(max_scroll);
-    if *scroll < max_scroll {
-        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::border_focus()))).right_aligned());
-    }
-    f.render_widget(block, area);
-    f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::popup_bg())).scroll((*scroll, 0)), inner);
+    lines
 }
 
 // ─── Sub-view modules ──────────────────────────────────────────────────────
@@ -955,6 +1177,31 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    #[test]
+    fn help_pages_split_keys_from_the_guide() {
+        use crate::app::HelpPage;
+        assert_eq!(HelpPage::Keys.step(true), HelpPage::Guide);
+        assert_eq!(HelpPage::WhatsNew.step(true), HelpPage::Keys);
+        assert_eq!(HelpPage::Keys.step(false), HelpPage::WhatsNew);
+        let text = |lines: Vec<Line>| lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("
+");
+        let keys = text(keys_help_lines());
+        let guide = text(guide_help_lines());
+        assert!(!keys.contains("Filter and search terms") && !keys.contains("Dashboard KPIs"));
+        assert!(guide.contains("Filter and search terms") && guide.contains(SNIFFER_HELP_TITLE) && guide.contains("Dashboard KPIs"));
+        assert!(guide_section_line(SNIFFER_HELP_TITLE).is_some());
+    }
+
+    #[test]
+    fn term_colors_differ_within_a_search_until_the_palette_runs_out() {
+        let colors = color::term_colors(["ubuntu22", "ubuntu24", "UBUNTU22", "ubuntu26"]);
+        assert_eq!(colors.len(), 3);
+        let c = |t| color::term_color_in(&colors, t);
+        assert!(c("ubuntu22") != c("ubuntu24") && c("ubuntu24") != c("ubuntu26") && c("ubuntu22") != c("ubuntu26"));
+        let many = color::term_colors(["a", "b", "c", "d", "e", "f", "g"]);
+        assert_eq!(color::term_color_in(&many, "g"), color::term_color_in(&many, "a"));
+    }
 
     #[test]
     fn every_help_shortcut_is_a_readme_row() {

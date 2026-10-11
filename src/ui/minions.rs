@@ -29,14 +29,14 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
 
     // ── Filter bar ────────────────────────────────────────────────────────
     if app.is_filtering {
-        let cursor = if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' };
-        lines.push(Line::from(vec![
-            Span::styled(format!(" /{} {}", app.filter_text, cursor), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+        let mut spans = super::input_spans(" filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
+        spans.extend([
             Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
-        ]));
+        ]);
+        lines.push(Line::from(spans));
     } else if !app.filter_text_for(Tab::Minions).is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.filter_text_for(Tab::Minions)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" filter: {} ", app.filter_text_for(Tab::Minions)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     } else if app.hide_timed_out {
@@ -268,7 +268,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
                     format!("  Filtered: {} of {} minions match ", filtered_minions.len(), fs.minions.len()),
                     Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(format!("/{}/", pat), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+                Span::styled(pat.to_string(), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             ]));
             lines.push(Line::from(""));
         }

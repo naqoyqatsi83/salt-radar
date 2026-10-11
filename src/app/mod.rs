@@ -1,6 +1,7 @@
 mod clipboard;
 mod config_editor;
 mod keys;
+pub(crate) mod line_edit;
 mod messages;
 
 pub use config_editor::{BrowserEntry, ConfigEditorState, ConfigFieldKind, PathBrowser, PathKind};
@@ -21,7 +22,7 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::alerts::{AlertEngine, ServiceMemThresholds};
-use crate::config::{load_config, AppConfig};
+use crate::config::{load_config_or_fallback, AppConfig};
 use crate::types::*;
 
 const JOB_STATS_WINDOW: usize = 500;
@@ -108,11 +109,33 @@ pub struct App {
     // UI state
     pub last_frame_size: Rect,
     pub detail_popup: Option<DetailPopup>,
+    /// The Config Editor, a global overlay drawn over `detail_popup` so the
+    /// popup underneath comes back unchanged when the editor closes.
+    pub config_editor: Option<ConfigEditorState>,
     /// Tab where the current popup was opened (popup only shows on that tab)
     pub popup_tab: Option<Tab>,
     pub show_help: bool,
     /// Help overlay scroll offset, clamped while drawing.
     pub help_scroll: u16,
+    /// Which page the help overlay shows.
+    pub help_page: HelpPage,
+    /// Help search, like Job Detail's output search: the query, whether it's
+    /// being typed, the line of each match on the page shown (written back
+    /// every render) and the occurrence `n`/`N` landed on.
+    pub help_search: String,
+    pub help_searching: bool,
+    pub help_search_matches: Vec<usize>,
+    pub help_search_focus: Option<usize>,
+    /// Enter was pressed on a help search: the next draw, which has the
+    /// matches for the final query, jumps to the first one.
+    pub help_search_jump: bool,
+    /// Where the help overlay's page labels were drawn: (row, first column,
+    /// end column, page), for clicks.
+    pub help_page_hits: Vec<(u16, u16, u16, HelpPage)>,
+    /// The version that ran before this one, when salt-radar was upgraded
+    /// since it last ran: the title bar points at "What's new" until it's
+    /// been opened.
+    pub upgraded_from: Option<String>,
     /// The `(color_theme, theme_background)` currently installed via
     /// `color::set_theme`, so `sync_theme` only reloads on a change.
     applied_theme: Option<(String, bool)>,
@@ -345,6 +368,10 @@ pub struct App {
     // Sniffer
     pub sniffer_input_active: bool,
     pub sniffer_input_text: String,
+    /// Cursor of whichever text input is active (see `line_edit`).
+    pub input_cursor: Option<usize>,
+    /// Why the sniffer input wasn't accepted (an invalid regex term).
+    pub sniffer_input_error: Option<String>,
     pub sniffer_dirty: bool,
     /// Lives outside `detail_popup` (unlike every other popup) because it's
     /// meant to keep capturing in the background while you use other tabs
@@ -367,14 +394,16 @@ pub struct App {
     /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
     /// content preview (right panel).
     pub job_detail_scroll_max: usize,
-    /// Job Detail output search: the query, whether it's being typed, and the
-    /// matching line numbers (written back every render, like the scroll max).
+    /// Job Detail output search: the query, whether it's being typed, the
+    /// line of each match (one entry per occurrence, written back every
+    /// render, like the scroll max) and the occurrence `n`/`N` landed on.
     pub job_search: String,
     pub job_searching: bool,
     pub job_search_matches: Vec<usize>,
+    pub job_search_focus: Option<usize>,
     /// Lines of the Job Detail output holding a failed state (`f`/`F`).
     pub job_fail_lines: Vec<usize>,
-    /// The output line the last `n`/`N`/`f`/`F` jump landed on, marked in the pane.
+    /// The failed state's line the last `f`/`F` jump landed on, marked in the pane.
     pub job_focus_line: Option<usize>,
     /// Minion whose return Job Detail selects once its lookup arrives.
     pub job_detail_select_minion: Option<String>,
@@ -617,7 +646,6 @@ pub enum DetailPopup {
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
-    ConfigEditor(ConfigEditorState),
     MinionEvents { minion_id: String, selected: usize },
     ApiRequest(ApiLogEntry),
 }
@@ -625,7 +653,7 @@ pub enum DetailPopup {
 impl App {
     pub fn new() -> Self {
         let config_path = crate::config::resolve_config_path();
-        let config = load_config(&config_path);
+        let config = load_config_or_fallback(&config_path);
         let config_secs = config.config_secs;
         let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -689,13 +717,24 @@ impl App {
 
             last_frame_size: Rect::default(),
             detail_popup: None,
+            config_editor: None,
             popup_tab: None,
             show_help: false,
             help_scroll: 0,
+            help_page: HelpPage::Keys,
+            help_search: String::new(),
+            help_searching: false,
+            help_search_matches: Vec::new(),
+            help_search_focus: None,
+            help_search_jump: false,
+            help_page_hits: Vec::new(),
+            upgraded_from: crate::config::note_version_seen(),
             applied_theme: None,
 
             sniffer_input_active: false,
             sniffer_input_text: String::new(),
+            input_cursor: None,
+            sniffer_input_error: None,
             sniffer_dirty: false,
             sniffer: None,
             return_to_minion_events: None,
@@ -705,6 +744,7 @@ impl App {
             job_search: String::new(),
             job_searching: false,
             job_search_matches: Vec::new(),
+            job_search_focus: None,
             job_fail_lines: Vec::new(),
             job_focus_line: None,
             job_detail_select_minion: None,
@@ -1039,40 +1079,73 @@ impl App {
         }
     }
 
+    /// One filter term against one field: a `/regex/` term's match, or a
+    /// case-insensitive substring.
     fn matches_filter(text: &str, pat: &str) -> bool {
         if pat.is_empty() { return true; }
-        text.to_lowercase().contains(&pat.to_lowercase())
+        match crate::sniff::regex_term(pat) {
+            Some(re) => re.is_match(text),
+            None => text.to_lowercase().contains(&pat.to_lowercase()),
+        }
     }
 
     /// Splits a filter pattern into its comma-separated terms (trimmed, empty
     /// tokens dropped) — mirrors Salt's own list-targeting syntax
-    /// (`salt -L 'web1,web2'`) instead of introducing regex: a filter of
-    /// `web1, web2` means "matches web1 OR web2", not a literal substring
-    /// containing a comma.
+    /// (`salt -L 'web1,web2'`): a filter of `web1, web2` means "matches web1
+    /// OR web2". A term wrapped in slashes is a regex, commas inside it
+    /// included (see `crate::sniff::filter_terms`).
     fn filter_terms(pat: &str) -> Vec<&str> {
-        pat.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect()
+        crate::sniff::filter_terms(pat)
     }
 
-    /// Case-insensitive wildcard match (`*` = any run of characters, `?` =
-    /// any single character), anchored across the whole of `text` — the same
-    /// semantics as Salt's own glob minion targeting (`salt 'web*' ...`).
+    /// Whether a filter term is a glob: it isn't a `/regex/` and has `*`,
+    /// `?` or a `[…]` class.
+    pub(crate) fn is_glob(term: &str) -> bool {
+        crate::sniff::regex_term(term).is_none() && term.contains(['*', '?', '['])
+    }
+
+    /// Case-insensitive wildcard match with Salt's glob semantics (Python's
+    /// fnmatch): `*` = any run of characters, `?` = any single character,
+    /// `[…]` = one of a set (`[12]`, `[1-3]`, `[!0-9]` / `[^0-9]` negated; an
+    /// unclosed `[` is literal), anchored across the whole of `text`.
     /// Classic O(n*m) DP wildcard-matching table; hostnames are short enough
     /// that this is effectively instant.
-    fn glob_match(text: &str, pattern: &str) -> bool {
-        let t: Vec<char> = text.to_lowercase().chars().collect();
+    pub(crate) fn glob_match(text: &str, pattern: &str) -> bool {
+        enum Tok { Star, Any, Class(Vec<(char, char)>, bool), Lit(char) }
         let p: Vec<char> = pattern.to_lowercase().chars().collect();
-        let (tn, pn) = (t.len(), p.len());
+        let mut toks = Vec::new();
+        let mut i = 0;
+        while i < p.len() {
+            toks.push(match p[i] {
+                '*' => Tok::Star,
+                '?' => Tok::Any,
+                '[' => match glob_class(&p, i) {
+                    Some(class) => {
+                        toks.push(Tok::Class(class.ranges, class.negated));
+                        i = class.next;
+                        continue;
+                    }
+                    None => Tok::Lit('['),
+                },
+                c => Tok::Lit(c),
+            });
+            i += 1;
+        }
+        let t: Vec<char> = text.to_lowercase().chars().collect();
+        let (tn, pn) = (t.len(), toks.len());
         let mut dp = vec![vec![false; pn + 1]; tn + 1];
         dp[0][0] = true;
         for j in 1..=pn {
-            if p[j - 1] == '*' { dp[0][j] = dp[0][j - 1]; }
+            if matches!(toks[j - 1], Tok::Star) { dp[0][j] = dp[0][j - 1]; }
         }
         for i in 1..=tn {
             for j in 1..=pn {
-                dp[i][j] = match p[j - 1] {
-                    '*' => dp[i - 1][j] || dp[i][j - 1],
-                    '?' => dp[i - 1][j - 1],
-                    c => dp[i - 1][j - 1] && c == t[i - 1],
+                let c = t[i - 1];
+                dp[i][j] = match &toks[j - 1] {
+                    Tok::Star => dp[i - 1][j] || dp[i][j - 1],
+                    Tok::Any => dp[i - 1][j - 1],
+                    Tok::Class(ranges, negated) => dp[i - 1][j - 1] && ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&c)) != *negated,
+                    Tok::Lit(l) => dp[i - 1][j - 1] && *l == c,
                 };
             }
         }
@@ -1085,7 +1158,9 @@ impl App {
     /// requiring `web*`, but `web*` anchors to the whole id like Salt's CLI
     /// targeting does.
     fn host_matches_term(host: &str, term: &str) -> bool {
-        if term.contains('*') || term.contains('?') {
+        if let Some(re) = crate::sniff::regex_term(term) {
+            re.is_match(host)
+        } else if Self::is_glob(term) {
             Self::glob_match(host, term)
         } else {
             Self::matches_filter(host, term)
@@ -1102,7 +1177,11 @@ impl App {
         if Self::matches_filter(&evt.tag, term)
             || evt.data["fun"].as_str().map(|f| Self::matches_filter(f, term)).unwrap_or(false)
             || evt.data["id"].as_str().map(|i| Self::host_matches_term(i, term)).unwrap_or(false)
-            || Self::matches_filter(&evt.data.to_string(), term)
+            || match crate::sniff::regex_term(term) {
+                // As the event is shown, like the sniffer.
+                Some(re) => crate::sniff::pretty_json_lines(&evt.data).iter().any(|l| re.is_match(l)),
+                None => Self::matches_filter(&evt.data.to_string(), term),
+            }
         {
             return true;
         }
@@ -1131,29 +1210,6 @@ impl App {
             *selected = new_len.saturating_sub(1);
         } else if evicted {
             *selected = selected.saturating_sub(1);
-        }
-    }
-
-    fn matches_sniffer_event(evt: &SaltEvent, minion_ids: &[String]) -> bool {
-        for mid in minion_ids {
-            if evt.tag.contains(mid.as_str()) { return true; }
-            if let Some(id) = evt.data["id"].as_str() {
-                if id.contains(mid.as_str()) || mid.contains(id) { return true; }
-            }
-            if let Some(tgt) = evt.data["tgt"].as_str() {
-                if tgt == "*" || tgt.contains(mid.as_str()) || mid.contains(tgt) { return true; }
-            }
-            if Self::sniffer_search_value(&evt.data, mid) { return true; }
-        }
-        false
-    }
-
-    fn sniffer_search_value(value: &serde_json::Value, pattern: &str) -> bool {
-        match value {
-            serde_json::Value::String(s) => s.contains(pattern),
-            serde_json::Value::Object(map) => map.values().any(|v| Self::sniffer_search_value(v, pattern)),
-            serde_json::Value::Array(arr) => arr.iter().any(|v| Self::sniffer_search_value(v, pattern)),
-            _ => false,
         }
     }
 
@@ -1252,30 +1308,38 @@ impl App {
         }
     }
 
-    /// Expands any glob term (contains `*`/`?`) to the concrete minion IDs
-    /// it matches — a glob never literally appears in rendered text (there's
-    /// no "debian12-*" substring anywhere to highlight), so used as-is it
-    /// would never match anything. Falls back to the raw term if it matches
-    /// no known minion, so an in-progress/nonsense glob doesn't just vanish.
-    /// Plain (non-glob) terms pass through unchanged. Shared by the Events
-    /// tab's own filter terms and the Event Sniffer's `color_terms` (see
-    /// `SnifferState`) so both resolve host globs identically.
-    fn resolve_host_terms<'a>(&self, terms: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    /// The known minions a sniffer term names: an exact minion ID, or every
+    /// minion a glob matches.
+    pub(crate) fn minions_for_term(&self, term: &str) -> Vec<String> {
         let known = self.accepted_ids();
-        terms.into_iter().flat_map(|term| {
-            if term.contains('*') || term.contains('?') {
-                let matched: Vec<String> = known.iter().filter(|m| Self::glob_match(m, term)).cloned().collect();
-                if matched.is_empty() { vec![term.to_string()] } else { matched }
-            } else {
-                vec![term.to_string()]
-            }
-        }).collect()
+        if Self::is_glob(term) {
+            let mut ids: Vec<String> = known.iter().filter(|m| Self::glob_match(m, term)).cloned().collect();
+            ids.sort();
+            ids
+        } else if known.contains(term) {
+            vec![term.to_string()]
+        } else {
+            Vec::new()
+        }
     }
 
-    pub fn events_filter_terms(&self) -> Vec<String> {
+    /// The Events filter's terms for highlighting, `filter_text` while it's
+    /// being typed and `applied_filter` once confirmed. A glob never
+    /// literally appears in rendered text (there's no "debian12-*" substring
+    /// to highlight), so each glob carries the known minions it matches,
+    /// sorted so their order — and the colors — stay put as the minion list
+    /// refreshes.
+    pub fn events_filter_terms(&self) -> Vec<HighlightTerm> {
         let pat: &str = if self.is_filtering { &self.filter_text } else { &self.applied_filter };
-        let terms = Self::filter_terms(pat);
-        self.resolve_host_terms(terms)
+        Self::filter_terms(pat).into_iter().map(|term| {
+            let mut ids: Vec<String> = if Self::is_glob(term) {
+                self.accepted_ids().iter().filter(|m| Self::glob_match(m, term)).cloned().collect()
+            } else {
+                Vec::new()
+            };
+            ids.sort();
+            HighlightTerm { term: term.to_string(), ids }
+        }).collect()
     }
 
     pub fn filtered_events_len(&self) -> usize {
@@ -1402,9 +1466,9 @@ impl App {
             }
         }
 
-        if !self.minion_events_filter.is_empty() {
-            let pat = self.minion_events_filter.to_lowercase();
-            items.retain(|item| matches_filter(item, &pat));
+        let terms = Self::filter_terms(&self.minion_events_filter);
+        if !terms.is_empty() {
+            items.retain(|item| matches_activity_item(item, &terms));
         }
 
         // Sort by timestamp descending (alerts with ts=0.0 fall to end)
@@ -1978,22 +2042,14 @@ impl App {
                     22 => *style = style.remove_modifier(Modifier::BOLD),
                     23 => *style = style.remove_modifier(Modifier::ITALIC),
                     24 => *style = style.remove_modifier(Modifier::UNDERLINED),
-                    // Standard foreground (30-37)
-                    30 => *style = style.fg(Color::Black),
-                    31 => *style = style.fg(Color::Red),
-                    32 => *style = style.fg(Color::Green),
-                    33 => *style = style.fg(Color::Yellow),
-                    34 => *style = style.fg(Color::Blue),
-                    35 => *style = style.fg(Color::Magenta),
-                    36 => *style = style.fg(Color::Cyan),
-                    37 => *style = style.fg(Color::White),
+                    30..=37 => *style = style.fg(ansi_theme_color(params[i] - 30, false)),
                     38 => {
                         // Extended foreground: 38;5;N or 38;2;R;G;B
                         if i + 1 < params.len() {
                             match params[i + 1] {
                                 5 if i + 2 < params.len() => {
-                                    let idx = params[i + 2] as u8;
-                                    *style = style.fg(Color::Indexed(idx));
+                                    let idx = params[i + 2];
+                                    *style = style.fg(if idx < 16 { ansi_theme_color(idx % 8, false) } else { Color::Indexed(idx as u8) });
                                     i += 2;
                                 }
                                 2 if i + 4 < params.len() => {
@@ -2007,23 +2063,15 @@ impl App {
                             }
                         }
                     }
-                    39 => *style = style.fg(Color::Reset),
-                    // Standard background (40-47)
-                    40 => *style = style.bg(Color::Black),
-                    41 => *style = style.bg(Color::Red),
-                    42 => *style = style.bg(Color::Green),
-                    43 => *style = style.bg(Color::Yellow),
-                    44 => *style = style.bg(Color::Blue),
-                    45 => *style = style.bg(Color::Magenta),
-                    46 => *style = style.bg(Color::Cyan),
-                    47 => *style = style.bg(Color::White),
+                    39 => style.fg = default_style.fg,
+                    40..=47 => *style = style.bg(ansi_theme_color(params[i] - 40, true)),
                     48 => {
                         // Extended background: 48;5;N or 48;2;R;G;B
                         if i + 1 < params.len() {
                             match params[i + 1] {
                                 5 if i + 2 < params.len() => {
-                                    let idx = params[i + 2] as u8;
-                                    *style = style.bg(Color::Indexed(idx));
+                                    let idx = params[i + 2];
+                                    *style = style.bg(if idx < 16 { ansi_theme_color(idx % 8, true) } else { Color::Indexed(idx as u8) });
                                     i += 2;
                                 }
                                 2 if i + 4 < params.len() => {
@@ -2037,25 +2085,9 @@ impl App {
                             }
                         }
                     }
-                    49 => *style = style.bg(Color::Reset),
-                    // Bright foreground (90-97)
-                    90 => *style = style.fg(Color::Rgb(128, 128, 128)),
-                    91 => *style = style.fg(Color::Rgb(255, 85, 85)),
-                    92 => *style = style.fg(Color::Rgb(85, 255, 85)),
-                    93 => *style = style.fg(Color::Rgb(255, 255, 85)),
-                    94 => *style = style.fg(Color::Rgb(85, 85, 255)),
-                    95 => *style = style.fg(Color::Rgb(255, 85, 255)),
-                    96 => *style = style.fg(Color::Rgb(85, 255, 255)),
-                    97 => *style = style.fg(Color::Rgb(255, 255, 255)),
-                    // Bright background (100-107)
-                    100 => *style = style.bg(Color::Rgb(128, 128, 128)),
-                    101 => *style = style.bg(Color::Rgb(255, 85, 85)),
-                    102 => *style = style.bg(Color::Rgb(85, 255, 85)),
-                    103 => *style = style.bg(Color::Rgb(255, 255, 85)),
-                    104 => *style = style.bg(Color::Rgb(85, 85, 255)),
-                    105 => *style = style.bg(Color::Rgb(255, 85, 255)),
-                    106 => *style = style.bg(Color::Rgb(85, 255, 255)),
-                    107 => *style = style.bg(Color::Rgb(255, 255, 255)),
+                    49 => style.bg = default_style.bg,
+                    90..=97 => *style = style.fg(ansi_theme_color(params[i] - 90, false)),
+                    100..=107 => *style = style.bg(ansi_theme_color(params[i] - 100, true)),
                     _ => {}
                 }
                 i += 1;
@@ -2211,7 +2243,7 @@ impl App {
         // now instead of writing back the whole in-memory config, which
         // clobbered anything saved to the file (by hand, or from another
         // salt-radar instance) while this one was running.
-        let mut on_disk = load_config(&self.config_path);
+        let mut on_disk = load_config_or_fallback(&self.config_path);
         let (cur, base) = (&self.config, &self.persisted_config);
         let mut changed = false;
         macro_rules! keep_toggled {
@@ -2834,9 +2866,144 @@ fn event_body_as_copied_text(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate
     }
 }
 
-/// Job Detail's returns-list filter: case-insensitive substring of the minion ID.
+/// A parsed glob `[…]` class: its character ranges, whether it's negated
+/// (`[!…]` / `[^…]`), and the pattern index after its `]`.
+struct GlobClass {
+    ranges: Vec<(char, char)>,
+    negated: bool,
+    next: usize,
+}
+
+/// The glob `[…]` class starting at `p[at]`, or `None` when it never closes.
+/// A `]` first in the class is a literal, as in fnmatch.
+fn glob_class(p: &[char], at: usize) -> Option<GlobClass> {
+    let mut j = at + 1;
+    let negated = matches!(p.get(j), Some('!' | '^'));
+    if negated {
+        j += 1;
+    }
+    let mut ranges = Vec::new();
+    let mut first = true;
+    while j < p.len() {
+        if p[j] == ']' && !first {
+            return Some(GlobClass { ranges, negated, next: j + 1 });
+        }
+        first = false;
+        if p.get(j + 1) == Some(&'-') && p.get(j + 2).is_some_and(|&c| c != ']') {
+            ranges.push((p[j], p[j + 2]));
+            j += 3;
+        } else {
+            ranges.push((p[j], p[j]));
+            j += 1;
+        }
+    }
+    None
+}
+
+/// The help overlay's pages, in the order `Tab` cycles through them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelpPage {
+    /// Keyboard shortcuts.
+    Keys,
+    /// Filter, search and sniffer syntax, and notes on what panels show.
+    Guide,
+    /// The changelog.
+    WhatsNew,
+}
+
+impl HelpPage {
+    pub const ALL: [HelpPage; 3] = [HelpPage::Keys, HelpPage::Guide, HelpPage::WhatsNew];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            HelpPage::Keys => "Keys",
+            HelpPage::Guide => "Guide",
+            HelpPage::WhatsNew => "What's new",
+        }
+    }
+
+    /// The next page (`forward`) or the previous one, wrapping around.
+    pub fn step(self, forward: bool) -> HelpPage {
+        let i = Self::ALL.iter().position(|&p| p == self).unwrap_or(0);
+        let n = Self::ALL.len();
+        Self::ALL[if forward { (i + 1) % n } else { (i + n - 1) % n }]
+    }
+}
+
+/// A filter term to highlight, in one color: its matches, or for a glob
+/// (`ids` non-empty) the known minions it matches.
+pub struct HighlightTerm {
+    pub term: String,
+    pub ids: Vec<String>,
+}
+
+impl HighlightTerm {
+    pub fn ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        if self.ids.is_empty() {
+            crate::sniff::term_ranges(text, &self.term)
+        } else {
+            self.ids.iter().flat_map(|id| crate::sniff::term_ranges(text, id)).collect()
+        }
+    }
+}
+
+/// Job Detail's returns-list filter: comma-separated terms matched against
+/// the minion ID like every host field (substring, glob or `/regex/`).
 pub fn return_matches(minion_id: &str, filter: &str) -> bool {
-    minion_id.to_ascii_lowercase().contains(&filter.to_ascii_lowercase())
+    let terms = App::filter_terms(filter);
+    terms.is_empty() || terms.iter().any(|t| App::host_matches_term(minion_id, t))
+}
+
+/// Where a filter's terms match in `text`, for highlighting: a regex term's
+/// matches, a glob matching the whole text, or a plain term's occurrences.
+pub fn filter_match_ranges(text: &str, filter: &str) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = App::filter_terms(filter).into_iter().flat_map(|t| {
+        if App::is_glob(t) {
+            if App::glob_match(text, t) { vec![(0, text.len())] } else { Vec::new() }
+        } else {
+            crate::sniff::term_ranges(text, t)
+        }
+    }).collect();
+    ranges.sort_unstable();
+    ranges
+}
+
+/// The search match `n` (`forward`) or `N` moves to, given the line of each
+/// occurrence: the one after/before the current one, or with none current
+/// the first at or below (last above) the scroll position; wraps around.
+/// The help scroll offset that shows `line` a couple of lines from the top
+/// (the draw clamps it).
+pub(crate) fn help_scroll_to(line: usize) -> u16 {
+    line.saturating_sub(2).min(u16::MAX as usize) as u16
+}
+
+pub(crate) fn step_match(matches: &[usize], current: Option<usize>, scroll: usize, forward: bool) -> Option<usize> {
+    let last = matches.len().checked_sub(1)?;
+    Some(match (current.filter(|&c| c <= last), forward) {
+        (Some(c), true) => if c == last { 0 } else { c + 1 },
+        (Some(c), false) => if c == 0 { last } else { c - 1 },
+        (None, true) => matches.iter().position(|&l| l >= scroll).unwrap_or(0),
+        (None, false) => matches.iter().rposition(|&l| l < scroll).unwrap_or(last),
+    })
+}
+
+/// The theme's color for ANSI palette slot 0-7 (black, red, green, yellow,
+/// blue, magenta, cyan, white; the bright variants share them), so Salt's
+/// colored output follows the theme instead of the terminal's own palette.
+fn ansi_theme_color(slot: u16, background: bool) -> Color {
+    use crate::ui::color;
+    match slot {
+        0 if background => color::popup_bg(),
+        0 => color::inactive_fg(),
+        1 => color::red(),
+        2 => color::green(),
+        3 => color::yellow(),
+        4 => color::highlight_1(),
+        5 => color::purple(),
+        6 => color::cyan(),
+        _ if background => color::main_fg(),
+        _ => color::hi_fg(),
+    }
 }
 
 /// Moves the selection to the nearest returns-list entry matching `filter`,
@@ -3146,31 +3313,80 @@ fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
     result
 }
 
-/// Check if a MinionActivityItem matches a lowercase filter pattern — a
-/// comma-separated list of terms is OR'd, same as every other filter in the
-/// app (see `App::filter_terms`); `pat` is already lowercased once by the
-/// caller since this runs per-item over a potentially large activity list.
-fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
-    pat.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).any(|term| match item {
-        MinionActivityItem::Event(_, evt) => {
-            evt.tag.to_lowercase().contains(term)
-                || evt.data.to_string().to_lowercase().contains(term)
-        }
-        MinionActivityItem::CacheJob(job) => {
-            job.jid.to_lowercase().contains(term)
-                || job.fun.to_lowercase().contains(term)
-                || job.args.to_lowercase().contains(term)
-        }
-        MinionActivityItem::Alert(alert) => {
-            alert.description.to_lowercase().contains(term)
-                || alert.key.to_lowercase().contains(term)
-        }
+/// Whether a minion activity item matches any of the filter's terms (OR'd,
+/// same as every other filter in the app; see `App::filter_terms`).
+fn matches_activity_item(item: &MinionActivityItem, terms: &[&str]) -> bool {
+    let m = App::matches_filter;
+    terms.iter().any(|&term| match item {
+        MinionActivityItem::Event(_, evt) => m(&evt.tag, term) || m(&evt.data.to_string(), term),
+        MinionActivityItem::CacheJob(job) => m(&job.jid, term) || m(&job.fun, term) || m(&job.args, term),
+        MinionActivityItem::Alert(alert) => m(&alert.description, term) || m(&alert.key, term),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ansi_colors_follow_the_theme() {
+        let base = Style::default().fg(crate::ui::color::main_fg());
+        let spans = App::ansi_to_styled_spans("[31mfail[39m ok [1;92mchanged[38;5;3mwarn", base);
+        let fg: Vec<_> = spans.iter().map(|s| s.style.fg).collect();
+        assert_eq!(fg, vec![
+            Some(crate::ui::color::red()),
+            Some(crate::ui::color::main_fg()),
+            Some(crate::ui::color::green()),
+            Some(crate::ui::color::yellow()),
+        ]);
+    }
+
+    #[test]
+    fn filters_take_regex_terms() {
+        assert!(App::matches_filter("state.highstate", r"/^state\.(apply|highstate)$/"));
+        assert!(!App::matches_filter("state.single", r"/^state\.(apply|highstate)$/"));
+        assert!(App::host_matches_term("web-03", "/web-0[1-5]$/"));
+        assert!(!App::host_matches_term("web-07", "/web-0[1-5]$/"));
+        assert!(App::host_matches_term("web-07", "web-*"), "globs still work");
+        assert!(App::matches_filter("x /web-0 y", "/web-0"), "an unclosed slash is plain text");
+        assert!(return_matches("db-02", "web*, /^db-0[0-9]$/"));
+        assert!(!return_matches("db-12", "web*, /^db-0[0-9]$/"));
+        assert_eq!(filter_match_ranges("web-01", "/b-0/, web*"), [(0, 6), (2, 5)]);
+    }
+
+    #[test]
+    fn a_glob_highlights_its_minions_as_one_term() {
+        let t = HighlightTerm { term: "web*".into(), ids: vec!["web1".into(), "web2".into()] };
+        assert_eq!(t.ranges("web2 then web1"), [(10, 14), (0, 4)]);
+        let plain = HighlightTerm { term: "/b[12]/".into(), ids: Vec::new() };
+        assert_eq!(plain.ranges("web2"), [(2, 4)]);
+    }
+
+    #[test]
+    fn globs_take_character_classes_like_salt() {
+        assert!(App::host_matches_term("debian12-3006-9-0", "debian[1-2]*"));
+        assert!(App::host_matches_term("debian11-3006-9-0", "DEBIAN1[12]-*"));
+        assert!(!App::host_matches_term("debian10-3006-9-0", "debian1[12]-*"));
+        assert!(App::glob_match("web-a", "web-[!0-9]"));
+        assert!(!App::glob_match("web-1", "web-[^0-9]"));
+        assert!(App::glob_match("a]b", "a[]]b"));
+        assert!(App::glob_match("web[1", "web[1"), "an unclosed [ is literal");
+    }
+
+    #[test]
+    fn step_match_moves_by_occurrence_and_wraps() {
+        // Two occurrences on line 3, one on 9.
+        let m = [3, 3, 9];
+        assert_eq!(step_match(&m, None, 0, true), Some(0));
+        assert_eq!(step_match(&m, Some(0), 0, true), Some(1));
+        assert_eq!(step_match(&m, Some(1), 0, true), Some(2));
+        assert_eq!(step_match(&m, Some(2), 0, true), Some(0));
+        assert_eq!(step_match(&m, Some(0), 0, false), Some(2));
+        assert_eq!(step_match(&m, None, 5, true), Some(2));
+        assert_eq!(step_match(&m, None, 5, false), Some(1));
+        assert_eq!(step_match(&m, None, 0, false), Some(2));
+        assert_eq!(step_match(&[], None, 0, true), None);
+    }
     use serde_json::json;
 
     #[test]
