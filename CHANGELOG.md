@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-11
+
 ### Added
 
 - Per-user config under sudo (#160): when salt-radar runs as root with `SUDO_USER` set, it uses the invoking user's config (starting from root's until their first save), personal themes, "updated to vX" marker and home for `~` (the default export directory), and hands what it creates there — config, marker, exports — over to them, instead of every sudo user sharing root's. The README has a note on running through sudo and on several users at once
