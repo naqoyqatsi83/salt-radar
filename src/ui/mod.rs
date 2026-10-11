@@ -7,6 +7,7 @@ mod pulse;
 mod minion_events;
 mod api_view;
 mod table;
+mod whats_new;
 
 pub mod config_editor;
 pub mod detail_popup;
@@ -446,7 +447,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         dim_background(f, dim);
         let help_area = detail_popup::centered_rect(60, 65, f.area());
         f.render_widget(Clear, help_area);
-        draw_help_overlay(f, help_area, &mut app.help_scroll);
+        draw_help_overlay(f, help_area, app);
     }
 
     // Save-to-file prompt: opened from inside a popup, so it's the top layer.
@@ -551,6 +552,14 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         .title_top(center_title.centered())
         .title_top(right_title.right_aligned())
         .title_bottom(global_hints.right_aligned());
+    let block = match &app.upgraded_from {
+        Some(_) => block.title_bottom(Line::from(vec![
+            Span::styled("\u{2524}", Style::default().fg(color::border())),
+            Span::styled(format!(" updated to v{version} \u{00B7} F1: what's new "), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("\u{251C}", Style::default().fg(color::border())),
+        ]).left_aligned()),
+        None => block,
+    };
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -792,7 +801,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`Esc`", action: "Close popup / help" },
         Shortcut { tab: "", key: "`/`", action: "Filter (current tab)" },
         Shortcut { tab: "", key: "`a`", action: "Toggle admin mode" },
-        Shortcut { tab: "", key: "`?` / `F1`", action: "Help overlay" },
+        Shortcut { tab: "", key: "`?` / `F1`", action: "Help overlay; `Tab` switches to What's new (the changelog)" },
         Shortcut { tab: "", key: "`F2`", action: "Toggle mouse mode" },
         Shortcut { tab: "", key: "`F3`", action: "Open Config Editor" },
         Shortcut { tab: "", key: "`+`/`-`", action: "Adjust refresh interval" },
@@ -841,8 +850,8 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Jump 10 returns" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last return (job detail)" },
         Shortcut { tab: "", key: "`Enter`", action: "Enter scroll mode (event/job detail)" },
-        Shortcut { tab: "", key: "`/`", action: "Search the return output, matches highlighted (job detail, output pane)" },
-        Shortcut { tab: "", key: "`n`/`N`", action: "Next/previous search match, marked in the output (job detail; also from the returns list)" },
+        Shortcut { tab: "", key: "`/`", action: "Search the return output (job detail, output pane) or the help pages, matches highlighted" },
+        Shortcut { tab: "", key: "`n`/`N`", action: "Next/previous search match, marked in place (job detail, also from the returns list; help)" },
         Shortcut { tab: "", key: "`f`/`F`", action: "Next/previous failed state, marked in the output (job detail; also from the returns list)" },
         Shortcut { tab: "", key: "`Esc`", action: "Exit scroll mode" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "Jump to start/end of output (scroll mode)" },
@@ -853,7 +862,96 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ]),
 ];
 
-fn draw_help_overlay(f: &mut Frame, area: Rect, scroll: &mut u16) {
+fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
+    let whats_new = app.help_whats_new;
+    let page = |name: &'static str, active: bool| if active {
+        Span::styled(format!(" {name} "), Style::default().fg(color::title()).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled(format!(" {name} "), Style::default().fg(color::inactive_fg()))
+    };
+    let pages = Line::from(vec![
+        Span::styled("\u{2524}", Style::default().fg(color::border_focus())),
+        page("Keys", !whats_new),
+        Span::styled("\u{2502}", Style::default().fg(color::border_focus())),
+        page("What's new", whats_new),
+        Span::styled("\u{251C}", Style::default().fg(color::border_focus())),
+    ]);
+    // A left-aligned title starts right after the corner.
+    let mut x = area.x + 1;
+    app.help_page_hits.clear();
+    for (i, span) in pages.spans.iter().enumerate() {
+        let w = span.width() as u16;
+        if i == 1 || i == 3 {
+            app.help_page_hits.push((area.y, x, x + w, i == 3));
+        }
+        x += w;
+    }
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::border_focus()))
+        .style(Style::default().bg(color::popup_bg()))
+        .title_top(pages.left_aligned());
+    let inner = block.inner(area);
+    let lines = if whats_new { whats_new::lines(inner.width.saturating_sub(1) as usize) } else { help_lines() };
+    let (lines, matches) = detail_popup::highlight_matches(lines, &app.help_search);
+    app.help_search_matches = matches;
+    let matches = &app.help_search_matches;
+    let focus_line = app.help_focus_line.filter(|l| matches.contains(l));
+
+    let other = if whats_new { "keys" } else { "what's new" };
+    let hints = if app.help_searching {
+        vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())]
+    } else {
+        let mut h = vec![("\u{2191}\u{2193}/PgUp/PgDn", "scroll".to_string()), ("/", "search".to_string())];
+        if !matches.is_empty() {
+            h.push(("n/N", "next/prev".to_string()));
+        }
+        h.push(("Tab", other.to_string()));
+        h.push(("Esc", if app.help_search.is_empty() { "close" } else { "clear search" }.to_string()));
+        h
+    };
+    block = block.title_bottom(border_hints(&hints, color::border_focus()).left_aligned());
+    if !app.help_search.is_empty() && !app.help_searching {
+        let status = match (focus_line.and_then(|f| matches.iter().position(|&l| l == f)), matches.len()) {
+            (_, 0) => "no matches".to_string(),
+            (Some(i), n) => format!("match {} of {}", i + 1, n),
+            (None, 1) => "1 match".to_string(),
+            (None, n) => format!("{n} matches"),
+        };
+        block = block.title_top(Line::from(Span::styled(
+            format!(" /{}: {} ", app.help_search, status),
+            Style::default().fg(if matches.is_empty() { color::red() } else { color::yellow() }),
+        )).right_aligned());
+    }
+    let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
+    app.help_scroll = app.help_scroll.min(max_scroll);
+    let scroll = app.help_scroll;
+    if scroll < max_scroll {
+        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::border_focus()))).right_aligned());
+    }
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::popup_bg())).scroll((scroll, 0)), inner);
+    if let Some(line) = focus_line {
+        let scroll = scroll as usize;
+        if line >= scroll && line < scroll + inner.height as usize {
+            let row = Rect { y: inner.y + (line - scroll) as u16, height: 1, ..inner };
+            f.buffer_mut().set_style(row, color::select_bg());
+        }
+    }
+    if app.help_searching {
+        let bar = Rect { y: inner.y + inner.height.saturating_sub(1), height: 1.min(inner.height), ..inner };
+        f.render_widget(Clear, bar);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  Search: {}_", app.help_search),
+                Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
+            ))).style(Style::default().bg(color::popup_bg())),
+            bar,
+        );
+    }
+}
+
+fn help_lines() -> Vec<Line<'static>> {
     let key_style = Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD);
     let mut lines = vec![
         Line::from(Span::styled("  Help", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
@@ -934,21 +1032,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, scroll: &mut u16) {
         Line::from(Span::styled("  Read-only TUI. All data sourced from /proc, systemctl,", Style::default().fg(color::inactive_fg()))),
         Line::from(Span::styled("  and Salt's own APIs via the bundled Python agent.", Style::default().fg(color::inactive_fg()))),
     ]);
-
-    let hints = [("\u{2191}\u{2193}/PgUp/PgDn", "scroll".to_string()), ("Esc", "close".to_string())];
-    let mut block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::border_focus()))
-        .style(Style::default().bg(color::popup_bg()))
-        .title_bottom(border_hints(&hints, color::border_focus()).left_aligned());
-    let inner = block.inner(area);
-    let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
-    *scroll = (*scroll).min(max_scroll);
-    if *scroll < max_scroll {
-        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::border_focus()))).right_aligned());
-    }
-    f.render_widget(block, area);
-    f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::popup_bg())).scroll((*scroll, 0)), inner);
+    lines
 }
 
 // ─── Sub-view modules ──────────────────────────────────────────────────────

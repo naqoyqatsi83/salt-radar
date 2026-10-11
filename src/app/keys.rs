@@ -4,21 +4,106 @@
 use super::*;
 
 impl App {
+    /// Opens help on the key reference, or on "What's new" right after an
+    /// upgrade, which the title bar is pointing at.
+    fn open_help(&mut self) {
+        self.show_help = true;
+        self.help_scroll = 0;
+        self.help_whats_new = self.upgraded_from.take().is_some();
+        self.help_search.clear();
+        self.help_searching = false;
+        self.help_focus_line = None;
+    }
+
+    fn handle_help_key(&mut self, code: KeyCode) {
+        if self.help_searching {
+            match code {
+                KeyCode::Esc => {
+                    self.help_searching = false;
+                    self.help_search.clear();
+                }
+                KeyCode::Enter => {
+                    self.help_searching = false;
+                    let scroll = self.help_scroll as usize;
+                    let m = &self.help_search_matches;
+                    if let Some(&line) = m.iter().find(|&&l| l >= scroll).or(m.first()) {
+                        self.focus_help_line(line);
+                    }
+                }
+                KeyCode::Backspace => { self.help_search.pop(); }
+                KeyCode::Char(c) => self.help_search.push(c),
+                _ => {}
+            }
+            return;
+        }
+        match code {
+            KeyCode::Esc if !self.help_search.is_empty() => {
+                self.help_search.clear();
+                self.help_focus_line = None;
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') | KeyCode::F(1) => {
+                self.show_help = false;
+            }
+            KeyCode::Char('/') => {
+                self.help_searching = true;
+                self.help_search.clear();
+                self.help_focus_line = None;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') if !self.help_search_matches.is_empty() => {
+                let m = &self.help_search_matches;
+                let scroll = self.help_scroll as usize;
+                let cur = self.help_focus_line.filter(|l| m.contains(l));
+                let line = if code == KeyCode::Char('n') {
+                    match cur {
+                        Some(c) => m.iter().find(|&&l| l > c),
+                        None => m.iter().find(|&&l| l >= scroll),
+                    }.or(m.first())
+                } else {
+                    match cur {
+                        Some(c) => m.iter().rev().find(|&&l| l < c),
+                        None => m.iter().rev().find(|&&l| l < scroll),
+                    }.or(m.last())
+                }.copied();
+                if let Some(line) = line {
+                    self.focus_help_line(line);
+                }
+            }
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right | KeyCode::Char('w') | KeyCode::Char('W') => {
+                self.show_help_page(!self.help_whats_new);
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.help_scroll = self.help_scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.help_scroll = self.help_scroll.saturating_add(1),
+            KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+            KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(10),
+            KeyCode::Home => self.help_scroll = 0,
+            KeyCode::End => self.help_scroll = u16::MAX,
+            _ => {}
+        }
+    }
+
+    fn show_help_page(&mut self, whats_new: bool) {
+        if self.help_whats_new == whats_new {
+            return;
+        }
+        self.help_whats_new = whats_new;
+        self.help_scroll = 0;
+        self.help_focus_line = None;
+        if whats_new {
+            self.upgraded_from = None;
+        }
+    }
+
+    /// Marks a help line and scrolls it into view a couple of lines from the
+    /// top (the draw clamps the scroll).
+    fn focus_help_line(&mut self, line: usize) {
+        self.help_focus_line = Some(line);
+        self.help_scroll = line.saturating_sub(2).min(u16::MAX as usize) as u16;
+    }
+
     pub fn handle_key(&mut self, code: KeyCode) -> bool {
         // Help overlay handles its own dismiss
         if self.show_help {
-            match code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') | KeyCode::F(1) => {
-                    self.show_help = false;
-                }
-                KeyCode::Up | KeyCode::Char('k') => self.help_scroll = self.help_scroll.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => self.help_scroll = self.help_scroll.saturating_add(1),
-                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
-                KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(10),
-                KeyCode::Home => self.help_scroll = 0,
-                KeyCode::End => self.help_scroll = u16::MAX,
-                _ => {}
-            }
+            self.handle_help_key(code);
             return false;
         }
 
@@ -122,8 +207,7 @@ impl App {
                         return false;
                     }
                     KeyCode::Char('?') | KeyCode::F(1) => {
-                        self.show_help = true;
-                        self.help_scroll = 0;
+                        self.open_help();
                         return false;
                     }
                     _ => {}
@@ -1170,8 +1254,7 @@ impl App {
                 }
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
-                self.show_help = true;
-                self.help_scroll = 0;
+                self.open_help();
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 self.sparkline_style = match self.sparkline_style {
@@ -1280,6 +1363,14 @@ impl App {
         let h = frame_size.height as usize;
 
         if self.config_editor.is_some() || self.save_prompt.is_some() {
+            return false;
+        }
+        if self.show_help {
+            if let Some(&(_, _, _, whats_new)) = self.help_page_hits.iter().find(|&&(y, x0, x1, _)| y == row && (x0..x1).contains(&col)) {
+                if !self.help_searching {
+                    self.show_help_page(whats_new);
+                }
+            }
             return false;
         }
 

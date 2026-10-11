@@ -116,6 +116,23 @@ pub struct App {
     pub show_help: bool,
     /// Help overlay scroll offset, clamped while drawing.
     pub help_scroll: u16,
+    /// The help overlay shows its "What's new" page (the changelog) instead
+    /// of the key reference.
+    pub help_whats_new: bool,
+    /// Help search, like Job Detail's output search: the query, whether it's
+    /// being typed, the matching lines of the page shown (written back every
+    /// render) and the line the last `n`/`N` jump landed on.
+    pub help_search: String,
+    pub help_searching: bool,
+    pub help_search_matches: Vec<usize>,
+    pub help_focus_line: Option<usize>,
+    /// Where the help overlay's `Keys │ What's new` labels were drawn:
+    /// (row, first column, end column, is "What's new"), for clicks.
+    pub help_page_hits: Vec<(u16, u16, u16, bool)>,
+    /// The version that ran before this one, when salt-radar was upgraded
+    /// since it last ran: the title bar points at "What's new" until it's
+    /// been opened.
+    pub upgraded_from: Option<String>,
     /// The `(color_theme, theme_background)` currently installed via
     /// `color::set_theme`, so `sync_theme` only reloads on a change.
     applied_theme: Option<(String, bool)>,
@@ -695,6 +712,13 @@ impl App {
             popup_tab: None,
             show_help: false,
             help_scroll: 0,
+            help_whats_new: false,
+            help_search: String::new(),
+            help_searching: false,
+            help_search_matches: Vec::new(),
+            help_focus_line: None,
+            help_page_hits: Vec::new(),
+            upgraded_from: crate::config::note_version_seen(),
             applied_theme: None,
 
             sniffer_input_active: false,

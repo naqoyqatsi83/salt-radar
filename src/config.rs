@@ -32,6 +32,32 @@ fn user_config_dir() -> Option<PathBuf> {
         .map(|dir| dir.join("salt-radar"))
 }
 
+/// `$XDG_STATE_HOME/salt-radar/last-version`, falling back to
+/// `~/.local/state/salt-radar/last-version`.
+fn last_version_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .map(|dir| dir.join("salt-radar").join("last-version"))
+}
+
+/// Records the running version as the last one seen and returns the version
+/// seen before it, if that was a different one. A first run returns `None`:
+/// nothing was upgraded.
+pub fn note_version_seen() -> Option<String> {
+    let path = last_version_path()?;
+    let current = env!("CARGO_PKG_VERSION");
+    let previous = std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string());
+    if previous.as_deref() == Some(current) {
+        return None;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, format!("{current}\n"));
+    previous.filter(|p| !p.is_empty())
+}
+
 /// Expands a leading `~` / `~/` against $HOME, as the shell would.
 pub fn expand_home(raw: &str) -> PathBuf {
     let home = || std::env::var_os("HOME").map(PathBuf::from);

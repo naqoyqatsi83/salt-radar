@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Show the changelog in the app: the help overlay (`F1`) has a **What's new** page (`Tab` switches to it), built into the binary and searchable like Job Detail's output (`/`, then `n`/`N`, on either help page); after an upgrade the title bar says `updated to vX.Y.Z · F1: what's new` and `F1` opens straight on it. The changelog is also installed to `/usr/share/doc/salt-radar/` by the `.deb` and `.rpm` and included in the `.tar.gz` (#139)
+
 ### Fixed
 
+- Help overlay with the mouse on: a right-click closes it like other popups, clicking `Keys` / `What's new` in its border switches pages, and clicks no longer reach the tab behind it
 - Keep the open popup when the Config Editor (`F3`) is opened over it: closing the editor returns to the popup as it was (selection, filter, scroll), and the popup keeps updating underneath; clicks no longer reach the tab behind the editor
 
 ## [0.7.6] - 2026-10-10

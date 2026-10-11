@@ -1348,7 +1348,7 @@ impl ReturnsTable {
 /// Highlights case-insensitive (ASCII) occurrences of `query` and returns the
 /// numbers of the lines that contain one. A match split across two styled
 /// spans isn't found.
-fn highlight_matches(lines: Vec<Line<'static>>, query: &str) -> (Vec<Line<'static>>, Vec<usize>) {
+pub(super) fn highlight_matches(lines: Vec<Line<'static>>, query: &str) -> (Vec<Line<'static>>, Vec<usize>) {
     if query.is_empty() {
         return (lines, Vec::new());
     }

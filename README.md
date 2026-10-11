@@ -287,7 +287,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | `Esc` | Close popup / help |
 | `/` | Filter (current tab) |
 | `a` | Toggle admin mode |
-| `?` / `F1` | Help overlay |
+| `?` / `F1` | Help overlay; `Tab` switches to What's new (the changelog) |
 | `F2` | Toggle mouse mode |
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval |
@@ -347,8 +347,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `PgUp`/`PgDn` | Jump 10 returns |
 | `Home`/`End` | First/last return (job detail) |
 | `Enter` | Enter scroll mode (event/job detail) |
-| `/` | Search the return output, matches highlighted (job detail, output pane) |
-| `n`/`N` | Next/previous search match, marked in the output (job detail; also from the returns list) |
+| `/` | Search the return output (job detail, output pane) or the help pages, matches highlighted |
+| `n`/`N` | Next/previous search match, marked in place (job detail, also from the returns list; help) |
 | `f`/`F` | Next/previous failed state, marked in the output (job detail; also from the returns list) |
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |
