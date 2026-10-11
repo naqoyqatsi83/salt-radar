@@ -233,6 +233,16 @@ impl App {
         self.applied_theme = Some(wanted);
     }
 
+    /// `popup_dim_pct` to draw with: the configured one, or while the Config
+    /// Editor is open the value confirmed in its field, so the dimming behind
+    /// the editor previews it (and reverts with a cancelled or discarded edit).
+    pub fn popup_dim_pct(&self) -> u64 {
+        self.config_editor.as_ref()
+            .and_then(|s| s.fields.iter().find(|f| f.label == "popup_dim_pct"))
+            .and_then(|f| f.label_value.trim().parse::<u64>().ok())
+            .map_or(self.config.popup_dim_pct, |v| v.min(100))
+    }
+
     pub(crate) fn open_columns_picker(&mut self, table: TableId) {
         self.open_config_editor();
         if let Some(ref mut s) = self.config_editor {

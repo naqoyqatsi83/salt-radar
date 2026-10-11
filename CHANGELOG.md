@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Config Editor: preview `popup_dim_pct` live — once a new value is confirmed with `Enter`, the dimming behind the editor uses it; cancelling or discarding the edit reverts it, like the theme preview
 - Show the changelog in the app: the help overlay (`F1`) has a **What's new** page (`Tab` switches to it), built into the binary and searchable like Job Detail's output (`/`, then `n`/`N`, on either help page); after an upgrade the title bar says `updated to vX.Y.Z · F1: what's new` and `F1` opens straight on it. The changelog is also installed to `/usr/share/doc/salt-radar/` by the `.deb` and `.rpm` and included in the `.tar.gz` (#139)
 
 ### Fixed

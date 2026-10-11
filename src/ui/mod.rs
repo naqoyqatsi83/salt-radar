@@ -444,7 +444,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_key_hints(f, main_layout[2], app);
 
     // Detail popup overlay
-    let dim = app.config.popup_dim_pct;
+    let dim = app.popup_dim_pct();
     if popup_active || sniffer_active { dim_background(f, dim); }
     if popup_active { detail_popup::draw_detail_popup(f, app); }
     else if sniffer_active { detail_popup::draw_sniffer_overlay(f, app); }
