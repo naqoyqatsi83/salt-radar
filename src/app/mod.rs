@@ -22,7 +22,7 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::alerts::{AlertEngine, ServiceMemThresholds};
-use crate::config::{load_config, AppConfig};
+use crate::config::{load_config_or_fallback, AppConfig};
 use crate::types::*;
 
 const JOB_STATS_WINDOW: usize = 500;
@@ -653,7 +653,7 @@ pub enum DetailPopup {
 impl App {
     pub fn new() -> Self {
         let config_path = crate::config::resolve_config_path();
-        let config = load_config(&config_path);
+        let config = load_config_or_fallback(&config_path);
         let config_secs = config.config_secs;
         let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -2243,7 +2243,7 @@ impl App {
         // now instead of writing back the whole in-memory config, which
         // clobbered anything saved to the file (by hand, or from another
         // salt-radar instance) while this one was running.
-        let mut on_disk = load_config(&self.config_path);
+        let mut on_disk = load_config_or_fallback(&self.config_path);
         let (cur, base) = (&self.config, &self.persisted_config);
         let mut changed = false;
         macro_rules! keep_toggled {

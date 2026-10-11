@@ -635,7 +635,10 @@ impl App {
                     return false;
                 }
                 let content = self.save_prompt.as_ref().unwrap().content.clone();
-                let result = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &content));
+                let result = crate::config::create_dir_all_owned(&dir).and_then(|_| std::fs::write(&path, &content));
+                if result.is_ok() {
+                    crate::config::give_to_sudo_user(&path);
+                }
                 self.clipboard_msg = Some(match result {
                     Ok(()) => {
                         self.save_at = Some(Instant::now());
