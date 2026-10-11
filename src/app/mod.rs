@@ -120,12 +120,15 @@ pub struct App {
     /// of the key reference.
     pub help_whats_new: bool,
     /// Help search, like Job Detail's output search: the query, whether it's
-    /// being typed, the matching lines of the page shown (written back every
-    /// render) and the line the last `n`/`N` jump landed on.
+    /// being typed, the line of each match on the page shown (written back
+    /// every render) and the occurrence `n`/`N` landed on.
     pub help_search: String,
     pub help_searching: bool,
     pub help_search_matches: Vec<usize>,
-    pub help_focus_line: Option<usize>,
+    pub help_search_focus: Option<usize>,
+    /// Enter was pressed on a help search: the next draw, which has the
+    /// matches for the final query, jumps to the first one.
+    pub help_search_jump: bool,
     /// Where the help overlay's `Keys │ What's new` labels were drawn:
     /// (row, first column, end column, is "What's new"), for clicks.
     pub help_page_hits: Vec<(u16, u16, u16, bool)>,
@@ -387,14 +390,16 @@ pub struct App {
     /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
     /// content preview (right panel).
     pub job_detail_scroll_max: usize,
-    /// Job Detail output search: the query, whether it's being typed, and the
-    /// matching line numbers (written back every render, like the scroll max).
+    /// Job Detail output search: the query, whether it's being typed, the
+    /// line of each match (one entry per occurrence, written back every
+    /// render, like the scroll max) and the occurrence `n`/`N` landed on.
     pub job_search: String,
     pub job_searching: bool,
     pub job_search_matches: Vec<usize>,
+    pub job_search_focus: Option<usize>,
     /// Lines of the Job Detail output holding a failed state (`f`/`F`).
     pub job_fail_lines: Vec<usize>,
-    /// The output line the last `n`/`N`/`f`/`F` jump landed on, marked in the pane.
+    /// The failed state's line the last `f`/`F` jump landed on, marked in the pane.
     pub job_focus_line: Option<usize>,
     /// Minion whose return Job Detail selects once its lookup arrives.
     pub job_detail_select_minion: Option<String>,
@@ -716,7 +721,8 @@ impl App {
             help_search: String::new(),
             help_searching: false,
             help_search_matches: Vec::new(),
-            help_focus_line: None,
+            help_search_focus: None,
+            help_search_jump: false,
             help_page_hits: Vec::new(),
             upgraded_from: crate::config::note_version_seen(),
             applied_theme: None,
@@ -732,6 +738,7 @@ impl App {
             job_search: String::new(),
             job_searching: false,
             job_search_matches: Vec::new(),
+            job_search_focus: None,
             job_fail_lines: Vec::new(),
             job_focus_line: None,
             job_detail_select_minion: None,
@@ -2005,22 +2012,14 @@ impl App {
                     22 => *style = style.remove_modifier(Modifier::BOLD),
                     23 => *style = style.remove_modifier(Modifier::ITALIC),
                     24 => *style = style.remove_modifier(Modifier::UNDERLINED),
-                    // Standard foreground (30-37)
-                    30 => *style = style.fg(Color::Black),
-                    31 => *style = style.fg(Color::Red),
-                    32 => *style = style.fg(Color::Green),
-                    33 => *style = style.fg(Color::Yellow),
-                    34 => *style = style.fg(Color::Blue),
-                    35 => *style = style.fg(Color::Magenta),
-                    36 => *style = style.fg(Color::Cyan),
-                    37 => *style = style.fg(Color::White),
+                    30..=37 => *style = style.fg(ansi_theme_color(params[i] - 30, false)),
                     38 => {
                         // Extended foreground: 38;5;N or 38;2;R;G;B
                         if i + 1 < params.len() {
                             match params[i + 1] {
                                 5 if i + 2 < params.len() => {
-                                    let idx = params[i + 2] as u8;
-                                    *style = style.fg(Color::Indexed(idx));
+                                    let idx = params[i + 2];
+                                    *style = style.fg(if idx < 16 { ansi_theme_color(idx % 8, false) } else { Color::Indexed(idx as u8) });
                                     i += 2;
                                 }
                                 2 if i + 4 < params.len() => {
@@ -2034,23 +2033,15 @@ impl App {
                             }
                         }
                     }
-                    39 => *style = style.fg(Color::Reset),
-                    // Standard background (40-47)
-                    40 => *style = style.bg(Color::Black),
-                    41 => *style = style.bg(Color::Red),
-                    42 => *style = style.bg(Color::Green),
-                    43 => *style = style.bg(Color::Yellow),
-                    44 => *style = style.bg(Color::Blue),
-                    45 => *style = style.bg(Color::Magenta),
-                    46 => *style = style.bg(Color::Cyan),
-                    47 => *style = style.bg(Color::White),
+                    39 => style.fg = default_style.fg,
+                    40..=47 => *style = style.bg(ansi_theme_color(params[i] - 40, true)),
                     48 => {
                         // Extended background: 48;5;N or 48;2;R;G;B
                         if i + 1 < params.len() {
                             match params[i + 1] {
                                 5 if i + 2 < params.len() => {
-                                    let idx = params[i + 2] as u8;
-                                    *style = style.bg(Color::Indexed(idx));
+                                    let idx = params[i + 2];
+                                    *style = style.bg(if idx < 16 { ansi_theme_color(idx % 8, true) } else { Color::Indexed(idx as u8) });
                                     i += 2;
                                 }
                                 2 if i + 4 < params.len() => {
@@ -2064,25 +2055,9 @@ impl App {
                             }
                         }
                     }
-                    49 => *style = style.bg(Color::Reset),
-                    // Bright foreground (90-97)
-                    90 => *style = style.fg(Color::Rgb(128, 128, 128)),
-                    91 => *style = style.fg(Color::Rgb(255, 85, 85)),
-                    92 => *style = style.fg(Color::Rgb(85, 255, 85)),
-                    93 => *style = style.fg(Color::Rgb(255, 255, 85)),
-                    94 => *style = style.fg(Color::Rgb(85, 85, 255)),
-                    95 => *style = style.fg(Color::Rgb(255, 85, 255)),
-                    96 => *style = style.fg(Color::Rgb(85, 255, 255)),
-                    97 => *style = style.fg(Color::Rgb(255, 255, 255)),
-                    // Bright background (100-107)
-                    100 => *style = style.bg(Color::Rgb(128, 128, 128)),
-                    101 => *style = style.bg(Color::Rgb(255, 85, 85)),
-                    102 => *style = style.bg(Color::Rgb(85, 255, 85)),
-                    103 => *style = style.bg(Color::Rgb(255, 255, 85)),
-                    104 => *style = style.bg(Color::Rgb(85, 85, 255)),
-                    105 => *style = style.bg(Color::Rgb(255, 85, 255)),
-                    106 => *style = style.bg(Color::Rgb(85, 255, 255)),
-                    107 => *style = style.bg(Color::Rgb(255, 255, 255)),
+                    49 => style.bg = default_style.bg,
+                    90..=97 => *style = style.fg(ansi_theme_color(params[i] - 90, false)),
+                    100..=107 => *style = style.bg(ansi_theme_color(params[i] - 100, true)),
                     _ => {}
                 }
                 i += 1;
@@ -2866,6 +2841,44 @@ pub fn return_matches(minion_id: &str, filter: &str) -> bool {
     minion_id.to_ascii_lowercase().contains(&filter.to_ascii_lowercase())
 }
 
+/// The search match `n` (`forward`) or `N` moves to, given the line of each
+/// occurrence: the one after/before the current one, or with none current
+/// the first at or below (last above) the scroll position; wraps around.
+/// The help scroll offset that shows `line` a couple of lines from the top
+/// (the draw clamps it).
+pub(crate) fn help_scroll_to(line: usize) -> u16 {
+    line.saturating_sub(2).min(u16::MAX as usize) as u16
+}
+
+pub(crate) fn step_match(matches: &[usize], current: Option<usize>, scroll: usize, forward: bool) -> Option<usize> {
+    let last = matches.len().checked_sub(1)?;
+    Some(match (current.filter(|&c| c <= last), forward) {
+        (Some(c), true) => if c == last { 0 } else { c + 1 },
+        (Some(c), false) => if c == 0 { last } else { c - 1 },
+        (None, true) => matches.iter().position(|&l| l >= scroll).unwrap_or(0),
+        (None, false) => matches.iter().rposition(|&l| l < scroll).unwrap_or(last),
+    })
+}
+
+/// The theme's color for ANSI palette slot 0-7 (black, red, green, yellow,
+/// blue, magenta, cyan, white; the bright variants share them), so Salt's
+/// colored output follows the theme instead of the terminal's own palette.
+fn ansi_theme_color(slot: u16, background: bool) -> Color {
+    use crate::ui::color;
+    match slot {
+        0 if background => color::popup_bg(),
+        0 => color::inactive_fg(),
+        1 => color::red(),
+        2 => color::green(),
+        3 => color::yellow(),
+        4 => color::highlight_1(),
+        5 => color::purple(),
+        6 => color::cyan(),
+        _ if background => color::main_fg(),
+        _ => color::hi_fg(),
+    }
+}
+
 /// Moves the selection to the nearest returns-list entry matching `filter`,
 /// looking forward from the current one first.
 pub fn snap_to_matching_return(lookup: &JidLookup, selected: &mut Option<usize>, filter: &str) {
@@ -3198,6 +3211,34 @@ fn matches_filter(item: &MinionActivityItem, pat: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ansi_colors_follow_the_theme() {
+        let base = Style::default().fg(crate::ui::color::main_fg());
+        let spans = App::ansi_to_styled_spans("[31mfail[39m ok [1;92mchanged[38;5;3mwarn", base);
+        let fg: Vec<_> = spans.iter().map(|s| s.style.fg).collect();
+        assert_eq!(fg, vec![
+            Some(crate::ui::color::red()),
+            Some(crate::ui::color::main_fg()),
+            Some(crate::ui::color::green()),
+            Some(crate::ui::color::yellow()),
+        ]);
+    }
+
+    #[test]
+    fn step_match_moves_by_occurrence_and_wraps() {
+        // Two occurrences on line 3, one on 9.
+        let m = [3, 3, 9];
+        assert_eq!(step_match(&m, None, 0, true), Some(0));
+        assert_eq!(step_match(&m, Some(0), 0, true), Some(1));
+        assert_eq!(step_match(&m, Some(1), 0, true), Some(2));
+        assert_eq!(step_match(&m, Some(2), 0, true), Some(0));
+        assert_eq!(step_match(&m, Some(0), 0, false), Some(2));
+        assert_eq!(step_match(&m, None, 5, true), Some(2));
+        assert_eq!(step_match(&m, None, 5, false), Some(1));
+        assert_eq!(step_match(&m, None, 0, false), Some(2));
+        assert_eq!(step_match(&[], None, 0, true), None);
+    }
     use serde_json::json;
 
     #[test]

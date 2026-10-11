@@ -140,6 +140,18 @@ pub mod color {
         Style::default().bg(selected_bg()).add_modifier(Modifier::BOLD)
     }
 
+    // Search matches: every match softly tinted, the one `n`/`N` is on as a
+    // solid block. Built from theme roles that hold in dark and light themes
+    // alike: badge_bg is a muted amber meant for hi_fg text on top, and
+    // popup_bg text on yellow is the strongest contrast a theme defines.
+    pub fn search_match() -> Style {
+        Style::default().fg(hi_fg()).bg(badge_bg())
+    }
+
+    pub fn search_current() -> Style {
+        Style::default().fg(popup_bg()).bg(yellow()).add_modifier(Modifier::BOLD)
+    }
+
     // Job outcome colors, the same wherever a result is shown (Live Jobs,
     // Job Detail, the minion activity popup, Fail%), following Salt's own
     // highstate output: a zero or a value that doesn't apply is dimmed.
@@ -893,10 +905,17 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         .title_top(pages.left_aligned());
     let inner = block.inner(area);
     let lines = if whats_new { whats_new::lines(inner.width.saturating_sub(1) as usize) } else { help_lines() };
-    let (lines, matches) = detail_popup::highlight_matches(lines, &app.help_search);
+    if std::mem::take(&mut app.help_search_jump) {
+        let (_, matches) = detail_popup::highlight_matches(lines.clone(), &app.help_search, None);
+        if let Some(i) = crate::app::step_match(&matches, None, app.help_scroll as usize, true) {
+            app.help_search_focus = Some(i);
+            app.help_scroll = crate::app::help_scroll_to(matches[i]);
+        }
+    }
+    let (lines, matches) = detail_popup::highlight_matches(lines, &app.help_search, app.help_search_focus);
     app.help_search_matches = matches;
     let matches = &app.help_search_matches;
-    let focus_line = app.help_focus_line.filter(|l| matches.contains(l));
+    let focus = app.help_search_focus.filter(|&i| i < matches.len());
 
     let other = if whats_new { "keys" } else { "what's new" };
     let hints = if app.help_searching {
@@ -912,7 +931,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     };
     block = block.title_bottom(border_hints(&hints, color::border_focus()).left_aligned());
     if !app.help_search.is_empty() && !app.help_searching {
-        let status = match (focus_line.and_then(|f| matches.iter().position(|&l| l == f)), matches.len()) {
+        let status = match (focus, matches.len()) {
             (_, 0) => "no matches".to_string(),
             (Some(i), n) => format!("match {} of {}", i + 1, n),
             (None, 1) => "1 match".to_string(),
@@ -931,13 +950,6 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     }
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::popup_bg())).scroll((scroll, 0)), inner);
-    if let Some(line) = focus_line {
-        let scroll = scroll as usize;
-        if line >= scroll && line < scroll + inner.height as usize {
-            let row = Rect { y: inner.y + (line - scroll) as u16, height: 1, ..inner };
-            f.buffer_mut().set_style(row, color::select_bg());
-        }
-    }
     if app.help_searching {
         let bar = Rect { y: inner.y + inner.height.saturating_sub(1), height: 1.min(inner.height), ..inner };
         f.render_widget(Clear, bar);

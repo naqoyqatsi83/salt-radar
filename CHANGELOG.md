@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Themes: color Salt's own colored output (ANSI codes in job returns) with the theme's colors instead of the terminal's palette, and make the `greyscale` theme grey throughout — its status, pulse and highlight colors were the port's colorful defaults; now the more attention a state needs, the brighter its grey
+- Search in Job Detail output and help: `n`/`N` step through each match instead of each matching line (two matches on one line are two stops); the current match is a solid block and the others are tinted, in colors taken from the theme so they read on dark and light themes alike, instead of marking the whole line with the selection color, which turned the matches on it into dark text on blue; `Enter` on a pasted query jumps to the first match; the border no longer says `4 matchs`
+- Ignore clicks on the Events list while the event sniffer is shown over it, so a stray click no longer opens an event from the list behind the sniffer
 - Help overlay with the mouse on: a right-click closes it like other popups, clicking `Keys` / `What's new` in its border switches pages, and clicks no longer reach the tab behind it
 - Keep the open popup when the Config Editor (`F3`) is opened over it: closing the editor returns to the popup as it was (selection, filter, scroll), and the popup keeps updating underneath; clicks no longer reach the tab behind the editor
 

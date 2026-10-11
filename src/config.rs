@@ -796,6 +796,21 @@ mod tests {
     }
 
     #[test]
+    fn greyscale_theme_sets_every_role_to_a_grey() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/themes/greyscale.theme");
+        let text = std::fs::read_to_string(path).unwrap();
+        let theme = load_theme(path);
+        for key in Theme::KEYS {
+            assert!(text.contains(&format!("theme[{key}]=")), "greyscale.theme doesn't set {key}");
+            let mut t = theme;
+            match t.slot(key) {
+                Some(Color::Rgb(r, g, b)) => assert!(r == g && g == b, "{key} is not grey"),
+                other => panic!("{key}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn unknown_theme_name_falls_back_to_default() {
         assert_eq!(load_theme("no-such-theme-anywhere"), Theme::DEFAULT);
         assert_eq!(load_theme(DEFAULT_THEME), Theme::DEFAULT);

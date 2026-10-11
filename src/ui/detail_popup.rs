@@ -36,7 +36,7 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &app.job_search, app.job_searching, &mut app.job_search_matches, &mut app.job_fail_lines, app.job_focus_line, clipboard_at, save_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -831,6 +831,7 @@ fn draw_job_detail(
     search: &str,
     searching: bool,
     search_matches: &mut Vec<usize>,
+    search_focus: Option<usize>,
     fail_lines: &mut Vec<usize>,
     focus_line: Option<usize>,
     clipboard_at: Option<std::time::Instant>,
@@ -1133,8 +1134,19 @@ fn draw_job_detail(
         })
         .map(|(i, _)| i)
         .collect();
-    let (right_lines, matches) = highlight_matches(right_lines, search);
+    let (mut right_lines, matches) = highlight_matches(right_lines, search, search_focus);
     *search_matches = matches;
+    let search_focus = search_focus.filter(|&i| i < search_matches.len());
+    // A failed state `f`/`F` landed on: tint the line, but only where nothing
+    // (a search match, say) has its own background.
+    let focus_line = focus_line.filter(|l| fail_lines.contains(l));
+    if let Some(line) = focus_line.and_then(|l| right_lines.get_mut(l)) {
+        for span in &mut line.spans {
+            if span.style.bg.is_none() {
+                span.style = span.style.patch(color::select_bg());
+            }
+        }
+    }
 
     // Viewport-aware max scroll — a `Borders::ALL` block always insets 1 on
     // each side, so this matches what `right_block.inner()` will produce
@@ -1162,21 +1174,20 @@ fn draw_job_detail(
     if more_below {
         right_block = right_block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(right_border_color))).right_aligned());
     }
-    let focus_line = focus_line.filter(|l| search_matches.contains(l) || fail_lines.contains(l));
-    let position = |lines: &[usize], what: &str| match focus_line.and_then(|f| lines.iter().position(|&l| l == f)) {
-        Some(i) => format!("{} {} of {}", what, i + 1, lines.len()),
-        None if lines.len() == 1 => format!("1 {}", what),
-        None => format!("{} {}s", lines.len(), what),
+    let position = |at: Option<usize>, n: usize, what: &str, whats: &str| match at {
+        Some(i) => format!("{} {} of {}", what, i + 1, n),
+        None if n == 1 => format!("1 {}", what),
+        None => format!("{} {}", n, whats),
     };
     let mut status_spans = Vec::new();
     if !search.is_empty() && !searching {
         status_spans.push(Span::styled(
-            format!(" /{}: {} ", search, if search_matches.is_empty() { "no matches".to_string() } else { position(search_matches, "match") }),
+            format!(" /{}: {} ", search, if search_matches.is_empty() { "no matches".to_string() } else { position(search_focus, search_matches.len(), "match", "matches") }),
             Style::default().fg(if search_matches.is_empty() { color::red() } else { color::yellow() }),
         ));
     }
     if !fail_lines.is_empty() {
-        status_spans.push(Span::styled(format!(" {} ", position(fail_lines, "failed state")), Style::default().fg(color::red())));
+        status_spans.push(Span::styled(format!(" {} ", position(focus_line.and_then(|f| fail_lines.iter().position(|&l| l == f)), fail_lines.len(), "failed state", "failed states")), Style::default().fg(color::red())));
     }
     if !status_spans.is_empty() {
         right_block = right_block.title_bottom(Line::from(status_spans).left_aligned());
@@ -1190,12 +1201,6 @@ fn draw_job_detail(
             .style(Style::default().bg(color::popup_bg())),
         right_inner,
     );
-    if let Some(line) = focus_line {
-        if line >= effective_scroll && line < effective_scroll + right_inner.height as usize {
-            let row = Rect { y: right_inner.y + (line - effective_scroll) as u16, height: 1, ..right_inner };
-            f.buffer_mut().set_style(row, color::select_bg());
-        }
-    }
 
     if searching {
         let bar = Rect { y: right_inner.y + right_inner.height.saturating_sub(1), height: 1.min(right_inner.height), ..right_inner };
@@ -1312,7 +1317,7 @@ impl ReturnsTable {
         let id_style = Style::default().fg(id_fg).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() });
         let shown = shorten_middle(id, id_w);
         let pad = id_w.saturating_sub(shown.chars().count());
-        let (id_line, _) = highlight_matches(vec![Line::from(Span::styled(shown, id_style))], filter);
+        let (id_line, _) = highlight_matches(vec![Line::from(Span::styled(shown, id_style))], filter, None);
         let mut spans = vec![Span::styled(format!(" {} ", if selected { "\u{25b6}" } else { " " }), id_style)];
         spans.extend(id_line.into_iter().flat_map(|l| l.spans));
         spans.push(Span::raw(" ".repeat(pad + 2)));
@@ -1348,12 +1353,14 @@ impl ReturnsTable {
 /// Highlights case-insensitive (ASCII) occurrences of `query` and returns the
 /// numbers of the lines that contain one. A match split across two styled
 /// spans isn't found.
-pub(super) fn highlight_matches(lines: Vec<Line<'static>>, query: &str) -> (Vec<Line<'static>>, Vec<usize>) {
+/// Highlights every case-insensitive occurrence of `query`, the `current`-th
+/// one (counting from the top) more strongly, and returns the line of each
+/// occurrence, in order.
+pub(super) fn highlight_matches(lines: Vec<Line<'static>>, query: &str, current: Option<usize>) -> (Vec<Line<'static>>, Vec<usize>) {
     if query.is_empty() {
         return (lines, Vec::new());
     }
     let q = query.to_ascii_lowercase();
-    let hl = Style::default().fg(color::popup_bg()).bg(color::yellow());
     let mut matches = Vec::new();
     let out = lines.into_iter().enumerate().map(|(i, line)| {
         let mut spans = Vec::with_capacity(line.spans.len());
@@ -1368,14 +1375,13 @@ pub(super) fn highlight_matches(lines: Vec<Line<'static>>, query: &str) -> (Vec<
                 if pos > last {
                     spans.push(Span::styled(span.content[last..pos].to_string(), span.style));
                 }
+                let hl = if current == Some(matches.len()) { color::search_current() } else { color::search_match() };
                 spans.push(Span::styled(span.content[pos..pos + q.len()].to_string(), span.style.patch(hl)));
+                matches.push(i);
                 last = pos + q.len();
             }
             if last < span.content.len() {
                 spans.push(Span::styled(span.content[last..].to_string(), span.style));
-            }
-            if matches.last() != Some(&i) {
-                matches.push(i);
             }
         }
         Line { spans, ..line }
@@ -1877,11 +1883,13 @@ mod tests {
             Line::from("nothing here"),
             Line::from("Comment: NGINX failed, nginx"),
         ];
-        let (out, matches) = highlight_matches(lines, "nginx");
-        assert_eq!(matches, vec![0, 2]);
+        let (out, matches) = highlight_matches(lines, "nginx", Some(2));
+        assert_eq!(matches, vec![0, 2, 2]);
         let texts: Vec<&str> = out[2].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, vec!["Comment: ", "NGINX", " failed, ", "nginx"]);
+        assert_eq!(out[2].spans[1].style.bg, color::search_match().bg);
+        assert_eq!(out[2].spans[3].style.bg, color::search_current().bg);
         assert_eq!(out[1].spans.len(), 1);
-        assert!(highlight_matches(vec![Line::from("x")], "").1.is_empty());
+        assert!(highlight_matches(vec![Line::from("x")], "", None).1.is_empty());
     }
 }

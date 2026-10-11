@@ -12,7 +12,7 @@ impl App {
         self.help_whats_new = self.upgraded_from.take().is_some();
         self.help_search.clear();
         self.help_searching = false;
-        self.help_focus_line = None;
+        self.help_search_focus = None;
     }
 
     fn handle_help_key(&mut self, code: KeyCode) {
@@ -24,11 +24,7 @@ impl App {
                 }
                 KeyCode::Enter => {
                     self.help_searching = false;
-                    let scroll = self.help_scroll as usize;
-                    let m = &self.help_search_matches;
-                    if let Some(&line) = m.iter().find(|&&l| l >= scroll).or(m.first()) {
-                        self.focus_help_line(line);
-                    }
+                    self.help_search_jump = true;
                 }
                 KeyCode::Backspace => { self.help_search.pop(); }
                 KeyCode::Char(c) => self.help_search.push(c),
@@ -39,7 +35,7 @@ impl App {
         match code {
             KeyCode::Esc if !self.help_search.is_empty() => {
                 self.help_search.clear();
-                self.help_focus_line = None;
+                self.help_search_focus = None;
             }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') | KeyCode::F(1) => {
                 self.show_help = false;
@@ -47,27 +43,9 @@ impl App {
             KeyCode::Char('/') => {
                 self.help_searching = true;
                 self.help_search.clear();
-                self.help_focus_line = None;
+                self.help_search_focus = None;
             }
-            KeyCode::Char('n') | KeyCode::Char('N') if !self.help_search_matches.is_empty() => {
-                let m = &self.help_search_matches;
-                let scroll = self.help_scroll as usize;
-                let cur = self.help_focus_line.filter(|l| m.contains(l));
-                let line = if code == KeyCode::Char('n') {
-                    match cur {
-                        Some(c) => m.iter().find(|&&l| l > c),
-                        None => m.iter().find(|&&l| l >= scroll),
-                    }.or(m.first())
-                } else {
-                    match cur {
-                        Some(c) => m.iter().rev().find(|&&l| l < c),
-                        None => m.iter().rev().find(|&&l| l < scroll),
-                    }.or(m.last())
-                }.copied();
-                if let Some(line) = line {
-                    self.focus_help_line(line);
-                }
-            }
+            KeyCode::Char('n') | KeyCode::Char('N') => self.step_help_match(code == KeyCode::Char('n')),
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right | KeyCode::Char('w') | KeyCode::Char('W') => {
                 self.show_help_page(!self.help_whats_new);
             }
@@ -87,17 +65,20 @@ impl App {
         }
         self.help_whats_new = whats_new;
         self.help_scroll = 0;
-        self.help_focus_line = None;
+        self.help_search_focus = None;
         if whats_new {
             self.upgraded_from = None;
         }
     }
 
-    /// Marks a help line and scrolls it into view a couple of lines from the
-    /// top (the draw clamps the scroll).
-    fn focus_help_line(&mut self, line: usize) {
-        self.help_focus_line = Some(line);
-        self.help_scroll = line.saturating_sub(2).min(u16::MAX as usize) as u16;
+    /// Moves to the next/previous help search match and scrolls its line
+    /// into view a couple of lines from the top (the draw clamps the scroll).
+    fn step_help_match(&mut self, forward: bool) {
+        let m = &self.help_search_matches;
+        if let Some(i) = step_match(m, self.help_search_focus, self.help_scroll as usize, forward) {
+            self.help_scroll = help_scroll_to(m[i]);
+            self.help_search_focus = Some(i);
+        }
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> bool {
@@ -278,11 +259,10 @@ impl App {
                                 }
                                 KeyCode::Enter => {
                                     self.job_searching = false;
-                                    if let Some(&line) = self.job_search_matches.iter().find(|&&l| l >= *content_scroll)
-                                        .or(self.job_search_matches.first())
-                                    {
-                                        self.job_focus_line = Some(line);
-                                        *content_scroll = line.saturating_sub(2).min(self.job_detail_scroll_max);
+                                    if let Some(i) = step_match(&self.job_search_matches, None, *content_scroll, true) {
+                                        self.job_search_focus = Some(i);
+                                        self.job_focus_line = None;
+                                        *content_scroll = self.job_search_matches[i].saturating_sub(2).min(self.job_detail_scroll_max);
                                     }
                                 }
                                 KeyCode::Backspace => { self.job_search.pop(); }
@@ -295,18 +275,23 @@ impl App {
                             KeyCode::Char('/') => {
                                 self.job_searching = true;
                                 self.job_search.clear();
-                                self.job_focus_line = None;
+                                self.job_search_focus = None;
                                 return false;
                             }
-                            KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::Char('n') | KeyCode::Char('N') if jump_ready => {
+                            KeyCode::Char('n') | KeyCode::Char('N') if jump_ready => {
+                                let m = &self.job_search_matches;
+                                if let Some(i) = step_match(m, self.job_search_focus, *content_scroll, code == KeyCode::Char('n')) {
+                                    *content_scroll = m[i].saturating_sub(2).min(self.job_detail_scroll_max);
+                                    self.job_search_focus = Some(i);
+                                    self.job_focus_line = None;
+                                }
+                                return false;
+                            }
+                            KeyCode::Char('f') | KeyCode::Char('F') if jump_ready => {
                                 // A failure lands 4 lines down, on its state's `----------` separator.
-                                let (m, context) = if matches!(code, KeyCode::Char('f') | KeyCode::Char('F')) {
-                                    (&self.job_fail_lines, 4)
-                                } else {
-                                    (&self.job_search_matches, 2)
-                                };
+                                let (m, context) = (&self.job_fail_lines, 4);
                                 let cur = self.job_focus_line.filter(|l| m.contains(l));
-                                let line = if matches!(code, KeyCode::Char('f') | KeyCode::Char('n')) {
+                                let line = if code == KeyCode::Char('f') {
                                     match cur {
                                         Some(c) => m.iter().find(|&&l| l > c),
                                         None => m.iter().find(|&&l| l >= *content_scroll),
@@ -319,6 +304,7 @@ impl App {
                                 }.copied();
                                 if let Some(line) = line {
                                     self.job_focus_line = Some(line);
+                                    self.job_search_focus = None;
                                     *content_scroll = line.saturating_sub(context).min(self.job_detail_scroll_max);
                                 }
                                 return false;
@@ -433,6 +419,7 @@ impl App {
                     } else {
                     // Left panel (return list) focused
                     self.job_focus_line = None;
+                    self.job_search_focus = None;
                     match code {
                         KeyCode::Esc if !return_filter.is_empty() => { return_filter.clear(); }
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -1397,6 +1384,12 @@ impl App {
             if let Some(tab) = Self::tab_at_col(col) {
                 self.current_tab = tab;
             }
+            return false;
+        }
+
+        // The sniffer overlays the Events list: a click there would open an
+        // event from the list behind it.
+        if self.current_tab == Tab::Events && self.sniffer.is_some() {
             return false;
         }
 
