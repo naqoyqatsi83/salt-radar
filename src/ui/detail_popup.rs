@@ -36,7 +36,7 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, clipboard_at, save_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -71,7 +71,6 @@ pub fn draw_save_prompt(f: &mut Frame, app: &App) {
     let Some(ref prompt) = app.save_prompt else { return };
     let dir = app.resolved_save_dir();
     let exists = !prompt.filename.trim().is_empty() && dir.join(&prompt.filename).exists();
-    let cursor = if prompt.filename.len() % 2 == 0 { '|' } else { ' ' };
     let screen = f.area();
     let width = (dir.display().to_string().len().max(prompt.filename.len()) as u16 + 20)
         .clamp(60, screen.width.saturating_sub(4).max(20));
@@ -89,11 +88,11 @@ pub fn draw_save_prompt(f: &mut Frame, app: &App) {
             Span::styled("  Directory  ", Style::default().fg(color::label_fg())),
             Span::styled(dir.display().to_string(), Style::default().fg(color::main_fg())),
         ]),
-        Line::from(vec![
-            Span::styled("  File name  ", Style::default().fg(color::label_fg())),
-            Span::styled(format!("{}{}", prompt.filename, cursor),
+        Line::from([
+            vec![Span::styled("  File name  ", Style::default().fg(color::label_fg()))],
+            super::input_spans("", &prompt.filename, app.input_cursor,
                 Style::default().fg(if exists { color::red() } else { color::yellow() }).add_modifier(Modifier::BOLD)),
-        ]),
+        ].concat()),
         Line::from(""),
     ];
     if exists {
@@ -117,7 +116,7 @@ pub fn draw_sniffer_overlay(f: &mut Frame, app: &App) {
     let Some(ref state) = app.sniffer else { return };
     let area = centered_rect(80, 85, f.area());
     f.render_widget(Clear, area);
-    draw_event_sniffer(f, area, state, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+    draw_event_sniffer(f, area, state, app.input_cursor, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
 }
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -834,6 +833,7 @@ fn draw_job_detail(
     search_focus: Option<usize>,
     fail_lines: &mut Vec<usize>,
     focus_line: Option<usize>,
+    input_cursor: Option<usize>,
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
     clipboard_warning: Option<&str>,
@@ -1057,8 +1057,10 @@ fn draw_job_detail(
 
     // Filter bar overlay if active
     if return_is_filtering {
-        let filter_bar = Paragraph::new(Line::from(Span::styled(
-            format!("  Filter: {}_", return_filter),
+        let filter_bar = Paragraph::new(Line::from(super::input_spans(
+            "  Filter: ",
+            return_filter,
+            input_cursor,
             Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         )))
         .style(Style::default().bg(color::popup_bg()));
@@ -1206,8 +1208,10 @@ fn draw_job_detail(
         let bar = Rect { y: right_inner.y + right_inner.height.saturating_sub(1), height: 1.min(right_inner.height), ..right_inner };
         f.render_widget(Clear, bar);
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("  Search: {}_", search),
+            Paragraph::new(Line::from(super::input_spans(
+                "  Search: ",
+                search,
+                input_cursor,
                 Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
             ))).style(Style::default().bg(color::popup_bg())),
             bar,
@@ -1564,23 +1568,18 @@ fn draw_event_sniffer(
     f: &mut Frame,
     area: Rect,
     state: &SnifferState,
+    input_cursor: Option<usize>,
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
     clipboard_warning: Option<&str>,
 ) {
-    let ids_str = state.minion_ids.join(", ");
-    let title = if ids_str.len() > 50 {
-        format!(" Event Sniffer: {}... ", &ids_str[..47])
-    } else {
-        format!(" Event Sniffer: {} ", ids_str)
-    };
+    let title = format!(" Event Sniffer: {} ", shorten_middle(&state.query, 50));
 
     let mut lines = header_lines(&title, area.width);
     let visible = state.filtered_indices();
-    // Coloring uses both the sniff target's own terms (always on, cosmetic
-    // only) and any additional `h` search terms (which also narrow `visible`
-    // above) — see `SnifferState::color_terms` for why these stay separate.
-    let color_terms: Vec<String> = state.color_terms.iter().chain(state.highlight_keywords.iter()).cloned().collect();
+    // Both the sniff terms and any `h` terms (which also narrow `visible`
+    // above) color their matches.
+    let color_terms: Vec<crate::sniff::SniffTerm> = state.terms.iter().chain(state.highlight_terms.iter()).cloned().collect();
 
     // Status bar
     let (status_label, status_color) = if state.paused {
@@ -1598,9 +1597,9 @@ fn draw_event_sniffer(
             Style::default().fg(color::inactive_fg()),
         ),
     ];
-    if !state.highlight_keywords.is_empty() {
+    if !state.highlight_terms.is_empty() {
         status_spans.push(Span::styled(
-            format!("  Shown: {} (highlight filter active)", visible.len()),
+            format!("  Shown: {} (filter: {})", visible.len(), state.highlight_query),
             Style::default().fg(color::yellow()),
         ));
     }
@@ -1683,14 +1682,13 @@ fn draw_event_sniffer(
             // plain CYAN in favor of an all-TEXT-colored tag that looks
             // unstyled.
             let padded_tag = format!("{:<jw$}", tag_disp, jw = jid_w);
-            let lower_tag = padded_tag.to_lowercase();
-            let tag_has_hit = color_terms.iter().any(|t| lower_tag.contains(&t.to_lowercase()));
+            let tag_has_hit = color_terms.iter().any(|t| !t.find_in(&padded_tag).is_empty());
             let mut header_spans = vec![
                 Span::styled(format!("  {:>nw$} ", event_num, nw = num_w - 3), Style::default().fg(color::inactive_fg())),
                 Span::styled(format!("{:<tw$}", t, tw = time_w), Style::default().fg(color::inactive_fg())),
             ];
             if tag_has_hit {
-                header_spans.extend(super::highlight_keywords(&padded_tag, &color_terms));
+                header_spans.extend(super::highlight_terms(&padded_tag, &color_terms));
             } else {
                 header_spans.push(Span::styled(padded_tag, Style::default().fg(color::cyan())));
             }
@@ -1711,7 +1709,7 @@ fn draw_event_sniffer(
             if !color_terms.is_empty() {
                 for raw_line in json_str.lines() {
                     let text = format!("{}{}", indent, raw_line);
-                    let mut spans = super::highlight_keywords(&text, &color_terms);
+                    let mut spans = super::highlight_terms(&text, &color_terms);
                     if is_sel {
                         let pad = inner_w.saturating_sub(text.len());
                         if pad > 0 {
@@ -1753,14 +1751,14 @@ fn draw_event_sniffer(
         let more_below = (scroll as usize) + scrollable_height < event_only_len;
 
         let hints = sniffer_hints(state);
-        let status = sniffer_status(clipboard_at, save_at, state, clipboard_warning);
+        let status = sniffer_status(input_cursor, clipboard_at, save_at, state, clipboard_warning);
         render_popup(f, area, &lines, &hints, status, (more_above, more_below), scroll, pinned_header);
         return;
     }
 
     lines.push(Line::from(""));
     let hints = sniffer_hints(state);
-    let status = sniffer_status(clipboard_at, save_at, state, clipboard_warning);
+    let status = sniffer_status(input_cursor, clipboard_at, save_at, state, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
 
@@ -1774,22 +1772,23 @@ fn sniffer_format_ts(ts: f64) -> String {
 /// Live-typed highlight-keyword buffer, or the shared copy/warning status —
 /// the only things a static border hint can't show.
 fn sniffer_status(
+    input_cursor: Option<usize>,
     clipboard_at: Option<std::time::Instant>,
     save_at: Option<std::time::Instant>,
     state: &SnifferState,
     clipboard_warning: Option<&str>,
 ) -> Option<Line<'static>> {
     if let Some(ref buf) = state.highlight_input {
-        let cursor = if buf.len() % 2 == 0 { '|' } else { ' ' };
-        let display = if buf.is_empty() {
-            String::from("  Filter keywords (comma-separated, Enter=confirm, Esc=cancel): ")
-        } else {
-            format!("  Filter keywords: {} {}", buf, cursor)
-        };
-        return Some(Line::from(Span::styled(
-            display,
+        let mut spans = super::input_spans(
+            "  Show only (keyword or /regex/, comma-separated; empty = all; F1: examples): ",
+            buf,
+            input_cursor,
             Style::default().fg(super::color::yellow()).add_modifier(Modifier::BOLD),
-        )));
+        );
+        if let Some(ref err) = state.highlight_error {
+            spans.push(Span::styled(format!("  \u{2717} {err}"), Style::default().fg(super::color::red()).add_modifier(Modifier::BOLD)));
+        }
+        return Some(Line::from(spans));
     }
     clipboard_status(clipboard_at, save_at, clipboard_warning)
 }

@@ -196,11 +196,11 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 let editing = is_sel && state.editing;
                 let sel_style = if is_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
 
-                let display_val = if editing {
-                    let cursor = if state.input.len() % 2 == 0 { "\u{2588}" } else { " " };
-                    format!("{}{}", state.input, cursor)
+                let value_style = sel_style.fg(if editing { color::yellow() } else { color::main_fg() });
+                let value_spans = if editing {
+                    super::input_spans("", &state.input, app.input_cursor, value_style)
                 } else {
-                    field.label_value.clone()
+                    vec![Span::styled(field.label_value.clone(), value_style)]
                 };
                 let missing = match field.kind {
                     ConfigFieldKind::Path(kind) if !editing => !kind.exists(&field.label_value),
@@ -208,20 +208,16 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 };
 
                 if is_sel { sel_line = lines.len(); }
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {:<label_w$}", field.label, label_w = label_w),
-                        sel_style.fg(if is_sel { color::main_fg() } else { color::label_fg() }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
-                    ),
-                    Span::styled(
-                        display_val,
-                        sel_style.fg(if editing { color::yellow() } else { color::main_fg() }),
-                    ),
-                    Span::styled(
-                        if missing { "  \u{2717} not found" } else { "" },
-                        sel_style.fg(color::red()).add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+                let mut spans = vec![Span::styled(
+                    format!("  {:<label_w$}", field.label, label_w = label_w),
+                    sel_style.fg(if is_sel { color::main_fg() } else { color::label_fg() }).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                )];
+                spans.extend(value_spans);
+                spans.push(Span::styled(
+                    if missing { "  \u{2717} not found" } else { "" },
+                    sel_style.fg(color::red()).add_modifier(Modifier::BOLD),
+                ));
+                lines.push(Line::from(spans));
             }
         }
     }

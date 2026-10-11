@@ -1,6 +1,7 @@
 mod clipboard;
 mod config_editor;
 mod keys;
+pub(crate) mod line_edit;
 mod messages;
 
 pub use config_editor::{BrowserEntry, ConfigEditorState, ConfigFieldKind, PathBrowser, PathKind};
@@ -368,6 +369,10 @@ pub struct App {
     // Sniffer
     pub sniffer_input_active: bool,
     pub sniffer_input_text: String,
+    /// Cursor of whichever text input is active (see `line_edit`).
+    pub input_cursor: Option<usize>,
+    /// Why the sniffer input wasn't accepted (an invalid regex term).
+    pub sniffer_input_error: Option<String>,
     pub sniffer_dirty: bool,
     /// Lives outside `detail_popup` (unlike every other popup) because it's
     /// meant to keep capturing in the background while you use other tabs
@@ -729,6 +734,8 @@ impl App {
 
             sniffer_input_active: false,
             sniffer_input_text: String::new(),
+            input_cursor: None,
+            sniffer_input_error: None,
             sniffer_dirty: false,
             sniffer: None,
             return_to_minion_events: None,
@@ -1092,7 +1099,7 @@ impl App {
     /// semantics as Salt's own glob minion targeting (`salt 'web*' ...`).
     /// Classic O(n*m) DP wildcard-matching table; hostnames are short enough
     /// that this is effectively instant.
-    fn glob_match(text: &str, pattern: &str) -> bool {
+    pub(crate) fn glob_match(text: &str, pattern: &str) -> bool {
         let t: Vec<char> = text.to_lowercase().chars().collect();
         let p: Vec<char> = pattern.to_lowercase().chars().collect();
         let (tn, pn) = (t.len(), p.len());
@@ -1165,29 +1172,6 @@ impl App {
             *selected = new_len.saturating_sub(1);
         } else if evicted {
             *selected = selected.saturating_sub(1);
-        }
-    }
-
-    fn matches_sniffer_event(evt: &SaltEvent, minion_ids: &[String]) -> bool {
-        for mid in minion_ids {
-            if evt.tag.contains(mid.as_str()) { return true; }
-            if let Some(id) = evt.data["id"].as_str() {
-                if id.contains(mid.as_str()) || mid.contains(id) { return true; }
-            }
-            if let Some(tgt) = evt.data["tgt"].as_str() {
-                if tgt == "*" || tgt.contains(mid.as_str()) || mid.contains(tgt) { return true; }
-            }
-            if Self::sniffer_search_value(&evt.data, mid) { return true; }
-        }
-        false
-    }
-
-    fn sniffer_search_value(value: &serde_json::Value, pattern: &str) -> bool {
-        match value {
-            serde_json::Value::String(s) => s.contains(pattern),
-            serde_json::Value::Object(map) => map.values().any(|v| Self::sniffer_search_value(v, pattern)),
-            serde_json::Value::Array(arr) => arr.iter().any(|v| Self::sniffer_search_value(v, pattern)),
-            _ => false,
         }
     }
 
@@ -1291,9 +1275,22 @@ impl App {
     /// no "debian12-*" substring anywhere to highlight), so used as-is it
     /// would never match anything. Falls back to the raw term if it matches
     /// no known minion, so an in-progress/nonsense glob doesn't just vanish.
-    /// Plain (non-glob) terms pass through unchanged. Shared by the Events
-    /// tab's own filter terms and the Event Sniffer's `color_terms` (see
-    /// `SnifferState`) so both resolve host globs identically.
+    /// Plain (non-glob) terms pass through unchanged.
+    /// The known minions a sniffer term names: an exact minion ID, or every
+    /// minion a glob matches.
+    pub(crate) fn minions_for_term(&self, term: &str) -> Vec<String> {
+        let known = self.accepted_ids();
+        if term.contains(['*', '?']) {
+            let mut ids: Vec<String> = known.iter().filter(|m| Self::glob_match(m, term)).cloned().collect();
+            ids.sort();
+            ids
+        } else if known.contains(term) {
+            vec![term.to_string()]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn resolve_host_terms<'a>(&self, terms: impl IntoIterator<Item = &'a str>) -> Vec<String> {
         let known = self.accepted_ids();
         terms.into_iter().flat_map(|term| {

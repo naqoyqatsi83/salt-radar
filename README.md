@@ -119,13 +119,13 @@ Live overview of your Salt Master with real-time sparkline panels:
 ### Events
 - Live event stream from the Salt event bus (via ZMQ)
 - Full date/time in local and UTC columns, plus an optional Minion column (the event's minion ID)
-- Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax. Matched terms are colored consistently (same term, same color, everywhere) from a small high-contrast palette, hashed from the term text
+- Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax. Each term of the filter is colored in its own color, in the order typed, from the theme's highlight palette (six colors before any repeat)
 - Event detail popup:
   - `t` toggles between raw JSON and a **pretty view** for job-return events — the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output (same subprocess call Job Detail uses), so formatting and colors are authoritative Salt output, not an approximation. Falls back to a client-side rendering only when no live fetch is possible (non-job-return events) or after a fetch failure/timeout
   - Copy to clipboard (`y` = tag/timestamp + body, `Y` = body only) matches whatever's currently on screen — pretty or raw
-- Advanced **Event Sniffer** (`n` key) — filter events by minion ID/glob, same syntax as the main filter:
-  - Sniffed minion IDs are colored wherever they occur in captured content (tag and JSON body), same hashed palette as the main filter
-  - `h` sets an additional keyword search *within* what's already being sniffed — unlike the minion-ID coloring above, this one also narrows the displayed list to matches
+- Advanced **Event Sniffer** (`n` key) — capture events by comma-separated terms: a minion ID or glob (events from or about those minions, including the jobs that target them), a keyword (anywhere in the tag or data, ignoring case) or a `/regex/` (`/…/i` ignores case; commas and slashes inside it are part of it), e.g. `web-*, nginx, /ret/(db|web)\d+/`; each term colors its matches:
+  - An invalid regex keeps the prompt open and says what's wrong
+  - `h` narrows the shown list to events matching further keywords or `/regex/` terms (empty input shows everything again)
   - Pause/resume live capture (`p`)
   - Navigate events with full pretty-printed JSON body
   - Open event detail from sniffer (`Enter`), return to sniffer on close
@@ -353,7 +353,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |
 | `t` | Toggle raw JSON / pretty view (event detail) |
-| `h` | Edit keyword filter (sniffer) |
+| `h` | Show only events matching keywords or `/regex/` terms (sniffer) |
 | `p` | Pause/resume (sniffer) |
 | `g` | Fetch grains for this minion (minion detail, admin mode only) |
 

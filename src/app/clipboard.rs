@@ -583,6 +583,7 @@ impl App {
     /// clipboard copy) with `content` and a filename proposed from
     /// `name_hint`, which the user can edit before confirming.
     pub fn open_save_prompt(&mut self, content: String, name_hint: &str, ext: &str) {
+        self.input_cursor = None;
         self.save_prompt = Some(SaveFilePrompt {
             filename: Self::propose_save_filename(name_hint, ext),
             content,
@@ -615,16 +616,11 @@ impl App {
             KeyCode::Esc => {
                 self.save_prompt = None;
             }
-            KeyCode::Backspace => {
+            KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => {
                 if let Some(ref mut prompt) = self.save_prompt {
-                    prompt.filename.pop();
-                    prompt.confirm_overwrite = false;
-                }
-            }
-            KeyCode::Char(c) if !c.is_control() => {
-                if let Some(ref mut prompt) = self.save_prompt {
-                    prompt.filename.push(c);
-                    prompt.confirm_overwrite = false;
+                    if super::line_edit::edit(&mut prompt.filename, &mut self.input_cursor, code) {
+                        prompt.confirm_overwrite = false;
+                    }
                 }
             }
             KeyCode::Enter => {

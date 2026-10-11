@@ -251,6 +251,7 @@ impl App {
                 s.input = s.fields[idx].label_value.clone();
                 s.choice_idx = 0;
                 s.editing = true;
+                self.input_cursor = None;
                 s.quick = true;
             }
         }
@@ -519,6 +520,7 @@ impl App {
                         s.browser = None;
                         s.input = s.fields.get(s.selected).map(|f| f.label_value.clone()).unwrap_or_default();
                         s.editing = true;
+                        self.input_cursor = None;
                         return false;
                     }
                     KeyCode::Esc => s.browser = None,
@@ -691,9 +693,7 @@ impl App {
                         s.editing = false;
                         s.input.clear();
                     }
-                    KeyCode::Backspace => { s.input.pop(); }
-                    KeyCode::Char(c) => { s.input.push(c); }
-                    _ => {}
+                    _ => { super::line_edit::edit(&mut s.input, &mut self.input_cursor, code); }
                 }
                 return false;
             }
@@ -820,6 +820,7 @@ impl App {
                                     s.input = val;
                                 }
                                 s.editing = true;
+                                self.input_cursor = None;
                             }
                         }
                     }

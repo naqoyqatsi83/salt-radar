@@ -75,12 +75,11 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
 
     // Filter bar
     if app.is_filtering {
-        let cursor = if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' };
-        let filter_text = format!(" /{} {}", app.filter_text, cursor);
-        lines.push(Line::from(vec![
-            Span::styled(filter_text, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+        let mut spans = super::input_spans(" /", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
+        spans.extend([
             Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
-        ]));
+        ]);
+        lines.push(Line::from(spans));
     } else if !app.applied_filter.is_empty() {
         lines.push(Line::from(vec![
             Span::styled(format!(" /{}/ ", app.applied_filter), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),

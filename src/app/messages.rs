@@ -592,7 +592,7 @@ impl App {
                     if let Some(ref mut state) = self.sniffer {
                         if !state.paused {
                             if let Some(evt) = self.events.back() {
-                                if Self::matches_sniffer_event(evt, &state.minion_ids) {
+                                if crate::sniff::matches(&state.terms, evt) {
                                     let will_evict = state.buffer.len() >= state.max_size;
                                     // `selected`/`following` track the filtered (displayed)
                                     // view, not the raw buffer — only touch them when this
@@ -600,14 +600,14 @@ impl App {
                                     // evicted item (if any) or the new item itself passes the
                                     // active highlight-keyword filter.
                                     let evicted_visible = will_evict && state.buffer.front()
-                                        .map(|e| state.highlight_keywords.is_empty() || crate::types::SnifferState::event_matches_keywords(e, &state.highlight_keywords))
+                                        .map(|e| state.highlight_terms.is_empty() || crate::sniff::matches(&state.highlight_terms, e))
                                         .unwrap_or(false);
                                     if will_evict {
                                         state.buffer.pop_front();
                                     }
                                     state.buffer.push_back(evt.clone());
-                                    let new_visible = state.highlight_keywords.is_empty()
-                                        || crate::types::SnifferState::event_matches_keywords(evt, &state.highlight_keywords);
+                                    let new_visible = state.highlight_terms.is_empty()
+                                        || crate::sniff::matches(&state.highlight_terms, evt);
                                     // The visible length is an O(buffer) keyword
                                     // re-scan, so a following selection is
                                     // resynced once after the batch instead of

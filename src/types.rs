@@ -382,7 +382,12 @@ pub enum PrettyFetch {
 
 #[derive(Clone, Debug)]
 pub struct SnifferState {
-    pub minion_ids: Vec<String>,
+    /// The input the sniffer was started with, as typed (title, file names).
+    pub query: String,
+    /// What gets captured: events matching any of these (see `crate::sniff`
+    /// for minion, keyword and regex terms). They also color their matches
+    /// in what's shown.
+    pub terms: Vec<crate::sniff::SniffTerm>,
     pub buffer: VecDeque<SaltEvent>,
     pub max_size: usize,
     pub paused: bool,
@@ -392,25 +397,16 @@ pub struct SnifferState {
     /// arrive (tail -f style); moving selection away from the last row
     /// turns this off so live traffic doesn't yank the selection around.
     pub following: bool,
-    /// The minion-id target(s) entered when starting the sniffer (glob-
-    /// resolved to concrete minion IDs at construction, same as the Events
-    /// tab's own filter — see `App::resolve_host_terms`), used ONLY to color
-    /// their occurrences within captured content. Deliberately not a filter:
-    /// `minion_ids` above already decides what gets captured via broader
-    /// relevance matching (a wildcard-targeted job counts even though it
-    /// doesn't literally contain any minion's name), so re-filtering the
-    /// display by literal text match on these same terms would hide events
-    /// that are legitimately relevant but don't happen to mention a minion
-    /// by name in their JSON body.
-    pub color_terms: Vec<String>,
-    /// A separate, optional, user-invoked (`h`) keyword search *within*
-    /// whatever's already being sniffed — unlike `color_terms` above, this
-    /// one DOES narrow the displayed view (see `filtered_indices`), since
-    /// it's a deliberate additional search rather than the sniffer's own
-    /// baseline relevance filter.
-    pub highlight_keywords: Vec<String>,
-    /// When Some, the user is editing highlight keywords within the popup
+    /// An optional, user-invoked (`h`) narrowing of what's shown: only
+    /// captured events matching one of these keyword / regex terms, typed as
+    /// `highlight_query`. Unlike `terms`, these filter the displayed view
+    /// (see `filtered_indices`).
+    pub highlight_query: String,
+    pub highlight_terms: Vec<crate::sniff::SniffTerm>,
+    /// When Some, the user is editing the `h` terms within the popup.
     pub highlight_input: Option<String>,
+    /// Why the last `h` input wasn't applied (an invalid regex term).
+    pub highlight_error: Option<String>,
 }
 
 impl SnifferState {
@@ -424,23 +420,15 @@ impl SnifferState {
     /// list — a keyword field a user reaches for expecting it to behave like
     /// a filter (find the needle) should actually filter, not just tint it.
     pub fn filtered_indices(&self) -> Vec<usize> {
-        if self.highlight_keywords.is_empty() {
+        if self.highlight_terms.is_empty() {
             return (0..self.buffer.len()).collect();
         }
         self.buffer.iter().enumerate()
-            .filter(|(_, evt)| Self::event_matches_keywords(evt, &self.highlight_keywords))
+            .filter(|(_, evt)| crate::sniff::matches(&self.highlight_terms, evt))
             .map(|(i, _)| i)
             .collect()
     }
 
-    pub(crate) fn event_matches_keywords(evt: &SaltEvent, keywords: &[String]) -> bool {
-        let tag_lower = evt.tag.to_lowercase();
-        let body_lower = evt.data.to_string().to_lowercase();
-        keywords.iter().any(|k| {
-            let kl = k.trim().to_lowercase();
-            !kl.is_empty() && (tag_lower.contains(&kl) || body_lower.contains(&kl))
-        })
-    }
 }
 
 // ─── Job entry (live) ─────────────────────────────────────────────────────

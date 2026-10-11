@@ -206,8 +206,10 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         rule,
     ];
 
-    let status = app.minion_events_is_filtering.then(|| Line::from(Span::styled(
-        format!("  /{}_", app.minion_events_filter),
+    let status = app.minion_events_is_filtering.then(|| Line::from(super::input_spans(
+        "  /",
+        &app.minion_events_filter,
+        app.input_cursor,
         Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
     )));
     let chunks = Layout::default()

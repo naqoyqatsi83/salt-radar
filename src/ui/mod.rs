@@ -176,40 +176,43 @@ pub mod color {
         line.style(select_bg())
     }
 
-    /// Deterministic color for a filter/highlight term — same term always
-    /// gets the same color (everywhere, every session), via a simple FNV-1a
-    /// hash of the lowercased text rather than assignment order, so it
-    /// doesn't shift depending on typing order or which terms are active.
-    /// The `highlight_*` colors are kept apart from green/red/yellow/orange,
-    /// which already carry pass/fail/warn meaning — a term-colored hostname
-    /// shouldn't read as a status indicator.
-    pub fn term_color(term: &str) -> Color {
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for b in term.trim().to_lowercase().bytes() {
-            hash ^= b as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
+    /// Highlight colors for the terms of one search: each distinct term
+    /// (ignoring case) takes the next color in the order the terms were
+    /// typed, so terms of one search only share a color past the palette's
+    /// six. The `highlight_*` colors come first; green/red/yellow/orange are
+    /// left out, as they already carry pass/fail/warn meaning — a
+    /// term-colored hostname shouldn't read as a status indicator.
+    pub fn term_colors<'a>(terms: impl IntoIterator<Item = &'a str>) -> std::collections::HashMap<String, Color> {
+        let palette = [highlight_1(), highlight_2(), highlight_3(), highlight_4(), cyan(), purple()];
+        let mut colors = std::collections::HashMap::new();
+        for term in terms {
+            let key = term.trim().to_lowercase();
+            if !key.is_empty() && !colors.contains_key(&key) {
+                let color = palette[colors.len() % palette.len()];
+                colors.insert(key, color);
+            }
         }
-        let palette = [highlight_1(), highlight_2(), highlight_3(), highlight_4()];
-        palette[(hash as usize) % palette.len()]
+        colors
+    }
+
+    /// A term's color from `term_colors`.
+    pub fn term_color_in(colors: &std::collections::HashMap<String, Color>, term: &str) -> Color {
+        colors.get(&term.trim().to_lowercase()).copied().unwrap_or_else(highlight_1)
     }
 }
 
 /// Colors every occurrence of any `keywords` entry within `text`, each
-/// keyword getting its own stable `color::term_color`; overlapping matches
+/// keyword in its own color (`color::term_colors`); overlapping matches
 /// keep the earlier (by start position) keyword's color rather than
-/// splitting further. Shared by the Event Sniffer's keyword highlighting and
-/// the Events list's filter-term highlighting so both stay visually
-/// consistent — the same term is always the same color in both places.
+/// splitting further. Used for the Events list's filter terms.
 pub fn highlight_keywords(text: &str, keywords: &[String]) -> Vec<Span<'static>> {
-    if keywords.is_empty() {
-        return vec![Span::styled(text.to_string(), Style::default().fg(color::main_fg()))];
-    }
     let lower_text = text.to_lowercase();
+    let colors = color::term_colors(keywords.iter().map(String::as_str));
     let mut matches: Vec<(usize, usize, Color)> = Vec::new();
     for kw in keywords {
         if kw.is_empty() { continue; }
         let lower_kw = kw.to_lowercase();
-        let kw_color = color::term_color(kw);
+        let kw_color = color::term_color_in(&colors, kw);
         let mut start = 0;
         while let Some(pos) = lower_text[start..].find(&lower_kw) {
             let abs_start = start + pos;
@@ -218,6 +221,37 @@ pub fn highlight_keywords(text: &str, keywords: &[String]) -> Vec<Span<'static>>
             start = abs_end;
         }
     }
+    colored_ranges(text, matches)
+}
+
+/// A text input's `prefix` and content with its cursor: the character under
+/// it, or a space past the end, in reverse video (readable in any theme).
+pub fn input_spans(prefix: &str, text: &str, cursor: Option<usize>, style: Style) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let at = cursor.unwrap_or(chars.len()).min(chars.len());
+    let under = chars.get(at).map_or_else(|| " ".to_string(), |c| c.to_string());
+    vec![
+        Span::styled(format!("{prefix}{}", chars[..at].iter().collect::<String>()), style),
+        Span::styled(under, style.add_modifier(Modifier::REVERSED)),
+        Span::styled(chars.get(at + 1..).unwrap_or_default().iter().collect::<String>(), style),
+    ]
+}
+
+/// `highlight_keywords` for the Event Sniffer's terms: each minion, keyword
+/// or regex match in its term's color (`color::term_colors`, in the order of
+/// the terms).
+pub fn highlight_terms(text: &str, terms: &[crate::sniff::SniffTerm]) -> Vec<Span<'static>> {
+    let colors = color::term_colors(terms.iter().map(|t| t.color_key()));
+    let matches = terms.iter()
+        .flat_map(|t| {
+            let c = color::term_color_in(&colors, t.color_key());
+            t.find_in(text).into_iter().map(move |(s, e)| (s, e, c))
+        })
+        .collect();
+    colored_ranges(text, matches)
+}
+
+fn colored_ranges(text: &str, mut matches: Vec<(usize, usize, Color)>) -> Vec<Span<'static>> {
     if matches.is_empty() {
         return vec![Span::styled(text.to_string(), Style::default().fg(color::main_fg()))];
     }
@@ -629,16 +663,22 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     if app.sniffer_input_active {
-        let cursor = if app.sniffer_input_text.len().is_multiple_of(2) { '|' } else { ' ' };
         let k1 = key::render("Esc", "Cancel");
         let k2 = key::render("Enter", "Start");
         let mut all_spans: Vec<Span<'static>> = Vec::new();
         all_spans.extend(k1);
         all_spans.extend(k2);
-        all_spans.push(Span::styled(
-            format!("  Minion IDs (comma-separated): {} {}", app.sniffer_input_text, cursor),
+        all_spans.extend(input_spans(
+            "  Sniff for (minion, glob, keyword or /regex/, comma-separated): ",
+            &app.sniffer_input_text,
+            app.input_cursor,
             Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
         ));
+        if let Some(ref err) = app.sniffer_input_error {
+            all_spans.push(Span::styled(format!("  \u{2717} {err}"), Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
+        } else if app.sniffer_input_text.is_empty() {
+            all_spans.push(Span::styled("  e.g. web-*, nginx, /ret/(db|web)\\d+/i  \u{00B7}  F1: examples", Style::default().fg(color::inactive_fg())));
+        }
         let paragraph = Paragraph::new(Line::from(all_spans))
             .style(Style::default().bg(color::bar_bg()));
         f.render_widget(paragraph, area);
@@ -652,10 +692,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         ];
         let mut all_spans: Vec<Span<'static>> = Vec::new();
         for s in spans { all_spans.extend(s); }
-        all_spans.push(Span::styled(
-            format!("  filter: /{} {}", app.filter_text, if app.filter_text.len().is_multiple_of(2) { '|' } else { ' ' }),
-            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
-        ));
+        all_spans.extend(input_spans("  filter: /", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)));
         let paragraph = Paragraph::new(Line::from(all_spans))
             .style(Style::default().bg(color::bar_bg()));
         f.render_widget(paragraph, area);
@@ -868,7 +905,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`Esc`", action: "Exit scroll mode" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "Jump to start/end of output (scroll mode)" },
         Shortcut { tab: "", key: "`t`", action: "Toggle raw JSON / pretty view (event detail)" },
-        Shortcut { tab: "", key: "`h`", action: "Edit keyword filter (sniffer)" },
+        Shortcut { tab: "", key: "`h`", action: "Show only events matching keywords or `/regex/` terms (sniffer)" },
         Shortcut { tab: "", key: "`p`", action: "Pause/resume (sniffer)" },
         Shortcut { tab: "", key: "`g`", action: "Fetch grains for this minion (minion detail, admin mode only)" },
     ]),
@@ -954,13 +991,56 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         let bar = Rect { y: inner.y + inner.height.saturating_sub(1), height: 1.min(inner.height), ..inner };
         f.render_widget(Clear, bar);
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("  Search: {}_", app.help_search),
+            Paragraph::new(Line::from(input_spans(
+                "  Search: ",
+                &app.help_search,
+                app.input_cursor,
                 Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
             ))).style(Style::default().bg(color::popup_bg())),
             bar,
         );
     }
+}
+
+/// Heading of the help section `F1` jumps to from the sniffer's prompts.
+pub const SNIFFER_HELP_TITLE: &str = "Event Sniffer terms";
+
+/// The help line holding a section's heading.
+pub fn help_section_line(title: &str) -> Option<usize> {
+    help_lines().iter().position(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim() == title)
+}
+
+/// What can be typed when starting the sniffer (`n`) or narrowing it (`h`),
+/// one example per kind of term.
+fn sniffer_help_lines() -> Vec<Line<'static>> {
+    let rows: [(&str, &str, &str); 7] = [
+        ("minion", "web01", "its events, returns and the jobs targeting it"),
+        ("glob", "web-*  db?", "the same for each known minion it matches"),
+        ("keyword", "nginx", "anywhere in the tag or JSON, any case"),
+        ("regex", r"/salt/job/\d+/ret/db\d+/", "a tag or JSON line matching it"),
+        ("regex (i)", "/error|timed out/i", "the same, ignoring case"),
+        ("several", "web-*, nginx, /fail(ed)?/i", "any of the terms matches"),
+        ("h (narrow)", "/rocky9-1[0-9]/, timeout", "in a running sniffer: show only matches"),
+    ];
+    let kind_w = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
+    let example_w = rows.iter().map(|r| r.1.chars().count()).max().unwrap_or(0);
+    let note = |text: &str| Line::from(Span::styled(format!("  {text}"), Style::default().fg(color::inactive_fg())));
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(format!("  {SNIFFER_HELP_TITLE}"), Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        note("n on Events starts the sniffer; it captures events matching any term."),
+    ];
+    for (kind, example, what) in rows {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {kind:<kind_w$}  "), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{example:<example_w$}  "), Style::default().fg(color::cyan())),
+            Span::styled(what.to_string(), Style::default().fg(color::main_fg())),
+        ]));
+    }
+    lines.push(note("Keywords and regexes match the tag and pretty JSON line by line."));
+    lines.push(note("Inside /…/, commas and slashes belong to the regex. Empty h shows all."));
+    lines.push(note("Each term colors its matches; an invalid regex shows its error."));
+    lines
 }
 
 fn help_lines() -> Vec<Line<'static>> {
@@ -984,6 +1064,7 @@ fn help_lines() -> Vec<Line<'static>> {
             lines.push(Line::from(spans));
         }
     }
+    lines.extend(sniffer_help_lines());
     lines.extend([
         Line::from(""),
         Line::from(Span::styled("  Dashboard KPIs", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
@@ -1054,6 +1135,16 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    #[test]
+    fn term_colors_differ_within_a_search_until_the_palette_runs_out() {
+        let colors = color::term_colors(["ubuntu22", "ubuntu24", "UBUNTU22", "ubuntu26"]);
+        assert_eq!(colors.len(), 3);
+        let c = |t| color::term_color_in(&colors, t);
+        assert!(c("ubuntu22") != c("ubuntu24") && c("ubuntu24") != c("ubuntu26") && c("ubuntu22") != c("ubuntu26"));
+        let many = color::term_colors(["a", "b", "c", "d", "e", "f", "g"]);
+        assert_eq!(color::term_color_in(&many, "g"), color::term_color_in(&many, "a"));
+    }
 
     #[test]
     fn every_help_shortcut_is_a_readme_row() {
