@@ -9,17 +9,17 @@ impl App {
     fn open_help(&mut self) {
         self.show_help = true;
         self.help_scroll = 0;
-        self.help_whats_new = self.upgraded_from.take().is_some();
+        self.help_page = if self.upgraded_from.take().is_some() { HelpPage::WhatsNew } else { HelpPage::Keys };
         self.help_search.clear();
         self.help_searching = false;
         self.help_search_focus = None;
     }
 
-    /// Opens help on its key page, scrolled to the section titled `title`.
+    /// Opens help on its Guide page, scrolled to the section titled `title`.
     fn open_help_at(&mut self, title: &str) {
         self.open_help();
-        self.help_whats_new = false;
-        self.help_scroll = crate::ui::help_section_line(title).unwrap_or(0) as u16;
+        self.help_page = HelpPage::Guide;
+        self.help_scroll = crate::ui::guide_section_line(title).unwrap_or(0) as u16;
     }
 
     fn handle_help_key(&mut self, code: KeyCode) {
@@ -52,9 +52,9 @@ impl App {
                 self.help_search_focus = None;
             }
             KeyCode::Char('n') | KeyCode::Char('N') => self.step_help_match(code == KeyCode::Char('n')),
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right | KeyCode::Char('w') | KeyCode::Char('W') => {
-                self.show_help_page(!self.help_whats_new);
-            }
+            KeyCode::Tab | KeyCode::Right => self.show_help_page(self.help_page.step(true)),
+            KeyCode::BackTab | KeyCode::Left => self.show_help_page(self.help_page.step(false)),
+            KeyCode::Char('w') | KeyCode::Char('W') => self.show_help_page(HelpPage::WhatsNew),
             KeyCode::Up | KeyCode::Char('k') => self.help_scroll = self.help_scroll.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => self.help_scroll = self.help_scroll.saturating_add(1),
             KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
@@ -65,14 +65,14 @@ impl App {
         }
     }
 
-    fn show_help_page(&mut self, whats_new: bool) {
-        if self.help_whats_new == whats_new {
+    fn show_help_page(&mut self, page: HelpPage) {
+        if self.help_page == page {
             return;
         }
-        self.help_whats_new = whats_new;
+        self.help_page = page;
         self.help_scroll = 0;
         self.help_search_focus = None;
-        if whats_new {
+        if page == HelpPage::WhatsNew {
             self.upgraded_from = None;
         }
     }
@@ -1341,9 +1341,9 @@ impl App {
             return false;
         }
         if self.show_help {
-            if let Some(&(_, _, _, whats_new)) = self.help_page_hits.iter().find(|&&(y, x0, x1, _)| y == row && (x0..x1).contains(&col)) {
+            if let Some(&(_, _, _, page)) = self.help_page_hits.iter().find(|&&(y, x0, x1, _)| y == row && (x0..x1).contains(&col)) {
                 if !self.help_searching {
-                    self.show_help_page(whats_new);
+                    self.show_help_page(page);
                 }
             }
             return false;

@@ -483,7 +483,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Help overlay
     if app.show_help {
         dim_background(f, dim);
-        let help_area = detail_popup::centered_rect(60, 65, f.area());
+        // The same size as Job Detail, the largest popup.
+        let help_area = detail_popup::centered_rect(85, 85, f.area());
         f.render_widget(Clear, help_area);
         draw_help_overlay(f, help_area, app);
     }
@@ -842,7 +843,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`Esc`", action: "Close popup / help" },
         Shortcut { tab: "", key: "`/`", action: "Filter (current tab)" },
         Shortcut { tab: "", key: "`a`", action: "Toggle admin mode" },
-        Shortcut { tab: "", key: "`?` / `F1`", action: "Help overlay; `Tab` switches to What's new (the changelog)" },
+        Shortcut { tab: "", key: "`?` / `F1`", action: "Help overlay; `Tab` cycles its pages: Keys, Guide (filter, search and sniffer syntax, panel notes) and What's new (the changelog)" },
         Shortcut { tab: "", key: "`F2`", action: "Toggle mouse mode" },
         Shortcut { tab: "", key: "`F3`", action: "Open Config Editor" },
         Shortcut { tab: "", key: "`+`/`-`", action: "Adjust refresh interval" },
@@ -904,36 +905,41 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
 ];
 
 fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
-    let whats_new = app.help_whats_new;
-    let page = |name: &'static str, active: bool| if active {
-        Span::styled(format!(" {name} "), Style::default().fg(color::title()).add_modifier(Modifier::BOLD))
-    } else {
-        Span::styled(format!(" {name} "), Style::default().fg(color::inactive_fg()))
-    };
-    let pages = Line::from(vec![
-        Span::styled("\u{2524}", Style::default().fg(color::border_focus())),
-        page("Keys", !whats_new),
-        Span::styled("\u{2502}", Style::default().fg(color::border_focus())),
-        page("What's new", whats_new),
-        Span::styled("\u{251C}", Style::default().fg(color::border_focus())),
-    ]);
-    // A left-aligned title starts right after the corner.
-    let mut x = area.x + 1;
+    use crate::app::HelpPage;
+    let border = Style::default().fg(color::border_focus());
+    // `┤ Keys ├┤ Guide ├┤ What's new ├` like the hints in the border, each
+    // label clickable. A left-aligned title starts right after the corner.
+    let mut spans = vec![Span::styled("\u{2524}", border)];
+    let mut x = area.x + 2;
     app.help_page_hits.clear();
-    for (i, span) in pages.spans.iter().enumerate() {
-        let w = span.width() as u16;
-        if i == 1 || i == 3 {
-            app.help_page_hits.push((area.y, x, x + w, i == 3));
+    for (i, page) in HelpPage::ALL.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("\u{251C}\u{2524}", border));
+            x += 2;
         }
+        let label = format!(" {} ", page.title());
+        let w = label.chars().count() as u16;
+        app.help_page_hits.push((area.y, x, x + w, page));
         x += w;
+        spans.push(if page == app.help_page {
+            Span::styled(label, Style::default().fg(color::title()).add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled(label, Style::default().fg(color::inactive_fg()))
+        });
     }
+    spans.push(Span::styled("\u{251C}", border));
+    let pages = Line::from(spans);
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::border_focus()))
         .style(Style::default().bg(color::popup_bg()))
         .title_top(pages.left_aligned());
     let inner = block.inner(area);
-    let lines = if whats_new { whats_new::lines(inner.width.saturating_sub(1) as usize) } else { help_lines() };
+    let lines = match app.help_page {
+        HelpPage::Keys => keys_help_lines(),
+        HelpPage::Guide => guide_help_lines(),
+        HelpPage::WhatsNew => whats_new::lines(inner.width.saturating_sub(1) as usize),
+    };
     if std::mem::take(&mut app.help_search_jump) {
         let (_, matches) = detail_popup::highlight_matches(lines.clone(), &app.help_search, None);
         if let Some(i) = crate::app::step_match(&matches, None, app.help_scroll as usize, true) {
@@ -946,7 +952,6 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     let matches = &app.help_search_matches;
     let focus = app.help_search_focus.filter(|&i| i < matches.len());
 
-    let other = if whats_new { "keys" } else { "what's new" };
     let hints = if app.help_searching {
         vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())]
     } else {
@@ -954,7 +959,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         if !matches.is_empty() {
             h.push(("n/N", "next/prev".to_string()));
         }
-        h.push(("Tab", other.to_string()));
+        h.push(("Tab", "next page".to_string()));
         h.push(("Esc", if app.help_search.is_empty() { "close" } else { "clear search" }.to_string()));
         h
     };
@@ -997,9 +1002,9 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
 /// Heading of the help section `F1` jumps to from the sniffer's prompts.
 pub const SNIFFER_HELP_TITLE: &str = "Event Sniffer terms";
 
-/// The help line holding a section's heading.
-pub fn help_section_line(title: &str) -> Option<usize> {
-    help_lines().iter().position(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim() == title)
+/// The help Guide page's line holding a section's heading.
+pub fn guide_section_line(title: &str) -> Option<usize> {
+    guide_help_lines().iter().position(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim() == title)
 }
 
 /// A help section explaining a kind of input: a heading, an intro line, one
@@ -1039,6 +1044,7 @@ fn filter_help_lines() -> Vec<Line<'static>> {
         &[
             "Text that isn't a complete /…/ is plain, so /etc/salt/minion finds the path.",
             "Filter terms get a color each; search matches are tinted, the current one solid.",
+            "Job Cache filters on the master: globs match the target, regexes use Python's re.",
         ],
     )
 }
@@ -1066,10 +1072,11 @@ fn sniffer_help_lines() -> Vec<Line<'static>> {
     )
 }
 
-fn help_lines() -> Vec<Line<'static>> {
+/// The help Keys page: every keyboard shortcut, grouped.
+fn keys_help_lines() -> Vec<Line<'static>> {
     let key_style = Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD);
     let mut lines = vec![
-        Line::from(Span::styled("  Help", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("  Keys", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(Span::styled("  \u{2500}".to_string() + &"\u{2500}".repeat(15), Style::default().fg(color::div_line()))),
         Line::from(Span::styled("  Most shortcuts are also shown live in the border of the panel they affect.", Style::default().fg(color::inactive_fg()))),
     ];
@@ -1087,6 +1094,17 @@ fn help_lines() -> Vec<Line<'static>> {
             lines.push(Line::from(spans));
         }
     }
+    lines
+}
+
+/// The help Guide page: the syntax of filters, searches and the sniffer,
+/// then notes on what some panels show.
+fn guide_help_lines() -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(Span::styled("  Guide", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("  \u{2500}".to_string() + &"\u{2500}".repeat(15), Style::default().fg(color::div_line()))),
+        Line::from(Span::styled("  What filters, searches and the sniffer take, and what some panels show.", Style::default().fg(color::inactive_fg()))),
+    ];
     lines.extend(filter_help_lines());
     lines.extend(sniffer_help_lines());
     lines.extend([
@@ -1159,6 +1177,21 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    #[test]
+    fn help_pages_split_keys_from_the_guide() {
+        use crate::app::HelpPage;
+        assert_eq!(HelpPage::Keys.step(true), HelpPage::Guide);
+        assert_eq!(HelpPage::WhatsNew.step(true), HelpPage::Keys);
+        assert_eq!(HelpPage::Keys.step(false), HelpPage::WhatsNew);
+        let text = |lines: Vec<Line>| lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("
+");
+        let keys = text(keys_help_lines());
+        let guide = text(guide_help_lines());
+        assert!(!keys.contains("Filter and search terms") && !keys.contains("Dashboard KPIs"));
+        assert!(guide.contains("Filter and search terms") && guide.contains(SNIFFER_HELP_TITLE) && guide.contains("Dashboard KPIs"));
+        assert!(guide_section_line(SNIFFER_HELP_TITLE).is_some());
+    }
 
     #[test]
     fn term_colors_differ_within_a_search_until_the_palette_runs_out() {

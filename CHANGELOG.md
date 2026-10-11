@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Job Cache filter: the same terms as every other filter (#149) — comma-separated (any may match), globs (`*`, `?`, `[…]`) matched against the target, and `/regex/` / `/regex/i` terms, applied by the agent across the whole cache (noted in help's **Filter and search terms**); it was a single plain substring
 - Regex terms in every list filter and in the output searches (#148): a filter term wrapped in slashes is a regex (`/web-0[1-5]$/`, `/…/i` ignores case; commas inside it belong to it) on Events, Minions, Live Jobs, Alerts, API, the minion activity popup and Job Detail's host filter — which also gains comma-separated and glob terms like the other filters. Job Detail's output search and the help search take a whole query wrapped in slashes as a regex. Text that isn't a complete `/…/` stays plain, so a filter being typed never errors and `/etc/salt/minion` still searches for the path. Help has a new **Filter and search terms** section with examples
 - Text inputs have a real cursor: every filter, search, sniffer prompt, Config Editor field and the save prompt shows where you are (the character under the cursor in reverse video) and edits there — `←`/`→`, `Home`/`End`, `Delete` and `Backspace` — instead of only appending and deleting at the end behind a `|` that blinked with the text length
 - Help: an **Event Sniffer terms** section with an example of each kind of term (minion, glob, keyword, regex, regex ignoring case, several, `h`); `F1` in the sniffer prompts opens help right at it
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Help has three pages, `Keys ├┤ Guide ├┤ What's new`: Keys lists only the shortcuts, and the new Guide page holds the filter, search and sniffer syntax and the notes on what panels show, which used to follow the shortcuts; `Tab` / `←→` cycle the pages, `w` jumps to What's new, and `F1` from the sniffer prompts opens the Guide at the sniffer section; the help window is the size of the Job Detail popup (85% of the screen) instead of 60% × 65%
 - Filter and sniffer highlighting gives each term of a search its own color in the order typed (six before any repeats, a glob's minions sharing their term's), instead of picking from four colors by a hash of the text, which often gave two terms of one search the same color
 
 ### Fixed

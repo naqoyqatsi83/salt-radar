@@ -133,7 +133,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 
 ### Jobs
 - Split panel: **Live Jobs** (left) from event bus and **Job Cache** (right) from Salt's master job cache
-- Job cache supports pagination (`[`/`]` adjust limit, `,`/`.` page navigation) and server-side search
+- Job cache supports pagination (`[`/`]` adjust limit, `,`/`.` page navigation) and server-side search — the same terms as the other filters (comma-separated, globs matched against the target, `/regex/`), applied by the agent across the whole cache; its regexes use Python's `re`, which differs slightly from the other filters' regex dialect (e.g. lookarounds work only here)
 - **Args** column shows what a job was run with: for `state.apply`/`state.sls` the requested formula (e.g. `apache.install`), `highstate` when none was named, and a dimmed `(test)` marker for `test=True` dry runs; for other functions their arguments (e.g. `uptime` for `cmd.run`). The `/` filter matches it too
 - Sortable and configurable columns (see [Columns and sorting](#columns-and-sorting)) — the Job Cache is sorted across the whole cache by the agent, not just the page on screen
 - Default order (no sort column picked): Live Jobs run oldest to newest by JID, tail-style like Events — the cursor stays on the newest job as new ones arrive, until you move it (`End` resumes following); the Job Cache lists newest first
@@ -287,7 +287,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | `Esc` | Close popup / help |
 | `/` | Filter (current tab) |
 | `a` | Toggle admin mode |
-| `?` / `F1` | Help overlay; `Tab` switches to What's new (the changelog) |
+| `?` / `F1` | Help overlay; `Tab` cycles its pages: Keys, Guide (filter, search and sniffer syntax, panel notes) and What's new (the changelog) |
 | `F2` | Toggle mouse mode |
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval |

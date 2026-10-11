@@ -117,9 +117,8 @@ pub struct App {
     pub show_help: bool,
     /// Help overlay scroll offset, clamped while drawing.
     pub help_scroll: u16,
-    /// The help overlay shows its "What's new" page (the changelog) instead
-    /// of the key reference.
-    pub help_whats_new: bool,
+    /// Which page the help overlay shows.
+    pub help_page: HelpPage,
     /// Help search, like Job Detail's output search: the query, whether it's
     /// being typed, the line of each match on the page shown (written back
     /// every render) and the occurrence `n`/`N` landed on.
@@ -130,9 +129,9 @@ pub struct App {
     /// Enter was pressed on a help search: the next draw, which has the
     /// matches for the final query, jumps to the first one.
     pub help_search_jump: bool,
-    /// Where the help overlay's `Keys │ What's new` labels were drawn:
-    /// (row, first column, end column, is "What's new"), for clicks.
-    pub help_page_hits: Vec<(u16, u16, u16, bool)>,
+    /// Where the help overlay's page labels were drawn: (row, first column,
+    /// end column, page), for clicks.
+    pub help_page_hits: Vec<(u16, u16, u16, HelpPage)>,
     /// The version that ran before this one, when salt-radar was upgraded
     /// since it last ran: the title bar points at "What's new" until it's
     /// been opened.
@@ -722,7 +721,7 @@ impl App {
             popup_tab: None,
             show_help: false,
             help_scroll: 0,
-            help_whats_new: false,
+            help_page: HelpPage::Keys,
             help_search: String::new(),
             help_searching: false,
             help_search_matches: Vec::new(),
@@ -2899,6 +2898,36 @@ fn glob_class(p: &[char], at: usize) -> Option<GlobClass> {
         }
     }
     None
+}
+
+/// The help overlay's pages, in the order `Tab` cycles through them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelpPage {
+    /// Keyboard shortcuts.
+    Keys,
+    /// Filter, search and sniffer syntax, and notes on what panels show.
+    Guide,
+    /// The changelog.
+    WhatsNew,
+}
+
+impl HelpPage {
+    pub const ALL: [HelpPage; 3] = [HelpPage::Keys, HelpPage::Guide, HelpPage::WhatsNew];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            HelpPage::Keys => "Keys",
+            HelpPage::Guide => "Guide",
+            HelpPage::WhatsNew => "What's new",
+        }
+    }
+
+    /// The next page (`forward`) or the previous one, wrapping around.
+    pub fn step(self, forward: bool) -> HelpPage {
+        let i = Self::ALL.iter().position(|&p| p == self).unwrap_or(0);
+        let n = Self::ALL.len();
+        Self::ALL[if forward { (i + 1) % n } else { (i + n - 1) % n }]
+    }
 }
 
 /// A filter term to highlight, in one color: its matches, or for a glob
