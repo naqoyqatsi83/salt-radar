@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Regex terms in every list filter and in the output searches (#148): a filter term wrapped in slashes is a regex (`/web-0[1-5]$/`, `/…/i` ignores case; commas inside it belong to it) on Events, Minions, Live Jobs, Alerts, API, the minion activity popup and Job Detail's host filter — which also gains comma-separated and glob terms like the other filters. Job Detail's output search and the help search take a whole query wrapped in slashes as a regex. Text that isn't a complete `/…/` stays plain, so a filter being typed never errors and `/etc/salt/minion` still searches for the path. Help has a new **Filter and search terms** section with examples
 - Text inputs have a real cursor: every filter, search, sniffer prompt, Config Editor field and the save prompt shows where you are (the character under the cursor in reverse video) and edits there — `←`/`→`, `Home`/`End`, `Delete` and `Backspace` — instead of only appending and deleting at the end behind a `|` that blinked with the text length
 - Help: an **Event Sniffer terms** section with an example of each kind of term (minion, glob, keyword, regex, regex ignoring case, several, `h`); `F1` in the sniffer prompts opens help right at it
 - Event Sniffer: capture by minions, globs, keywords or `/regex/` terms (#146) — the prompt now reads `Sniff for (minion, glob, keyword or /regex/, comma-separated)`; a term wrapped in slashes is a regex (`/…/i` ignores case, commas and slashes inside it are part of it) and an invalid one keeps the prompt open with the error shown; a term that names known minions (an ID or a glob) captures events from or about them, including jobs targeting them by `*`, glob, list or the master's resolved minion list; any other term is a keyword matched anywhere in the tag or data, ignoring case. Keywords and regexes match the event as shown (tag and pretty JSON, line by line), so every match is colored. The `h` filter takes the same keyword and `/regex/` terms, and empty input clears it
@@ -21,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Events filter: a glob's minions are highlighted in the glob's one color, instead of a color per minion that reshuffled every few seconds as the minion list refreshed
+- Globs take `[…]` character classes like Salt's own targeting (`debian[12]*`, `web-[1-3]`, `[!0-9]`), in every filter and the sniffer — the bracket was matched literally, so such a glob matched nothing
+- Show an active filter as `filter: web*` and a search as `search …: match 1 of 4` instead of wrapping them in slashes (`/web*/`), which now reads as a regex
+- Search highlighting finds matches that span differently colored parts of a line — `Result: False` in Salt's colored output was never found, as each colored piece was searched on its own
 - `/` on the Dashboard no longer opens a filter prompt whose input went nowhere — like Pulse, the Dashboard has nothing to filter
 - Event Sniffer: a glob such as `web-*` now captures those minions' events (it only colored them, capturing little more than jobs targeting `*`), capture ignores case like the coloring does, and a keyword no longer captures every job targeting `*`
 - Config Editor: `PgUp`/`PgDn` and `Home`/`End` work in the theme and other choice pickers and in the columns picker (paging by 5, like the settings list), and the choice picker's hints show its own keys instead of the settings list's

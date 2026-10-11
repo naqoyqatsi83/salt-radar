@@ -119,7 +119,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 ### Events
 - Live event stream from the Salt event bus (via ZMQ)
 - Full date/time in local and UTC columns, plus an optional Minion column (the event's minion ID)
-- Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax. Each term of the filter is colored in its own color, in the order typed, from the theme's highlight palette (six colors before any repeat)
+- Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax, or a regex wrapped in slashes (`/web-0[1-5]$/`, `/…/i` ignores case; a regex is matched against the event's pretty JSON line by line). Each term of the filter is colored in its own color, in the order typed, from the theme's highlight palette (six colors before any repeat)
 - Event detail popup:
   - `t` toggles between raw JSON and a **pretty view** for job-return events — the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output (same subprocess call Job Detail uses), so formatting and colors are authoritative Salt output, not an approximation. Falls back to a client-side rendering only when no live fetch is possible (non-job-return events) or after a fetch failure/timeout
   - Copy to clipboard (`y` = tag/timestamp + body, `Y` = body only) matches whatever's currently on screen — pretty or raw
@@ -212,7 +212,7 @@ If DISPLAY and XAUTHORITY can't be resolved, a transient yellow hint is shown in
 ### Everywhere
 - **Color themes** — btop++-style `.theme` files (see below); the screen behind any popup is dimmed so the popup stands out — how strongly is `popup_dim_pct` in `[ui]` (default 70%, `0` turns it off)
 - **Clipboard integration** — tmux load-buffer + xclip via X11 forwarding. DISPLAY and XAUTHORITY are auto-resolved from the process environment or the tmux session's global environment — no manual configuration needed even when running under `sudo`
-- Filter-as-you-type with `/` on all list tabs — each tab keeps its own filter independently, comma-separated terms (each optionally a glob) are OR'd together, and matched terms are consistently colored
+- Filter-as-you-type with `/` on all list tabs — each tab keeps its own filter independently, comma-separated terms (each optionally a glob, or a `/regex/`) are OR'd together, and matched terms are colored, each in its own color; text that isn't a complete `/…/` is plain, so a filter being typed never errors. Job Detail's output search and the help search take a whole-query `/regex/` the same way (`/etc/salt/minion` stays a plain path search), and a match may span differently colored parts of a line
 - Keyboard-driven navigation with `?` for help
 
 ## Installation

@@ -205,22 +205,14 @@ pub mod color {
 /// keyword in its own color (`color::term_colors`); overlapping matches
 /// keep the earlier (by start position) keyword's color rather than
 /// splitting further. Used for the Events list's filter terms.
-pub fn highlight_keywords(text: &str, keywords: &[String]) -> Vec<Span<'static>> {
-    let lower_text = text.to_lowercase();
-    let colors = color::term_colors(keywords.iter().map(String::as_str));
-    let mut matches: Vec<(usize, usize, Color)> = Vec::new();
-    for kw in keywords {
-        if kw.is_empty() { continue; }
-        let lower_kw = kw.to_lowercase();
-        let kw_color = color::term_color_in(&colors, kw);
-        let mut start = 0;
-        while let Some(pos) = lower_text[start..].find(&lower_kw) {
-            let abs_start = start + pos;
-            let abs_end = abs_start + kw.len();
-            matches.push((abs_start, abs_end, kw_color));
-            start = abs_end;
-        }
-    }
+pub fn highlight_keywords(text: &str, terms: &[crate::app::HighlightTerm]) -> Vec<Span<'static>> {
+    let colors = color::term_colors(terms.iter().map(|t| t.term.as_str()));
+    let matches = terms.iter()
+        .flat_map(|t| {
+            let c = color::term_color_in(&colors, &t.term);
+            t.ranges(text).into_iter().map(move |(s, e)| (s, e, c))
+        })
+        .collect();
     colored_ranges(text, matches)
 }
 
@@ -692,7 +684,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         ];
         let mut all_spans: Vec<Span<'static>> = Vec::new();
         for s in spans { all_spans.extend(s); }
-        all_spans.extend(input_spans("  filter: /", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)));
+        all_spans.extend(input_spans("  filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)));
         let paragraph = Paragraph::new(Line::from(all_spans))
             .style(Style::default().bg(color::bar_bg()));
         f.render_widget(paragraph, area);
@@ -764,9 +756,9 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 spans.push(Span::styled(format!(" {}/{} ", cur, total), Style::default().fg(color::cyan())));
             }
             if app.cache_focus && !app.cache_filter_text.is_empty() {
-                spans.push(Span::styled(format!(" filtered: /{}/ ", app.cache_filter_text), Style::default().fg(color::yellow())));
+                spans.push(Span::styled(format!(" filter: {} ", app.cache_filter_text), Style::default().fg(color::yellow())));
             } else if !app.cache_focus && !app.filter_text_for(Tab::Jobs).is_empty() {
-                spans.push(Span::styled(format!(" filtered: /{}/ ", app.filter_text_for(Tab::Jobs)), Style::default().fg(color::yellow())));
+                spans.push(Span::styled(format!(" filter: {} ", app.filter_text_for(Tab::Jobs)), Style::default().fg(color::yellow())));
             }
         }
         _ => {
@@ -788,7 +780,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 _ => "",
             };
             if !active_filter.is_empty() {
-                spans.push(Span::styled(format!(" filtered: /{}/ ", active_filter), Style::default().fg(color::yellow())));
+                spans.push(Span::styled(format!(" filter: {} ", active_filter), Style::default().fg(color::yellow())));
             }
         }
     }
@@ -975,7 +967,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
             (None, n) => format!("{n} matches"),
         };
         block = block.title_top(Line::from(Span::styled(
-            format!(" /{}: {} ", app.help_search, status),
+            format!(" search {}: {} ", app.help_search, status),
             Style::default().fg(if matches.is_empty() { color::red() } else { color::yellow() }),
         )).right_aligned());
     }
@@ -1010,25 +1002,16 @@ pub fn help_section_line(title: &str) -> Option<usize> {
     help_lines().iter().position(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim() == title)
 }
 
-/// What can be typed when starting the sniffer (`n`) or narrowing it (`h`),
-/// one example per kind of term.
-fn sniffer_help_lines() -> Vec<Line<'static>> {
-    let rows: [(&str, &str, &str); 7] = [
-        ("minion", "web01", "its events, returns and the jobs targeting it"),
-        ("glob", "web-*  db?", "the same for each known minion it matches"),
-        ("keyword", "nginx", "anywhere in the tag or JSON, any case"),
-        ("regex", r"/salt/job/\d+/ret/db\d+/", "a tag or JSON line matching it"),
-        ("regex (i)", "/error|timed out/i", "the same, ignoring case"),
-        ("several", "web-*, nginx, /fail(ed)?/i", "any of the terms matches"),
-        ("h (narrow)", "/rocky9-1[0-9]/, timeout", "in a running sniffer: show only matches"),
-    ];
+/// A help section explaining a kind of input: a heading, an intro line, one
+/// `kind  example  meaning` row per kind of term, then notes.
+fn term_help_section(title: &str, intro: &str, rows: &[(&str, &str, &str)], notes: &[&str]) -> Vec<Line<'static>> {
     let kind_w = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
     let example_w = rows.iter().map(|r| r.1.chars().count()).max().unwrap_or(0);
     let note = |text: &str| Line::from(Span::styled(format!("  {text}"), Style::default().fg(color::inactive_fg())));
     let mut lines = vec![
         Line::from(""),
-        Line::from(Span::styled(format!("  {SNIFFER_HELP_TITLE}"), Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
-        note("n on Events starts the sniffer; it captures events matching any term."),
+        Line::from(Span::styled(format!("  {title}"), Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        note(intro),
     ];
     for (kind, example, what) in rows {
         lines.push(Line::from(vec![
@@ -1037,10 +1020,50 @@ fn sniffer_help_lines() -> Vec<Line<'static>> {
             Span::styled(what.to_string(), Style::default().fg(color::main_fg())),
         ]));
     }
-    lines.push(note("Keywords and regexes match the tag and pretty JSON line by line."));
-    lines.push(note("Inside /…/, commas and slashes belong to the regex. Empty h shows all."));
-    lines.push(note("Each term colors its matches; an invalid regex shows its error."));
+    lines.extend(notes.iter().map(|n| note(n)));
     lines
+}
+
+/// What the list filters (`/`) and the output / help searches take.
+fn filter_help_lines() -> Vec<Line<'static>> {
+    term_help_section(
+        "Filter and search terms",
+        "/ on a list filters it by comma-separated terms; a row matching any term stays.",
+        &[
+            ("plain", "nginx", "the text anywhere, any case"),
+            ("glob", "web-*  db?", "a whole minion ID, like Salt's targeting"),
+            ("regex", "/web-0[1-5]$/", "a regex; /…/i ignores case"),
+            ("several", "web-*, /^db-0[0-9]$/", "any of the terms matches"),
+            ("search", "/Result: (False|None)/", "output and help search: one query"),
+        ],
+        &[
+            "Text that isn't a complete /…/ is plain, so /etc/salt/minion finds the path.",
+            "Filter terms get a color each; search matches are tinted, the current one solid.",
+        ],
+    )
+}
+
+/// What can be typed when starting the sniffer (`n`) or narrowing it (`h`),
+/// one example per kind of term.
+fn sniffer_help_lines() -> Vec<Line<'static>> {
+    term_help_section(
+        SNIFFER_HELP_TITLE,
+        "n on Events starts the sniffer; it captures events matching any term.",
+        &[
+            ("minion", "web01", "its events, returns and the jobs targeting it"),
+            ("glob", "web-*  db?", "the same for each known minion it matches"),
+            ("keyword", "nginx", "anywhere in the tag or JSON, any case"),
+            ("regex", r"/salt/job/\d+/ret/db\d+/", "a tag or JSON line matching it"),
+            ("regex (i)", "/error|timed out/i", "the same, ignoring case"),
+            ("several", "web-*, nginx, /fail(ed)?/i", "any of the terms matches"),
+            ("h (narrow)", "/rocky9-1[0-9]/, timeout", "in a running sniffer: show only matches"),
+        ],
+        &[
+            "Keywords and regexes match the tag and pretty JSON line by line.",
+            "Inside /…/, commas and slashes belong to the regex. Empty h shows all.",
+            "Each term colors its matches; an invalid regex shows its error.",
+        ],
+    )
 }
 
 fn help_lines() -> Vec<Line<'static>> {
@@ -1064,6 +1087,7 @@ fn help_lines() -> Vec<Line<'static>> {
             lines.push(Line::from(spans));
         }
     }
+    lines.extend(filter_help_lines());
     lines.extend(sniffer_help_lines());
     lines.extend([
         Line::from(""),

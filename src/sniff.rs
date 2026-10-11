@@ -1,6 +1,11 @@
-//! Event sniffer terms, parsed from the comma-separated input that starts a
-//! sniff (or narrows one with `h`): minion IDs and globs, plain keywords and
-//! `/regex/` terms.
+//! Filter and search terms. The event sniffer's terms, parsed from the
+//! comma-separated input that starts a sniff (or narrows one with `h`):
+//! minion IDs and globs, plain keywords and `/regex/` terms. Plus the
+//! lenient versions every list filter and output search use, where text
+//! that isn't a complete `/…/` regex is simply plain text.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use regex::{Regex, RegexBuilder};
 use serde_json::Value;
@@ -53,6 +58,107 @@ fn find_ignore_case(text: &str, needle: &str) -> Vec<(usize, usize)> {
 fn ends_regex(rest: &[char]) -> bool {
     let rest = rest.strip_prefix(&['i']).unwrap_or(rest);
     rest.iter().find(|c| !c.is_whitespace()).is_none_or(|&c| c == ',')
+}
+
+/// Splits a list filter into its comma-separated terms like the sniffer
+/// does (a comma inside a `/…/` term belongs to it), but leniently: a `/`
+/// that never closes is plain text, so `/web-0` filters literally while
+/// it's being typed. Terms are returned as typed (a regex with its slashes
+/// and flag), for `regex_term` and the plain matchers.
+pub fn filter_terms(input: &str) -> Vec<&str> {
+    let b = input.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b',' || b[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        if b[i] == b'/' {
+            let mut j = i + 1;
+            let mut end = None;
+            while j < b.len() {
+                match b[j] {
+                    b'\\' => j += 2,
+                    b'/' if ends_regex_bytes(&b[j + 1..]) => {
+                        end = Some(j + 1);
+                        break;
+                    }
+                    _ => j += 1,
+                }
+            }
+            if let Some(mut k) = end {
+                if b.get(k) == Some(&b'i') {
+                    k += 1;
+                }
+                out.push(&input[start..k]);
+                i = k;
+                continue;
+            }
+        }
+        let end = input[start..].find(',').map_or(input.len(), |p| start + p);
+        let term = input[start..end].trim();
+        if !term.is_empty() {
+            out.push(term);
+        }
+        i = end;
+    }
+    out
+}
+
+fn ends_regex_bytes(rest: &[u8]) -> bool {
+    let rest = rest.strip_prefix(b"i").unwrap_or(rest);
+    rest.iter().find(|c| !c.is_ascii_whitespace()).is_none_or(|&c| c == b',')
+}
+
+thread_local! {
+    static REGEXES: RefCell<HashMap<String, Option<Regex>>> = RefCell::new(HashMap::new());
+}
+
+/// `term` compiled as a regex when it's a complete `/…/` or `/…/i` (`\/` is a
+/// literal slash), or `None` when it's plain text or doesn't compile — then
+/// it's matched as plain text. Cached, as filters run per event and per
+/// frame.
+pub fn regex_term(term: &str) -> Option<Regex> {
+    let t = term.trim();
+    if !t.starts_with('/') || t.len() < 3 {
+        return None;
+    }
+    REGEXES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(re) = cache.get(t) {
+            return re.clone();
+        }
+        let (body, ignore_case) = match t.strip_suffix("/i") {
+            Some(b) if b.len() > 1 => (b, true),
+            _ => (t.strip_suffix('/').unwrap_or(""), false),
+        };
+        let body = body.strip_prefix('/').unwrap_or("").replace("\\/", "/");
+        let re = (!body.is_empty())
+            .then(|| RegexBuilder::new(&body).case_insensitive(ignore_case).build().ok())
+            .flatten();
+        if cache.len() > 256 {
+            cache.clear();
+        }
+        cache.insert(t.to_string(), re.clone());
+        re
+    })
+}
+
+/// Byte ranges of `term`'s matches in `text`: a regex term's matches, or the
+/// term's case-insensitive occurrences.
+pub fn term_ranges(text: &str, term: &str) -> Vec<(usize, usize)> {
+    match regex_term(term) {
+        Some(re) => re.find_iter(text).filter(|m| !m.is_empty()).map(|m| (m.start(), m.end())).collect(),
+        None => find_ignore_case(text, &term.to_ascii_lowercase()),
+    }
+}
+
+/// An event's pretty-printed JSON lines — what regex terms are matched
+/// against, as that's how events are shown.
+pub fn pretty_json_lines(data: &Value) -> Vec<String> {
+    serde_json::to_string_pretty(data).unwrap_or_default().lines().map(String::from).collect()
 }
 
 enum RawTerm {
@@ -161,10 +267,7 @@ pub fn matches(terms: &[SniffTerm], evt: &SaltEvent) -> bool {
 }
 
 fn shown_lines<'a>(cache: &'a mut Option<Vec<String>>, evt: &SaltEvent) -> &'a [String] {
-    cache.get_or_insert_with(|| {
-        let json = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
-        std::iter::once(evt.tag.clone()).chain(json.lines().map(String::from)).collect()
-    })
+    cache.get_or_insert_with(|| std::iter::once(evt.tag.clone()).chain(pretty_json_lines(&evt.data)).collect())
 }
 
 /// An event from or about one of `ids`: sent by it, naming it in the tag, a
@@ -217,6 +320,26 @@ mod tests {
             SniffTerm::Keyword { text, .. } => format!("keyword {text}"),
             SniffTerm::Regex(re) => format!("regex {}", re.as_str()),
         }).collect()
+    }
+
+    #[test]
+    fn filter_terms_keep_regexes_whole_and_unclosed_slashes_plain() {
+        assert_eq!(filter_terms("web1, /a{1,3}/i ,db*"), ["web1", "/a{1,3}/i", "db*"]);
+        assert_eq!(filter_terms("/web-0, db"), ["/web-0", "db"]);
+        assert_eq!(filter_terms("/salt/job/\\d+/ret/"), ["/salt/job/\\d+/ret/"]);
+        assert!(filter_terms(" , ").is_empty());
+    }
+
+    #[test]
+    fn regex_term_compiles_only_complete_regexes() {
+        assert!(regex_term("/web-0[1-5]$/").unwrap().is_match("web-03"));
+        assert!(regex_term("/WEB/i").unwrap().is_match("web"));
+        assert!(regex_term("/a\\/b/").unwrap().is_match("a/b"));
+        for plain in ["web", "/etc/salt/minion", "//", "/i", "/[a-/"] {
+            assert!(regex_term(plain).is_none(), "{plain}");
+        }
+        assert_eq!(term_ranges("Web and web", "WEB"), [(0, 3), (8, 11)]);
+        assert_eq!(term_ranges("web-01 web-07", "/web-0[1-5]/"), [(0, 6)]);
     }
 
     #[test]

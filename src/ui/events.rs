@@ -75,14 +75,14 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
 
     // Filter bar
     if app.is_filtering {
-        let mut spans = super::input_spans(" /", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
+        let mut spans = super::input_spans(" filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
         spans.extend([
             Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
         ]);
         lines.push(Line::from(spans));
     } else if !app.applied_filter.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" /{}/ ", app.applied_filter), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" filter: {} ", app.applied_filter), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
         ]));
     }
@@ -120,9 +120,8 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
                     // this cell's text containing it — keep its plain color in
                     // that case instead of running it through the highlighter
                     // and getting an all-TEXT-colored cell that looks unstyled.
-                    let lower = padded.to_lowercase();
                     let has_hit = matches!(col, Column::Tag | Column::EventMinion)
-                        && filter_terms.iter().any(|t| lower.contains(&t.to_lowercase()));
+                        && filter_terms.iter().any(|t| !t.ranges(&padded).is_empty());
                     if has_hit {
                         spans.extend(super::highlight_keywords(&padded, &filter_terms));
                     } else {

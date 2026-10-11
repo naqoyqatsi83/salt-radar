@@ -968,7 +968,7 @@ fn draw_job_detail(
         .style(Style::default().bg(color::popup_bg()));
     if !return_filter.is_empty() && !return_is_filtering {
         left_block = left_block.title_bottom(Line::from(Span::styled(
-            format!(" /{}: {} ", return_filter, if shown_returns == 0 { "no matches".to_string() } else { format!("{} of {}", shown_returns, total_returns) }),
+            format!(" filter {}: {} ", return_filter, if shown_returns == 0 { "no matches".to_string() } else { format!("{} of {}", shown_returns, total_returns) }),
             Style::default().fg(if shown_returns == 0 { color::red() } else { color::yellow() }),
         )).left_aligned());
     }
@@ -1184,7 +1184,7 @@ fn draw_job_detail(
     let mut status_spans = Vec::new();
     if !search.is_empty() && !searching {
         status_spans.push(Span::styled(
-            format!(" /{}: {} ", search, if search_matches.is_empty() { "no matches".to_string() } else { position(search_focus, search_matches.len(), "match", "matches") }),
+            format!(" search {}: {} ", search, if search_matches.is_empty() { "no matches".to_string() } else { position(search_focus, search_matches.len(), "match", "matches") }),
             Style::default().fg(if search_matches.is_empty() { color::red() } else { color::yellow() }),
         ));
     }
@@ -1321,9 +1321,10 @@ impl ReturnsTable {
         let id_style = Style::default().fg(id_fg).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() });
         let shown = shorten_middle(id, id_w);
         let pad = id_w.saturating_sub(shown.chars().count());
-        let (id_line, _) = highlight_matches(vec![Line::from(Span::styled(shown, id_style))], filter, None);
+        let ranges = crate::app::filter_match_ranges(&shown, filter);
+        let id_line = style_ranges(Line::from(Span::styled(shown, id_style)), &ranges, |_| color::search_match());
         let mut spans = vec![Span::styled(format!(" {} ", if selected { "\u{25b6}" } else { " " }), id_style)];
-        spans.extend(id_line.into_iter().flat_map(|l| l.spans));
+        spans.extend(id_line.spans);
         spans.push(Span::raw(" ".repeat(pad + 2)));
 
         let Some(ret) = returned else {
@@ -1361,36 +1362,62 @@ impl ReturnsTable {
 /// one (counting from the top) more strongly, and returns the line of each
 /// occurrence, in order.
 pub(super) fn highlight_matches(lines: Vec<Line<'static>>, query: &str, current: Option<usize>) -> (Vec<Line<'static>>, Vec<usize>) {
-    if query.is_empty() {
+    if query.trim().is_empty() {
         return (lines, Vec::new());
     }
-    let q = query.to_ascii_lowercase();
+    // The whole query is one term: a `/regex/` when wrapped in slashes,
+    // otherwise plain text (a path like `/etc/salt/minion` included).
+    let query = query.trim();
     let mut matches = Vec::new();
     let out = lines.into_iter().enumerate().map(|(i, line)| {
-        let mut spans = Vec::with_capacity(line.spans.len());
-        for span in line.spans {
-            let lower = span.content.to_ascii_lowercase();
-            if !lower.contains(&q) {
-                spans.push(span);
-                continue;
-            }
-            let mut last = 0;
-            for (pos, _) in lower.match_indices(&q) {
-                if pos > last {
-                    spans.push(Span::styled(span.content[last..pos].to_string(), span.style));
-                }
-                let hl = if current == Some(matches.len()) { color::search_current() } else { color::search_match() };
-                spans.push(Span::styled(span.content[pos..pos + q.len()].to_string(), span.style.patch(hl)));
-                matches.push(i);
-                last = pos + q.len();
-            }
-            if last < span.content.len() {
-                spans.push(Span::styled(span.content[last..].to_string(), span.style));
-            }
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let ranges = crate::sniff::term_ranges(&text, query);
+        if ranges.is_empty() {
+            return line;
         }
-        Line { spans, ..line }
+        let first = matches.len();
+        matches.extend(std::iter::repeat_n(i, ranges.len()));
+        style_ranges(line, &ranges, |n| if current == Some(first + n) { color::search_current() } else { color::search_match() })
     }).collect();
     (out, matches)
+}
+
+/// Restyles the parts of `line` within `ranges` (byte offsets into the
+/// line's whole text, sorted, possibly overlapping) by patching each with
+/// `style(index of the range)`, splitting spans where needed, so a match can
+/// run across differently colored spans.
+pub(super) fn style_ranges(line: Line<'static>, ranges: &[(usize, usize)], style: impl Fn(usize) -> Style) -> Line<'static> {
+    let mut spans = Vec::with_capacity(line.spans.len() + ranges.len() * 2);
+    let mut offset = 0;
+    for span in line.spans {
+        let (start, end) = (offset, offset + span.content.len());
+        offset = end;
+        let mut cuts: Vec<(usize, usize, Option<usize>)> = Vec::new();
+        let mut pos = start;
+        for (n, &(rs, re)) in ranges.iter().enumerate() {
+            let (s, e) = (rs.max(pos), re.min(end));
+            if s >= e {
+                continue;
+            }
+            if s > pos {
+                cuts.push((pos, s, None));
+            }
+            cuts.push((s, e, Some(n)));
+            pos = e;
+        }
+        if cuts.is_empty() {
+            spans.push(span);
+            continue;
+        }
+        if pos < end {
+            cuts.push((pos, end, None));
+        }
+        for (s, e, hit) in cuts {
+            let text = span.content[s - start..e - start].to_string();
+            spans.push(Span::styled(text, hit.map_or(span.style, |n| span.style.patch(style(n)))));
+        }
+    }
+    Line { spans, ..line }
 }
 
 /// What the keyboard can do right now in the Job Detail popup. `n/N` and
@@ -1873,6 +1900,33 @@ mod tests {
         assert_eq!(col(&rows[0], "OK"), col(&rows[2], "NO RETURN"));
         assert_eq!(rows[0].len(), rows[1].len(), "count columns end at the same place: {:?}", rows);
         assert!(rows[1].ends_with("    3    0   105"), "{:?}", rows[1]);
+    }
+
+    #[test]
+    fn search_matches_across_colored_spans_and_takes_a_regex() {
+        let result = |v: &'static str| Line::from(vec![
+            Span::styled("Result: ", Style::default().fg(color::label_fg())),
+            Span::styled(v, Style::default().fg(color::red())),
+        ]);
+        let (out, m) = highlight_matches(vec![result("False")], "result: false", None);
+        assert_eq!(m, vec![0]);
+        let texts: Vec<&str> = out[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, ["Result: ", "False"]);
+        assert!(out[0].spans.iter().all(|s| s.style.bg == color::search_match().bg));
+        let (_, m) = highlight_matches(vec![result("False"), result("True"), result("None")], "/Result: (False|None)/", None);
+        assert_eq!(m, vec![0, 2]);
+        let (_, m) = highlight_matches(vec![Line::from("cat /etc/salt/minion")], "/etc/salt/minion", None);
+        assert_eq!(m, vec![0], "a path is plain text");
+    }
+
+    #[test]
+    fn style_ranges_splits_only_the_matched_part() {
+        let line = Line::from(vec![Span::raw("web-01"), Span::raw(" ok")]);
+        let out = style_ranges(line, &[(4, 8)], |_| color::search_match());
+        let texts: Vec<&str> = out.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, ["web-", "01", " o", "k"]);
+        assert_eq!(out.spans[0].style.bg, None);
+        assert_eq!(out.spans[3].style.bg, None);
     }
 
     #[test]
