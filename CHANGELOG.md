@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep the open popup when the Config Editor (`F3`) is opened over it: closing the editor returns to the popup as it was (selection, filter, scroll), and the popup keeps updating underneath; clicks no longer reach the tab behind the editor
+
 ## [0.7.6] - 2026-10-10
 
 ### Added

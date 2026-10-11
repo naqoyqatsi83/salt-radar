@@ -51,9 +51,6 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
         DetailPopup::MinionEvents { minion_id, selected } => {
             super::minion_events::draw_minion_events(f, f.area(), app, minion_id, *selected);
         }
-        DetailPopup::ConfigEditor(_) => {
-            super::config_editor::draw_config_editor(f, app);
-        }
         DetailPopup::ApiRequest(entry) => {
             let area = centered_rect(65, 40, f.area());
             f.render_widget(Clear, area);

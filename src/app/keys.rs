@@ -23,7 +23,7 @@ impl App {
         }
 
         // Config editor is a global overlay — handle it early regardless of tab
-        if matches!(self.detail_popup, Some(DetailPopup::ConfigEditor(_))) {
+        if self.config_editor.is_some() {
             return self.handle_config_editor_key(code);
         }
 
@@ -814,7 +814,6 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::ConfigEditor(_) => {}
             }
         }
         if let Some(text) = clipboard_text {
@@ -1279,6 +1278,10 @@ impl App {
     /// Content area = list tabs: select item by proportional position.
     pub fn handle_mouse_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
         let h = frame_size.height as usize;
+
+        if self.config_editor.is_some() || self.save_prompt.is_some() {
+            return false;
+        }
 
         // Popup showing — AdminConfirm and MinionEvents handle left-click
         if self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab) {

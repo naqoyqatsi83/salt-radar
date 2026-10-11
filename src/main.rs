@@ -150,6 +150,10 @@ fn main() -> io::Result<()> {
                                 // layout, so redraw before the next one.
                                 break;
                             }
+                            MouseEventKind::Down(MouseButton::Right) if app.config_editor.is_some() => {
+                                if app.handle_key(KeyCode::Esc) { break 'main; }
+                                need_redraw = true;
+                            }
                             MouseEventKind::Down(MouseButton::Right) => {
                                 app.detail_popup = None;
                                 // A sniffer, if any, isn't stashed anywhere -- it

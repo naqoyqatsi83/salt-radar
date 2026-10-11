@@ -108,6 +108,9 @@ pub struct App {
     // UI state
     pub last_frame_size: Rect,
     pub detail_popup: Option<DetailPopup>,
+    /// The Config Editor, a global overlay drawn over `detail_popup` so the
+    /// popup underneath comes back unchanged when the editor closes.
+    pub config_editor: Option<ConfigEditorState>,
     /// Tab where the current popup was opened (popup only shows on that tab)
     pub popup_tab: Option<Tab>,
     pub show_help: bool,
@@ -617,7 +620,6 @@ pub enum DetailPopup {
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
-    ConfigEditor(ConfigEditorState),
     MinionEvents { minion_id: String, selected: usize },
     ApiRequest(ApiLogEntry),
 }
@@ -689,6 +691,7 @@ impl App {
 
             last_frame_size: Rect::default(),
             detail_popup: None,
+            config_editor: None,
             popup_tab: None,
             show_help: false,
             help_scroll: 0,

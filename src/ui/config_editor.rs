@@ -8,10 +8,7 @@ use super::color;
 use super::detail_popup;
 
 pub fn draw_config_editor(f: &mut Frame, app: &App) {
-    let state = match app.detail_popup {
-        Some(crate::app::DetailPopup::ConfigEditor(ref s)) => s,
-        _ => return,
-    };
+    let Some(ref state) = app.config_editor else { return };
 
     let area = detail_popup::centered_rect(68, 70, f.area());
     f.render_widget(Clear, area);

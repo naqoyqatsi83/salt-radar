@@ -18,7 +18,6 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::app::DetailPopup;
 use crate::types::Tab;
 
 // ─── Theme colors ──────────────────────────────────────────────────────────
@@ -401,7 +400,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_title_frame(f, main_layout[0], app);
 
-    // A popup (including the globally-triggered Config Editor) steals focus
+    // A popup (or the globally-triggered Config Editor) steals focus
     // from whatever tab is behind it, so that tab's normally-always-bright
     // navigable panel should dim back to the same color as its non-navigable
     // neighbors instead of still reading as the focused element. `popup_tab`
@@ -409,14 +408,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // closes (closing just sets `detail_popup` back to `None`), so it must
     // be gated on `detail_popup.is_some()` too — otherwise a tab that ever
     // had a popup opened on it reads as permanently unfocused afterward.
-    let popup_active = app.detail_popup.is_some()
-        && (app.popup_tab == Some(app.current_tab) || matches!(app.detail_popup, Some(DetailPopup::ConfigEditor(_))));
+    let popup_active = app.detail_popup.is_some() && app.popup_tab == Some(app.current_tab);
     // The sniffer lives outside `detail_popup` (it keeps running when you
     // leave Events) so it isn't covered by `popup_active` above, but it
     // still overlays/steals focus from the Events tab whenever it's the
     // thing on screen there (i.e. no other Events-tab popup on top of it).
     let sniffer_active = !popup_active && app.current_tab == Tab::Events && app.sniffer.is_some();
-    let tab_focused = !popup_active && !sniffer_active && !app.show_help;
+    let tab_focused = !popup_active && !sniffer_active && !app.show_help && app.config_editor.is_none();
 
     let mut hits = Vec::new();
     match app.current_tab {
@@ -437,6 +435,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if popup_active || sniffer_active { dim_background(f, dim); }
     if popup_active { detail_popup::draw_detail_popup(f, app); }
     else if sniffer_active { detail_popup::draw_sniffer_overlay(f, app); }
+
+    if app.config_editor.is_some() {
+        dim_background(f, dim);
+        config_editor::draw_config_editor(f, app);
+    }
 
     // Help overlay
     if app.show_help {

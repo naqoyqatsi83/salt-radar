@@ -206,7 +206,7 @@ impl App {
     /// and revert on their own when the edit is cancelled or discarded.
     pub fn sync_theme(&mut self) {
         let mut wanted = (self.config.color_theme.clone(), self.config.theme_background);
-        if let Some(DetailPopup::ConfigEditor(ref s)) = self.detail_popup {
+        if let Some(ref s) = self.config_editor {
             let current = |label: &str| {
                 let i = s.fields.iter().position(|f| f.label == label)?;
                 if s.editing && s.selected == i {
@@ -231,7 +231,7 @@ impl App {
 
     pub(crate) fn open_columns_picker(&mut self, table: TableId) {
         self.open_config_editor();
-        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+        if let Some(ref mut s) = self.config_editor {
             if let Some(idx) = s.fields.iter().position(|f| f.label == table.config_key()) {
                 s.selected = idx;
                 s.input = s.fields[idx].label_value.clone();
@@ -253,7 +253,7 @@ impl App {
     pub(crate) fn open_config_editor(&mut self) {
         // Clone the current config into an editable state
         let cfg = &self.config;
-        self.detail_popup = Some(DetailPopup::ConfigEditor(ConfigEditorState {
+        self.config_editor = Some(ConfigEditorState {
             fields: vec![
                 ConfigField { label: "[salt]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
@@ -341,16 +341,15 @@ impl App {
             confirm_discard: false,
             themes: crate::config::theme_names(),
             browser: None,
-        }));
-        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+        });
+        if let Some(ref mut s) = self.config_editor {
             s.original = s.fields.iter().map(|f| f.label_value.clone()).collect();
         }
-        self.popup_tab = None; // global — works from any tab
     }
 
     pub(crate) fn save_config_from_editor(&mut self) -> Result<(), String> {
-        let fields = match self.detail_popup {
-            Some(DetailPopup::ConfigEditor(ref state)) => &state.fields,
+        let fields = match self.config_editor {
+            Some(ref state) => &state.fields,
             _ => return Err("No editor state".into()),
         };
         // Extract values by label
@@ -470,7 +469,7 @@ impl App {
 
     pub(crate) fn handle_config_editor_key(&mut self, code: KeyCode) -> bool {
         // --- Editing mode (borrow state) ---
-        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+        if let Some(ref mut s) = self.config_editor {
             if let Some(ref mut b) = s.browser {
                 let last = b.entries.len().saturating_sub(1);
                 let mut picked: Option<String> = None;
@@ -590,18 +589,18 @@ impl App {
                     match finish {
                         Some(true) if quick => match self.save_config_from_editor() {
                             Ok(()) => {
-                                self.detail_popup = None;
+                                self.config_editor = None;
                                 self.clipboard_msg = Some((" Columns saved ".into(), std::time::Instant::now()));
                             }
                             Err(e) => {
-                                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                                if let Some(ref mut s) = self.config_editor {
                                     s.save_error = Some(e);
                                 }
                             }
                         },
-                        Some(false) if quick => self.detail_popup = None,
+                        Some(false) if quick => self.config_editor = None,
                         Some(_) => {
-                            if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                            if let Some(ref mut s) = self.config_editor {
                                 s.editing = false;
                                 s.input.clear();
                             }
@@ -683,7 +682,7 @@ impl App {
         // --- Navigation / action mode (borrow state per arm, not function-level) ---
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                if let Some(ref mut s) = self.config_editor {
                     let mut new_sel = s.selected;
                     loop {
                         if new_sel == 0 { break; }
@@ -698,7 +697,7 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                if let Some(ref mut s) = self.config_editor {
                     let last = s.fields.len().saturating_sub(1);
                     let mut new_sel = s.selected;
                     loop {
@@ -715,7 +714,7 @@ impl App {
             }
             KeyCode::PageUp => {
                 for _ in 0..5 {
-                    if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    if let Some(ref mut s) = self.config_editor {
                         let mut new_sel = s.selected;
                         loop {
                             if new_sel == 0 { break; }
@@ -732,7 +731,7 @@ impl App {
             }
             KeyCode::PageDown => {
                 for _ in 0..5 {
-                    if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                    if let Some(ref mut s) = self.config_editor {
                         let last = s.fields.len().saturating_sub(1);
                         let mut new_sel = s.selected;
                         loop {
@@ -749,19 +748,19 @@ impl App {
                 }
             }
             KeyCode::Home => {
-                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                if let Some(ref mut s) = self.config_editor {
                     s.selected = 1;
                 }
             }
             KeyCode::End => {
-                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                if let Some(ref mut s) = self.config_editor {
                     s.selected = s.fields.len().saturating_sub(1);
                 }
             }
             KeyCode::Enter => {
                 // Determine action from field at current selection (immutable borrow)
-                let action = match self.detail_popup {
-                    Some(DetailPopup::ConfigEditor(ref s)) => {
+                let action = match self.config_editor {
+                    Some(ref s) => {
                         match s.fields.get(s.selected).map(|f| &f.kind) {
                             Some(ConfigFieldKind::SaveButton) => Some("save"),
                             Some(ConfigFieldKind::Str) | Some(ConfigFieldKind::U64) | Some(ConfigFieldKind::F64) | Some(ConfigFieldKind::Choice(_)) | Some(ConfigFieldKind::Order) | Some(ConfigFieldKind::Columns(_)) | Some(ConfigFieldKind::Theme) | Some(ConfigFieldKind::Path(_)) => {
@@ -775,13 +774,13 @@ impl App {
                 match action {
                     Some("save") => self.save_editor_and_close(),
                     Some("edit") => {
-                        let field_info = match self.detail_popup {
-                            Some(DetailPopup::ConfigEditor(ref s)) => {
+                        let field_info = match self.config_editor {
+                            Some(ref s) => {
                                 s.fields.get(s.selected).map(|f| (f.label_value.clone(), f.kind))
                             }
                             _ => None,
                         };
-                        if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                        if let Some(ref mut s) = self.config_editor {
                             if let Some((val, kind)) = field_info {
                                 if let ConfigFieldKind::Path(path_kind) = kind {
                                     s.browser = Some(PathBrowser::open(path_kind, &val));
@@ -809,18 +808,18 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                 // Closing used to drop edits silently — easy to lose them by
                 // confirming a field and expecting that alone to apply it.
-                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                if let Some(ref mut s) = self.config_editor {
                     if s.dirty() && !s.confirm_discard {
                         s.confirm_discard = true;
                         return false;
                     }
                 }
-                self.detail_popup = None;
+                self.config_editor = None;
             }
             _ => {}
         }
         if !matches!(code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')) {
-            if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+            if let Some(ref mut s) = self.config_editor {
                 s.confirm_discard = false;
             }
         }
@@ -830,11 +829,11 @@ impl App {
     pub(crate) fn save_editor_and_close(&mut self) {
         match self.save_config_from_editor() {
             Ok(()) => {
-                self.detail_popup = None;
+                self.config_editor = None;
                 self.clipboard_msg = Some((" Config saved ".into(), std::time::Instant::now()));
             }
             Err(e) => {
-                if let Some(DetailPopup::ConfigEditor(ref mut s)) = self.detail_popup {
+                if let Some(ref mut s) = self.config_editor {
                     s.save_error = Some(e);
                 }
             }
