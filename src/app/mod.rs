@@ -394,6 +394,7 @@ pub struct App {
     /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
     /// content preview (right panel).
     pub job_detail_scroll_max: usize,
+    pub job_detail_hits: JobDetailHits,
     /// Job Detail output search: the query, whether it's being typed, the
     /// line of each match (one entry per occurrence, written back every
     /// render, like the scroll max) and the occurrence `n`/`N` landed on.
@@ -741,6 +742,7 @@ impl App {
             return_to_minion_detail: None,
             event_detail_scroll_max: 0,
             job_detail_scroll_max: 0,
+            job_detail_hits: JobDetailHits::default(),
             job_search: String::new(),
             job_searching: false,
             job_search_matches: Vec::new(),

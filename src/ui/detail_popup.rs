@@ -36,7 +36,7 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &mut app.job_detail_hits, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert(alert) => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -827,6 +827,7 @@ fn draw_job_detail(
     content_scroll: usize,
     content_scroll_mode: bool,
     content_scroll_max: &mut usize,
+    hits: &mut crate::types::JobDetailHits,
     search: &str,
     searching: bool,
     search_matches: &mut Vec<usize>,
@@ -946,6 +947,7 @@ fn draw_job_detail(
         Constraint::Min(1),
     ])
     .split(vert[1]);
+    *hits = crate::types::JobDetailHits { preview: horiz[1], ..Default::default() };
 
     // ── Build LEFT panel: returns table ──
     let left_border_color = if !panel_focus { color::border_focus() } else { color::border() };
@@ -981,6 +983,7 @@ fn draw_job_detail(
         // them flush with the panel's right edge.
         let id_w = (left_inner.width as usize).saturating_sub(t.width() - t.id_w);
         let mut sel_shown = false;
+        let mut shown: Vec<usize> = Vec::new();
         let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
         let (header_area, list_area) = if l.entry_count() > 0 {
             let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(left_inner);
@@ -1016,6 +1019,7 @@ fn draw_job_detail(
                 }
                 let line = t.row(l, i, i == sel, id_w, return_filter);
                 sel_shown |= i == sel;
+                shown.push(i);
                 left_lines.push(if i == sel { color::selected_row(line) } else { line });
             }
         }
@@ -1031,6 +1035,10 @@ fn draw_job_detail(
         // The filter bar overlays the panel's last row while typing.
         let left_list_h = (list_area.height as usize).saturating_sub(return_is_filtering as usize);
         let (left_scroll, _, _) = super::scroll_window(sel_vis_idx, left_list_h, left_lines.len());
+        hits.list = Rect { height: left_list_h as u16, ..list_area };
+        hits.rows = shown.iter().skip(left_scroll).take(left_list_h).enumerate()
+            .map(|(row, &i)| (list_area.y + row as u16, i))
+            .collect();
         f.render_widget(
             Paragraph::new(left_lines)
                 .scroll((left_scroll as u16, 0))

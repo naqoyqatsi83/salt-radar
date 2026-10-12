@@ -758,6 +758,16 @@ pub struct HeaderHit {
     pub table: TableId,
 }
 
+/// Where the Job Detail popup's last frame put its returns list (each
+/// visible row's screen y and return index) and its preview panel, so a
+/// click hit-tests against what was actually drawn.
+#[derive(Clone, Debug, Default)]
+pub struct JobDetailHits {
+    pub list: ratatui::layout::Rect,
+    pub rows: Vec<(u16, usize)>,
+    pub preview: ratatui::layout::Rect,
+}
+
 // ─── JID lookup result ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default)]
