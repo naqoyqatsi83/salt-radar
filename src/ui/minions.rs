@@ -256,11 +256,8 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(""));
 
         let pat = if follow { app.filter_text_for(Tab::Minions) } else { "" };
-        let filtered_minions: Vec<&crate::types::FleetMinion> = if pat.is_empty() {
-            fs.minions.iter().collect()
-        } else {
-            fs.minions.iter().filter(|m| crate::app::App::matches_fleet_minion(m, pat)).collect()
-        };
+        let matches = crate::app::App::fleet_minion_matcher(pat);
+        let filtered_minions: Vec<&crate::types::FleetMinion> = fs.minions.iter().filter(|m| matches(m)).collect();
 
         if !pat.is_empty() {
             lines.push(Line::from(vec![

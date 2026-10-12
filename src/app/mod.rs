@@ -95,6 +95,9 @@ pub struct App {
     /// re-scanning the whole buffer -- see `sync_filtered_events_cache` and
     /// `rebuild_filtered_events_cache`.
     filtered_events_cache: VecDeque<SaltEvent>,
+    /// `applied_filter` resolved against the accepted keys, for matching
+    /// each incoming event without re-resolving it.
+    events_matcher: EventMatcher,
 
     // Live jobs
     pub jobs: Vec<JobEntry>,
@@ -710,6 +713,7 @@ impl App {
             event_breakdown: EventBreakdown::default(),
             events_per_sec: 0.0,
             filtered_events_cache: VecDeque::new(),
+            events_matcher: EventMatcher::default(),
 
             jobs: Vec::new(),
             jobs_index: HashMap::new(),
@@ -1169,36 +1173,6 @@ impl App {
         }
     }
 
-    fn matches_event(evt: &SaltEvent, pat: &str, known_minions: &HashSet<String>) -> bool {
-        let terms = Self::filter_terms(pat);
-        if terms.is_empty() { return true; }
-        terms.iter().any(|term| Self::matches_event_term(evt, term, known_minions))
-    }
-
-    fn matches_event_term(evt: &SaltEvent, term: &str, known_minions: &HashSet<String>) -> bool {
-        if Self::matches_filter(&evt.tag, term)
-            || evt.data["fun"].as_str().map(|f| Self::matches_filter(f, term)).unwrap_or(false)
-            || evt.data["id"].as_str().map(|i| Self::host_matches_term(i, term)).unwrap_or(false)
-            || match crate::sniff::regex_term(term) {
-                // As the event is shown, like the sniffer.
-                Some(re) => crate::sniff::pretty_json_lines(&evt.data).iter().any(|l| re.is_match(l)),
-                None => Self::matches_filter(&evt.data.to_string(), term),
-            }
-        {
-            return true;
-        }
-        // If the term matches a known minion ID, also show events targeted at
-        // all minions ("*") or whose tgt pattern could match that minion.
-        if known_minions.iter().any(|m| Self::host_matches_term(m, term)) {
-            if let Some(tgt) = evt.data["tgt"].as_str() {
-                if tgt == "*" || known_minions.iter().any(|m| Self::matches_filter(tgt, m)) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     /// Keeps a tail-following selection index correct as one item is
     /// appended to a capped, oldest-at-front buffer (Events, Sniffer) that
     /// may have just evicted its oldest entry to stay under its cap. While
@@ -1220,11 +1194,7 @@ impl App {
     /// per job, the latter cost a scan of every accepted minion (#165).
     fn job_matcher<'a>(pat: &'a str, known_minions: &HashSet<String>) -> impl Fn(&JobEntry) -> bool + 'a {
         let terms: Vec<(FilterTerm, bool)> = Self::filter_terms(pat).into_iter()
-            .map(|term| {
-                let term = FilterTerm::new(term);
-                let names_minion = known_minions.iter().any(|m| term.host(m));
-                (term, names_minion)
-            })
+            .map(|term| FilterTerm::with_minion_check(term, known_minions))
             .collect();
         move |job| terms.is_empty() || terms.iter().any(|(term, names_minion)| Self::matches_job_term(job, term, *names_minion))
     }
@@ -1246,28 +1216,22 @@ impl App {
         })
     }
 
-    pub fn matches_minion(minion: &MinionInfo, pat: &str) -> bool {
-        let terms = Self::filter_terms(pat);
-        if terms.is_empty() { return true; }
-        terms.iter().any(|term| {
-            Self::host_matches_term(&minion.id, term)
-                || Self::matches_filter(&minion.os, term)
-                || Self::matches_filter(&minion.osrelease, term)
-                || Self::matches_filter(&minion.salt_version, term)
+    /// The Minions-tab filter as a predicate, its terms resolved once per
+    /// pass (see `FilterTerm`).
+    pub fn minion_matcher(pat: &str) -> impl Fn(&MinionInfo) -> bool {
+        let terms: Vec<FilterTerm> = Self::filter_terms(pat).into_iter().map(FilterTerm::new).collect();
+        move |m| terms.is_empty() || terms.iter().any(|t| {
+            t.host(&m.id) || t.text(&m.os) || t.text(&m.osrelease) || t.text(&m.salt_version)
         })
     }
 
-    /// Same matching rules as `matches_minion`, for the separate `FleetMinion`
+    /// Same matching rules as `minion_matcher`, for the separate `FleetMinion`
     /// type used by the Fleet Overview scan — lets the Minions-tab filter also
     /// scope the OS/version/arch breakdown, not just the list.
-    pub fn matches_fleet_minion(minion: &crate::types::FleetMinion, pat: &str) -> bool {
-        let terms = Self::filter_terms(pat);
-        if terms.is_empty() { return true; }
-        terms.iter().any(|term| {
-            Self::host_matches_term(&minion.id, term)
-                || Self::matches_filter(&minion.osfinger, term)
-                || Self::matches_filter(&minion.osrelease, term)
-                || Self::matches_filter(&minion.saltversion, term)
+    pub fn fleet_minion_matcher(pat: &str) -> impl Fn(&crate::types::FleetMinion) -> bool {
+        let terms: Vec<FilterTerm> = Self::filter_terms(pat).into_iter().map(FilterTerm::new).collect();
+        move |m| terms.is_empty() || terms.iter().any(|t| {
+            t.host(&m.id) || t.text(&m.osfinger) || t.text(&m.osrelease) || t.text(&m.saltversion)
         })
     }
 
@@ -1384,16 +1348,21 @@ impl App {
     /// (committed on Enter, or cleared on Esc/`/`) — never per-event or
     /// per-tick.
     fn rebuild_filtered_events_cache(&mut self) {
+        self.refresh_events_matcher();
         if self.applied_filter.is_empty() {
             self.filtered_events_cache.clear();
             return;
         }
-        let pat = self.applied_filter.clone();
-        let known = self.accepted_ids().clone();
+        let matcher = &self.events_matcher;
         self.filtered_events_cache = self.events.iter()
-            .filter(|e| Self::matches_event(e, &pat, &known))
+            .filter(|e| matcher.matches(e))
             .cloned()
             .collect();
+    }
+
+    /// Re-resolves the Events filter against the current filter and keys.
+    pub(crate) fn refresh_events_matcher(&mut self) {
+        self.events_matcher = EventMatcher::new(&self.applied_filter, &self.accepted_id_set);
     }
 
     /// Keeps `filtered_events_cache` consistent with a single event
@@ -1406,7 +1375,7 @@ impl App {
     fn sync_filtered_events_cache(
         cache: &mut VecDeque<SaltEvent>,
         pat: &str,
-        known: &HashSet<String>,
+        matcher: &EventMatcher,
         new_evt: &SaltEvent,
         evicted: Option<&SaltEvent>,
     ) {
@@ -1414,11 +1383,11 @@ impl App {
             return;
         }
         if let Some(evicted_evt) = evicted {
-            if Self::matches_event(evicted_evt, pat, known) {
+            if matcher.matches(evicted_evt) {
                 cache.pop_front();
             }
         }
-        if Self::matches_event(new_evt, pat, known) {
+        if matcher.matches(new_evt) {
             cache.push_back(new_evt.clone());
         }
     }
@@ -1911,15 +1880,15 @@ impl App {
     pub fn filtered_minions_len(&self) -> usize {
         let accepted = &self.accepted_id_set;
         let hide = self.hide_timed_out;
-        let pat = self.filter_text_for(Tab::Minions);
+        let matches = Self::minion_matcher(self.filter_text_for(Tab::Minions));
         let resp_count = self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+            .filter(|m| matches(m))
             .filter(|m| !m.timed_out)
             .count();
         let to_count = self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+            .filter(|m| matches(m))
             .filter(|m| m.timed_out)
             .count();
         if hide || to_count == 0 {
@@ -1935,10 +1904,10 @@ impl App {
     /// so a sort never mixes timed-out minions in with responsive ones.
     pub fn minion_rows(&self) -> Vec<Option<&MinionInfo>> {
         let accepted = &self.accepted_id_set;
-        let pat = self.filter_text_for(Tab::Minions);
+        let matches = Self::minion_matcher(self.filter_text_for(Tab::Minions));
         let (mut live, mut timed_out): (Vec<&MinionInfo>, Vec<&MinionInfo>) = self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+            .filter(|m| matches(m))
             .partition(|m| !m.timed_out);
         if let Some((col, desc)) = self.sort_of(TableId::Minions) {
             let keys = self.key_status_map();
@@ -1987,10 +1956,10 @@ impl App {
     /// section is collapsed — the count its header shows.
     pub fn filtered_timed_out_count(&self) -> usize {
         let accepted = &self.accepted_id_set;
-        let pat = self.filter_text_for(Tab::Minions);
+        let matches = Self::minion_matcher(self.filter_text_for(Tab::Minions));
         self.minion_info.iter()
             .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| pat.is_empty() || Self::matches_minion(m, pat))
+            .filter(|m| matches(m))
             .filter(|m| m.timed_out)
             .count()
     }
@@ -2872,19 +2841,27 @@ fn event_body_as_copied_text(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate
 /// `regex_term` hands out a fresh clone of its cached `Regex`, and a fresh
 /// clone starts with an empty match cache — rebuilt per field, that made
 /// regexes with classes or anchors (`/^db1\d\d$/`) the slow filters (#165).
-enum FilterTerm<'a> {
+enum FilterTerm {
     Regex(regex::Regex),
-    Glob { pattern: &'a str, lower: String },
+    Glob { pattern: String, lower: String },
     Plain(String),
 }
 
-impl<'a> FilterTerm<'a> {
-    fn new(term: &'a str) -> Self {
+impl FilterTerm {
+    fn new(term: &str) -> Self {
         match crate::sniff::regex_term(term) {
             Some(re) => Self::Regex(re),
-            None if App::is_glob(term) => Self::Glob { pattern: term, lower: term.to_lowercase() },
+            None if App::is_glob(term) => Self::Glob { pattern: term.to_string(), lower: term.to_lowercase() },
             None => Self::Plain(term.to_lowercase()),
         }
+    }
+
+    /// The term and whether it names a known minion — what makes the Live
+    /// Jobs and Events filters also show jobs targeting that minion.
+    fn with_minion_check(term: &str, known_minions: &HashSet<String>) -> (Self, bool) {
+        let term = Self::new(term);
+        let names_minion = known_minions.iter().any(|m| term.host(m));
+        (term, names_minion)
     }
 
     fn text(&self, text: &str) -> bool {
@@ -2899,6 +2876,64 @@ impl<'a> FilterTerm<'a> {
             Self::Glob { pattern, .. } => App::glob_match(host, pattern),
             _ => self.text(host),
         }
+    }
+}
+
+/// The Events filter, resolved when the filter or the accepted keys change
+/// rather than per event: checked on every incoming event, settling per
+/// event whether each term names a known minion — and whether a job's
+/// target names one — scanned every accepted key.
+#[derive(Default)]
+pub(crate) struct EventMatcher {
+    terms: Vec<(FilterTerm, bool)>,
+    minions_lower: Vec<String>,
+    /// Whether a target names a known minion, per target seen: a busy
+    /// master sends the same few targets over and over.
+    tgt_names_minion: std::cell::RefCell<HashMap<String, bool>>,
+}
+
+impl EventMatcher {
+    fn new(pat: &str, known_minions: &HashSet<String>) -> Self {
+        let terms: Vec<(FilterTerm, bool)> = App::filter_terms(pat).into_iter()
+            .map(|term| FilterTerm::with_minion_check(term, known_minions))
+            .collect();
+        let minions_lower = if terms.iter().any(|&(_, names_minion)| names_minion) {
+            known_minions.iter().map(|m| m.to_lowercase()).collect()
+        } else {
+            Vec::new()
+        };
+        Self { terms, minions_lower, tgt_names_minion: Default::default() }
+    }
+
+    fn matches(&self, evt: &SaltEvent) -> bool {
+        self.terms.is_empty() || self.terms.iter().any(|(term, names_minion)| self.matches_term(evt, term, *names_minion))
+    }
+
+    fn matches_term(&self, evt: &SaltEvent, term: &FilterTerm, names_minion: bool) -> bool {
+        if term.text(&evt.tag)
+            || evt.data["fun"].as_str().is_some_and(|f| term.text(f))
+            || evt.data["id"].as_str().is_some_and(|i| term.host(i))
+            || match term {
+                // As the event is shown, like the sniffer.
+                FilterTerm::Regex(re) => crate::sniff::pretty_json_lines(&evt.data).iter().any(|l| re.is_match(l)),
+                _ => term.text(&evt.data.to_string()),
+            }
+        {
+            return true;
+        }
+        // A term naming a known minion also shows events targeted at all
+        // minions ("*") or whose tgt names a known minion.
+        names_minion && evt.data["tgt"].as_str().is_some_and(|tgt| tgt == "*" || self.names_minion(tgt))
+    }
+
+    fn names_minion(&self, tgt: &str) -> bool {
+        if let Some(&hit) = self.tgt_names_minion.borrow().get(tgt) {
+            return hit;
+        }
+        let lower = tgt.to_lowercase();
+        let hit = self.minions_lower.iter().any(|m| lower.contains(m.as_str()));
+        self.tgt_names_minion.borrow_mut().insert(tgt.to_string(), hit);
+        hit
     }
 }
 
@@ -3453,6 +3488,24 @@ mod tests {
     }
 
     #[test]
+    fn event_filter_shows_targeted_jobs_for_known_minion_terms() {
+        let evt = |tag: &str, data: serde_json::Value| SaltEvent { tag: tag.into(), data, ts: 0.0 };
+        let star = evt("salt/job/1/new", json!({"fun": "test.ping", "tgt": "*"}));
+        let listed = evt("salt/job/2/new", json!({"fun": "test.ping", "tgt": "DB01,web02"}));
+        let other = evt("salt/job/3/new", json!({"fun": "test.ping", "tgt": "mail01"}));
+        let ret = evt("salt/job/4/ret/db01", json!({"fun": "test.ping", "id": "db01"}));
+        let known: HashSet<String> = ["web01".to_string(), "db01".to_string()].into();
+        let web = EventMatcher::new("web0*", &known);
+        assert!(web.matches(&star) && web.matches(&listed) && !web.matches(&other));
+        assert!(web.matches(&listed), "a cached target answers the same");
+        let re = EventMatcher::new(r"/^db\d+$/", &known);
+        assert!(re.matches(&ret) && re.matches(&star) && !re.matches(&other));
+        let plain = EventMatcher::new("mail", &known);
+        assert!(plain.matches(&other) && !plain.matches(&star), "a term naming no minion leaves * jobs out");
+        assert!(EventMatcher::new("", &known).matches(&other));
+    }
+
+    #[test]
     fn host_terms_use_globs_only_when_they_contain_wildcards() {
         assert!(App::host_matches_term("web01.prod", "web"), "plain terms are substrings");
         assert!(App::host_matches_term("web01.prod", "WEB*"), "globs are case-insensitive");
@@ -3651,5 +3704,6 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
 
 
