@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-13
+
+### Fixed
+
+- Slow Live Jobs filter on busy masters (#165): every job re-checked each filter term against every accepted minion (to decide whether to also show jobs targeting `*`), so with ~1.3k jobs and a few thousand minions a term like a JID took hundreds of milliseconds per pass, several passes per keystroke and poll; the check now runs once per pass. Regex terms with classes or anchors (`/^db1\d\d$/`) were slow on their own too, as every field was matched with a fresh copy of the regex that had to rebuild its match cache; each term is now compiled once per pass
+- Slow Events and Minions filters with many minions, the same causes as #165: the Events filter checked each term, and each job's target, against every accepted minion for every event, so with 3,000 minions applying it froze the TUI for 1-5 s and every incoming event cost up to half a millisecond; it's now resolved once when the filter or the keys change (applying it takes milliseconds, an event under a microsecond). The Minions list and Fleet overview filters now compile regex terms once per pass too (`/^db1\d\d$/` over 3,000 minions: 13 ms to 0.1 ms)
+- Mouse in the Job Detail popup (#164): a click on a minion in the returns list now selects it, a double-click opens its return like Enter, and a click on the return preview focuses it; left-clicks in the popup used to be ignored
+- Help for paging (#163): the help overlay's keys and border hint now say that `←`/`→` switch its pages (`Shift+Tab` back), and the General keys list `Shift+Tab` for the previous tab; README to match
+
 ## [0.8.1] - 2026-10-11
 
 ### Fixed

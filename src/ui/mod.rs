@@ -840,7 +840,7 @@ pub struct Shortcut {
 pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ("General", &[
         Shortcut { tab: "", key: "`q`", action: "Quit" },
-        Shortcut { tab: "", key: "`Tab`", action: "Switch tab" },
+        Shortcut { tab: "", key: "`Tab` / `Shift+Tab`", action: "Next / previous tab" },
         Shortcut { tab: "", key: "`1`–`7`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse)" },
         Shortcut { tab: "", key: "`↑`/`↓`", action: "Scroll / navigate" },
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Page scroll" },
@@ -849,7 +849,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`Esc`", action: "Close popup / help" },
         Shortcut { tab: "", key: "`/`", action: "Filter (current tab)" },
         Shortcut { tab: "", key: "`a`", action: "Toggle admin mode" },
-        Shortcut { tab: "", key: "`?` / `F1`", action: "Help overlay; `Tab` cycles its pages: Keys, Guide (filter, search and sniffer syntax, panel notes) and What's new (the changelog)" },
+        Shortcut { tab: "", key: "`?` / `F1`", action: "Help overlay; `Tab` / `←` / `→` switch its pages (`Shift+Tab` back): Keys, Guide (filter, search and sniffer syntax, panel notes) and What's new (the changelog)" },
         Shortcut { tab: "", key: "`F2`", action: "Toggle mouse mode" },
         Shortcut { tab: "", key: "`F3`", action: "Open Config Editor" },
         Shortcut { tab: "", key: "`+`/`-`", action: "Adjust refresh interval" },
@@ -965,7 +965,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         if !matches.is_empty() {
             h.push(("n/N", "next/prev".to_string()));
         }
-        h.push(("Tab", "next page".to_string()));
+        h.push(("Tab/\u{2190}\u{2192}", "page".to_string()));
         h.push(("Esc", if app.help_search.is_empty() { "close" } else { "clear search" }.to_string()));
         h
     };

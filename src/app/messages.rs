@@ -81,6 +81,9 @@ impl App {
                                     .filter(|k| k.status == KeyStatus::Accepted)
                                     .map(|k| k.id.clone())
                                     .collect();
+                                if !self.applied_filter.is_empty() {
+                                    self.refresh_events_matcher();
+                                }
                             }
                         }
                         "list_processes" => {
@@ -570,7 +573,7 @@ impl App {
                     Self::sync_filtered_events_cache(
                         &mut self.filtered_events_cache,
                         &self.applied_filter,
-                        &self.accepted_id_set,
+                        &self.events_matcher,
                         &evt,
                         evicted_evt.as_ref(),
                     );

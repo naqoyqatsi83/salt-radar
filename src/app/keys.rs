@@ -1357,6 +1357,9 @@ impl App {
             if matches!(self.detail_popup, Some(DetailPopup::MinionEvents { .. })) {
                 return self.handle_minion_events_click(col, row, frame_size);
             }
+            if matches!(self.detail_popup, Some(DetailPopup::JobDetail { .. })) {
+                return self.handle_job_detail_click(col, row);
+            }
             // Other popups: ignore left-click (right-click closes from main.rs)
             return false;
         }
@@ -1571,23 +1574,60 @@ impl App {
             Tab::Dashboard => {}
         }
 
-        // Double-click detection on list tabs
-        let dbl_click_ms: u128 = 400;
         if self.current_tab != Tab::Dashboard && self.current_tab != Tab::Pulse {
-            let now = Instant::now();
-            let is_double = self.last_click_at
-                .map(|t| now.duration_since(t).as_millis() < dbl_click_ms && col == self.last_click_col && row == self.last_click_row)
-                .unwrap_or(false);
-            self.last_click_at = Some(now);
-            self.last_click_col = col;
-            self.last_click_row = row;
-            if is_double {
+            if self.register_click(col, row) {
                 self.open_detail();
             }
         } else {
             self.last_click_at = None;
         }
 
+        false
+    }
+
+    /// Records a click and tells whether it completes a double-click: a
+    /// second click on the same cell within 400ms.
+    fn register_click(&mut self, col: u16, row: u16) -> bool {
+        let now = Instant::now();
+        let is_double = self.last_click_at
+            .is_some_and(|t| now.duration_since(t).as_millis() < 400 && col == self.last_click_col && row == self.last_click_row);
+        self.last_click_at = Some(now);
+        self.last_click_col = col;
+        self.last_click_row = row;
+        is_double
+    }
+
+    /// Job Detail (#164): a click on a returns row selects that minion, a
+    /// double-click opens its return (like Enter), and a click on the
+    /// preview focuses it.
+    fn handle_job_detail_click(&mut self, col: u16, row: u16) -> bool {
+        let inside = |r: Rect| r.contains(ratatui::layout::Position { x: col, y: row });
+        let hits = &self.job_detail_hits;
+        let clicked = hits.rows.iter().find(|&&(y, _)| y == row).map(|&(_, i)| i).filter(|_| inside(hits.list));
+        let on_preview = inside(hits.preview);
+        let is_double = clicked.is_some() && self.register_click(col, row);
+        if self.job_searching {
+            return false;
+        }
+        let Some(DetailPopup::JobDetail {
+            ref mut selected_return, ref mut panel_focus, ref mut content_scroll,
+            ref mut content_scroll_mode, ref lookup, return_is_filtering, ..
+        }) = self.detail_popup else { return false };
+        if return_is_filtering || lookup.is_none() {
+            return false;
+        }
+        if let Some(i) = clicked {
+            if *selected_return != Some(i) {
+                *content_scroll = 0;
+                self.job_focus_line = None;
+                self.job_search_focus = None;
+            }
+            *selected_return = Some(i);
+            *panel_focus = is_double;
+            *content_scroll_mode = false;
+        } else if on_preview {
+            *panel_focus = true;
+        }
         false
     }
 
@@ -1652,16 +1692,7 @@ impl App {
 
         if let Some(DetailPopup::MinionEvents { ref mut selected, .. }) = self.detail_popup {
             *selected = item_idx;
-
-            let dbl_click_ms: u128 = 400;
-            let now = Instant::now();
-            let is_double = self.last_click_at
-                .map(|t| now.duration_since(t).as_millis() < dbl_click_ms && col == self.last_click_col && row == self.last_click_row)
-                .unwrap_or(false);
-            self.last_click_at = Some(now);
-            self.last_click_col = col;
-            self.last_click_row = row;
-            if is_double {
+            if self.register_click(col, row) {
                 if let Some(item) = items.get(item_idx) {
                     match item {
                         MinionActivityItem::Event(_, evt) => {
