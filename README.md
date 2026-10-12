@@ -284,7 +284,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | Key | Action |
 |-----|--------|
 | `q` | Quit |
-| `Tab` | Switch tab |
+| `Tab` / `Shift+Tab` | Next / previous tab |
 | `1`–`7` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
@@ -293,7 +293,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | `Esc` | Close popup / help |
 | `/` | Filter (current tab) |
 | `a` | Toggle admin mode |
-| `?` / `F1` | Help overlay; `Tab` cycles its pages: Keys, Guide (filter, search and sniffer syntax, panel notes) and What's new (the changelog) |
+| `?` / `F1` | Help overlay; `Tab` / `←` / `→` switch its pages (`Shift+Tab` back): Keys, Guide (filter, search and sniffer syntax, panel notes) and What's new (the changelog) |
 | `F2` | Toggle mouse mode |
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval |
