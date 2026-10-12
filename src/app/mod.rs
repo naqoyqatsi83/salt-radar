@@ -1213,26 +1213,27 @@ impl App {
         }
     }
 
-    fn matches_job(job: &JobEntry, pat: &str, known_minions: &HashSet<String>) -> bool {
-        let terms = Self::filter_terms(pat);
-        if terms.is_empty() { return true; }
-        terms.iter().any(|term| Self::matches_job_term(job, term, known_minions))
+    /// The Live Jobs filter as a predicate. Terms are resolved, and whether
+    /// each names a known minion settled, once per pass rather than per job:
+    /// per job, the latter cost a scan of every accepted minion (#165).
+    fn job_matcher<'a>(pat: &'a str, known_minions: &HashSet<String>) -> impl Fn(&JobEntry) -> bool + 'a {
+        let terms: Vec<(FilterTerm, bool)> = Self::filter_terms(pat).into_iter()
+            .map(|term| {
+                let term = FilterTerm::new(term);
+                let names_minion = known_minions.iter().any(|m| term.host(m));
+                (term, names_minion)
+            })
+            .collect();
+        move |job| terms.is_empty() || terms.iter().any(|(term, names_minion)| Self::matches_job_term(job, term, *names_minion))
     }
 
-    fn matches_job_term(job: &JobEntry, term: &str, known_minions: &HashSet<String>) -> bool {
-        if Self::matches_filter(&job.jid, term)
-            || Self::matches_filter(&job.fun, term)
-            || Self::matches_filter(&job.args, term)
-            || Self::host_matches_term(&job.tgt, term)
-        {
-            return true;
-        }
-        // Show jobs targeting "*" when searching for a known minion
-        if known_minions.iter().any(|m| Self::host_matches_term(m, term))
-            && job.tgt == "*" {
-                return true;
-            }
-        false
+    fn matches_job_term(job: &JobEntry, term: &FilterTerm, names_minion: bool) -> bool {
+        term.text(&job.jid)
+            || term.text(&job.fun)
+            || term.text(&job.args)
+            || term.host(&job.tgt)
+            // Show jobs targeting "*" when searching for a known minion
+            || (names_minion && job.tgt == "*")
     }
 
     fn matches_alert(alert: &AlertEntry, pat: &str) -> bool {
@@ -1664,21 +1665,19 @@ impl App {
         if pat.is_empty() && !self.jobs_failed_only {
             return self.jobs.len();
         }
-        let known = self.accepted_ids();
-        self.jobs.iter().filter(|j| self.job_shown(j, pat, known)).count()
+        self.jobs.iter().filter(self.job_shown()).count()
     }
 
-    fn job_shown(&self, job: &JobEntry, pat: &str, known: &HashSet<String>) -> bool {
-        (!self.jobs_failed_only || job.failed > 0) && (pat.is_empty() || Self::matches_job(job, pat, known))
+    fn job_shown(&self) -> impl Fn(&&JobEntry) -> bool + '_ {
+        let matches = Self::job_matcher(self.filter_text_for(Tab::Jobs), self.accepted_ids());
+        move |job| (!self.jobs_failed_only || job.failed > 0) && matches(job)
     }
 
     /// Live Jobs in display order: filtered, then sorted. Unsorted, they
     /// run oldest to newest by JID (tail-style, like Events) rather than in
     /// event-arrival order, which a late or reordered `/new` can scramble.
     pub fn filtered_jobs(&self) -> Vec<&JobEntry> {
-        let pat = self.filter_text_for(Tab::Jobs);
-        let known = self.accepted_ids();
-        let mut jobs: Vec<&JobEntry> = self.jobs.iter().filter(|j| self.job_shown(j, pat, known)).collect();
+        let mut jobs: Vec<&JobEntry> = self.jobs.iter().filter(self.job_shown()).collect();
         jobs.sort_by(|a, b| a.jid.cmp(&b.jid));
         if let Some((col, desc)) = self.sort_of(TableId::LiveJobs) {
             jobs.sort_by(|a, b| {
@@ -2866,6 +2865,41 @@ fn event_body_as_copied_text(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate
     }
 }
 
+/// One filter term resolved once for a whole filter pass, matching like
+/// `App::matches_filter` (`text`) and `App::host_matches_term` (`host`).
+/// `regex_term` hands out a fresh clone of its cached `Regex`, and a fresh
+/// clone starts with an empty match cache — rebuilt per field, that made
+/// regexes with classes or anchors (`/^db1\d\d$/`) the slow filters (#165).
+enum FilterTerm<'a> {
+    Regex(regex::Regex),
+    Glob { pattern: &'a str, lower: String },
+    Plain(String),
+}
+
+impl<'a> FilterTerm<'a> {
+    fn new(term: &'a str) -> Self {
+        match crate::sniff::regex_term(term) {
+            Some(re) => Self::Regex(re),
+            None if App::is_glob(term) => Self::Glob { pattern: term, lower: term.to_lowercase() },
+            None => Self::Plain(term.to_lowercase()),
+        }
+    }
+
+    fn text(&self, text: &str) -> bool {
+        match self {
+            Self::Regex(re) => re.is_match(text),
+            Self::Glob { lower, .. } | Self::Plain(lower) => text.to_lowercase().contains(lower.as_str()),
+        }
+    }
+
+    fn host(&self, host: &str) -> bool {
+        match self {
+            Self::Glob { pattern, .. } => App::glob_match(host, pattern),
+            _ => self.text(host),
+        }
+    }
+}
+
 /// A parsed glob `[…]` class: its character ranges, whether it's negated
 /// (`[!…]` / `[^…]`), and the pattern index after its `]`.
 struct GlobClass {
@@ -3396,6 +3430,27 @@ mod tests {
     }
 
     #[test]
+    fn job_filter_shows_star_jobs_only_for_known_minion_terms() {
+        let job = |tgt: &str| JobEntry {
+            jid: "20261012133558123456".into(), fun: "state.apply".into(), tgt: tgt.into(),
+            target_count: 1, returned: 0, succeeded: 0, failed: 0, age_seconds: 0, created_epoch: 0.0,
+            local: false, finalized: false, args: String::new(), test_run: false,
+        };
+        let known: HashSet<String> = ["web01".to_string(), "db01".to_string()].into();
+        let (star, db) = (job("*"), job("db01"));
+        let web = App::job_matcher("web*", &known);
+        assert!(web(&star) && !web(&db), "a known-minion term also shows jobs targeting *");
+        let other = App::job_matcher("nginx, db01.prod", &known);
+        assert!(!other(&star) && !other(&db), "terms naming no minion leave * jobs out");
+        assert!(App::job_matcher("5581", &known)(&star), "the JID still matches");
+        assert!(App::job_matcher(" , ", &known)(&db), "no terms shows everything");
+        let re = App::job_matcher(r"/^db\d+$/", &known);
+        assert!(re(&star) && re(&db), "a regex naming a known minion also shows jobs targeting *");
+        assert!(App::job_matcher("/STATE/i", &known)(&db));
+        assert!(!App::job_matcher("db*", &known)(&job("x-db01")), "globs anchor to the whole target");
+    }
+
+    #[test]
     fn host_terms_use_globs_only_when_they_contain_wildcards() {
         assert!(App::host_matches_term("web01.prod", "web"), "plain terms are substrings");
         assert!(App::host_matches_term("web01.prod", "WEB*"), "globs are case-insensitive");
@@ -3594,3 +3649,5 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+

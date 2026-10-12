@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Slow Live Jobs filter on busy masters (#165): every job re-checked each filter term against every accepted minion (to decide whether to also show jobs targeting `*`), so with ~1.3k jobs and a few thousand minions a term like a JID took hundreds of milliseconds per pass, several passes per keystroke and poll; the check now runs once per pass. Regex terms with classes or anchors (`/^db1\d\d$/`) were slow on their own too, as every field was matched with a fresh copy of the regex that had to rebuild its match cache; each term is now compiled once per pass
+
 ## [0.8.1] - 2026-10-11
 
 ### Fixed
