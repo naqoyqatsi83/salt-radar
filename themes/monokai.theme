@@ -3,6 +3,9 @@
 #
 # Bashtop monokai theme
 # by aristocratos
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Monokai palette.
 
 theme[main_bg]="#060604"
 theme[meter_bg]="#23221b"
@@ -22,7 +25,7 @@ theme[subtitle_fg]="#b8b7ac"
 theme[version_fg]="#66d9ef"
 theme[hint_fg]="#615e50"
 theme[badge_bg]="#5d3818"
-theme[green]="#50c878"
+theme[green]="#a6e22e"
 theme[cyan]="#66d9ef"
 theme[yellow]="#e6db74"
 theme[orange]="#ff963c"
@@ -36,7 +39,7 @@ theme[mem_gradient_start]="#75715e"
 theme[mem_gradient_mid]="#f92672"
 theme[mem_gradient_high]="#fc5692"
 theme[mem_gradient_end]="#ff87b2"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#a6e22e"
 theme[pulse_aging]="#ff963c"
 theme[tab_active_bg]="#4c0d23"
 theme[tab_active_fg]="#f92672"

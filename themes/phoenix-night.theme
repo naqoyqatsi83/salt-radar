@@ -7,6 +7,9 @@
 # Base theme colors from Pascal Jaeger's tokyo-night
 # Graph theme colors from Pete Allebone's HotPurpleTrafficLight
 # ...basically, I wanted most of Tokyo Night with a significantly more visible graph bar coloration.
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# its own palette.
 
 theme[main_bg]="#1a1b26"
 theme[meter_bg]="#2f3349"
@@ -31,7 +34,7 @@ theme[cyan]="#7dcfff"
 theme[yellow]="#ffc850"
 theme[orange]="#ff9933"
 theme[red]="#ff0000"
-theme[purple]="#b478ff"
+theme[purple]="#a64dff"
 theme[gradient_start]="#00ff00"
 theme[gradient_mid]="#ccff66"
 theme[gradient_high]="#e68033"
@@ -40,7 +43,7 @@ theme[mem_gradient_start]="#00ff00"
 theme[mem_gradient_mid]="#ccff66"
 theme[mem_gradient_high]="#e68033"
 theme[mem_gradient_end]="#ff0000"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#00ff00"
 theme[pulse_aging]="#ff9933"
 theme[tab_active_bg]="#31364e"
 theme[tab_active_fg]="#7dcfff"
@@ -48,5 +51,5 @@ theme[tab_inactive_fg]="#626a8f"
 theme[tab_separator]="#565f89"
 theme[highlight_1]="#676d86"
 theme[highlight_2]="#ff2dc8"
-theme[highlight_3]="#00e6aa"
-theme[highlight_4]="#aa50ff"
+theme[highlight_3]="#9999ff"
+theme[highlight_4]="#a64dff"

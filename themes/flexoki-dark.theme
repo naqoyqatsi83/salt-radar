@@ -3,6 +3,9 @@
 #
 # Flexoki Dark theme (https://stephango.com/flexoki)
 # by Steph Ango
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Flexoki palette.
 
 theme[main_bg]="#100f0f"
 theme[meter_bg]="#1d1c1b"
@@ -22,7 +25,7 @@ theme[subtitle_fg]="#aaa9a2"
 theme[version_fg]="#2b66aa"
 theme[hint_fg]="#63625e"
 theme[badge_bg]="#573119"
-theme[green]="#50c878"
+theme[green]="#879a39"
 theme[cyan]="#3aa99f"
 theme[yellow]="#ad8301"
 theme[orange]="#da702c"
@@ -36,7 +39,7 @@ theme[mem_gradient_start]="#879a39"
 theme[mem_gradient_mid]="#da702c"
 theme[mem_gradient_high]="#d65e36"
 theme[mem_gradient_end]="#d14d41"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#879a39"
 theme[pulse_aging]="#da702c"
 theme[tab_active_bg]="#2d2b2a"
 theme[tab_active_fg]="#da702c"

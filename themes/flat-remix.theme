@@ -3,6 +3,9 @@
 #
 # Bashtop theme with flat-remix colors
 # by Daniel Ruiz de Alegría <daniel@drasite.com>
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# its own palette.
 
 theme[main_bg]=""
 theme[meter_bg]=""
@@ -36,7 +39,7 @@ theme[mem_gradient_start]="#12715f"
 theme[mem_gradient_mid]="#19a187"
 theme[mem_gradient_high]="#1eaea4"
 theme[mem_gradient_end]="#23bac2"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#54bd8e"
 theme[pulse_aging]="#fd7d00"
 theme[tab_active_bg]="#6e0e2e"
 theme[tab_active_fg]="#909090"

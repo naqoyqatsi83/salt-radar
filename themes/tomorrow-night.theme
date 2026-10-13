@@ -3,6 +3,9 @@
 #
 # Nord theme but using the Tomorrow Night palette
 # by Appuchia <contact@appu.ltd>
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Tomorrow Night palette.
 
 theme[main_bg]="#1d1f21"
 theme[meter_bg]="#26292c"
@@ -22,12 +25,12 @@ theme[subtitle_fg]="#7e8284"
 theme[version_fg]="#81a2be"
 theme[hint_fg]="#696c70"
 theme[badge_bg]="#6c492a"
-theme[green]="#50c878"
+theme[green]="#b5bd68"
 theme[cyan]="#81beb7"
 theme[yellow]="#f0c674"
-theme[orange]="#ff963c"
+theme[orange]="#de935f"
 theme[red]="#cc6666"
-theme[purple]="#b478ff"
+theme[purple]="#b294bb"
 theme[gradient_start]="#b5bd68"
 theme[gradient_mid]="#f0c674"
 theme[gradient_high]="#de966d"
@@ -36,13 +39,13 @@ theme[mem_gradient_start]="#b5bd68"
 theme[mem_gradient_mid]="#f0c674"
 theme[mem_gradient_high]="#de966d"
 theme[mem_gradient_end]="#cc6666"
-theme[pulse_fresh]="#78ff78"
-theme[pulse_aging]="#ff963c"
+theme[pulse_fresh]="#b5bd68"
+theme[pulse_aging]="#de935f"
 theme[tab_active_bg]="#242629"
 theme[tab_active_fg]="#81beb7"
 theme[tab_inactive_fg]="#696c70"
 theme[tab_separator]="#81a2be"
 theme[highlight_1]="#81a2be"
-theme[highlight_2]="#ff2dc8"
+theme[highlight_2]="#b294bb"
 theme[highlight_3]="#81beb7"
 theme[highlight_4]="#aa50ff"

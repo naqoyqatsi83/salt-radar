@@ -3,6 +3,9 @@
 #
 # Bashtop Kyli0x Theme
 # by Kyli0x <kyli0x@protonmail.ch>
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# its own palette.
 
 theme[main_bg]="#222222"
 theme[meter_bg]="#375b58"
@@ -19,7 +22,7 @@ theme[title]="#e8f6f5"
 theme[hi_fg]="#e8f6f5"
 theme[header_fg]="#dfc4e6"
 theme[subtitle_fg]="#d188bc"
-theme[version_fg]="#5a96d2"
+theme[version_fg]="#21d6c9"
 theme[hint_fg]="#5ec4bc"
 theme[badge_bg]="#6f4b2b"
 theme[green]="#50c878"
@@ -42,7 +45,7 @@ theme[tab_active_bg]="#1f5753"
 theme[tab_active_fg]="#21d6c9"
 theme[tab_inactive_fg]="#5ec4bc"
 theme[tab_separator]="#80638e"
-theme[highlight_1]="#3282ff"
+theme[highlight_1]="#5ec4bc"
 theme[highlight_2]="#c13190"
 theme[highlight_3]="#1aaba0"
 theme[highlight_4]="#80638e"

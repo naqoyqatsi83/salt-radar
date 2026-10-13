@@ -4,6 +4,9 @@
 # Bashtop gruvbox (https://github.com/morhetz/gruvbox) theme
 # First version created By BachoSeven
 # Adjustments to proper colors by Pietryszak (https://github.com/pietryszak/)
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the gruvbox palette.
 
 theme[main_bg]="#282828"
 theme[meter_bg]="#2f2e2d"
@@ -20,15 +23,15 @@ theme[title]="#ebdbb2"
 theme[hi_fg]="#ebdbb2"
 theme[header_fg]="#cdbd9d"
 theme[subtitle_fg]="#caba9b"
-theme[version_fg]="#5a96d2"
+theme[version_fg]="#83a598"
 theme[hint_fg]="#797161"
 theme[badge_bg]="#583b24"
-theme[green]="#689d6a"
+theme[green]="#98971a"
 theme[cyan]="#458588"
-theme[yellow]="#98971a"
+theme[yellow]="#d79921"
 theme[orange]="#b25e1c"
 theme[red]="#d13a34"
-theme[purple]="#b478ff"
+theme[purple]="#b16286"
 theme[gradient_start]="#8ec07c"
 theme[gradient_mid]="#d79921"
 theme[gradient_high]="#d25e1f"
@@ -43,7 +46,7 @@ theme[tab_active_bg]="#2e2d2c"
 theme[tab_active_fg]="#d13a34"
 theme[tab_inactive_fg]="#797161"
 theme[tab_separator]="#a89984"
-theme[highlight_1]="#3282ff"
+theme[highlight_1]="#458588"
 theme[highlight_2]="#d3869b"
 theme[highlight_3]="#83a598"
-theme[highlight_4]="#aa50ff"
+theme[highlight_4]="#b16286"

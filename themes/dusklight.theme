@@ -3,6 +3,9 @@
 #
 # Bpytop theme comprised of blues, oranges, cyan, and yellow.
 # by Drazil100
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# its own palette.
 
 theme[main_bg]="#04142e"
 theme[meter_bg]="#041d3a"
@@ -22,7 +25,7 @@ theme[subtitle_fg]="#89c0da"
 theme[version_fg]="#506d85"
 theme[hint_fg]="#396c8e"
 theme[badge_bg]="#5c391e"
-theme[green]="#50c878"
+theme[green]="#b4bb63"
 theme[cyan]="#00d4ff"
 theme[yellow]="#fff86b"
 theme[orange]="#ff7f00"
@@ -36,7 +39,7 @@ theme[mem_gradient_start]="#b46718"
 theme[mem_gradient_mid]="#b46718"
 theme[mem_gradient_high]="#b46718"
 theme[mem_gradient_end]="#b46718"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#b4bb63"
 theme[pulse_aging]="#ff7f00"
 theme[tab_active_bg]="#462213"
 theme[tab_active_fg]="#ff7f00"

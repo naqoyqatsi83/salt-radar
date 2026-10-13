@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Bundled themes use their own palette for the colors salt-radar adds (#145): job outcomes, the four filter highlight colors, the Pulse markers, purple and the title-bar version used one generic set in most themes, so Nord, Tokyo Night, gruvbox and the rest showed the same green, yellow and pink. 30 themes now take them from the color scheme they port (Tokyo Night, gruvbox, Everforest, Kanagawa, One Dark, Solarized, Dracula, …) or from their btop original, which also fixes gruvbox's yellow being its green and Tokyo Night's orange being its yellow. A role stays on the default only where the theme has no color of that kind; every theme still passes the check that keeps status and highlight colors apart and readable
 - Events Preview wraps long lines (#169): the tag and the JSON body used to be cut off at the panel's right edge, so long targets, arguments and state comments couldn't be read without opening the event. Wrapped rows hang under their key, and the body's height and its jump to the first filter match count wrapped rows, so the match stays on screen
 
 ### Fixed

@@ -4,6 +4,9 @@
 # btop theme with the Gotham colorscheme for vim/neovim
 # Credit to Andrea Lopardi (https://github.com/whatyouhide/vim-gotham)
 # Adapted by jrebs (https://github.com/jrebs)
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Gotham palette.
 
 theme[main_bg]="#2e3440"
 theme[meter_bg]="#34363c"
@@ -23,12 +26,12 @@ theme[subtitle_fg]="#708e89"
 theme[version_fg]="#79808f"
 theme[hint_fg]="#6c8681"
 theme[badge_bg]="#595758"
-theme[green]="#50c878"
+theme[green]="#2aa889"
 theme[cyan]="#99d1ce"
-theme[yellow]="#ffc850"
+theme[yellow]="#edb443"
 theme[orange]="#a89984"
 theme[red]="#ff5050"
-theme[purple]="#b478ff"
+theme[purple]="#888ca6"
 theme[gradient_start]="#2aa889"
 theme[gradient_mid]="#99d1ce"
 theme[gradient_high]="#cce8e6"
@@ -37,7 +40,7 @@ theme[mem_gradient_start]="#2aa889"
 theme[mem_gradient_mid]="#99d1ce"
 theme[mem_gradient_high]="#cce8e6"
 theme[mem_gradient_end]="#ffffff"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#2aa889"
 theme[pulse_aging]="#a89984"
 theme[tab_active_bg]="#183645"
 theme[tab_active_fg]="#ffffff"
@@ -45,5 +48,5 @@ theme[tab_inactive_fg]="#6c8681"
 theme[tab_separator]="#4c566a"
 theme[highlight_1]="#79808f"
 theme[highlight_2]="#ff2dc8"
-theme[highlight_3]="#2aa889"
+theme[highlight_3]="#33859e"
 theme[highlight_4]="#aa50ff"

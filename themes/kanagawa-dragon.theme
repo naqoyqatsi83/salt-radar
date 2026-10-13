@@ -3,6 +3,9 @@
 #
 # Bashtop Kanagawa-dragon (https://github.com/rebelot/kanagawa.nvim) theme
 # By: Marcus441
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Kanagawa palette.
 
 theme[main_bg]="#181616"
 theme[meter_bg]="#3a3c3c"
@@ -27,7 +30,7 @@ theme[cyan]="#8ba4b0"
 theme[yellow]="#c4b28a"
 theme[orange]="#b6927b"
 theme[red]="#c4746e"
-theme[purple]="#b478ff"
+theme[purple]="#8992a7"
 theme[gradient_start]="#87a987"
 theme[gradient_mid]="#c4b28a"
 theme[gradient_high]="#c4937c"
@@ -36,13 +39,13 @@ theme[mem_gradient_start]="#8ba4b0"
 theme[mem_gradient_mid]="#949fb5"
 theme[mem_gradient_high]="#91a2ac"
 theme[mem_gradient_end]="#8ea4a2"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#87a987"
 theme[pulse_aging]="#b6927b"
 theme[tab_active_bg]="#222020"
 theme[tab_active_fg]="#c4746e"
 theme[tab_inactive_fg]="#7a8382"
 theme[tab_separator]="#7a8382"
 theme[highlight_1]="#8ba4b0"
-theme[highlight_2]="#ff2dc8"
-theme[highlight_3]="#00e6aa"
-theme[highlight_4]="#aa50ff"
+theme[highlight_2]="#a292a3"
+theme[highlight_3]="#6a9589"
+theme[highlight_4]="#957fb8"

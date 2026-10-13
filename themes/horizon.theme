@@ -5,6 +5,9 @@
 # For single color graphs leave "mid" and "end" variable empty.
 # Use "start" and "end" variables for two color gradient
 # Use "start", "mid" and "end" for three color gradient
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Horizon palette.
 
 theme[main_bg]="#1c1e26"
 theme[meter_bg]="#20242b"
@@ -21,7 +24,7 @@ theme[title]="#f8f8f2"
 theme[hi_fg]="#f8f8f2"
 theme[header_fg]="#dbbee8"
 theme[subtitle_fg]="#f8f8f2"
-theme[version_fg]="#5a96d2"
+theme[version_fg]="#26bbd9"
 theme[hint_fg]="#666b6c"
 theme[badge_bg]="#6a574f"
 theme[green]="#27d796"
@@ -38,13 +41,13 @@ theme[mem_gradient_start]="#27d796"
 theme[mem_gradient_mid]="#fac29a"
 theme[mem_gradient_high]="#f28c89"
 theme[mem_gradient_end]="#e95678"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#29d398"
 theme[pulse_aging]="#fac29a"
 theme[tab_active_bg]="#232630"
 theme[tab_active_fg]="#b877db"
 theme[tab_inactive_fg]="#666b6c"
 theme[tab_separator]="#3c4246"
-theme[highlight_1]="#3282ff"
-theme[highlight_2]="#ff2dc8"
+theme[highlight_1]="#59e1e3"
+theme[highlight_2]="#ee64ac"
 theme[highlight_3]="#26bbd9"
 theme[highlight_4]="#b877db"

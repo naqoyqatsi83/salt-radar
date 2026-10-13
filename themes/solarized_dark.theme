@@ -3,6 +3,9 @@
 #
 # Bashtop solarized theme
 # by aristocratos
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Solarized palette.
 
 theme[main_bg]="#002b36"
 theme[meter_bg]="#022f3a"
@@ -22,7 +25,7 @@ theme[subtitle_fg]="#7a8f8c"
 theme[version_fg]="#587990"
 theme[hint_fg]="#637d7d"
 theme[badge_bg]="#50392b"
-theme[green]="#50c878"
+theme[green]="#859900"
 theme[cyan]="#587990"
 theme[yellow]="#edb400"
 theme[orange]="#e65317"
@@ -36,7 +39,7 @@ theme[mem_gradient_start]="#a16869"
 theme[mem_gradient_mid]="#b94f50"
 theme[mem_gradient_high]="#ca3e3f"
 theme[mem_gradient_end]="#e02f30"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#859900"
 theme[pulse_aging]="#e65317"
 theme[tab_active_bg]="#04323d"
 theme[tab_active_fg]="#b58900"
@@ -44,5 +47,5 @@ theme[tab_inactive_fg]="#637d7d"
 theme[tab_separator]="#586e75"
 theme[highlight_1]="#587990"
 theme[highlight_2]="#9b607d"
-theme[highlight_3]="#00e6aa"
+theme[highlight_3]="#2aa198"
 theme[highlight_4]="#ccb5f7"

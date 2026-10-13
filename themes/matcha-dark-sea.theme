@@ -3,6 +3,9 @@
 #
 # Bashtop matcha-dark-sea theme
 # by TheCynicalTeam
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# its own palette.
 
 theme[main_bg]=""
 theme[meter_bg]=""
@@ -27,7 +30,7 @@ theme[cyan]="#66d9ef"
 theme[yellow]="#e6db74"
 theme[orange]="#ff963c"
 theme[red]="#ff5050"
-theme[purple]="#b478ff"
+theme[purple]="#7976b7"
 theme[gradient_start]="#33b165"
 theme[gradient_mid]="#f8f8f2"
 theme[gradient_high]="#93d6c5"
@@ -36,7 +39,7 @@ theme[mem_gradient_start]="#75715e"
 theme[mem_gradient_mid]="#2eb398"
 theme[mem_gradient_high]="#30b27e"
 theme[mem_gradient_end]="#33b165"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#33b165"
 theme[pulse_aging]="#ff963c"
 theme[tab_active_bg]="#082c25"
 theme[tab_active_fg]="#2eb398"

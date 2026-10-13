@@ -5,6 +5,9 @@
 # c/o @s6muel
 # inspired by @yorickpeterse's vim-paper theme at https://gitlab.com/yorickpeterse/vim-paper
 #
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# its own palette.
 
 theme[main_bg]="#f2eede"
 theme[meter_bg]="#e9e5d6"
@@ -47,4 +50,4 @@ theme[tab_separator]="#000000"
 theme[highlight_1]="#1e6fcc"
 theme[highlight_2]="#f22bbe"
 theme[highlight_3]="#00966e"
-theme[highlight_4]="#aa50ff"
+theme[highlight_4]="#a26ce6"
