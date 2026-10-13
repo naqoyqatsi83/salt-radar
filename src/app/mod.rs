@@ -3365,7 +3365,11 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             serde_json::Value::Array(ids) => ids.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","),
             _ => "?".to_string(),
         };
-        let minions = evt.data["minions"].as_array().map(|a| a.len()).unwrap_or(0);
+        // Distinct IDs: a list target naming a minion twice (`-L a,b,a`) is
+        // passed through as given, but that minion returns once.
+        let minions = evt.data["minions"].as_array()
+            .map(|a| a.iter().filter_map(|m| m.as_str()).collect::<HashSet<_>>().len())
+            .unwrap_or(0);
         let (args, test_run) = format_job_args(&fun, &evt.data["arg"]);
         if let Some(job) = index.get(&jid).map(|&i| &mut jobs[i]) {
             // A `/ret/` for this jid was processed before this `/new` --
@@ -3678,6 +3682,21 @@ mod tests {
             ("web01", Some(KeyStatus::Denied), false),
         ], "the denied duplicate is its own row; db01 is listed before the master knows it");
         assert_eq!(minion_list_rows(&[], &minions, &HashMap::new()).len(), 1, "without keys, the known accepted minions");
+    }
+
+    #[test]
+    fn live_jobs_counts_a_minion_targeted_twice_once() {
+        let evt = |tag: &str, data: serde_json::Value| SaltEvent { tag: tag.into(), data, ts: 0.0 };
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/new", json!({
+            "jid": "1", "fun": "test.ping", "tgt": "web01,db01,web01", "tgt_type": "list",
+            "minions": ["web01", "db01", "web01"],
+        })));
+        for mid in ["web01", "db01"] {
+            track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/1/ret/{mid}"),
+                json!({"id": mid, "fun": "test.ping", "return": true, "retcode": 0, "success": true})));
+        }
+        assert_eq!((jobs[0].target_count, jobs[0].returned), (2, 2), "nothing left waiting");
     }
 
     #[test]
