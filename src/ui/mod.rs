@@ -271,6 +271,32 @@ fn hang_indent(text: &str, width: usize) -> usize {
 
 /// A text input's `prefix` and content with its cursor: the character under
 /// it, or a space past the end, in reverse video (readable in any theme).
+/// A list's filter bar: the filter being typed (with its cursor) or the one
+/// applied, the item count, and a warning when a `/…/` term is matched as
+/// plain text instead of a regex. `check_syntax` is false where the agent
+/// applies the filter, as Python's regex syntax differs from this one.
+pub fn filter_bar(text: &str, typing: bool, cursor: Option<usize>, count: String, check_syntax: bool) -> Option<Line<'static>> {
+    if !typing && text.is_empty() {
+        return None;
+    }
+    let style = Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD);
+    let mut spans = if typing {
+        input_spans(" filter: ", text, cursor, style)
+    } else {
+        vec![Span::styled(format!(" filter: {} ", text), style)]
+    };
+    spans.push(Span::styled(if typing { format!("  {}", count) } else { count }, Style::default().fg(color::inactive_fg())));
+    let problem = crate::sniff::filter_terms(text).into_iter()
+        .find_map(|t| crate::sniff::regex_problem(t, check_syntax).map(|why| (t, why)));
+    if let Some((term, why)) = problem {
+        spans.push(Span::styled(
+            format!("  \u{26a0} {}: {}, matched as text", term, why),
+            Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
+        ));
+    }
+    Some(Line::from(spans))
+}
+
 pub fn input_spans(prefix: &str, text: &str, cursor: Option<usize>, style: Style) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     let at = cursor.unwrap_or(chars.len()).min(chars.len());
@@ -1095,12 +1121,13 @@ fn filter_help_lines() -> Vec<Line<'static>> {
         &[
             ("plain", "nginx", "the text anywhere, any case"),
             ("glob", "web-*  db?", "a whole minion ID, like Salt's targeting"),
-            ("regex", "/web-0[1-5]$/", "a regex; /…/i ignores case"),
+            ("regex", "/web-0[1-5]$/", "a regex, case-sensitive; /…/i ignores case"),
             ("several", "web-*, /^db-0[0-9]$/", "any of the terms matches"),
             ("search", "/Result: (False|None)/", "output and help search: one query"),
         ],
         &[
             "Text that isn't a complete /…/ is plain, so /etc/salt/minion finds the path.",
+            "A /…/ that isn't a usable regex (/x/g, look-around) is matched as text, flagged ⚠.",
             "Filter terms get a color each; search matches are tinted, the current one solid.",
             "Job Cache filters on the master: globs match the target, regexes use Python's re.",
         ],

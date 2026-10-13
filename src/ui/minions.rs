@@ -29,17 +29,9 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
     let selected = app.minion_selected.min(total.saturating_sub(1));
 
     // ── Filter bar ────────────────────────────────────────────────────────
-    if app.is_filtering {
-        let mut spans = super::input_spans(" filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
-        spans.extend([
-            Span::styled(format!("  {} items", entries), Style::default().fg(color::inactive_fg())),
-        ]);
-        lines.push(Line::from(spans));
-    } else if !app.filter_text_for(Tab::Minions).is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(format!(" filter: {} ", app.filter_text_for(Tab::Minions)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", entries), Style::default().fg(color::inactive_fg())),
-        ]));
+    let filter = if app.is_filtering { &app.filter_text } else { app.filter_text_for(Tab::Minions) };
+    if let Some(bar) = super::filter_bar(filter, app.is_filtering, app.input_cursor, format!("{} items", entries), true) {
+        lines.push(bar);
     } else if app.hide_timed_out {
         lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD))));
     }

@@ -125,17 +125,13 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
     let mut lines: Vec<Line> = Vec::new();
 
     // Filter bar
-    if app.is_filtering {
-        let mut spans = super::input_spans(" filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
-        spans.extend([
-            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
-        ]);
-        lines.push(Line::from(spans));
-    } else if !app.filter_text_for(Tab::Jobs).is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(format!(" filter: {} ", app.filter_text_for(Tab::Jobs)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
-        ]));
+    let (filter, count) = if app.is_filtering {
+        (app.filter_text.as_str(), format!("{} items", total))
+    } else {
+        (app.filter_text_for(Tab::Jobs), format!("{} items", total))
+    };
+    if let Some(bar) = super::filter_bar(filter, app.is_filtering, app.input_cursor, count, true) {
+        lines.push(bar);
     }
 
     if app.jobs.is_empty() {
@@ -249,17 +245,13 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
     }
 
     // Filter bar with total_count context
-    if app.cache_is_filtering {
-        let mut spans = super::input_spans(" filter: ", &app.cache_filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
-        spans.extend([
-            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
-        ]);
-        lines.push(Line::from(spans));
-    } else if !app.cache_server_filter.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(format!(" filter: {} ", app.cache_server_filter), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items (of {} total)", total, app.cache_total_count), Style::default().fg(color::inactive_fg())),
-        ]));
+    let (filter, count) = if app.cache_is_filtering {
+        (&app.cache_filter_text, format!("{} items", total))
+    } else {
+        (&app.cache_server_filter, format!("{} items (of {} total)", total, app.cache_total_count))
+    };
+    if let Some(bar) = super::filter_bar(filter, app.cache_is_filtering, app.input_cursor, count, false) {
+        lines.push(bar);
     }
 
     if app.jobs_cache.is_empty() {

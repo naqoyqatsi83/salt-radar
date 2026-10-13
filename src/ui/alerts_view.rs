@@ -71,17 +71,13 @@ pub fn draw_alerts(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &m
     let mut lines: Vec<Line> = Vec::new();
 
     // Filter bar
-    if app.is_filtering {
-        let mut spans = super::input_spans(" filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
-        spans.extend([
-            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
-        ]);
-        lines.push(Line::from(spans));
-    } else if !app.filter_text_for(Tab::Alerts).is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(format!(" filter: {} ", app.filter_text_for(Tab::Alerts)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
-        ]));
+    let (filter, count) = if app.is_filtering {
+        (app.filter_text.as_str(), format!("{} items", total))
+    } else {
+        (app.filter_text_for(Tab::Alerts), format!("{} items", total))
+    };
+    if let Some(bar) = super::filter_bar(filter, app.is_filtering, app.input_cursor, count, true) {
+        lines.push(bar);
     }
 
     if app.alert_engine.alerts.is_empty() {
