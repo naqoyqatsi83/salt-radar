@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Confirm before quitting (#173): `q` now asks "Quit salt-radar?" and only `y`/`Enter` quits, while any other key, `q` included, cancels. Extra `q` presses meant for a popup that lag already closed used to quit the app, since queued keys are handled in one batch before the next redraw. Turn it off with `confirm_quit = false` in `[ui]` or the Config Editor; `Ctrl+C` still quits at once
+- `graph_style` (`dots`/`bars`) in `[dashboard]` and `mouse` in `[ui]` (#174): the Dashboard graphs' style (`m`) and mouse capture (`F2`) are now settings, in the Config Editor too, instead of starting as dots and on every time
 
 ### Changed
 
@@ -17,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dashboard toggles lost on restart (#174): the graph panels (`F4`–`F8`), Minions `f` and API `x` were saved only on a clean quit, so closing the terminal window or a dropped SSH session lost them. Every hotkey toggle, the new graph style and mouse settings included, is now saved the moment it changes, merged into the config file as it is
 - Regex filter terms that couldn't be used failing silently (#168): a `/…/` term with a flag other than `/i` (`/fit/g`), or one this regex engine can't compile (look-around, an unclosed group), was quietly matched as plain text and found nothing, which looked like regex filtering being broken. Every list filter's bar now flags such a term with ⚠ and the reason; the Job Cache, which the agent filters with Python's `re`, flags only the flags. The help and README also say that regex terms are case-sensitive unless written `/…/i`
 - Minions view not adding up to the Dashboard's key counts (#171): it listed only minions with an accepted key, so pending, rejected and denied keys never showed, and an ID with both an accepted and a denied key showed once, as `denied`, though it was accepted and working. The list now has a row per key, matching Minion Key Status: the denied duplicate is its own row next to the accepted one, other keys show their status with no minion data, and the filter matches key status (`denied`). The "minions" count on the Dashboard's Salt RSS gauge is now the accepted key count
 - Live Jobs and Job Detail disagreeing on a return's outcome (#166): Live Jobs went by the event's `success` flag alone, while Job Detail and the Minions Fail% column also counted an empty return as a failure, so `config.get` of a missing key was OK in Live Jobs and RC 1 in Job Detail. All views now share one rule: Salt's `success`/`retcode`, plus failures Salt misses in the return data (a failed state, an `ERROR:` string); an empty return is a success
