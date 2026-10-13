@@ -581,15 +581,12 @@ pub fn return_event_jid(evt: &SaltEvent) -> Option<&str> {
     }
 }
 
-/// Outcome of a job return event: Salt's own `success`/`retcode` when the
-/// event carries them, and what the return data itself says (a failed state
-/// inside a state run, an `ERROR:` string, ...).
+/// Outcome of a job return event, by the same rule as every other view (see
+/// `return_outcome`).
 pub fn return_event_result(data: &serde_json::Value) -> ReturnResult {
     let ret = &data["return"];
-    let (derived_rc, derived_ok) = derive_success_retcode(ret);
-    let retcode = data["retcode"].as_i64().unwrap_or(derived_rc);
-    let success = data["success"].as_bool().unwrap_or(true) && derived_ok && retcode == 0;
-    ReturnResult { success, retcode: if success { 0 } else { retcode.max(1) }, counts: state_counts(ret) }
+    let (success, retcode) = return_outcome(data, ret);
+    ReturnResult { success, retcode, counts: state_counts(ret) }
 }
 
 /// Whether a Job Cache entry targeted this minion. Only targets that can be
@@ -2795,10 +2792,11 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
             }
             other => other.to_string(),
         };
+        let (success, retcode) = return_outcome(&evt.data, &full_return);
         returns.push(JidReturn {
             minion_id,
-            success: evt.data["success"].as_bool().unwrap_or(false),
-            retcode: evt.data["retcode"].as_i64().unwrap_or(0),
+            success,
+            retcode,
             summary,
             full_return,
             formatted_text: String::new(), // computed on-demand in y handler
@@ -3129,7 +3127,7 @@ pub fn state_counts(full_return: &serde_json::Value) -> Option<StateCounts> {
     Some(counts)
 }
 
-pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
+fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
     match full_return {
         serde_json::Value::Object(obj) => {
             // state dict: check 'result' key
@@ -3159,22 +3157,26 @@ pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
         serde_json::Value::Bool(b) => (0, *b),
         serde_json::Value::Null => (1, false),
         // Salt returns error strings starting with "ERROR:" for cmd.run etc.
-        serde_json::Value::String(s) if s.starts_with("ERROR:") || s.starts_with("error:") || s.trim().is_empty() => (1, false),
+        // An empty string is a valid result (`config.get` of a missing key).
+        serde_json::Value::String(s) if s.starts_with("ERROR:") || s.starts_with("error:") => (1, false),
         _ => (0, true),
     }
 }
 
-/// A looked-up return's outcome: the agent's verdict (which includes the
-/// retcode Salt stored in the job cache) combined with what the return data
-/// itself shows, so neither a non-zero exit nor a failed state is missed.
-fn lookup_return_outcome(entry: &serde_json::Value, full_return: &serde_json::Value) -> (bool, i64) {
+/// A return's `(success, retcode)`, shared by Live Jobs, Job Detail and
+/// minion health so they never disagree. `salt` is a return event or a
+/// looked-up return: its `success`/`retcode` are Salt's verdict (the agent
+/// reads the retcode stored in the job cache). The return data can only add
+/// failures Salt misses -- a failed state, an `ERROR:` string -- never clear
+/// one.
+pub(crate) fn return_outcome(salt: &serde_json::Value, full_return: &serde_json::Value) -> (bool, i64) {
     let (derived_rc, derived_ok) = derive_success_retcode(full_return);
-    let agent_ok = entry["success"].as_bool().unwrap_or(true);
-    let agent_rc = entry["retcode"].as_i64().unwrap_or(0);
-    if agent_ok && derived_ok && agent_rc == 0 {
+    let salt_ok = salt["success"].as_bool().unwrap_or(true);
+    let salt_rc = salt["retcode"].as_i64().unwrap_or(0);
+    if salt_ok && derived_ok && salt_rc == 0 {
         (true, 0)
     } else {
-        (false, [agent_rc, derived_rc, 1].into_iter().find(|&rc| rc != 0).unwrap_or(1))
+        (false, [salt_rc, derived_rc, 1].into_iter().find(|&rc| rc != 0).unwrap_or(1))
     }
 }
 
@@ -3195,7 +3197,7 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     if let Some(arr) = data["returns"].as_array() {
         for entry in arr {
             let full_return = entry["full_return"].clone();
-            let (success, retcode) = lookup_return_outcome(entry, &full_return);
+            let (success, retcode) = return_outcome(entry, &full_return);
             result.returns.push(JidReturn {
                 minion_id: entry["minion_id"].as_str().unwrap_or("?").to_string(),
                 success,
@@ -3321,11 +3323,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             .and_then(|s| s.split("/ret/").next())
             .unwrap_or("");
         if jid.is_empty() { return; }
-        // The event bus's own `success` (set by Salt itself from the real
-        // return, not re-derived here) is authoritative -- unlike the
-        // best-effort reconstruction `derive_success_retcode` has to do for
-        // the cached `jobs.lookup_jid` return shown in Job Detail.
-        let success = evt.data["success"].as_bool().unwrap_or(true);
+        let (success, _) = return_outcome(&evt.data, &evt.data["return"]);
         if let Some(job) = index.get(jid).map(|&i| &mut jobs[i]) {
             job.returned += 1;
             if success { job.succeeded += 1; } else { job.failed += 1; }
@@ -3520,7 +3518,7 @@ mod tests {
         assert_eq!(derive_success_retcode(&json!(false)), (0, false));
         assert_eq!(derive_success_retcode(&json!(null)), (1, false));
         assert_eq!(derive_success_retcode(&json!("ERROR: no such function")), (1, false));
-        assert_eq!(derive_success_retcode(&json!("  ")), (1, false));
+        assert_eq!(derive_success_retcode(&json!("")), (0, true), "config.get of a missing key");
         assert_eq!(derive_success_retcode(&json!("15:01 up 3 days")), (0, true));
         assert_eq!(derive_success_retcode(&json!({"retcode": 2, "stdout": ""})), (2, false));
         let states_ok = json!({"file_|-a_|-/a_|-managed": {"result": true, "__run_num__": 0}});
@@ -3559,13 +3557,33 @@ mod tests {
 
     #[test]
     fn lookup_outcome_trusts_the_stored_retcode_and_the_return_data() {
-        let out = |entry: serde_json::Value| lookup_return_outcome(&entry, &entry["full_return"]);
+        let out = |entry: serde_json::Value| return_outcome(&entry, &entry["full_return"]);
         assert_eq!(out(json!({"success": true, "retcode": 0, "full_return": "up 3 days"})), (true, 0));
         assert_eq!(out(json!({"success": false, "retcode": 127, "full_return": "/bin/sh: uptime: not found"})), (false, 127),
             "an exit code the output text doesn't show");
         assert_eq!(out(json!({"success": true, "retcode": 0, "full_return": "ERROR: boom"})), (false, 1),
             "an error the agent missed");
         assert_eq!(out(json!({"full_return": "up 3 days"})), (true, 0), "missing fields default to success");
+    }
+
+    #[test]
+    fn live_jobs_and_job_detail_agree_on_a_return() {
+        let cases = [
+            (json!(""), true, "config.get of a missing key"),
+            (json!("ERROR: boom"), false, "an error Salt reported as a success"),
+            (json!({"pkg_|-vim_|-vim_|-installed": {"result": false}}), false, "a failed state"),
+        ];
+        for (ret, ok, what) in cases {
+            let evt = SaltEvent {
+                tag: "salt/job/1/ret/web01".into(),
+                data: json!({"id": "web01", "fun": "config.get", "return": ret, "retcode": 0, "success": true}),
+                ts: 0.0,
+            };
+            let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+            track_job_from_event(&mut jobs, &mut index, &evt);
+            let detail = build_jid_lookup_from_events("1", &VecDeque::from([evt])).unwrap();
+            assert_eq!((jobs[0].failed == 0, detail.returns[0].success), (ok, ok), "{what}");
+        }
     }
 
     #[test]

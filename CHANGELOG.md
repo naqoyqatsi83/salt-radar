@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Live Jobs and Job Detail disagreeing on a return's outcome (#166): Live Jobs went by the event's `success` flag alone, while Job Detail and the Minions Fail% column also counted an empty return as a failure, so `config.get` of a missing key was OK in Live Jobs and RC 1 in Job Detail. All views now share one rule: Salt's `success`/`retcode`, plus failures Salt misses in the return data (a failed state, an `ERROR:` string); an empty return is a success
+
 ## [0.8.2] - 2026-10-13
 
 ### Fixed

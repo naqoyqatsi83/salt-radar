@@ -470,8 +470,7 @@ impl App {
                     if tag.contains("/ret/") {
                         self.note_return_for_open_job(&tag);
                         self.current_sec_returns += 1;
-                        let success = data["success"].as_bool()
-                            .unwrap_or_else(|| derive_success_retcode(&data["return"]).1);
+                        let (success, _) = return_outcome(&data, &data["return"]);
                         self.job_returns_window.push_back(success);
                         if self.job_returns_window.len() > JOB_STATS_WINDOW { self.job_returns_window.pop_front(); }
                         if let Some(mid) = tag.rsplit('/').next() {

@@ -573,8 +573,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
 pub(crate) fn job_return_wrapper(evt: &crate::types::SaltEvent) -> Option<(String, serde_json::Value, i64)> {
     let ret = evt.data.get("return")?.clone();
     let id = evt.data.get("id")?.as_str()?.to_string();
-    let retcode = evt.data.get("retcode").and_then(|v| v.as_i64())
-        .unwrap_or_else(|| crate::app::derive_success_retcode(&ret).0);
+    let (_, retcode) = crate::app::return_outcome(&evt.data, &ret);
     Some((id, ret, retcode))
 }
 
