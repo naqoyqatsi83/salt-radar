@@ -1241,11 +1241,39 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  state detail", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled("  always full/verbose, overriding the master's own state_output/state_verbose", Style::default().fg(color::main_fg())),
         ]),
+        Line::from(vec![
+            Span::styled("  OK / FAIL", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  Salt's success and retcode, plus a failed state or an ERROR: string Salt missed;", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  Live Jobs, Job Detail and Fail% all use this rule (an empty result is OK)", Style::default().fg(color::main_fg())),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Minion Detail", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![
             Span::styled("  Last Seen", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled("  newer of: Salt's own minion-cache mtime, or the last /ret/ event seen live", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Minions list", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  one row per key", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  adds up to Minion Key Status; pending, rejected and denied keys too", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  listed twice", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  an ID with an accepted and a denied key (it came back with a new key)", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Events Preview", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  long lines", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  wrap under their key; Enter opens the whole event", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  filter match", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  highlighted; the body starts at the first one when it would be cut off", Style::default().fg(color::main_fg())),
         ]),
         Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::inactive_fg()))),
