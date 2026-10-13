@@ -283,7 +283,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 
 | Key | Action |
 |-----|--------|
-| `q` | Quit |
+| `q` | Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once) |
 | `Tab` / `Shift+Tab` | Next / previous tab |
 | `1`–`7` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse) |
 | `↑`/`↓` | Scroll / navigate |

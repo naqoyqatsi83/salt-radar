@@ -88,6 +88,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> bool {
+        // Only an explicit yes quits: another `q` (lag, mashed keys) cancels.
+        if self.quit_confirm {
+            self.quit_confirm = false;
+            return matches!(code, KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y'));
+        }
+
         // Help overlay handles its own dismiss
         if self.show_help {
             self.handle_help_key(code);
@@ -1091,7 +1097,12 @@ impl App {
         }
 
         match code {
-            KeyCode::Char('q') | KeyCode::Char('Q') => return true,
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                if !self.config.confirm_quit {
+                    return true;
+                }
+                self.quit_confirm = true;
+            }
             KeyCode::Char('=') | KeyCode::Char('+') => {
                 self.tick_interval_ms = (self.tick_interval_ms + 500).min(30_000);
             }
@@ -1337,6 +1348,10 @@ impl App {
     pub fn handle_mouse_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
         let h = frame_size.height as usize;
 
+        if self.quit_confirm {
+            self.quit_confirm = false;
+            return false;
+        }
         if self.config_editor.is_some() || self.save_prompt.is_some() {
             return false;
         }

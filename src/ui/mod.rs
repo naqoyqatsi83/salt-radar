@@ -500,6 +500,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         dim_background(f, dim);
         detail_popup::draw_save_prompt(f, app);
     }
+
+    if app.quit_confirm {
+        dim_background(f, dim);
+        detail_popup::draw_quit_confirm(f);
+    }
 }
 
 /// Fades everything already drawn toward the theme's background by
@@ -839,7 +844,7 @@ pub struct Shortcut {
 /// Every shortcut, grouped like the README's keyboard tables.
 pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ("General", &[
-        Shortcut { tab: "", key: "`q`", action: "Quit" },
+        Shortcut { tab: "", key: "`q`", action: "Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once)" },
         Shortcut { tab: "", key: "`Tab` / `Shift+Tab`", action: "Next / previous tab" },
         Shortcut { tab: "", key: "`1`–`7`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse)" },
         Shortcut { tab: "", key: "`↑`/`↓`", action: "Scroll / navigate" },

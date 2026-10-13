@@ -143,6 +143,11 @@ pub struct App {
     /// `color::set_theme`, so `sync_theme` only reloads on a change.
     applied_theme: Option<(String, bool)>,
 
+    /// The "Quit salt-radar?" prompt `q` opens (`confirm_quit`). A global
+    /// overlay rather than a `detail_popup`, which may hold a popup parked on
+    /// another tab.
+    pub quit_confirm: bool,
+
     // Admin mode
     pub admin_mode: bool,
     pub admin_mode_pending: bool,
@@ -787,6 +792,7 @@ impl App {
             cache_load_progress: None,
 
             admin_mode: false,
+            quit_confirm: false,
             admin_mode_pending: false,
             fleet_scanning: false,
             fleet_scan_completed: false,

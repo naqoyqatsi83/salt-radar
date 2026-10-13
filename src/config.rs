@@ -400,6 +400,9 @@ pub struct AppConfig {
     /// How strongly the screen behind a popup is faded toward the theme's
     /// background, 0-100% (0 = no dimming).
     pub popup_dim_pct: u64,
+    /// Whether `q` asks before quitting, so extra presses meant for a popup
+    /// that lag already closed don't quit.
+    pub confirm_quit: bool,
 }
 
 impl AppConfig {
@@ -497,6 +500,7 @@ impl Default for AppConfig {
             color_theme: DEFAULT_THEME.into(),
             theme_background: true,
             popup_dim_pct: 70,
+            confirm_quit: true,
         }
     }
 }
@@ -599,6 +603,7 @@ struct UiConfig {
     color_theme: Option<String>,
     theme_background: Option<bool>,
     popup_dim_pct: Option<u64>,
+    confirm_quit: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -708,6 +713,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("ui", "color_theme", c.color_theme.to_toml()),
         ("ui", "theme_background", c.theme_background.to_toml()),
         ("ui", "popup_dim_pct", c.popup_dim_pct.to_toml()),
+        ("ui", "confirm_quit", c.confirm_quit.to_toml()),
     ]
 }
 
@@ -849,6 +855,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = u.color_theme { cfg.color_theme = v; }
                 if let Some(v) = u.theme_background { cfg.theme_background = v; }
                 if let Some(v) = u.popup_dim_pct { cfg.popup_dim_pct = v.min(100); }
+                if let Some(v) = u.confirm_quit { cfg.confirm_quit = v; }
             }
         }
     }
@@ -1099,6 +1106,7 @@ mod tests {
             color_theme: "nord".into(),
             theme_background: false,
             popup_dim_pct: 33,
+            confirm_quit: false,
             ..AppConfig::default()
         };
         write_config(&path, &cfg).unwrap();

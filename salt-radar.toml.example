@@ -247,3 +247,7 @@
 # How strongly the screen behind a popup is dimmed (faded toward the theme's
 # background), 0-100%. 0 turns dimming off.
 # popup_dim_pct = 70
+
+# Ask before quitting with 'q' (Ctrl+C always quits at once). Keeps extra 'q'
+# presses meant for a popup -- e.g. while the screen lags -- from quitting.
+# confirm_quit = true
