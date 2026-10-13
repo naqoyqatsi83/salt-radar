@@ -110,11 +110,12 @@ Live overview of your Salt Master with real-time sparkline panels:
 
 ### Minions
 - Scrollable minion list: ID, key status, OS, Salt version, plus optional Arch, Seen (time since last check-in) and Fail% (share of the minion's last 50 returns that failed, worst first when sorted) columns; sorting keeps timed-out minions in their own section
+- One row per key, so the list adds up to the Dashboard's Minion Key Status: pending, rejected and denied keys are listed too, and an ID with an accepted and a denied key (a minion that came back with a new key) shows twice, once per key
 - Freshly-active marker (`●`) next to minions that checked in recently, threshold adapts to the fleet's own median check-in age
 - Fleet overview panel: OS Distribution, Salt Version, and Architecture distribution bars
 - Detail popup with key info and connection status
 - Activity popup (`r`): the minion's recent jobs with function, args, result (OK / FAIL rc=N, or `2 ok 1 chg 1 fail` for state runs) and full JID, plus Job Cache entries that targeted it by name, glob or list; a summary line counts its last 50 returns and names the latest failure
-- Filter by ID, OS, or version (`/` key) — scopes the fleet overview breakdown to the matching minions too, when "follow filter" is on (`f` to toggle, on by default; startup default configurable via `follow_filter` under `[minions]`)
+- Filter by ID, key status (`denied`, `pending`, …), OS, or version (`/` key) — scopes the fleet overview breakdown to the matching minions too, when "follow filter" is on (`f` to toggle, on by default; startup default configurable via `follow_filter` under `[minions]`)
 
 ### Events
 - Live event stream from the Salt event bus (via ZMQ)

@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, MinionRow};
 use crate::types::{Column, HeaderHit, KeyStatus, MinionInfo, Tab, TableId};
 
 use super::color;
@@ -25,19 +25,20 @@ pub fn draw_minions(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
 fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) {
     let mut lines: Vec<Line> = Vec::new();
     let total = app.filtered_minions_len();
+    let entries = app.minion_entry_count();
     let selected = app.minion_selected.min(total.saturating_sub(1));
 
     // ── Filter bar ────────────────────────────────────────────────────────
     if app.is_filtering {
         let mut spans = super::input_spans(" filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
         spans.extend([
-            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
+            Span::styled(format!("  {} items", entries), Style::default().fg(color::inactive_fg())),
         ]);
         lines.push(Line::from(spans));
     } else if !app.filter_text_for(Tab::Minions).is_empty() {
         lines.push(Line::from(vec![
             Span::styled(format!(" filter: {} ", app.filter_text_for(Tab::Minions)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
+            Span::styled(format!("{} items", entries), Style::default().fg(color::inactive_fg())),
         ]));
     } else if app.hide_timed_out {
         lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD))));
@@ -81,7 +82,6 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
             has_more_above = more_above;
             has_more_below = more_below;
 
-            let key_map = app.key_status_map();
             let to_count = app.filtered_timed_out_count();
             let now = chrono::Utc::now().timestamp().max(0) as u64;
 
@@ -89,20 +89,28 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
                 let select = |line: Line<'static>| if idx == selected { color::selected_row(line) } else { line };
 
                 match row {
-                    Some(minion) => {
+                    MinionRow::Minion(minion) => {
                         // "Freshly active" marker in the 2-space row indent.
                         let fresh = !minion.timed_out && app.is_minion_fresh(minion.last_seen_epoch);
                         let mut spans = vec![
                             Span::styled(if fresh { "\u{25cf}" } else { " " }, Style::default().fg(color::green()).add_modifier(Modifier::BOLD)),
                             Span::raw(" "),
                         ];
-                        let ks = key_map.get(minion.id.as_str()).copied().or(minion.key_status);
                         for (&col, &w) in cols.iter().zip(&widths) {
-                            spans.push(minion_cell(minion, ks, col, w, now, app.minion_fail_ratio(&minion.id)));
+                            spans.push(minion_cell(minion, Some(KeyStatus::Accepted), col, w, now, app.minion_fail_ratio(&minion.id)));
                         }
                         lines.push(select(Line::from(spans)));
                     }
-                    None => {
+                    MinionRow::Key(key) => {
+                        // No minion data: every column but the ID and key reads as a dash.
+                        let stub = MinionInfo { id: key.id.clone(), ..Default::default() };
+                        let mut spans = vec![Span::raw("  ")];
+                        for (&col, &w) in cols.iter().zip(&widths) {
+                            spans.push(minion_cell(&stub, Some(key.status), col, w, now, None));
+                        }
+                        lines.push(select(Line::from(spans)));
+                    }
+                    MinionRow::TimedOutHeader => {
                         // Collapsible section header row
                         let prefix = if app.timed_out_collapsed { "\u{25B6}" } else { "\u{25BC}" };
                         let hint = if app.timed_out_collapsed { "  'z'/'Enter' to expand" } else { "" };
@@ -135,7 +143,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
     }
     hints.extend(super::table::hints(TableId::Minions));
     let block = super::list_block_hinted(
-        format!(" Minions ({}) ", total),
+        format!(" Minions ({}) ", entries),
         Style::default().fg(if focused { color::border_focus() } else { color::border() }),
         color::main_bg(),
         has_more_above,

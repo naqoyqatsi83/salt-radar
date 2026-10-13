@@ -577,6 +577,58 @@ pub struct ReturnResult {
     pub counts: Option<StateCounts>,
 }
 
+/// A row of the Minions list.
+#[derive(Clone, Copy)]
+pub enum MinionRow<'a> {
+    /// An accepted minion, with what the master knows about it.
+    Minion(&'a MinionInfo),
+    /// A key with no minion data: pending, rejected or denied (a denied key
+    /// often duplicates an accepted ID), or accepted but never seen.
+    Key(&'a KeyInfo),
+    /// The collapsible "Timed out" section header.
+    TimedOutHeader,
+}
+
+impl<'a> MinionRow<'a> {
+    pub fn minion(&self) -> Option<&'a MinionInfo> {
+        match *self {
+            Self::Minion(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Minion(m) => &m.id,
+            Self::Key(k) => &k.id,
+            Self::TimedOutHeader => "",
+        }
+    }
+
+    pub fn key_status(&self) -> Option<KeyStatus> {
+        match self {
+            Self::Minion(_) => Some(KeyStatus::Accepted),
+            Self::Key(k) => Some(k.status),
+            Self::TimedOutHeader => None,
+        }
+    }
+
+    fn timed_out(&self) -> bool {
+        matches!(self, Self::Minion(m) if m.timed_out)
+    }
+}
+
+/// The Minions list's rows, one per key (see `App::minion_entries`).
+fn minion_list_rows<'a>(keys: &'a [KeyInfo], minions: &'a [MinionInfo], index: &HashMap<String, usize>) -> Vec<MinionRow<'a>> {
+    if keys.is_empty() {
+        return minions.iter().filter(|m| m.key_status == Some(KeyStatus::Accepted)).map(MinionRow::Minion).collect();
+    }
+    keys.iter().map(|k| match (k.status, index.get(&k.id)) {
+        (KeyStatus::Accepted, Some(&i)) => MinionRow::Minion(&minions[i]),
+        _ => MinionRow::Key(k),
+    }).collect()
+}
+
 /// The JID of a `salt/job/<jid>/ret/<minion>` event.
 pub fn return_event_jid(evt: &SaltEvent) -> Option<&str> {
     let mut parts = evt.tag.split('/');
@@ -1219,16 +1271,7 @@ impl App {
         })
     }
 
-    /// The Minions-tab filter as a predicate, its terms resolved once per
-    /// pass (see `FilterTerm`).
-    pub fn minion_matcher(pat: &str) -> impl Fn(&MinionInfo) -> bool {
-        let terms: Vec<FilterTerm> = Self::filter_terms(pat).into_iter().map(FilterTerm::new).collect();
-        move |m| terms.is_empty() || terms.iter().any(|t| {
-            t.host(&m.id) || t.text(&m.os) || t.text(&m.osrelease) || t.text(&m.salt_version)
-        })
-    }
-
-    /// Same matching rules as `minion_matcher`, for the separate `FleetMinion`
+    /// The Minions filter's rules, for the separate `FleetMinion`
     /// type used by the Fleet Overview scan — lets the Minions-tab filter also
     /// scope the OS/version/arch breakdown, not just the list.
     pub fn fleet_minion_matcher(pat: &str) -> impl Fn(&crate::types::FleetMinion) -> bool {
@@ -1880,95 +1923,102 @@ impl App {
             .count()
     }
 
+    /// Minions list entries matching its filter, split into responsive rows
+    /// and timed-out minions. One row per key, so the list adds up to the
+    /// Dashboard's key counts: an accepted key shows its minion (or just the
+    /// key while the master knows nothing more), any other key its status.
+    /// Without readable keys, the accepted minions the master knows.
+    fn minion_entries(&self) -> (Vec<MinionRow<'_>>, Vec<MinionRow<'_>>) {
+        let matches = Self::minion_row_matcher(self.filter_text_for(Tab::Minions));
+        minion_list_rows(&self.keys, &self.minion_info, &self.minion_index).into_iter()
+            .filter(|r| matches(r))
+            .partition(|r| !r.timed_out())
+    }
+
+    /// The Minions filter: ID, key status and, for minions, OS and version.
+    fn minion_row_matcher(pat: &str) -> impl Fn(&MinionRow<'_>) -> bool {
+        let terms: Vec<FilterTerm> = Self::filter_terms(pat).into_iter().map(FilterTerm::new).collect();
+        move |r| terms.is_empty() || terms.iter().any(|t| {
+            t.host(r.id())
+                || r.key_status().is_some_and(|ks| t.text(ks.label()))
+                || matches!(r, MinionRow::Minion(m) if t.text(&m.os) || t.text(&m.osrelease) || t.text(&m.salt_version))
+        })
+    }
+
+    /// Rows the Minions list shows, the "Timed out" header included.
     pub fn filtered_minions_len(&self) -> usize {
-        let accepted = &self.accepted_id_set;
-        let hide = self.hide_timed_out;
-        let matches = Self::minion_matcher(self.filter_text_for(Tab::Minions));
-        let resp_count = self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| matches(m))
-            .filter(|m| !m.timed_out)
-            .count();
-        let to_count = self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| matches(m))
-            .filter(|m| m.timed_out)
-            .count();
-        if hide || to_count == 0 {
-            resp_count
+        let (live, timed_out) = self.minion_entries();
+        if self.hide_timed_out || timed_out.is_empty() {
+            live.len()
         } else {
-            resp_count + 1 + if self.timed_out_collapsed { 0 } else { to_count }
+            live.len() + 1 + if self.timed_out_collapsed { 0 } else { timed_out.len() }
         }
     }
 
-    /// Minions list rows in display order: responsive minions, then (unless
-    /// hidden) the collapsible "Timed out" section header as `None` and,
-    /// unless collapsed, the timed-out minions — each group sorted on its own
-    /// so a sort never mixes timed-out minions in with responsive ones.
-    pub fn minion_rows(&self) -> Vec<Option<&MinionInfo>> {
-        let accepted = &self.accepted_id_set;
-        let matches = Self::minion_matcher(self.filter_text_for(Tab::Minions));
-        let (mut live, mut timed_out): (Vec<&MinionInfo>, Vec<&MinionInfo>) = self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| matches(m))
-            .partition(|m| !m.timed_out);
-        if let Some((col, desc)) = self.sort_of(TableId::Minions) {
-            let keys = self.key_status_map();
-            let key_rank = |m: &MinionInfo| match keys.get(m.id.as_str()).copied().or(m.key_status) {
-                Some(KeyStatus::Accepted) => 0,
-                Some(KeyStatus::Pending) => 1,
-                Some(KeyStatus::Rejected) => 2,
-                Some(KeyStatus::Denied) => 3,
-                None => 4,
+    /// Keys and minions matching the Minions filter, collapsed or hidden
+    /// timed-out ones included: the count the list's title shows.
+    pub fn minion_entry_count(&self) -> usize {
+        let (live, timed_out) = self.minion_entries();
+        live.len() + timed_out.len()
+    }
+
+    /// Minions list rows in display order: responsive rows, then (unless
+    /// hidden) the collapsible "Timed out" header and, unless collapsed, the
+    /// timed-out minions -- each group sorted on its own so a sort never
+    /// mixes timed-out minions in with responsive ones. An ID with two keys
+    /// (accepted and denied) gets two rows, next to each other by default.
+    pub fn minion_rows(&self) -> Vec<MinionRow<'_>> {
+        let (mut live, mut timed_out) = self.minion_entries();
+        let rank = |r: &MinionRow| match r.key_status() {
+            Some(KeyStatus::Accepted) => 0,
+            Some(KeyStatus::Pending) => 1,
+            Some(KeyStatus::Rejected) => 2,
+            Some(KeyStatus::Denied) => 3,
+            None => 4,
+        };
+        let sort = self.sort_of(TableId::Minions);
+        let cmp = |a: &MinionRow, b: &MinionRow| {
+            let by_id = a.id().cmp(b.id()).then(rank(a).cmp(&rank(b)));
+            let Some((col, desc)) = sort else { return by_id };
+            let ord = match (col, a.minion(), b.minion()) {
+                (Column::KeyStatus, _, _) => rank(a).cmp(&rank(b)),
+                // Key-only rows have no minion data; they sort as empty.
+                (Column::Os, a, b) => a.map(|m| m.os_label()).cmp(&b.map(|m| m.os_label())),
+                (Column::SaltVersion, a, b) => version_cmp(a.map_or("", |m| &m.salt_version), b.map_or("", |m| &m.salt_version)),
+                (Column::Arch, a, b) => a.map(|m| &m.cpuarch).cmp(&b.map(|m| &m.cpuarch)),
+                // Most recently seen first, matching the Seen column's text.
+                (Column::LastSeen, a, b) => b.map_or(0, |m| m.last_seen_epoch).cmp(&a.map_or(0, |m| m.last_seen_epoch)),
+                // Worst first; rows with no returns yet go last.
+                (Column::FailPct, a, b) => {
+                    let ratio = |m: Option<&MinionInfo>| m.and_then(|m| self.minion_fail_ratio(&m.id)).unwrap_or(-1.0);
+                    ratio(b).total_cmp(&ratio(a))
+                }
+                _ => std::cmp::Ordering::Equal,
             };
-            let cmp = |a: &&MinionInfo, b: &&MinionInfo| {
-                let ord = match col {
-                    Column::KeyStatus => key_rank(a).cmp(&key_rank(b)),
-                    Column::Os => a.os_label().cmp(&b.os_label()),
-                    Column::SaltVersion => version_cmp(&a.salt_version, &b.salt_version),
-                    Column::Arch => a.cpuarch.cmp(&b.cpuarch),
-                    // Most recently seen first, matching the Seen column's text.
-                    Column::LastSeen => b.last_seen_epoch.cmp(&a.last_seen_epoch),
-                    // Worst first; minions with no returns yet go last.
-                    Column::FailPct => {
-                        let ratio = |m: &MinionInfo| self.minion_fail_ratio(&m.id).unwrap_or(-1.0);
-                        ratio(b).total_cmp(&ratio(a))
-                    }
-                    _ => a.id.cmp(&b.id),
-                };
-                if desc { ord.reverse() } else { ord }
-            };
-            live.sort_by(cmp);
-            timed_out.sort_by(cmp);
-        }
-        let mut rows: Vec<Option<&MinionInfo>> = live.into_iter().map(Some).collect();
+            let ord = if desc { ord.reverse() } else { ord };
+            ord.then(by_id)
+        };
+        live.sort_by(cmp);
+        timed_out.sort_by(cmp);
         if !self.hide_timed_out && !timed_out.is_empty() {
-            rows.push(None);
+            live.push(MinionRow::TimedOutHeader);
             if !self.timed_out_collapsed {
-                rows.extend(timed_out.into_iter().map(Some));
+                live.extend(timed_out);
             }
         }
-        rows
+        live
     }
 
+    /// The minion on a Minions list row; `None` for the header and for keys
+    /// the master has no minion data for.
     pub fn get_filtered_minion(&self, index: usize) -> Option<&MinionInfo> {
-        self.minion_rows().get(index).copied().flatten()
+        self.minion_rows().get(index).and_then(MinionRow::minion)
     }
 
     /// Timed-out minions matching the list filter, whether or not their
-    /// section is collapsed — the count its header shows.
+    /// section is collapsed -- the count its header shows.
     pub fn filtered_timed_out_count(&self) -> usize {
-        let accepted = &self.accepted_id_set;
-        let matches = Self::minion_matcher(self.filter_text_for(Tab::Minions));
-        self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| matches(m))
-            .filter(|m| m.timed_out)
-            .count()
-    }
-
-    pub fn key_status_map(&self) -> HashMap<&str, KeyStatus> {
-        self.keys.iter().map(|k| (k.id.as_str(), k.status)).collect()
+        self.minion_entries().1.len()
     }
 
     /// Strip ANSI escape sequences from a string.
@@ -3601,6 +3651,28 @@ mod tests {
         assert_eq!(out(json!({"success": true, "retcode": 0, "full_return": "ERROR: boom"})), (false, 1),
             "an error the agent missed");
         assert_eq!(out(json!({"full_return": "up 3 days"})), (true, 0), "missing fields default to success");
+    }
+
+    #[test]
+    fn minions_list_has_a_row_per_key() {
+        let key = |id: &str, status| KeyInfo { id: id.into(), status, mtime_epoch: 0 };
+        let keys = [
+            key("web01", KeyStatus::Accepted),
+            key("db01", KeyStatus::Accepted),
+            key("new01", KeyStatus::Pending),
+            key("web01", KeyStatus::Denied),
+        ];
+        let minions = [MinionInfo { id: "web01".into(), key_status: Some(KeyStatus::Accepted), ..Default::default() }];
+        let index: HashMap<String, usize> = [("web01".to_string(), 0)].into();
+        let rows = minion_list_rows(&keys, &minions, &index);
+        let shown: Vec<(&str, Option<KeyStatus>, bool)> = rows.iter().map(|r| (r.id(), r.key_status(), r.minion().is_some())).collect();
+        assert_eq!(shown, [
+            ("web01", Some(KeyStatus::Accepted), true),
+            ("db01", Some(KeyStatus::Accepted), false),
+            ("new01", Some(KeyStatus::Pending), false),
+            ("web01", Some(KeyStatus::Denied), false),
+        ], "the denied duplicate is its own row; db01 is listed before the master knows it");
+        assert_eq!(minion_list_rows(&[], &minions, &HashMap::new()).len(), 1, "without keys, the known accepted minions");
     }
 
     #[test]

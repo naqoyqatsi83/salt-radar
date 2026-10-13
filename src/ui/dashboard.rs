@@ -562,12 +562,17 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         Some(pct) => format!("  Workers {:.0}% busy", pct),
         None => "  Workers --".to_string(),
     };
+    // Accepted keys, as Minion Key Status counts them.
+    let minions = match count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted) {
+        0 => app.pulse_minions_count(),
+        n => n,
+    };
     let gauge = Gauge::default()
         .gauge_style(mem_gauge_style(mem_pct))
         .percent((mem_pct.round() as u16).min(100))
         .label(format!(
             "Salt RSS {} MB ({} proc)  {} minions{}",
-            total_rss_used / 1024, proc_count, app.filtered_minions_len(), workers_label,
+            total_rss_used / 1024, proc_count, minions, workers_label,
         ));
 
     let mut service_lines: Vec<Line<'static>> = vec![];
