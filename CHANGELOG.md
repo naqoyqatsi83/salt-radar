@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0-rc1] - 2026-10-13
+
 ### Added
 
 - Confirm before quitting (#173): `q` now asks "Quit salt-radar?" and only `y`/`Enter` quits, while any other key, `q` included, cancels. Extra `q` presses meant for a popup that lag already closed used to quit the app, since queued keys are handled in one batch before the next redraw. Turn it off with `confirm_quit = false` in `[ui]` or the Config Editor; `Ctrl+C` still quits at once
