@@ -331,6 +331,7 @@ impl App {
                 ConfigField { label: "show_job_pulse", label_value: on_off(cfg.show_job_pulse), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_salt_api", label_value: on_off(cfg.show_salt_api), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Order },
+                ConfigField { label: "graph_style", label_value: cfg.graph_style.clone(), kind: ConfigFieldKind::Choice(GRAPH_STYLES) },
                 ConfigField { label: "[minions]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "follow_filter", label_value: on_off(cfg.minions_follow_filter), kind: ConfigFieldKind::Choice(ON_OFF) },
                 self.columns_field(TableId::Minions),
@@ -345,6 +346,7 @@ impl App {
                 ConfigField { label: "theme_background", label_value: on_off(cfg.theme_background), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "popup_dim_pct", label_value: cfg.popup_dim_pct.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "confirm_quit", label_value: on_off(cfg.confirm_quit), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "mouse", label_value: on_off(cfg.mouse), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -432,6 +434,7 @@ impl App {
             show_cpu_graph: parse_bool("show_cpu_graph"),
             show_mem_graph: parse_bool("show_mem_graph"),
             graph_order: vals.get("graph_order").unwrap_or(&"cpu,mem,zmq,events,activity").to_string(),
+            graph_style: vals.get("graph_style").unwrap_or(&"dots").to_string(),
             show_host_resources: parse_bool("show_host_resources"),
             show_services: parse_bool("show_services"),
             show_key_status: parse_bool("show_key_status"),
@@ -454,11 +457,13 @@ impl App {
             theme_background: parse_bool("theme_background"),
             popup_dim_pct: parse_u64("popup_dim_pct")?.min(100),
             confirm_quit: parse_bool("confirm_quit"),
+            mouse: parse_bool("mouse"),
         };
 
         crate::config::write_config(&self.config_path, &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
         let latency_source_changed = new_config.zmq_latency_source != self.config.zmq_latency_source;
+        self.needs_mouse_toggle |= new_config.mouse != self.config.mouse;
         self.persisted_config = new_config.clone();
         self.config = new_config;
         // A sort on a column that was just hidden would keep reordering the

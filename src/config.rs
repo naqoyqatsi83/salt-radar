@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use ratatui::style::Color;
 
-use crate::types::TableId;
+use crate::types::{SparklineStyle, TableId};
 use crate::ui::color::Theme;
 
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
@@ -357,6 +357,8 @@ pub struct AppConfig {
     /// missing from the list is appended after the ones named, so a partial
     /// or malformed value degrades gracefully instead of losing a panel.
     pub graph_order: String,
+    /// How the Dashboard's sparklines are drawn: "dots" or "bars" (`m`).
+    pub graph_style: String,
     /// Which of the Dashboard's fixed (non-sparkline) panels are shown, all
     /// defaulting on so existing configs/behavior are unaffected. salt-api
     /// still only ever renders when the process is actually detected —
@@ -403,9 +405,15 @@ pub struct AppConfig {
     /// Whether `q` asks before quitting, so extra presses meant for a popup
     /// that lag already closed don't quit.
     pub confirm_quit: bool,
+    /// Mouse capture (clicks, wheel), toggled with F2.
+    pub mouse: bool,
 }
 
 impl AppConfig {
+    pub fn sparkline_style(&self) -> SparklineStyle {
+        if self.graph_style == "bars" { SparklineStyle::Bars } else { SparklineStyle::Dots }
+    }
+
     /// The ZMQ graph's top-of-scale latency: `zmq_latency_ceiling_ms`, or
     /// when unset, a default sized to what the source measures — a local
     /// agent round trip is a few ms when healthy, a real test.ping over the
@@ -482,6 +490,7 @@ impl Default for AppConfig {
             show_cpu_graph: true,
             show_mem_graph: true,
             graph_order: "cpu,mem,zmq,events,activity".into(),
+            graph_style: "dots".into(),
             show_host_resources: true,
             show_services: true,
             show_key_status: true,
@@ -501,6 +510,7 @@ impl Default for AppConfig {
             theme_background: true,
             popup_dim_pct: 70,
             confirm_quit: true,
+            mouse: true,
         }
     }
 }
@@ -604,6 +614,7 @@ struct UiConfig {
     theme_background: Option<bool>,
     popup_dim_pct: Option<u64>,
     confirm_quit: Option<bool>,
+    mouse: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -616,6 +627,7 @@ struct DashboardConfig {
     show_cpu_graph: Option<bool>,
     show_mem_graph: Option<bool>,
     graph_order: Option<String>,
+    graph_style: Option<String>,
     show_host_resources: Option<bool>,
     show_services: Option<bool>,
     show_key_status: Option<bool>,
@@ -698,6 +710,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("dashboard", "show_cpu_graph", c.show_cpu_graph.to_toml()),
         ("dashboard", "show_mem_graph", c.show_mem_graph.to_toml()),
         ("dashboard", "graph_order", c.graph_order.to_toml()),
+        ("dashboard", "graph_style", c.graph_style.to_toml()),
         ("dashboard", "show_host_resources", c.show_host_resources.to_toml()),
         ("dashboard", "show_services", c.show_services.to_toml()),
         ("dashboard", "show_key_status", c.show_key_status.to_toml()),
@@ -714,6 +727,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("ui", "theme_background", c.theme_background.to_toml()),
         ("ui", "popup_dim_pct", c.popup_dim_pct.to_toml()),
         ("ui", "confirm_quit", c.confirm_quit.to_toml()),
+        ("ui", "mouse", c.mouse.to_toml()),
     ]
 }
 
@@ -832,6 +846,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = d.show_cpu_graph { cfg.show_cpu_graph = v; }
                 if let Some(v) = d.show_mem_graph { cfg.show_mem_graph = v; }
                 if let Some(v) = d.graph_order { cfg.graph_order = v; }
+                if let Some(v) = d.graph_style { cfg.graph_style = v; }
                 if let Some(v) = d.show_host_resources { cfg.show_host_resources = v; }
                 if let Some(v) = d.show_services { cfg.show_services = v; }
                 if let Some(v) = d.show_key_status { cfg.show_key_status = v; }
@@ -856,6 +871,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = u.theme_background { cfg.theme_background = v; }
                 if let Some(v) = u.popup_dim_pct { cfg.popup_dim_pct = v.min(100); }
                 if let Some(v) = u.confirm_quit { cfg.confirm_quit = v; }
+                if let Some(v) = u.mouse { cfg.mouse = v; }
             }
         }
     }
@@ -1100,6 +1116,8 @@ mod tests {
             api_stats_auth_mode: "pillar".into(),
             zmq_latency_ceiling_ms: 250.0,
             graph_order: "zmq,cpu".into(),
+            graph_style: "bars".into(),
+            mouse: false,
             minions_follow_filter: false,
             save_dir: "~/exports".into(),
             jobs_cache_columns: "jid,fun".into(),

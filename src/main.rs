@@ -55,10 +55,11 @@ fn main() -> io::Result<()> {
     let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    // Enable mouse capture for click/scroll support
-    enable_mouse_capture()?;
-
     let mut app = App::new();
+
+    if app.config.mouse {
+        enable_mouse_capture()?;
+    }
 
     // Draw first frame immediately
     terminal.draw(|f| {
@@ -124,7 +125,7 @@ fn main() -> io::Result<()> {
                     Event::Resize(_, _) => {
                         need_redraw = true;
                     }
-                    Event::Mouse(mouse) if app.mouse_enabled => {
+                    Event::Mouse(mouse) if app.config.mouse => {
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
                                 if app.handle_key(KeyCode::Up) { break 'main; }
@@ -190,7 +191,7 @@ fn main() -> io::Result<()> {
 
         if app.needs_mouse_toggle {
             app.needs_mouse_toggle = false;
-            if app.mouse_enabled {
+            if app.config.mouse {
                 enable_mouse_capture()?;
             } else {
                 disable_mouse_capture()?;

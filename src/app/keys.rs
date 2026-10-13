@@ -185,8 +185,9 @@ impl App {
                     KeyCode::Char('7') => { self.current_tab = Tab::Pulse; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
                     KeyCode::F(2) => {
-                        self.mouse_enabled = !self.mouse_enabled;
+                        self.config.mouse = !self.config.mouse;
                         self.needs_mouse_toggle = true;
+                        self.save_toggles();
                         return false;
                     }
                     KeyCode::Char('?') | KeyCode::F(1) => {
@@ -1146,6 +1147,7 @@ impl App {
                     self.clamp_selection();
                 } else if self.current_tab == Tab::Api {
                     self.config.api_hide_stats_polls = !self.config.api_hide_stats_polls;
+                    self.save_toggles();
                 } else if self.current_tab == Tab::Jobs && !self.cache_focus {
                     self.jobs_failed_only = !self.jobs_failed_only;
                     self.job_selected = 0;
@@ -1160,6 +1162,7 @@ impl App {
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 if self.current_tab == Tab::Minions {
                     self.config.minions_follow_filter = !self.config.minions_follow_filter;
+                    self.save_toggles();
                 }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -1240,10 +1243,11 @@ impl App {
                 self.open_help();
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
-                self.sparkline_style = match self.sparkline_style {
-                    SparklineStyle::Bars => SparklineStyle::Dots,
-                    SparklineStyle::Dots => SparklineStyle::Bars,
-                };
+                self.config.graph_style = match self.config.sparkline_style() {
+                    SparklineStyle::Bars => "dots",
+                    SparklineStyle::Dots => "bars",
+                }.to_string();
+                self.save_toggles();
             }
             KeyCode::Char('/') => {
                 if matches!(self.current_tab, Tab::Dashboard | Tab::Pulse) {
@@ -1318,24 +1322,30 @@ impl App {
             KeyCode::End => self.move_to_last(),
             KeyCode::Enter => self.open_detail(),
             KeyCode::F(2) => {
-                self.mouse_enabled = !self.mouse_enabled;
+                self.config.mouse = !self.config.mouse;
                 self.needs_mouse_toggle = true;
+                self.save_toggles();
             }
             KeyCode::F(3) => self.open_config_editor(),
             KeyCode::F(4) if self.current_tab == Tab::Dashboard => {
                 self.config.show_cpu_graph = !self.config.show_cpu_graph;
+                self.save_toggles();
             }
             KeyCode::F(5) if self.current_tab == Tab::Dashboard => {
                 self.config.show_mem_graph = !self.config.show_mem_graph;
+                self.save_toggles();
             }
             KeyCode::F(6) if self.current_tab == Tab::Dashboard => {
                 self.config.show_zmq_graph = !self.config.show_zmq_graph;
+                self.save_toggles();
             }
             KeyCode::F(7) if self.current_tab == Tab::Dashboard => {
                 self.config.show_events_graph = !self.config.show_events_graph;
+                self.save_toggles();
             }
             KeyCode::F(8) if self.current_tab == Tab::Dashboard => {
                 self.config.show_activity_graph = !self.config.show_activity_graph;
+                self.save_toggles();
             }
             _ => {}
         }

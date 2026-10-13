@@ -189,6 +189,9 @@
 # ignored; any panel missing from the list is appended after the ones named.
 # graph_order = "cpu,mem,zmq,events,activity"
 
+# How the sparklines are drawn: "dots" or "bars". Also toggled with 'm'.
+# graph_style = "dots"
+
 # Which of the Dashboard's other (non-sparkline) panels are shown — all six
 # default on. salt-api still only ever renders when the process is actually
 # detected on this master; this just adds an opt-out on top of that.
@@ -251,3 +254,6 @@
 # Ask before quitting with 'q' (Ctrl+C always quits at once). Keeps extra 'q'
 # presses meant for a popup -- e.g. while the screen lags -- from quitting.
 # confirm_quit = true
+
+# Mouse capture (clicks, wheel scrolling). Also toggled with F2.
+# mouse = true

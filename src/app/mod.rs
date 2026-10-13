@@ -248,7 +248,6 @@ pub struct App {
     /// Active "save to file" prompt (the 's'/'S' counterpart of 'y'/'Y'
     /// clipboard copy), if one is open. Global overlay, like ConfigEditor.
     pub save_prompt: Option<SaveFilePrompt>,
-    pub sparkline_style: SparklineStyle,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
     /// Set to true when config editor saves — main loop will restart
@@ -367,7 +366,6 @@ pub struct App {
     prev_cpu_time: Option<Instant>,
 
     // Mouse support
-    pub mouse_enabled: bool,
     pub needs_mouse_toggle: bool,
     last_click_at: Option<Instant>,
     last_click_col: u16,
@@ -508,6 +506,7 @@ pub fn column_editor_items(value: &str, all: &[&'static str]) -> (Vec<&'static s
 
 pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
 pub const ON_OFF: &[&str] = &["on", "off"];
+pub const GRAPH_STYLES: &[&str] = &["dots", "bars"];
 pub const API_STATS_AUTH_MODES: &[&str] = &["none", "plaintext", "pillar"];
 
 fn on_off(b: bool) -> String {
@@ -815,7 +814,6 @@ impl App {
             minion_events_is_filtering: false,
             hide_timed_out: false,
             timed_out_collapsed: false,
-            mouse_enabled: true,
             needs_mouse_toggle: false,
             last_click_at: None,
             last_click_col: 0,
@@ -889,7 +887,6 @@ impl App {
             save_at: None,
             clipboard_msg: None,
             save_prompt: None,
-            sparkline_style: SparklineStyle::default(),
             needs_terminal_clear: false,
             needs_restart: false,
             zmq_latency_ms: 0.0,
@@ -2260,26 +2257,35 @@ impl App {
         let _ = std::fs::remove_file(&self.copy_path);
         let _ = std::fs::remove_file(&self.clip_log_path);
         let _ = std::fs::remove_file(&self.clip_debug_path);
+    }
 
-        // Persist the session's hotkey toggles (F4-F8 graphs, Minions `f`,
-        // API `x`) so they survive a restart — merged into the file as it is
-        // now instead of writing back the whole in-memory config, which
-        // clobbered anything saved to the file (by hand, or from another
-        // salt-radar instance) while this one was running.
+    /// Saves the hotkey toggles (F2 mouse, F4-F8 graphs, `m` graph style,
+    /// Minions `f`, API `x`) the moment they change, so the next start looks
+    /// the same even when the session doesn't end with a clean quit (the
+    /// terminal window closed, the SSH session dropped). Merged into the
+    /// file as it is now instead of writing back the whole in-memory config,
+    /// which would clobber anything saved to it meanwhile, by hand or from
+    /// another salt-radar instance.
+    pub(crate) fn save_toggles(&mut self) {
         let mut on_disk = load_config_or_fallback(&self.config_path);
         let (cur, base) = (&self.config, &self.persisted_config);
         let mut changed = false;
         macro_rules! keep_toggled {
             ($($field:ident),*) => {$(
                 if cur.$field != base.$field {
-                    on_disk.$field = cur.$field;
+                    on_disk.$field = cur.$field.clone();
                     changed = true;
                 }
             )*};
         }
-        keep_toggled!(show_cpu_graph, show_mem_graph, show_zmq_graph, show_events_graph, show_activity_graph, minions_follow_filter, api_hide_stats_polls);
-        if changed {
-            let _ = crate::config::write_config(&self.config_path, &on_disk);
+        keep_toggled!(show_cpu_graph, show_mem_graph, show_zmq_graph, show_events_graph, show_activity_graph,
+            graph_style, mouse, minions_follow_filter, api_hide_stats_polls);
+        if !changed {
+            return;
+        }
+        match crate::config::write_config(&self.config_path, &on_disk) {
+            Ok(()) => self.persisted_config = self.config.clone(),
+            Err(e) => self.clipboard_msg = Some((format!("Settings not saved: {}", e), Instant::now())),
         }
     }
 

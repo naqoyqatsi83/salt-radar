@@ -657,7 +657,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     right_spans.push(Span::styled("\u{251C}", Style::default().fg(color::border())));
     let right_title = Line::from(right_spans);
 
-    let mouse_hint = if app.mouse_enabled { "mouse off".to_string() } else { "mouse on".to_string() };
+    let mouse_hint = if app.config.mouse { "mouse off".to_string() } else { "mouse on".to_string() };
     let admin_hint = if app.admin_mode { "admin off".to_string() } else { "admin on".to_string() };
     let global_hints = border_hints(&[
         ("?/F1", "help".to_string()),
@@ -815,7 +815,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     // the key, not whether it's currently on or off; this is the actual
     // current state, same convention as admin mode.
     spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::tab_separator())));
-    if app.mouse_enabled {
+    if app.config.mouse {
         spans.push(Span::styled(" mouse: ON ", Style::default().fg(color::hi_fg()).bg(color::badge_bg()).add_modifier(Modifier::BOLD)));
     } else {
         spans.push(Span::styled(" mouse: off ", Style::default().fg(color::inactive_fg())));
