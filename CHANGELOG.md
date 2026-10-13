@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Live Jobs and Job Detail disagreeing on a return's outcome (#166): Live Jobs went by the event's `success` flag alone, while Job Detail and the Minions Fail% column also counted an empty return as a failure, so `config.get` of a missing key was OK in Live Jobs and RC 1 in Job Detail. All views now share one rule: Salt's `success`/`retcode`, plus failures Salt misses in the return data (a failed state, an `ERROR:` string); an empty return is a success
 - Job Detail output search carried over into the next job (#170): the query, its matches and `n`/`N` stayed active after closing the popup, so another job opened mid-search and `n` jumped through the old matches; the `f`/`F` failed-state marker lingered the same way. Opening a job now starts with neither
+- Events filter showing events that don't match (#167): a term naming a known minion also showed every job whose target named *any* known minion, so on a fleet targeted by lists most jobs passed any minion term. It now shows only jobs whose target covers one of the minions the term names (`*`, a list member, a glob, an `L@`/`G@` word), and list targets sent as arrays count too. The Preview highlights the matches in the body and, when the first one is below the visible part, starts there so the reason an event matched is on screen
 
 ## [0.8.2] - 2026-10-13
 

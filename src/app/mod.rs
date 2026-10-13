@@ -2884,36 +2884,33 @@ impl FilterTerm {
 }
 
 /// The Events filter, resolved when the filter or the accepted keys change
-/// rather than per event: checked on every incoming event, settling per
-/// event whether each term names a known minion — and whether a job's
-/// target names one — scanned every accepted key.
+/// rather than per event: checked on every incoming event, so which known
+/// minions each term names is settled once instead of scanning every
+/// accepted key per event.
 #[derive(Default)]
 pub(crate) struct EventMatcher {
-    terms: Vec<(FilterTerm, bool)>,
-    minions_lower: Vec<String>,
-    /// Whether a target names a known minion, per target seen: a busy
-    /// master sends the same few targets over and over.
-    tgt_names_minion: std::cell::RefCell<HashMap<String, bool>>,
+    /// Each term and the known minions it names, lowercased.
+    terms: Vec<(FilterTerm, HashSet<String>)>,
+    /// Whether a job's target covers one of a term's minions, per term and
+    /// target seen: a busy master sends the same few targets over and over.
+    tgt_covers: std::cell::RefCell<HashMap<(usize, String), bool>>,
 }
 
 impl EventMatcher {
     fn new(pat: &str, known_minions: &HashSet<String>) -> Self {
-        let terms: Vec<(FilterTerm, bool)> = App::filter_terms(pat).into_iter()
-            .map(|term| FilterTerm::with_minion_check(term, known_minions))
-            .collect();
-        let minions_lower = if terms.iter().any(|&(_, names_minion)| names_minion) {
-            known_minions.iter().map(|m| m.to_lowercase()).collect()
-        } else {
-            Vec::new()
-        };
-        Self { terms, minions_lower, tgt_names_minion: Default::default() }
+        let terms = App::filter_terms(pat).into_iter().map(|term| {
+            let term = FilterTerm::new(term);
+            let named = known_minions.iter().filter(|m| term.host(m)).map(|m| m.to_lowercase()).collect();
+            (term, named)
+        }).collect();
+        Self { terms, tgt_covers: Default::default() }
     }
 
     fn matches(&self, evt: &SaltEvent) -> bool {
-        self.terms.is_empty() || self.terms.iter().any(|(term, names_minion)| self.matches_term(evt, term, *names_minion))
+        self.terms.is_empty() || self.terms.iter().enumerate().any(|(i, (term, named))| self.matches_term(evt, i, term, named))
     }
 
-    fn matches_term(&self, evt: &SaltEvent, term: &FilterTerm, names_minion: bool) -> bool {
+    fn matches_term(&self, evt: &SaltEvent, i: usize, term: &FilterTerm, named: &HashSet<String>) -> bool {
         if term.text(&evt.tag)
             || evt.data["fun"].as_str().is_some_and(|f| term.text(f))
             || evt.data["id"].as_str().is_some_and(|i| term.host(i))
@@ -2925,20 +2922,46 @@ impl EventMatcher {
         {
             return true;
         }
-        // A term naming a known minion also shows events targeted at all
-        // minions ("*") or whose tgt names a known minion.
-        names_minion && evt.data["tgt"].as_str().is_some_and(|tgt| tgt == "*" || self.names_minion(tgt))
-    }
-
-    fn names_minion(&self, tgt: &str) -> bool {
-        if let Some(&hit) = self.tgt_names_minion.borrow().get(tgt) {
+        let tokens = target_tokens(&evt.data["tgt"]);
+        if tokens.iter().any(|t| term.host(t)) {
+            return true;
+        }
+        // A term naming known minions also shows the jobs sent to them.
+        if named.is_empty() || tokens.is_empty() {
+            return false;
+        }
+        if tokens.iter().any(|t| t == "*") {
+            return true;
+        }
+        let key = (i, tokens.join(","));
+        if let Some(&hit) = self.tgt_covers.borrow().get(&key) {
             return hit;
         }
-        let lower = tgt.to_lowercase();
-        let hit = self.minions_lower.iter().any(|m| lower.contains(m.as_str()));
-        self.tgt_names_minion.borrow_mut().insert(tgt.to_string(), hit);
+        let hit = tokens.iter().any(|t| {
+            let t = t.to_lowercase();
+            if App::is_glob(&t) { named.iter().any(|m| App::glob_match(m, &t)) } else { named.contains(&t) }
+        });
+        self.tgt_covers.borrow_mut().insert(key, hit);
         hit
     }
+}
+
+/// The minion names and globs in a job's target: a list (`a,b` or a JSON
+/// array), a glob, or the `L@`/`G@`… words of a compound target.
+fn target_tokens(tgt: &serde_json::Value) -> Vec<String> {
+    let words: Vec<&str> = match tgt {
+        serde_json::Value::String(s) => s.split(|c: char| c == ',' || c.is_whitespace()).collect(),
+        serde_json::Value::Array(a) => a.iter().filter_map(|v| v.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    words.into_iter()
+        .map(|w| match w.split_once('@') {
+            Some((kind, rest)) if kind.len() == 1 && kind.chars().all(|c| c.is_ascii_uppercase()) => rest,
+            _ => w,
+        })
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// A parsed glob `[…]` class: its character ranges, whether it's negated
@@ -3507,6 +3530,14 @@ mod tests {
         let plain = EventMatcher::new("mail", &known);
         assert!(plain.matches(&other) && !plain.matches(&star), "a term naming no minion leaves * jobs out");
         assert!(EventMatcher::new("", &known).matches(&other));
+
+        let only_db = evt("salt/job/5/new", json!({"fun": "test.ping", "tgt": "db01"}));
+        let web01 = EventMatcher::new("web01", &known);
+        assert!(!web01.matches(&only_db), "a job sent to another known minion isn't one of web01's");
+        for tgt in [json!("web*"), json!(["db01", "web01"]), json!("L@web01,db02 or G@os:Debian")] {
+            assert!(web01.matches(&evt("salt/job/6/new", json!({"fun": "test.ping", "tgt": tgt.clone()}))), "{tgt}");
+        }
+        assert!(!web01.matches(&evt("salt/job/7/new", json!({"fun": "test.ping", "tgt": "web1*"}))));
     }
 
     #[test]

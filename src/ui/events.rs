@@ -203,15 +203,33 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
 
     let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
     let data_lines: Vec<&str> = json_str.lines().collect();
-    let max_body = (inner.height as usize).saturating_sub(lines.len() + 2);
+    let mut max_body = (inner.height as usize).saturating_sub(lines.len() + 2);
 
-    for data_line in data_lines.iter().take(max_body) {
+    // Start at the first match when it would be cut off, so the reason an
+    // event passed the filter is on screen.
+    let terms = app.events_filter_terms();
+    let hit = |l: &str| terms.iter().any(|t| !t.ranges(l).is_empty());
+    let skip = match data_lines.iter().position(|l| hit(l)) {
+        Some(first) if first >= max_body => first.saturating_sub(2),
+        _ => 0,
+    };
+    if skip > 0 {
         lines.push(Line::from(Span::styled(
-            format!("  {}", data_line),
-            Style::default().fg(color::main_fg()),
+            format!("  ... ({} lines above)", skip),
+            Style::default().fg(color::inactive_fg()),
         )));
+        max_body = max_body.saturating_sub(1);
     }
-    if data_lines.len() > max_body {
+
+    for data_line in data_lines.iter().skip(skip).take(max_body) {
+        let text = format!("  {}", data_line);
+        if hit(data_line) {
+            lines.push(Line::from(super::highlight_keywords(&text, &terms)));
+        } else {
+            lines.push(Line::from(Span::styled(text, Style::default().fg(color::main_fg()))));
+        }
+    }
+    if data_lines.len() > skip + max_body {
         lines.push(Line::from(Span::styled(
             "  ... (press 'Enter' to view full)",
             Style::default().fg(color::yellow()),
