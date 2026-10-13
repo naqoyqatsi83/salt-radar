@@ -639,7 +639,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(color::title()),
     ));
     let dropped = app.agent_backlog_dropped.load(std::sync::atomic::Ordering::Relaxed);
-    let mut right_spans = value_hint("-", format!("{}ms", app.tick_interval_ms), "+", color::border());
+    let mut right_spans = value_hint("-", format!("{}ms", app.config.tick_ms), "+", color::border());
     if dropped > 0 {
         right_spans.push(Span::styled("\u{2524}", Style::default().fg(color::border())));
         right_spans.push(Span::styled(

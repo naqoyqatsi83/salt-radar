@@ -27,6 +27,10 @@
 # How often to re-fetch config snapshot from the agent
 # config_secs = 60
 
+# How often (ms) the screen redraws and timed work runs, 500-30000. Also
+# changed in steps of 500 with '-'/'+'; the header shows it as -2000ms+.
+# tick_ms = 2000
+
 [events]
 # Maximum number of events to keep in the ring buffer
 # buffer_size = 10000

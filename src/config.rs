@@ -7,6 +7,10 @@ use ratatui::style::Color;
 use crate::types::{SparklineStyle, TableId};
 use crate::ui::color::Theme;
 
+/// The range `tick_ms` is kept in, by `-`/`+` and when loaded.
+pub const TICK_MS_MIN: u64 = 500;
+pub const TICK_MS_MAX: u64 = 30_000;
+
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
 /// directory wins if present (lets you keep a per-directory config, and
 /// preserves behavior for anyone already relying on the old cwd-only
@@ -252,6 +256,9 @@ pub struct AppConfig {
     pub dashboard_secs: u64,
     pub minions_secs: u64,
     pub config_secs: u64,
+    /// How often (ms) the screen redraws and timed work runs; `-`/`+`
+    /// change it by 500 within 500-30000.
+    pub tick_ms: u64,
     pub event_buffer_size: usize,
     pub sniffer_buffer_size: usize,
     pub stale_minion_secs: u64,
@@ -450,6 +457,7 @@ impl Default for AppConfig {
             dashboard_secs: 2,
             minions_secs: 5,
             config_secs: 60,
+            tick_ms: 2000,
             event_buffer_size: 10000,
             sniffer_buffer_size: 1000,
             stale_minion_secs: 3600,
@@ -541,6 +549,7 @@ struct RefreshConfig {
     dashboard_secs: Option<u64>,
     minions_secs: Option<u64>,
     config_secs: Option<u64>,
+    tick_ms: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -667,6 +676,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("refresh", "dashboard_secs", c.dashboard_secs.to_toml()),
         ("refresh", "minions_secs", c.minions_secs.to_toml()),
         ("refresh", "config_secs", c.config_secs.to_toml()),
+        ("refresh", "tick_ms", c.tick_ms.to_toml()),
         ("events", "buffer_size", c.event_buffer_size.to_toml()),
         ("events", "sniffer_buffer_size", c.sniffer_buffer_size.to_toml()),
         ("events", "event_columns", c.event_columns.to_toml()),
@@ -795,6 +805,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = r.dashboard_secs { cfg.dashboard_secs = v; }
                 if let Some(v) = r.minions_secs { cfg.minions_secs = v; }
                 if let Some(v) = r.config_secs { cfg.config_secs = v; }
+                if let Some(v) = r.tick_ms { cfg.tick_ms = v.clamp(TICK_MS_MIN, TICK_MS_MAX); }
             }
             if let Some(e) = toml_cfg.events {
                 if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
@@ -1110,6 +1121,7 @@ mod tests {
         let cfg = AppConfig {
             agent_path: "/opt/agent.py".into(),
             dashboard_secs: 7,
+            tick_ms: 3500,
             event_buffer_size: 1234,
             disk_usage_pct: 91.5,
             api_hide_stats_polls: false,

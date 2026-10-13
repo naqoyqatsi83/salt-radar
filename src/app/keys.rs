@@ -1105,10 +1105,12 @@ impl App {
                 self.quit_confirm = true;
             }
             KeyCode::Char('=') | KeyCode::Char('+') => {
-                self.tick_interval_ms = (self.tick_interval_ms + 500).min(30_000);
+                self.config.tick_ms = (self.config.tick_ms + 500).min(crate::config::TICK_MS_MAX);
+                self.save_toggles();
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
-                self.tick_interval_ms = self.tick_interval_ms.saturating_sub(500).max(500);
+                self.config.tick_ms = self.config.tick_ms.saturating_sub(500).max(crate::config::TICK_MS_MIN);
+                self.save_toggles();
             }
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 if self.admin_mode {

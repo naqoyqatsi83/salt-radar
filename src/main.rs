@@ -88,7 +88,7 @@ fn main() -> io::Result<()> {
             need_redraw = false;
         }
 
-        let tick_rate = Duration::from_millis(app.tick_interval_ms);
+        let tick_rate = Duration::from_millis(app.config.tick_ms);
         let remaining = tick_rate.checked_sub(last_tick.elapsed()).unwrap_or(Duration::ZERO);
         let timeout = if app.needs_fast_poll() {
             remaining.min(Duration::from_millis(100))

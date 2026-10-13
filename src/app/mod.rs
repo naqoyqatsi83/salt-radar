@@ -352,9 +352,6 @@ pub struct App {
     /// Animation frame index for radar spinner in header
     pub header_radar_frame: u8,
 
-    /// User-adjustable tick interval in milliseconds (default 2000 = 2s)
-    pub tick_interval_ms: u64,
-
     // Network rate tracking
     prev_network_rx_bytes: u64,
     prev_network_tx_bytes: u64,
@@ -926,7 +923,6 @@ impl App {
             last_activity_at: Instant::now(),
             header_radar_frame: 0,
 
-            tick_interval_ms: 2000,
 
             prev_network_rx_bytes: 0,
             prev_network_tx_bytes: 0,
@@ -2260,7 +2256,7 @@ impl App {
     }
 
     /// Saves the hotkey toggles (F2 mouse, F4-F8 graphs, `m` graph style,
-    /// Minions `f`, API `x`) the moment they change, so the next start looks
+    /// `-`/`+` refresh speed, Minions `f`, API `x`) the moment they change, so the next start looks
     /// the same even when the session doesn't end with a clean quit (the
     /// terminal window closed, the SSH session dropped). Merged into the
     /// file as it is now instead of writing back the whole in-memory config,
@@ -2279,7 +2275,7 @@ impl App {
             )*};
         }
         keep_toggled!(show_cpu_graph, show_mem_graph, show_zmq_graph, show_events_graph, show_activity_graph,
-            graph_style, mouse, minions_follow_filter, api_hide_stats_polls);
+            graph_style, mouse, tick_ms, minions_follow_filter, api_hide_stats_polls);
         if !changed {
             return;
         }
