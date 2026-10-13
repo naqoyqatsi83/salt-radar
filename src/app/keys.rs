@@ -1725,6 +1725,12 @@ impl App {
         self.pending_jid_lookup = Some((req_id, jid.clone()));
         self.pending_jid_lookup_at = Some(Instant::now());
         self.job_detail_select_minion = select_minion;
+        self.job_search.clear();
+        self.job_searching = false;
+        self.job_search_matches.clear();
+        self.job_search_focus = None;
+        self.job_fail_lines.clear();
+        self.job_focus_line = None;
         self.detail_popup = Some(DetailPopup::JobDetail {
             jid,
             lookup: None,
