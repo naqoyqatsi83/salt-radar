@@ -161,15 +161,16 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
     let selected = app.event_selected.min(total.saturating_sub(1));
     let evt = filtered[selected];
 
+    let width = inner.width as usize;
     let mut lines = Vec::new();
 
     // Tag
     lines.push(Line::from(vec![
         Span::styled("  Tag", Style::default().fg(color::label_fg())),
     ]));
-    lines.push(Line::from(vec![
+    lines.extend(super::wrap_spans(vec![
         Span::styled(format!("  {}", evt.tag), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
-    ]));
+    ], width));
     lines.push(Line::from(""));
 
     // Timestamps
@@ -196,7 +197,7 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
         lines.push(Line::from(""));
     }
 
-    // JSON body — render as pretty-printed, truncate to available height
+    // JSON body — pretty-printed and wrapped, cut to the available height
     lines.push(Line::from(vec![
         Span::styled("  Body", Style::default().fg(color::label_fg())),
     ]));
@@ -209,8 +210,20 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
     // event passed the filter is on screen.
     let terms = app.events_filter_terms();
     let hit = |l: &str| terms.iter().any(|t| !t.ranges(l).is_empty());
+    let rows = |l: &str| super::wrapped_rows(&format!("  {}", l), width);
+    // Skip only as far as needed, keeping the panel full and a couple of
+    // rows below the match (one row goes to the "lines above" marker).
     let skip = match data_lines.iter().position(|l| hit(l)) {
-        Some(first) if first >= max_body => first.saturating_sub(2),
+        Some(first) if data_lines[..=first].iter().map(|l| rows(l)).sum::<usize>() > max_body => {
+            let room = max_body.saturating_sub(3);
+            let mut skip = first;
+            let mut need = rows(data_lines[first]);
+            while skip > 0 && need + rows(data_lines[skip - 1]) <= room {
+                skip -= 1;
+                need += rows(data_lines[skip]);
+            }
+            skip
+        }
         _ => 0,
     };
     if skip > 0 {
@@ -221,15 +234,27 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
         max_body = max_body.saturating_sub(1);
     }
 
-    for data_line in data_lines.iter().skip(skip).take(max_body) {
+    let mut used = 0;
+    let mut shown = skip;
+    for data_line in data_lines.iter().skip(skip) {
         let text = format!("  {}", data_line);
-        if hit(data_line) {
-            lines.push(Line::from(super::highlight_keywords(&text, &terms)));
+        let spans = if hit(data_line) {
+            super::highlight_keywords(&text, &terms)
         } else {
-            lines.push(Line::from(Span::styled(text, Style::default().fg(color::main_fg()))));
+            vec![Span::styled(text, Style::default().fg(color::main_fg()))]
+        };
+        let wrapped = super::wrap_spans(spans, width);
+        let fits = wrapped.len() <= max_body - used;
+        let take = wrapped.len().min(max_body - used);
+        lines.extend(wrapped.into_iter().take(take));
+        used += take;
+        if !fits || used == max_body {
+            shown += usize::from(fits);
+            break;
         }
+        shown += 1;
     }
-    if data_lines.len() > skip + max_body {
+    if shown < data_lines.len() {
         lines.push(Line::from(Span::styled(
             "  ... (press 'Enter' to view full)",
             Style::default().fg(color::yellow()),

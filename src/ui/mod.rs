@@ -222,6 +222,53 @@ pub fn highlight_keywords(text: &str, terms: &[crate::app::HighlightTerm]) -> Ve
     colored_ranges(text, matches)
 }
 
+/// Hard-wraps a styled line at `width` columns, continuation rows hanging
+/// two columns in from the line's own indent so a wrapped JSON value stays
+/// under its key. Unlike `Paragraph`'s word wrap the row count is known up
+/// front (`wrapped_rows`), which a panel budgeting its height needs.
+pub fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![Line::from(spans)];
+    }
+    let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    let indent = hang_indent(&text, width);
+    let mut rows = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        let mut chunk = String::new();
+        for c in span.content.chars() {
+            if used == width {
+                if !chunk.is_empty() {
+                    row.push(Span::styled(std::mem::take(&mut chunk), span.style));
+                }
+                rows.push(Line::from(std::mem::replace(&mut row, vec![Span::raw(" ".repeat(indent))])));
+                used = indent;
+            }
+            chunk.push(c);
+            used += 1;
+        }
+        if !chunk.is_empty() {
+            row.push(Span::styled(chunk, span.style));
+        }
+    }
+    rows.push(Line::from(row));
+    rows
+}
+
+/// How many rows `wrap_spans` makes of `text` at `width`.
+pub fn wrapped_rows(text: &str, width: usize) -> usize {
+    let n = text.chars().count();
+    if width == 0 || n <= width {
+        return 1;
+    }
+    1 + (n - width).div_ceil(width - hang_indent(text, width))
+}
+
+fn hang_indent(text: &str, width: usize) -> usize {
+    (text.len() - text.trim_start_matches(' ').len() + 2).min(width / 2)
+}
+
 /// A text input's `prefix` and content with its cursor: the character under
 /// it, or a space past the end, in reverse video (readable in any theme).
 pub fn input_spans(prefix: &str, text: &str, cursor: Option<usize>, style: Style) -> Vec<Span<'static>> {
@@ -1188,6 +1235,20 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    #[test]
+    fn wrap_spans_hangs_under_the_key_and_keeps_styles() {
+        let red = Style::default().fg(Color::Red);
+        let spans = vec![Span::raw("    \"tgt\": \""), Span::styled("web01,web02,web03", red), Span::raw("\",")];
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        let rows = wrap_spans(spans, 16);
+        let plain: Vec<String> = rows.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
+        assert_eq!(plain, ["    \"tgt\": \"web0", "      1,web02,we", "      b03\","]);
+        assert_eq!(rows.len(), wrapped_rows(&text, 16));
+        assert!(rows[1].spans.iter().any(|s| s.content == "1,web02,we" && s.style == red), "a style carries across a break");
+        assert_eq!(wrapped_rows("short", 16), 1);
+        assert_eq!(wrap_spans(vec![Span::raw("exactly 16 chars")], 16).len(), 1);
+    }
 
     #[test]
     fn help_pages_split_keys_from_the_guide() {
