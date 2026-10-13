@@ -271,6 +271,10 @@ service_mem_abs_threshold_mb = 2048.0
 zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 ```
 
+#### Slow links (SSH proxies that record sessions)
+
+On a busy master, every list scrolls on every refresh, and a scrolled panel is redrawn row by row; the Dashboard graphs shift one column each refresh, so once they're full nearly every graph cell is redrawn too. That's a few KB/s, which a direct SSH session doesn't notice, but a proxy that records sessions (CyberArk PSM, for one) can fall behind it, and then the whole connection lags, tmux and other windows on it included. Set `max_output_kbs` under `[refresh]` (e.g. 4–8) to cap what salt-radar sends: over the cap, refreshes wait until it allows them, while key presses still redraw at once. The header shows the cap (`≤4KB/s`), yellow while a refresh is waiting. Hiding the graphs (`F4`–`F8`) or a slower refresh (`+`) cuts the output too.
+
 #### Running through sudo, and several users at once
 
 salt-radar needs root (or the Salt user) to read the master's PKI and job cache, so it's often started with `sudo`. sudo resets `HOME` to root's, which would make every user share root's config — so when salt-radar runs as root with `SUDO_USER` set, it uses the invoking user's files instead: their `~/.config/salt-radar/salt-radar.toml` (a user without one yet starts from root's config, or the defaults, and their first save creates their own), their `~/.config/salt-radar/themes/`, their "updated to vX" marker, and their home for `~` (e.g. the default export directory). Whatever salt-radar creates in their home is owned by them. `./salt-radar.toml` in the current directory still wins, and `sudo -i` or a real root login behave as before. Config saves are atomic (a temp file renamed into place).

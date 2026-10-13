@@ -259,6 +259,10 @@ pub struct AppConfig {
     /// How often (ms) the screen redraws and timed work runs; `-`/`+`
     /// change it by 500 within 500-30000.
     pub tick_ms: u64,
+    /// Cap on what redraws send to the terminal, KB/s (0 = none): over it,
+    /// redraws that aren't answering a key wait, so a slow link (a
+    /// session-recording SSH proxy) doesn't fall behind a busy master.
+    pub max_output_kbs: u64,
     pub event_buffer_size: usize,
     pub sniffer_buffer_size: usize,
     pub stale_minion_secs: u64,
@@ -458,6 +462,7 @@ impl Default for AppConfig {
             minions_secs: 5,
             config_secs: 60,
             tick_ms: 2000,
+            max_output_kbs: 0,
             event_buffer_size: 10000,
             sniffer_buffer_size: 1000,
             stale_minion_secs: 3600,
@@ -550,6 +555,7 @@ struct RefreshConfig {
     minions_secs: Option<u64>,
     config_secs: Option<u64>,
     tick_ms: Option<u64>,
+    max_output_kbs: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -677,6 +683,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("refresh", "minions_secs", c.minions_secs.to_toml()),
         ("refresh", "config_secs", c.config_secs.to_toml()),
         ("refresh", "tick_ms", c.tick_ms.to_toml()),
+        ("refresh", "max_output_kbs", c.max_output_kbs.to_toml()),
         ("events", "buffer_size", c.event_buffer_size.to_toml()),
         ("events", "sniffer_buffer_size", c.sniffer_buffer_size.to_toml()),
         ("events", "event_columns", c.event_columns.to_toml()),
@@ -806,6 +813,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = r.minions_secs { cfg.minions_secs = v; }
                 if let Some(v) = r.config_secs { cfg.config_secs = v; }
                 if let Some(v) = r.tick_ms { cfg.tick_ms = v.clamp(TICK_MS_MIN, TICK_MS_MAX); }
+                if let Some(v) = r.max_output_kbs { cfg.max_output_kbs = v; }
             }
             if let Some(e) = toml_cfg.events {
                 if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
@@ -1122,6 +1130,7 @@ mod tests {
             agent_path: "/opt/agent.py".into(),
             dashboard_secs: 7,
             tick_ms: 3500,
+            max_output_kbs: 6,
             event_buffer_size: 1234,
             disk_usage_pct: 91.5,
             api_hide_stats_polls: false,

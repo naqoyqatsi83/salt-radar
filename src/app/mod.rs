@@ -248,6 +248,8 @@ pub struct App {
     /// Active "save to file" prompt (the 's'/'S' counterpart of 'y'/'Y'
     /// clipboard copy), if one is open. Global overlay, like ConfigEditor.
     pub save_prompt: Option<SaveFilePrompt>,
+    /// A redraw is waiting for `max_output_kbs` to allow it; the header says so.
+    pub output_held: bool,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
     /// Set to true when config editor saves — main loop will restart
@@ -884,6 +886,7 @@ impl App {
             save_at: None,
             clipboard_msg: None,
             save_prompt: None,
+            output_held: false,
             needs_terminal_clear: false,
             needs_restart: false,
             zmq_latency_ms: 0.0,

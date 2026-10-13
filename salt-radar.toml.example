@@ -31,6 +31,14 @@
 # changed in steps of 500 with '-'/'+'; the header shows it as -2000ms+.
 # tick_ms = 2000
 
+# Cap on what redraws send to the terminal, in KB/s; 0 = no cap. Through a
+# slow link, such as an SSH proxy that records sessions, a busy master's
+# scrolling lists can send more than the link passes on, and the whole
+# connection lags (other windows and tmux on it too). Over the cap, redraws
+# wait (key presses still redraw at once); the header shows the cap, yellow
+# while a redraw is waiting. Try 4-8 behind such a proxy.
+# max_output_kbs = 0
+
 [events]
 # Maximum number of events to keep in the ring buffer
 # buffer_size = 10000

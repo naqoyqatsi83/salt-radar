@@ -640,6 +640,15 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     ));
     let dropped = app.agent_backlog_dropped.load(std::sync::atomic::Ordering::Relaxed);
     let mut right_spans = value_hint("-", format!("{}ms", app.config.tick_ms), "+", color::border());
+    if app.config.max_output_kbs > 0 {
+        // Yellow while redraws wait for the output cap.
+        right_spans.push(Span::styled("\u{2524}", Style::default().fg(color::border())));
+        right_spans.push(Span::styled(
+            format!(" \u{2264}{}KB/s ", app.config.max_output_kbs),
+            Style::default().fg(if app.output_held { color::yellow() } else { color::inactive_fg() }),
+        ));
+        right_spans.push(Span::styled("\u{251C}", Style::default().fg(color::border())));
+    }
     if dropped > 0 {
         right_spans.push(Span::styled("\u{2524}", Style::default().fg(color::border())));
         right_spans.push(Span::styled(

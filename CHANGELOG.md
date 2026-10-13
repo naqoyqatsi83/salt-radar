@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Confirm before quitting (#173): `q` now asks "Quit salt-radar?" and only `y`/`Enter` quits, while any other key, `q` included, cancels. Extra `q` presses meant for a popup that lag already closed used to quit the app, since queued keys are handled in one batch before the next redraw. Turn it off with `confirm_quit = false` in `[ui]` or the Config Editor; `Ctrl+C` still quits at once
 - `graph_style` (`dots`/`bars`) in `[dashboard]`, `mouse` in `[ui]` and `tick_ms` in `[refresh]` (#174): the Dashboard graphs' style (`m`), mouse capture (`F2`) and the refresh speed (`-`/`+`, 500-30000 ms) are now settings, in the Config Editor too, instead of starting as dots, on and 2000 ms every time
+- `max_output_kbs` under `[refresh]` (#172): caps the bytes per second salt-radar sends to the terminal. On a busy master the scrolling lists and full Dashboard graphs send a few KB/s (measured: 5 KB/s on a full Dashboard, about 13 times the output with the graphs hidden), which a session-recording SSH proxy such as CyberArk can't keep up with, so the whole connection, tmux and other windows on it included, became sluggish after a few minutes. Over the cap, refreshes wait while key presses still redraw at once; the header shows the cap, yellow while a refresh is waiting. Off (0) by default
 
 ### Changed
 
