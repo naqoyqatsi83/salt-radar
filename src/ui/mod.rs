@@ -1298,6 +1298,34 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  listed twice", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled("  an ID with an accepted and a denied key (it came back with a new key)", Style::default().fg(color::main_fg())),
         ]),
+        Line::from(vec![
+            Span::styled("  Lag", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  the minion's return time ÷ the job's median, median of its last 50 jobs:", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  1.0x typical, yellow from 1.5x, red from 3x, whatever the jobs were", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  rated once all targets returned or after job_straggler_secs, later returns", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  against that median; times under 0.5 s count as 0.5 s, jobs where both the", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  minion and the median took under 0.5 s aren't rated (\u{2014} until one is)", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ping", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  time to the minion's latest test.ping return, whoever sent it", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  both fill in from jobs seen while salt-radar runs; v shows the columns", Style::default().fg(color::main_fg())),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Events Preview", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![
