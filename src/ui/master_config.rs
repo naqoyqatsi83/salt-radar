@@ -86,11 +86,12 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
             let count = |k: SettingKind| mc.settings.iter().filter(|s| s.kind == k).count();
             let pending = mc.settings.iter().filter(|s| s.restart_pending(mc)).count();
             let rejected = mc.files.iter().filter(|file| file.error.is_some()).count();
+            // Warnings first: on a narrow panel the counts are what gets cut.
             format!(
-                " Master Config ({} set, {} not core, {} derived, {} default){}{} ",
-                count(SettingKind::Explicit), count(SettingKind::Unknown), count(SettingKind::Derived), count(SettingKind::Default),
+                " Master Config{}{} \u{b7} {} set, {} not core, {} derived, {} default ",
                 if rejected > 0 { format!(" \u{26a0} {} file(s) rejected", rejected) } else { String::new() },
-                if pending > 0 { format!(" \u{21bb} {} may change on restart", pending) } else { String::new() },
+                if pending > 0 { format!(" \u{21bb} {} on restart", pending) } else { String::new() },
+                count(SettingKind::Explicit), count(SettingKind::Unknown), count(SettingKind::Derived), count(SettingKind::Default),
             )
         }
         None => " Master Config ".to_string(),
@@ -116,7 +117,7 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
     };
 
     let width = (inner.width as usize).saturating_sub(2);
-    let key_w = rows.iter().map(|&i| mc.settings[i].key.chars().count()).max().unwrap_or(3).clamp(3, 32) + 1;
+    let key_w = rows.iter().map(|&i| mc.settings[i].key.chars().count()).max().unwrap_or(3).clamp(3, 26) + 1;
     let source_w = rows.iter().map(|&i| source_label(mc, &mc.settings[i]).chars().count() + 1).max().unwrap_or(7).clamp(7, 29);
     let value_w = width.saturating_sub(key_w + source_w + 1).max(8);
     let header = Style::default().fg(color::header_fg()).add_modifier(Modifier::BOLD);
