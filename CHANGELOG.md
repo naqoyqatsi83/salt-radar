@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0-rc3] - 2026-10-15
+
 ### Added
 
 - Browse the master's configuration in a new Master Config tab (`7`, #178): every setting on one line, the ones set in a file first, in Salt's load order (`/etc/salt/master`, `master.d/*.conf`, `include:`) with the file and line that sets each, then the values Salt worked out at startup, then the defaults, greyed out. The right panel shows the file a setting comes from with its block marked, and the files it overrides; `Enter` opens the full value next to Salt's default, `y`/`s` copy or save it, `/` filters and `r` reads the files again. Keys Salt doesn't know are flagged "not core" (a module's own option or a typo Salt ignores; `worker_thread` names `worker_threads`), and a ↻ marks each setting set in a file that changed after salt-master started, as its value may change on restart (the title counts them, `/restart` lists them). Credential-looking values are redacted by the agent, in the list, the files and copies, so they never reach the TUI. Its divider moves with `Ctrl+←`/`Ctrl+→` too (`master_split_pct`)
@@ -18,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulse moves to `8`, staying the last tab after the new Master Config tab (`7`)
 - The Salt major alert only lists minions on a newer major than the master, as "Minion newer than master" (#181): a newer master supports older minions, and the protocol alerts already cover the ones too old for it, so a fleet of 3000–3005 minions on a 3006 master no longer lands there too
 
+### Fixed
+
+- Tab bar clicks one column off: clicking a tab's last letter missed it, and the frame border left of Dashboard selected it; the clickable ranges now come from the labels as drawn
+
 ## [0.9.0-rc2] - 2026-10-14
 
 ### Added
@@ -28,7 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Tab bar clicks one column off: clicking a tab's last letter missed it, and the frame border left of Dashboard selected it; the clickable ranges now come from the labels as drawn
 - Minions OS, Salt and Arch empty until a fleet scan (#180): the agent never read the master's minion data cache, which holds every minion's grains (it asked for the wrong cache entry, and a missing import made it give up silently). The columns now fill in at start; the pillar compiled for salt-api stats credentials also gets the master's real grains. Last Seen and the Stale minion alert still go by returns seen live, as the cache is only rewritten when a minion's pillar is compiled, and the Guide no longer says otherwise
 
 ## [0.9.0-rc1] - 2026-10-13
