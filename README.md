@@ -65,11 +65,17 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Pulse** — per-minion return activity at a glance, with connection detail on the side
-<img src="docs/screenshots/pulse.png" alt="Pulse tab">
+**Master** — the master's configuration: what each file sets and how they combine, rejected files, typos, and settings a restart would change; credentials redacted
+<img src="docs/screenshots/master.png" alt="Master tab">
 
 </td>
 </tr>
+<tr><td colspan="2">
+
+**Pulse** — per-minion return activity at a glance, with connection detail on the side
+<img src="docs/screenshots/pulse.png" alt="Pulse tab">
+
+</td></tr>
 <tr><td colspan="2">
 
 **Job Detail** — every minion's return for one job, side by side with its full Salt output; the screen behind any popup is dimmed
@@ -145,11 +151,6 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Job detail popup shows correct OK/FAIL status derived from return values
 - Always shows full per-state detail (`--state-output=full --state-verbose=True`), regardless of the master's own `state_output`/`state_verbose` defaults — opening the popup is an explicit request to see everything about that one job, even a "terse"/"changes" master would otherwise hide unchanged/no-op states here
 
-### Pulse
-- Per-minion return activity at a glance: every minion as a dot in a wrapped grid, color- *and* shape-tiered by recency (`●` bright green flash → `•` green → `·` orange → `·` grey → `·` red for timed out) so adjacent tiers stay distinguishable even at a glance
-- Scales from a handful of minions to 4,000+ without layout changes
-- Detail panel on the side: key status, connection status, OS, Salt version, last return time
-
 ### Alerts
 17 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
 
@@ -194,9 +195,14 @@ The master's configuration, as its files set it:
 - `Enter` opens the full value next to Salt's default, and when several files set it, each file's own value before the result; `y` copies it as YAML, `s` saves it
 - **Rejected files** — a file Salt can't parse (the same key twice is enough) is skipped whole, with only a log line. The title says so, its settings are listed as **ignored** with Salt's reason (named from its top-level lines when the file isn't valid YAML at all), the line at fault is marked in the file, and the "Config file rejected" alert fires
 - **Not core** — a key in a file that isn't one of Salt's core settings: either a module's own option (`rest_cherrypy`, `mysql.host`) or a typo, which Salt silently ignores; a near miss names the setting it's probably meant to be (`worker_thread` → did you mean `worker_threads`)
-- **↻ may change on restart** — the setting is set in a file that changed after salt-master started, so the running master may not be using what it says yet; the title counts them and `/restart` lists them. (salt-radar can't read the running master's values, only when its files changed, so a setting removed from a file isn't caught)
+- **↻ may change on restart** — the setting is set in a file that changed after salt-master started, so the running master may not be using what it says yet; the title counts them (`↻ 10 on restart`) and `/restart` lists them. (salt-radar can't read the running master's values, only when its files changed, so a setting removed from a file isn't caught)
 - Credentials are redacted by the agent before they reach the TUI, in the list, the files, the popup and copies: values of keys like `*pass*`, `*password*`, `*secret*`, `*token`, `*_key` (nested ones too, as in `ext_pillar`), except flags and file paths
 - Read from the files at start, with the config refresh (`config_secs`) and on `r`
+
+### Pulse
+- Per-minion return activity at a glance: every minion as a dot in a wrapped grid, color- *and* shape-tiered by recency (`●` bright green flash → `•` green → `·` orange → `·` grey → `·` red for timed out) so adjacent tiers stay distinguishable even at a glance
+- Scales from a handful of minions to 4,000+ without layout changes
+- Detail panel on the side: key status, connection status, OS, Salt version, last return time
 
 ### Admin Mode
 - Toggle with `a` (danger-zone confirmation dialog required)
