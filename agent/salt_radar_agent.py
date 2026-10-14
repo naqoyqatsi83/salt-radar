@@ -457,6 +457,12 @@ _api_token_cache = {}
 _api_pillar_compiled_cache = None
 
 
+def _minion_data_bank(mid):
+    """The master's minion data cache keeps each minion's grains and pillar
+    under key "data" in bank "minions/<id>" (salt/utils/minions.py)."""
+    return "minions/{}".format(mid)
+
+
 def _pillar_get(compiled, path):
     """Walk a colon-delimited path into a compiled pillar dict, the same
     shape `salt-call pillar.get` resolves. Returns None if any segment is
@@ -494,7 +500,7 @@ def _compile_stats_pillar(opts, force_refresh=False):
         salt = _import_salt()
         minion_id, _ = salt.config.get_id(opts)
         cache = salt.cache.factory(opts)
-        grains = cache.fetch("minions", minion_id) or {}
+        grains = (cache.fetch(_minion_data_bank(minion_id), "data") or {}).get("grains", {})
         pil = salt.pillar.get_pillar(opts, grains, minion_id, saltenv=opts.get("saltenv") or "base")
         compiled = pil.compile_pillar()
         _api_pillar_compiled_cache = compiled
@@ -947,23 +953,24 @@ def cmd_minion_cache_list(opts, req):
         return
 
     try:
-        cache = salt.cache.factory(opts)
+        cache = _import_salt().cache.factory(opts)
     except Exception:
         cache = None
 
     for mid in key_ids:
-        entry = {"id": mid, "last_seen": 0, "cache_updated": 0}
+        entry = {"id": mid}
         if cache is not None:
             try:
-                mtime = cache.updated("minions", mid) or 0
-                entry["last_seen"] = mtime
-                entry["cache_updated"] = mtime
+                # Not a "last seen": Salt rewrites the entry only when it
+                # compiles the minion's pillar, so an idle, healthy minion
+                # keeps an old mtime.
+                mtime = cache.updated(_minion_data_bank(mid), "data") or 0
 
                 cached = _minion_grains_cache.get(mid)
                 if cached is not None and cached["mtime"] == mtime:
                     entry.update(cached["grains"])
                 else:
-                    grains = cache.fetch("minions", mid)
+                    grains = (cache.fetch(_minion_data_bank(mid), "data") or {}).get("grains")
                     grain_fields = {}
                     if grains:
                         grain_fields = {

@@ -69,7 +69,7 @@ impl AlertEngine {
 
         // Rule 1: Stale minion
         for minion in minion_info {
-            let last_seen = minion.last_seen_epoch.max(minion.cache_updated_epoch);
+            let last_seen = minion.last_seen_epoch;
             if last_seen == 0 {
                 continue;
             }

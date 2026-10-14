@@ -101,7 +101,6 @@ pub struct MinionInfo {
     pub salt_version: String,
     pub cpuarch: String,
     pub last_seen_epoch: u64,
-    pub cache_updated_epoch: u64,
     pub connected: bool,
     pub timed_out: bool,
 }

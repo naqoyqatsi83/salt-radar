@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Move the divider between a tab's two panels with `Ctrl+←`/`Ctrl+→` (#179), 1% a step (hold the keys to move further) between 20% and 80%, on Minions, Events, Jobs, API and Pulse, to give a long list or a wide preview more room. Each tab keeps its own split, saved the moment it moves as `minions_split_pct`, `events_split_pct`, `jobs_split_pct`, `api_split_pct` and `pulse_split_pct` in `[ui]` (also in the Config Editor); mouse clicks follow the divider
 - Show how slowly each minion answers compared with its peers (#176): the optional Minions `Lag` column (`lag`) is the median, over the minion's last 50 jobs, of its return time divided by the job's median, so a consistently slow minion stands out whatever the jobs were (1.0x typical, yellow from 1.5x, red from 3x; sortable worst first). A job is rated once every target returned or it passed `job_straggler_secs`, and later returns against that median; return times under 0.5 s count as 0.5 s so ping jitter doesn't read as lag, and jobs where both the minion and the median took under 0.5 s aren't rated, so mostly fast jobs don't flatten every minion to 1.0x. The optional `Ping` column (`ping`) is the time to the minion's latest `test.ping` return, and the activity popup's summary line adds the lag median and p95 and the last ping
 
+### Fixed
+
+- Minions OS, Salt and Arch empty until a fleet scan (#180): the agent never read the master's minion data cache, which holds every minion's grains (it asked for the wrong cache entry, and a missing import made it give up silently). The columns now fill in at start; the pillar compiled for salt-api stats credentials also gets the master's real grains. Last Seen and the Stale minion alert still go by returns seen live, as the cache is only rewritten when a minion's pillar is compiled, and the Guide no longer says otherwise
+
 ## [0.9.0-rc1] - 2026-10-13
 
 ### Added

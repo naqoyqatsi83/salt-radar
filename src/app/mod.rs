@@ -2813,8 +2813,6 @@ fn parse_minion_list(data: &serde_json::Value) -> Vec<MinionInfo> {
                 osfinger: entry["osfinger"].as_str().unwrap_or("").to_string(),
                 salt_version: entry["saltversion"].as_str().unwrap_or("").to_string(),
                 cpuarch: entry["cpuarch"].as_str().unwrap_or("").to_string(),
-                last_seen_epoch: entry["last_seen"].as_u64().unwrap_or(0),
-                cache_updated_epoch: entry["cache_updated"].as_u64().unwrap_or(0),
                 ..Default::default()
             });
         }

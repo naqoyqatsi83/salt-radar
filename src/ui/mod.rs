@@ -1286,7 +1286,7 @@ fn guide_help_lines() -> Vec<Line<'static>> {
         Line::from(Span::styled("  Minion Detail", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![
             Span::styled("  Last Seen", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  newer of: Salt's own minion-cache mtime, or the last /ret/ event seen live", Style::default().fg(color::main_fg())),
+            Span::styled("  the minion's last job return seen live, since salt-radar started", Style::default().fg(color::main_fg())),
         ]),
         Line::from(""),
         Line::from(Span::styled("  Minions list", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),

@@ -41,13 +41,14 @@ impl App {
                                 // Preserve enriched fields from event processing
                                 if let Some(&i) = self.minion_index.get(&minion.id) {
                                     let existing = &self.minion_info[i];
-                                    if !existing.osfinger.is_empty() { minion.osfinger.clone_from(&existing.osfinger); }
-                                    if !existing.osrelease.is_empty() { minion.osrelease.clone_from(&existing.osrelease); }
-                                    if !existing.salt_version.is_empty() { minion.salt_version.clone_from(&existing.salt_version); }
-                                    if !existing.cpuarch.is_empty() { minion.cpuarch.clone_from(&existing.cpuarch); }
-                                    if !existing.os.is_empty() { minion.os.clone_from(&existing.os); }
-                                    if existing.last_seen_epoch > minion.last_seen_epoch { minion.last_seen_epoch = existing.last_seen_epoch; }
-                                    if existing.cache_updated_epoch > minion.cache_updated_epoch { minion.cache_updated_epoch = existing.cache_updated_epoch; }
+                                    // The cache's grains win, so an upgraded minion shows its
+                                    // new version; a fleet scan or grains return fills the gaps.
+                                    if minion.osfinger.is_empty() { minion.osfinger.clone_from(&existing.osfinger); }
+                                    if minion.osrelease.is_empty() { minion.osrelease.clone_from(&existing.osrelease); }
+                                    if minion.salt_version.is_empty() { minion.salt_version.clone_from(&existing.salt_version); }
+                                    if minion.cpuarch.is_empty() { minion.cpuarch.clone_from(&existing.cpuarch); }
+                                    if minion.os.is_empty() { minion.os.clone_from(&existing.os); }
+                                    minion.last_seen_epoch = existing.last_seen_epoch;
                                     // Fleet scan timed_out status is not known to the cache — preserve it
                                     if existing.timed_out { minion.timed_out = true; }
                                     // Being present in the master's minion cache means it was
