@@ -721,7 +721,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     // Tab menu (left) and host/uptime (right) share the one content row.
-    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Pulse, Tab::Master];
+    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Master, Tab::Pulse];
     let mut tab_spans: Vec<Span<'static>> = Vec::new();
     for (i, tab) in tabs.iter().enumerate() {
         if i > 0 {
@@ -954,7 +954,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ("General", &[
         Shortcut { tab: "", key: "`q`", action: "Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once)" },
         Shortcut { tab: "", key: "`Tab` / `Shift+Tab`", action: "Next / previous tab" },
-        Shortcut { tab: "", key: "`1`–`8`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse/Master)" },
+        Shortcut { tab: "", key: "`1`–`8`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master/Pulse)" },
         Shortcut { tab: "", key: "`↑`/`↓`", action: "Scroll / navigate" },
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Page scroll" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last row" },
@@ -1350,6 +1350,26 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  /etc/salt/master, then master.d/*.conf (sorted), then include:", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
+            Span::styled("  list", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  settings set in a file first (load order), then derived, then defaults", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  right panel", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  the file the setting comes from, its block marked, and what each file", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  setting it does; Enter shows each file's own value, then the result", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  / and r", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  filter by name, value, file or kind (set, not core, ignored, restart, ...);", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  r reads the files again (also at start and every config_secs)", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
             Span::styled("  set", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled("  in a file; Source is the file and line that wins, +N when others set it too", Style::default().fg(color::main_fg())),
         ]),
@@ -1386,8 +1406,12 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  Salt's default, in no file", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
-            Span::styled("  restart pending", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  a file changed after salt-master started; the master isn't using it yet", Style::default().fg(color::main_fg())),
+            Span::styled("  \u{21bb}", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  set in a file changed after salt-master started: may change on restart", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  (the running master's values can't be read, only when its files changed)", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
             Span::styled("  <redacted>", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),

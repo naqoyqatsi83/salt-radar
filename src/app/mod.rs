@@ -1878,6 +1878,7 @@ impl App {
                     Self::matches_filter(&s.key, t)
                         || Self::matches_filter(&s.line, t)
                         || Self::matches_filter(s.kind.label(), t)
+                        || (s.restart_pending(mc) && Self::matches_filter("restart", t))
                         || s.sources.iter().any(|src| mc.files.get(src.file).is_some_and(|file| Self::matches_filter(&file.path, t)))
                 })
             })
@@ -2774,8 +2775,8 @@ impl App {
             43..=50 => Some(Tab::Jobs),
             54..=63 => Some(Tab::Alerts),
             67..=73 => Some(Tab::Api),
-            77..=85 => Some(Tab::Pulse),
-            89..=98 => Some(Tab::Master),
+            77..=86 => Some(Tab::Master),
+            90..=98 => Some(Tab::Pulse),
             _ => None,
         }
     }

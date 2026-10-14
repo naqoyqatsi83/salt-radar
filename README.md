@@ -194,7 +194,7 @@ The master's configuration, as its files set it:
 - `Enter` opens the full value next to Salt's default, and when several files set it, each file's own value before the result; `y` copies it as YAML, `s` saves it
 - **Rejected files** — a file Salt can't parse (the same key twice is enough) is skipped whole, with only a log line. The title says so, its settings are listed as **ignored** with Salt's reason (named from its top-level lines when the file isn't valid YAML at all), the line at fault is marked in the file, and the "Config file rejected" alert fires
 - **Not core** — a key in a file that isn't one of Salt's core settings: either a module's own option (`rest_cherrypy`, `mysql.host`) or a typo, which Salt silently ignores; a near miss names the setting it's probably meant to be (`worker_thread` → did you mean `worker_threads`)
-- **Restart pending** — a file changed after salt-master started, so the running master isn't using what it says yet
+- **↻ may change on restart** — the setting is set in a file that changed after salt-master started, so the running master may not be using what it says yet; the title counts them and `/restart` lists them. (salt-radar can't read the running master's values, only when its files changed, so a setting removed from a file isn't caught)
 - Credentials are redacted by the agent before they reach the TUI, in the list, the files, the popup and copies: values of keys like `*pass*`, `*password*`, `*secret*`, `*token`, `*_key` (nested ones too, as in `ext_pillar`), except flags and file paths
 - Read from the files at start, with the config refresh (`config_secs`) and on `r`
 
@@ -310,7 +310,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 |-----|--------|
 | `q` | Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once) |
 | `Tab` / `Shift+Tab` | Next / previous tab |
-| `1`–`8` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse/Master) |
+| `1`–`8` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Home`/`End` | First/last row |

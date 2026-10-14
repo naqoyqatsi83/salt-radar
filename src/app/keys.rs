@@ -182,8 +182,8 @@ impl App {
                     KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
                     KeyCode::Char('6') => { self.current_tab = Tab::Api; return false; }
-                    KeyCode::Char('7') => { self.current_tab = Tab::Pulse; return false; }
-                    KeyCode::Char('8') => { self.current_tab = Tab::Master; return false; }
+                    KeyCode::Char('7') => { self.current_tab = Tab::Master; return false; }
+                    KeyCode::Char('8') => { self.current_tab = Tab::Pulse; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
                     KeyCode::F(2) => {
                         self.config.mouse = !self.config.mouse;
@@ -1328,8 +1328,8 @@ impl App {
             KeyCode::Char('4') => self.current_tab = Tab::Jobs,
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
             KeyCode::Char('6') => self.current_tab = Tab::Api,
-            KeyCode::Char('7') => self.current_tab = Tab::Pulse,
-            KeyCode::Char('8') => self.current_tab = Tab::Master,
+            KeyCode::Char('7') => self.current_tab = Tab::Master,
+            KeyCode::Char('8') => self.current_tab = Tab::Pulse,
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
                     self.pulse_up();

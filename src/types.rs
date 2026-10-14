@@ -32,22 +32,22 @@ impl Tab {
             Self::Events => Self::Jobs,
             Self::Jobs => Self::Alerts,
             Self::Alerts => Self::Api,
-            Self::Api => Self::Pulse,
-            Self::Pulse => Self::Master,
-            Self::Master => Self::Dashboard,
+            Self::Api => Self::Master,
+            Self::Master => Self::Pulse,
+            Self::Pulse => Self::Dashboard,
         }
     }
 
     pub fn prev(&self) -> Self {
         match self {
-            Self::Dashboard => Self::Master,
-            Self::Master => Self::Pulse,
+            Self::Dashboard => Self::Pulse,
+            Self::Pulse => Self::Master,
             Self::Minions => Self::Dashboard,
             Self::Events => Self::Minions,
             Self::Jobs => Self::Events,
             Self::Alerts => Self::Jobs,
             Self::Api => Self::Alerts,
-            Self::Pulse => Self::Api,
+            Self::Master => Self::Api,
         }
     }
 
@@ -575,6 +575,13 @@ pub struct ConfigSetting {
 }
 
 impl ConfigSetting {
+    /// Set in a file written after salt-master started, so its value may
+    /// change when the master restarts. (What the running master holds in
+    /// memory can't be read, only when the files changed.)
+    pub fn restart_pending(&self, mc: &MasterConfig) -> bool {
+        self.sources.iter().any(|src| mc.files.get(src.file).is_some_and(|f| f.changed_since(mc.master_started)))
+    }
+
     /// The file whose value is in use: the last one Salt didn't reject, or
     /// for a setting only in rejected files, the last of those.
     pub fn winner(&self) -> Option<&ConfigSource> {

@@ -84,13 +84,13 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
     let title = match &app.master_config {
         Some(mc) => {
             let count = |k: SettingKind| mc.settings.iter().filter(|s| s.kind == k).count();
-            let stale = mc.files.iter().any(|file| file.changed_since(mc.master_started));
+            let pending = mc.settings.iter().filter(|s| s.restart_pending(mc)).count();
             let rejected = mc.files.iter().filter(|file| file.error.is_some()).count();
             format!(
                 " Master Config ({} set, {} not core, {} derived, {} default){}{} ",
                 count(SettingKind::Explicit), count(SettingKind::Unknown), count(SettingKind::Derived), count(SettingKind::Default),
                 if rejected > 0 { format!(" \u{26a0} {} file(s) rejected", rejected) } else { String::new() },
-                if stale { " \u{26a0} restart pending" } else { "" },
+                if pending > 0 { format!(" \u{21bb} {} may change on restart", pending) } else { String::new() },
             )
         }
         None => " Master Config ".to_string(),
@@ -140,7 +140,11 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
             &crate::app::filter_match_ranges(&s.key, filter),
             |_| color::search_match(),
         );
-        let mut spans = vec![Span::raw("  ")];
+        let mut spans = vec![if s.restart_pending(mc) {
+            Span::styled("\u{21bb} ", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD))
+        } else {
+            Span::raw("  ")
+        }];
         spans.extend(key.spans);
         spans.push(cell(&s.line, value_w, false, value_style));
         spans.push(Span::raw(" "));
@@ -211,9 +215,9 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
         if let Some(error) = &file.error {
             lines.push(note(format!("\u{26a0} Salt rejected this file: {}", error), Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
         }
-        if file.changed_since(mc.master_started) {
-            lines.push(note("\u{26a0} Changed after salt-master started: not in use until it restarts".to_string(), Style::default().fg(color::yellow())));
-        }
+    }
+    if s.restart_pending(mc) {
+        lines.push(note("\u{21bb} Set in a file changed after salt-master started: may change on restart".to_string(), Style::default().fg(color::yellow())));
     }
     lines.push(Line::from(""));
 
