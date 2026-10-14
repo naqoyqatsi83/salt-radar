@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tell minions on auth protocol v0 from v2 (#181): minions from before Salt's March 2022 security releases (2014.x–3001.x, 3002.0–3002.7, 3003.0–3003.3, 3004.0) send no protocol version and get no replay protection, but `Proto` showed them as v2. `Proto` now reads v0 (red), v2 (yellow) or v3, and a "No replay protection" alert lists the v0 minions next to the "Legacy auth protocol" one for v2
+
+### Changed
+
+- The Salt major alert only lists minions on a newer major than the master, as "Minion newer than master" (#181): a newer master supports older minions, and the protocol alerts already cover the ones too old for it, so a fleet of 3000–3005 minions on a 3006 master no longer lands there too
+
 ## [0.9.0-rc2] - 2026-10-14
 
 ### Added

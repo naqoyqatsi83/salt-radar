@@ -1328,11 +1328,15 @@ fn guide_help_lines() -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  Proto", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  auth protocol by Salt version: v3 from 3006.12, 3007.4 and 3008, v2 before;", Style::default().fg(color::main_fg())),
+            Span::styled("  auth protocol by Salt version: v0 before the March 2022 security releases,", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("  masters from 3006.17, 3007.9 and 3008 reject v2 (minimum_auth_version: 3)", Style::default().fg(color::main_fg())),
+            Span::styled("  v2 from 3002.8, 3003.4, 3004.1 and 3005, v3 from 3006.12, 3007.4 and 3008;", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  masters from 3006.17, 3007.9 and 3008 reject v0 and v2 (minimum_auth_version: 3)", Style::default().fg(color::main_fg())),
         ]),
         Line::from(""),
         Line::from(Span::styled("  Events Preview", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),

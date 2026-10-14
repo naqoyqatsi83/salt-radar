@@ -172,7 +172,10 @@ fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize
         Column::SaltVersion => cell(&unknown(&minion.salt_version), w, right, dim),
         Column::Proto => match crate::types::auth_protocol(&minion.salt_version) {
             None => cell("\u{2014}", w, right, dim),
-            Some(p) => cell(&format!("v{}", p), w, right, Style::default().fg(if p < 3 { color::yellow() } else { color::inactive_fg() })),
+            Some(p) => {
+                let fg = match p { 0 => color::red(), 2 => color::yellow(), _ => color::inactive_fg() };
+                cell(&format!("v{}", p), w, right, Style::default().fg(fg))
+            }
         },
         Column::Arch => cell(&unknown(&minion.cpuarch), w, right, dim),
         Column::LastSeen => {

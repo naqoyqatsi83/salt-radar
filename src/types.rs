@@ -444,17 +444,25 @@ pub fn salt_major_minor(version: &str) -> Option<(u64, u64)> {
     Some((major, minor_text[..digits].parse().unwrap_or(0)))
 }
 
-/// The auth protocol a minion of this Salt version speaks: 3 from 3006.12,
-/// 3007.4 and 3008 on, 2 before. Masters from 3006.17, 3007.9 and 3008 reject
-/// 2 by default (`minimum_auth_version: 3`).
+/// The request protocol a minion of this Salt version speaks, the `version`
+/// in its payloads: 0 (none sent) before the March 2022 security releases,
+/// 2 with their nonce and signed replies (3002.8, 3003.4, 3004.1, 3005), 3
+/// with per-minion session encryption (3006.12, 3007.4, 3008). Masters from
+/// 3006.17, 3007.9 and 3008 reject anything below 3 by default
+/// (`minimum_auth_version: 3`).
 pub fn auth_protocol(version: &str) -> Option<u64> {
     let (major, minor) = salt_major_minor(version)?;
-    let v3 = match major {
-        3006 => minor >= 12,
-        3007 => minor >= 4,
-        m => m >= 3008,
-    };
-    Some(if v3 { 3 } else { 2 })
+    let first = |v2: u64, v3: u64| if minor >= v3 { 3 } else if minor >= v2 { 2 } else { 0 };
+    Some(match major {
+        ..3002 => 0,
+        3002 => first(8, u64::MAX),
+        3003 => first(4, u64::MAX),
+        3004 => first(1, u64::MAX),
+        3005 => 2,
+        3006 => first(0, 12),
+        3007 => first(0, 4),
+        _ => 3,
+    })
 }
 
 #[cfg(test)]
@@ -462,7 +470,8 @@ pub fn auth_protocol(version: &str) -> Option<u64> {
 fn auth_protocol_follows_salt_releases() {
     let p = |v| auth_protocol(v);
     assert_eq!([p("3006.11"), p("3006.12"), p("3007.3"), p("3007.4"), p("3008.0rc1")], [Some(2), Some(3), Some(2), Some(3), Some(3)]);
-    assert_eq!([p("3005.5"), p("2019.2.8"), p(""), p("?")], [Some(2), Some(2), None, None]);
+    assert_eq!([p("3002.7"), p("3002.8"), p("3003.3"), p("3003.4"), p("3004"), p("3004.1"), p("3005.1")], [Some(0), Some(2), Some(0), Some(2), Some(0), Some(2), Some(2)]);
+    assert_eq!([p("2014.7.1"), p("2019.2.8"), p("3000.9"), p("3001.8"), p(""), p("?")], [Some(0), Some(0), Some(0), Some(0), None, None]);
     assert_eq!(salt_major_minor("3008.0rc1"), Some((3008, 0)));
     assert_eq!(["3006.16", "3006.17", "3007.8", "3007.9", "3008.0", "?"].map(enforces_minimum_auth_version), [false, true, false, true, true, false]);
 }
