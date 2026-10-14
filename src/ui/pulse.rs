@@ -13,10 +13,7 @@ use super::color;
 use ratatui::style::Color;
 
 pub fn draw_pulse(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(area);
+    let cols = super::split_panes(area, app);
 
     let left = Layout::default()
         .direction(Direction::Vertical)

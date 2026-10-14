@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -13,10 +13,7 @@ use super::color;
 use super::table::{cell, column_widths, header_line};
 
 pub fn draw_minions(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(area);
+    let cols = super::split_panes(area, app);
 
     draw_minion_list(f, cols[0], app, focused, hits);
     draw_fleet_overview(f, cols[1], app);

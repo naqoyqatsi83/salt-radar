@@ -1357,6 +1357,26 @@ impl App {
     /// Handle a mouse click at the given (col, row) position.
     /// Row 1 = tab bar: switch to clicked tab.
     /// Content area = list tabs: select item by proportional position.
+    /// `Ctrl+←`/`→`: moves the current tab's divider between its two panels
+    /// by 1%. False when there's no divider to move (no split on this tab,
+    /// or an overlay or popup in front), so the key acts as a plain arrow.
+    pub fn move_split(&mut self, right: bool) -> bool {
+        let popup_here = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
+        if self.quit_confirm || self.show_help || self.config_editor.is_some() || self.save_prompt.is_some() || popup_here {
+            return false;
+        }
+        let Some(pct) = self.config.split_pct_mut(self.current_tab) else { return false };
+        let moved = if right { *pct + 1 } else { pct.saturating_sub(1) };
+        *pct = moved.clamp(crate::config::SPLIT_PCT_MIN, crate::config::SPLIT_PCT_MAX);
+        self.save_toggles();
+        true
+    }
+
+    /// The column where the current tab's right panel starts.
+    fn split_col(&self, frame_size: Rect) -> usize {
+        crate::ui::split_panes(frame_size, self)[1].x as usize
+    }
+
     pub fn handle_mouse_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
         let h = frame_size.height as usize;
 
@@ -1461,9 +1481,8 @@ impl App {
                 }
             }
             Tab::Events => {
-                // Events has 50/50 horizontal split: only left half is the event list
-                let split_col = (frame_size.width / 2) as usize;
-                if (col as usize) >= split_col {
+                // Only the left panel is the event list
+                if (col as usize) >= self.split_col(frame_size) {
                     return false;
                 }
                 let total = self.filtered_events_len();
@@ -1527,9 +1546,7 @@ impl App {
                 }
             }
             Tab::Jobs => {
-                // 55/45 split: left = live jobs, right = cache
-                let col_split = frame_size.width as usize * 55 / 100;
-                let live_click = (col as usize) < col_split;
+                let live_click = (col as usize) < self.split_col(frame_size);
 
                 if self.cache_focus == live_click {
                     // Click is on the non-focused panel — just switch focus

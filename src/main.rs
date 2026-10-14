@@ -184,7 +184,9 @@ fn main() -> io::Result<()> {
                             } else {
                                 key.code
                             };
-                            if app.handle_key(code) {
+                            let ctrl_arrow = key.modifiers.contains(KeyModifiers::CONTROL)
+                                && matches!(key.code, KeyCode::Left | KeyCode::Right);
+                            if !(ctrl_arrow && app.move_split(key.code == KeyCode::Right)) && app.handle_key(code) {
                                 break 'main;
                             }
                             need_redraw = true;

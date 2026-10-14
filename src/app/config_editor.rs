@@ -349,6 +349,11 @@ impl App {
                 ConfigField { label: "popup_dim_pct", label_value: cfg.popup_dim_pct.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "confirm_quit", label_value: on_off(cfg.confirm_quit), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "mouse", label_value: on_off(cfg.mouse), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "minions_split_pct", label_value: cfg.minions_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "events_split_pct", label_value: cfg.events_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "jobs_split_pct", label_value: cfg.jobs_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "api_split_pct", label_value: cfg.api_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "pulse_split_pct", label_value: cfg.pulse_split_pct.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -388,6 +393,7 @@ impl App {
         let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
         let parse_bool = |key| vals.get(key) == Some(&"on");
         let columns = |key, table: TableId| vals.get(key).copied().unwrap_or(table.default_columns()).to_string();
+        let split = |key| parse_u64(key).map(|v| v.clamp(crate::config::SPLIT_PCT_MIN, crate::config::SPLIT_PCT_MAX));
 
         let new_config = AppConfig {
             agent_path: vals.get("agent_path").unwrap_or(&"").to_string(),
@@ -462,6 +468,11 @@ impl App {
             popup_dim_pct: parse_u64("popup_dim_pct")?.min(100),
             confirm_quit: parse_bool("confirm_quit"),
             mouse: parse_bool("mouse"),
+            minions_split_pct: split("minions_split_pct")?,
+            events_split_pct: split("events_split_pct")?,
+            jobs_split_pct: split("jobs_split_pct")?,
+            api_split_pct: split("api_split_pct")?,
+            pulse_split_pct: split("pulse_split_pct")?,
         };
 
         crate::config::write_config(&self.config_path, &new_config)

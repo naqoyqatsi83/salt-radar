@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
@@ -33,13 +33,7 @@ pub fn draw_api(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &
         return;
     }
 
-    let layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(65),
-            Constraint::Percentage(35),
-        ])
-        .split(area);
+    let layout = super::split_panes(area, app);
 
     draw_request_log(f, layout[0], app, tab_focused, hits);
     draw_endpoint_breakdown(f, layout[1], app);

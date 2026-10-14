@@ -455,6 +455,13 @@ pub fn bracket_title(mut spans: Vec<Span<'static>>, border_color: Color) -> Vec<
     wrapped
 }
 
+/// A tab's left and right panels, split where `Ctrl+←`/`→` left it. Mouse
+/// hit-testing goes through here too, so clicks follow the divider.
+pub fn split_panes(area: Rect, app: &App) -> [Rect; 2] {
+    let pct = app.config.split_pct(app.current_tab);
+    Layout::horizontal([Constraint::Percentage(pct), Constraint::Percentage(100 - pct)]).areas(area)
+}
+
 /// btop-style adjustable-value hint: `┤ -VALUE+ ├` with the `-`/`+` keys
 /// that step the value picked out in red, the live value shown plain
 /// between them (e.g. how btop shows its own update-interval in the box
@@ -941,6 +948,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`F3`", action: "Open Config Editor" },
         Shortcut { tab: "", key: "`+`/`-`", action: "Adjust refresh interval" },
         Shortcut { tab: "", key: "`m`", action: "Toggle sparkline style (Dashboard)" },
+        Shortcut { tab: "", key: "`Ctrl+←`/`Ctrl+→`", action: "Move the divider between the two panels (Minions, Events, Jobs, API, Pulse)" },
         Shortcut { tab: "", key: "`F4`–`F8`", action: "Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard)" },
     ]),
     ("Per tab", &[

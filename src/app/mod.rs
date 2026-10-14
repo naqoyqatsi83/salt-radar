@@ -2259,7 +2259,7 @@ impl App {
     }
 
     /// Saves the hotkey toggles (F2 mouse, F4-F8 graphs, `m` graph style,
-    /// `-`/`+` refresh speed, Minions `f`, API `x`) the moment they change, so the next start looks
+    /// `-`/`+` refresh speed, Minions `f`, API `x`, `Ctrl+←`/`→` splits) the moment they change, so the next start looks
     /// the same even when the session doesn't end with a clean quit (the
     /// terminal window closed, the SSH session dropped). Merged into the
     /// file as it is now instead of writing back the whole in-memory config,
@@ -2278,7 +2278,8 @@ impl App {
             )*};
         }
         keep_toggled!(show_cpu_graph, show_mem_graph, show_zmq_graph, show_events_graph, show_activity_graph,
-            graph_style, mouse, tick_ms, minions_follow_filter, api_hide_stats_polls);
+            graph_style, mouse, tick_ms, minions_follow_filter, api_hide_stats_polls,
+            minions_split_pct, events_split_pct, jobs_split_pct, api_split_pct, pulse_split_pct);
         if !changed {
             return;
         }

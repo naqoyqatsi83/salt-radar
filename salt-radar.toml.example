@@ -269,3 +269,11 @@
 
 # Mouse capture (clicks, wheel scrolling). Also toggled with F2.
 # mouse = true
+
+# Width of the left panel on the tabs split in two side by side, in percent
+# (20-80). Also moved 1% at a time with Ctrl+Left/Right on the tab itself.
+# minions_split_pct = 55
+# events_split_pct = 50
+# jobs_split_pct = 55
+# api_split_pct = 65
+# pulse_split_pct = 65

@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use ratatui::style::Color;
 
-use crate::types::{SparklineStyle, TableId};
+use crate::types::{SparklineStyle, TableId, Tab};
 use crate::ui::color::Theme;
 
 /// The range `tick_ms` is kept in, by `-`/`+` and when loaded.
@@ -418,9 +418,42 @@ pub struct AppConfig {
     pub confirm_quit: bool,
     /// Mouse capture (clicks, wheel), toggled with F2.
     pub mouse: bool,
+    /// Width of each split tab's left panel, in percent (`Ctrl+←`/`→`).
+    pub minions_split_pct: u64,
+    pub events_split_pct: u64,
+    pub jobs_split_pct: u64,
+    pub api_split_pct: u64,
+    pub pulse_split_pct: u64,
 }
 
+pub const SPLIT_PCT_MIN: u64 = 20;
+pub const SPLIT_PCT_MAX: u64 = 80;
+
 impl AppConfig {
+    /// The left panel's width setting of a tab split in two side by side.
+    pub fn split_pct_mut(&mut self, tab: Tab) -> Option<&mut u64> {
+        match tab {
+            Tab::Minions => Some(&mut self.minions_split_pct),
+            Tab::Events => Some(&mut self.events_split_pct),
+            Tab::Jobs => Some(&mut self.jobs_split_pct),
+            Tab::Api => Some(&mut self.api_split_pct),
+            Tab::Pulse => Some(&mut self.pulse_split_pct),
+            Tab::Dashboard | Tab::Alerts => None,
+        }
+    }
+
+    pub fn split_pct(&self, tab: Tab) -> u16 {
+        let pct = match tab {
+            Tab::Minions => self.minions_split_pct,
+            Tab::Events => self.events_split_pct,
+            Tab::Jobs => self.jobs_split_pct,
+            Tab::Api => self.api_split_pct,
+            Tab::Pulse => self.pulse_split_pct,
+            Tab::Dashboard | Tab::Alerts => 100,
+        };
+        pct.min(100) as u16
+    }
+
     pub fn sparkline_style(&self) -> SparklineStyle {
         if self.graph_style == "bars" { SparklineStyle::Bars } else { SparklineStyle::Dots }
     }
@@ -524,6 +557,11 @@ impl Default for AppConfig {
             popup_dim_pct: 70,
             confirm_quit: true,
             mouse: true,
+            minions_split_pct: 55,
+            events_split_pct: 50,
+            jobs_split_pct: 55,
+            api_split_pct: 65,
+            pulse_split_pct: 65,
         }
     }
 }
@@ -630,6 +668,11 @@ struct UiConfig {
     popup_dim_pct: Option<u64>,
     confirm_quit: Option<bool>,
     mouse: Option<bool>,
+    minions_split_pct: Option<u64>,
+    events_split_pct: Option<u64>,
+    jobs_split_pct: Option<u64>,
+    api_split_pct: Option<u64>,
+    pulse_split_pct: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -745,6 +788,11 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("ui", "popup_dim_pct", c.popup_dim_pct.to_toml()),
         ("ui", "confirm_quit", c.confirm_quit.to_toml()),
         ("ui", "mouse", c.mouse.to_toml()),
+        ("ui", "minions_split_pct", c.minions_split_pct.to_toml()),
+        ("ui", "events_split_pct", c.events_split_pct.to_toml()),
+        ("ui", "jobs_split_pct", c.jobs_split_pct.to_toml()),
+        ("ui", "api_split_pct", c.api_split_pct.to_toml()),
+        ("ui", "pulse_split_pct", c.pulse_split_pct.to_toml()),
     ]
 }
 
@@ -891,6 +939,12 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = u.popup_dim_pct { cfg.popup_dim_pct = v.min(100); }
                 if let Some(v) = u.confirm_quit { cfg.confirm_quit = v; }
                 if let Some(v) = u.mouse { cfg.mouse = v; }
+                let split = |v: u64| v.clamp(SPLIT_PCT_MIN, SPLIT_PCT_MAX);
+                if let Some(v) = u.minions_split_pct { cfg.minions_split_pct = split(v); }
+                if let Some(v) = u.events_split_pct { cfg.events_split_pct = split(v); }
+                if let Some(v) = u.jobs_split_pct { cfg.jobs_split_pct = split(v); }
+                if let Some(v) = u.api_split_pct { cfg.api_split_pct = split(v); }
+                if let Some(v) = u.pulse_split_pct { cfg.pulse_split_pct = split(v); }
             }
         }
     }
@@ -1146,11 +1200,24 @@ mod tests {
             theme_background: false,
             popup_dim_pct: 33,
             confirm_quit: false,
+            events_split_pct: 70,
+            pulse_split_pct: 40,
             ..AppConfig::default()
         };
         write_config(&path, &cfg).unwrap();
         let loaded = load_config(&path);
         assert_eq!(config_entries(&loaded), config_entries(&cfg));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn panel_splits_stay_in_range() {
+        let dir = scratch("split-range");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, "[ui]\nevents_split_pct = 95\napi_split_pct = 3\njobs_split_pct = 40\n").unwrap();
+        let cfg = load_config(&path);
+        assert_eq!((cfg.events_split_pct, cfg.api_split_pct, cfg.jobs_split_pct), (SPLIT_PCT_MAX, SPLIT_PCT_MIN, 40));
+        assert_eq!((cfg.split_pct(Tab::Jobs), cfg.split_pct(Tab::Alerts)), (40, 100));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

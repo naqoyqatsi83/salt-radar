@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -29,10 +29,7 @@ fn format_time_utc(ts: f64) -> String {
 }
 
 pub fn draw_events(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    let cols = super::split_panes(area, app);
 
     // Filtered once per frame and shared by both panels -- avoids each of
     // them separately re-scanning the whole (possibly `event_buffer_size`,

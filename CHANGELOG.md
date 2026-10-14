@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Move the divider between a tab's two panels with `Ctrl+←`/`Ctrl+→` (#179), 1% a step (hold the keys to move further) between 20% and 80%, on Minions, Events, Jobs, API and Pulse, to give a long list or a wide preview more room. Each tab keeps its own split, saved the moment it moves as `minions_split_pct`, `events_split_pct`, `jobs_split_pct`, `api_split_pct` and `pulse_split_pct` in `[ui]` (also in the Config Editor); mouse clicks follow the divider
+
 ## [0.9.0-rc1] - 2026-10-13
 
 ### Added

@@ -196,7 +196,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 - `color_theme` opens a picker of every theme found (see [Themes](#themes)) and previews each one live as you move through the list; `Esc`, or closing without saving, puts the saved theme back
 - `graph_order` opens as a reorderable list instead of free text — `↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts — since hand-typing a comma-separated list makes it easy to typo or drop a panel
 - The `*_columns` settings open the same way, plus `Space` to show/hide a column (hidden columns are listed unchecked below the shown ones)
-- The hotkey toggles are settings too and are saved the moment they change, so the next start looks the same however the session ended (a clean quit, a closed terminal window, a dropped SSH session): the Dashboard graphs (`F4`–`F8`, `show_*_graph`) and their style (`m`, `graph_style` = dots/bars), mouse capture (`F2`, `mouse`), the refresh speed (`-`/`+`, `tick_ms`), the Minions `f` follow filter and the API `x` stats-poll filter. Saving merges them into the file as it is, so it doesn't undo other edits made to it meanwhile
+- The hotkey toggles are settings too and are saved the moment they change, so the next start looks the same however the session ended (a clean quit, a closed terminal window, a dropped SSH session): the Dashboard graphs (`F4`–`F8`, `show_*_graph`) and their style (`m`, `graph_style` = dots/bars), mouse capture (`F2`, `mouse`), the refresh speed (`-`/`+`, `tick_ms`), the Minions `f` follow filter, the API `x` stats-poll filter and where `Ctrl+←`/`→` left each tab's panel divider (`*_split_pct` in `[ui]`, 20-80%). Saving merges them into the file as it is, so it doesn't undo other edits made to it meanwhile
 - `Save & Restart` (or `s` from anywhere in the editor) writes the TOML file and applies the new config immediately, no process restart needed. Only settings that differ from the defaults are written, so everything you haven't changed keeps following the defaults of future versions (a file saved by an older version, which held every setting, slims down on its next save). Confirming a field with `Enter` only stages it — the title shows `● unsaved changes` until saved, and closing with unsaved changes asks first (`Esc`/`q` again discards)
 
 ### Clipboard and save-to-file
@@ -304,6 +304,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval |
 | `m` | Toggle sparkline style (Dashboard) |
+| `Ctrl+←`/`Ctrl+→` | Move the divider between the two panels (Minions, Events, Jobs, API, Pulse) |
 | `F4`–`F8` | Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard) |
 
 Most of these are also shown live, btop-style, in the border of the panel they affect (e.g. the title frame's bottom border shows `-2000ms+` for the current refresh interval) — the table above is the full reference.
