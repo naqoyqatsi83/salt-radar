@@ -183,6 +183,7 @@ impl App {
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
                     KeyCode::Char('6') => { self.current_tab = Tab::Api; return false; }
                     KeyCode::Char('7') => { self.current_tab = Tab::Pulse; return false; }
+                    KeyCode::Char('8') => { self.current_tab = Tab::Master; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
                     KeyCode::F(2) => {
                         self.config.mouse = !self.config.mouse;
@@ -858,6 +859,28 @@ impl App {
                         }
                     }
                 }
+                DetailPopup::MasterSetting { index, ref mut scroll } => {
+                    let max = self.master_popup_scroll_max;
+                    let setting = self.master_config.as_ref().and_then(|mc| mc.settings.get(index));
+                    match code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            self.detail_popup = None;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                        KeyCode::Down | KeyCode::Char('j') => *scroll = (*scroll + 1).min(max),
+                        KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                        KeyCode::PageDown => *scroll = (*scroll + 10).min(max),
+                        KeyCode::Home => *scroll = 0,
+                        KeyCode::End => *scroll = max,
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            clipboard_text = setting.map(ConfigSetting::as_yaml);
+                        }
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            save_text = setting.map(|s| (s.as_yaml(), format!("master-{}", s.key), "txt"));
+                        }
+                        _ => {}
+                    }
+                }
                 DetailPopup::ApiRequest(ref entry) => {
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -1190,6 +1213,8 @@ impl App {
                 } else if self.current_tab == Tab::Jobs && !self.cache_loading {
                     let ft = self.cache_server_filter.clone();
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
+                } else if self.current_tab == Tab::Master && !self.master_config_loading {
+                    self.request_master_config();
                 }
             }
             KeyCode::Char(']') | KeyCode::Char('}') => {
@@ -1304,6 +1329,7 @@ impl App {
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
             KeyCode::Char('6') => self.current_tab = Tab::Api,
             KeyCode::Char('7') => self.current_tab = Tab::Pulse,
+            KeyCode::Char('8') => self.current_tab = Tab::Master,
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
                     self.pulse_up();
@@ -1542,6 +1568,27 @@ impl App {
                     if visual_idx < visible {
                         self.api_log_selected = (scroll + visual_idx).min(total - 1);
                         self.clamp_selection();
+                    }
+                }
+            }
+            Tab::Master => {
+                if (col as usize) >= self.split_col(frame_size) {
+                    return false;
+                }
+                let total = self.filtered_master_settings().len();
+                if total == 0 { return false; }
+
+                // Same shape as Events -- must match draw_master_list exactly.
+                let visible = inner_h.saturating_sub(2).max(1);
+                let selected = self.master_selected.min(total.saturating_sub(1));
+                let scroll = scroll_offset(selected, visible, total);
+
+                let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Master).is_empty();
+                let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        self.master_selected = (scroll + visual_idx).min(total - 1);
                     }
                 }
             }
@@ -1840,6 +1887,7 @@ impl App {
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
             Tab::Api => self.api_log_selected = self.api_log_selected.saturating_sub(1),
+            Tab::Master => self.master_selected = self.master_selected.saturating_sub(1),
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_sub(1).min(max);
@@ -1865,6 +1913,10 @@ impl App {
             }
             Tab::Alerts => self.alert_selected += 1,
             Tab::Api => self.api_log_selected += 1,
+            Tab::Master => {
+                let max = self.filtered_master_settings().len().saturating_sub(1);
+                self.master_selected = (self.master_selected + 1).min(max);
+            }
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_add(1).min(max);
@@ -1890,6 +1942,7 @@ impl App {
             }
             Tab::Alerts => self.alert_selected = 0,
             Tab::Api => self.api_log_selected = 0,
+            Tab::Master => self.master_selected = 0,
             Tab::Pulse => self.pulse_selected = 0,
             _ => {}
         }
@@ -1912,6 +1965,7 @@ impl App {
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
             Tab::Api => self.api_log_selected = self.filtered_api_log_len().saturating_sub(1),
+            Tab::Master => self.master_selected = self.filtered_master_settings().len().saturating_sub(1),
             Tab::Pulse => self.pulse_selected = self.pulse_minions_count().saturating_sub(1),
             _ => {}
         }
@@ -1953,6 +2007,12 @@ impl App {
             Tab::Api => {
                 if let Some(entry) = self.get_filtered_api_log(self.api_log_selected) {
                     self.detail_popup = Some(DetailPopup::ApiRequest(entry.clone()));
+                    self.popup_tab = Some(self.current_tab);
+                }
+            }
+            Tab::Master => {
+                if let Some(&index) = self.filtered_master_settings().get(self.master_selected) {
+                    self.detail_popup = Some(DetailPopup::MasterSetting { index, scroll: 0 });
                     self.popup_tab = Some(self.current_tab);
                 }
             }

@@ -183,6 +183,17 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 - Only what cpstats records is ever visible: no request/response body, no headers — so no credentials, payload content, or which minion/job/user was involved
 - salt-radar's own `GET /stats` poll (the request that populates this log) is filtered out by default — `hide_stats_polls` (`[api]`, default `true`) — since at the Dashboard refresh interval it would otherwise drown out real traffic with one entry per tick. Set to `false`, or press `x` on the API tab to toggle it live — the filter applies at display time, so it hides/shows already-captured entries retroactively, not just ones captured from that point on. `/stats` requests are still always captured and still count against `log_cap`/`log_max_age_secs` even while hidden — this only controls what's shown.
 
+### Master
+The master's configuration, as its files set it:
+
+- Every setting, collapsed to one line: the ones set in a file first, in Salt's load order (`/etc/salt/master`, then `master.d/*.conf` sorted, then `include:`), with the file and line that sets each; then values Salt worked out at startup (derived); then the defaults, greyed out. `/` filters by name, value, file or kind (`set`, `not core`, `derived`, `default`)
+- The right panel shows the file the selected setting comes from, its block marked, and the files it overrides when several set it (a later file wins; nested values from included files are merged)
+- `Enter` opens the full value next to Salt's default; `y` copies it as YAML, `s` saves it
+- **Not core** — a key in a file that isn't one of Salt's core settings: either a module's own option (`rest_cherrypy`, `mysql.host`) or a typo, which Salt silently ignores; a near miss names the setting it's probably meant to be (`worker_thread` → did you mean `worker_threads`)
+- **Restart pending** — a file changed after salt-master started, so the running master isn't using what it says yet
+- Credentials are redacted by the agent before they reach the TUI, in the list, the files, the popup and copies: values of keys like `*pass*`, `*password*`, `*secret*`, `*token`, `*_key` (nested ones too, as in `ext_pillar`), except flags and file paths
+- Read from the files when the tab is first opened and on `r`
+
 ### Admin Mode
 - Toggle with `a` (danger-zone confirmation dialog required)
 - **Fleet scan** (`s`): runs `grains.items` on all minions via Salt LocalClient, populates OS/Salt Version/Arch data; it finishes as soon as every minion has answered, and marks any still silent after 60s as timed out
@@ -295,7 +306,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 |-----|--------|
 | `q` | Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once) |
 | `Tab` / `Shift+Tab` | Next / previous tab |
-| `1`–`7` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse) |
+| `1`–`8` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse/Master) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Home`/`End` | First/last row |
@@ -308,7 +319,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval |
 | `m` | Toggle sparkline style (Dashboard) |
-| `Ctrl+←`/`Ctrl+→` | Move the divider between the two panels (Minions, Events, Jobs, API, Pulse) |
+| `Ctrl+←`/`Ctrl+→` | Move the divider between the two panels (Minions, Events, Jobs, API, Pulse, Master) |
 | `F4`–`F8` | Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard) |
 
 Most of these are also shown live, btop-style, in the border of the panel they affect (e.g. the title frame's bottom border shows `-2000ms+` for the current refresh interval) — the table above is the full reference.
@@ -333,6 +344,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Jobs (Cache) | `r` | Refresh job cache |
 | Jobs (Cache) | `←`/`→` | Switch focus between Live Jobs and Cache panels |
 | Pulse | `↑`/`↓`/`←`/`→` | Navigate the minion grid |
+| Master | `Enter` | The setting's full value, where it's set and Salt's default |
+| Master | `r` | Read the configuration files again |
 | API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |
 
 ### Config Editor

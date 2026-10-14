@@ -172,6 +172,7 @@ pub struct App {
     pub jobs_filter: String,
     pub alerts_filter: String,
     pub api_filter: String,
+    pub master_filter: String,
     /// Events-tab filter actually applied to `self.events` — committed from
     /// `filter_text` on Enter rather than re-filtered on every keystroke.
     /// See `filtered_events`/`get_filtered_event`.
@@ -305,6 +306,14 @@ pub struct App {
     /// request log and per-endpoint breakdown.
     pub api_requests_log: VecDeque<ApiLogEntry>,
     pub api_log_selected: usize,
+
+    /// The Master tab's configuration, fetched on first visit and on `r`.
+    pub master_config: Option<MasterConfig>,
+    pub master_config_loading: bool,
+    pub master_config_error: Option<String>,
+    pub master_selected: usize,
+    /// Last scroll position of the setting popup, set when it's drawn.
+    pub master_popup_scroll_max: usize,
 
     /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
     /// used to compute cpu_percent from the delta between polls.
@@ -730,6 +739,9 @@ pub enum DetailPopup {
     AdminConfirm,
     MinionEvents { minion_id: String, selected: usize },
     ApiRequest(ApiLogEntry),
+    /// A Master tab setting's full value; the index is into
+    /// `master_config.settings`.
+    MasterSetting { index: usize, scroll: usize },
 }
 
 impl App {
@@ -879,6 +891,7 @@ impl App {
             jobs_filter: String::new(),
             alerts_filter: String::new(),
             api_filter: String::new(),
+            master_filter: String::new(),
             applied_filter: String::new(),
 
             event_selected: 0,
@@ -931,6 +944,11 @@ impl App {
             api_login_latencies: VecDeque::new(),
             api_requests_log: VecDeque::new(),
             api_log_selected: 0,
+            master_config: None,
+            master_config_loading: false,
+            master_config_error: None,
+            master_selected: 0,
+            master_popup_scroll_max: 0,
             job_outcome_window: VecDeque::new(),
             prev_proc_cpu: HashMap::new(),
             clk_tck: 100.0,
@@ -1115,6 +1133,8 @@ impl App {
             .min(self.pulse_minions_count().saturating_sub(1));
         self.api_log_selected = self.api_log_selected
             .min(self.filtered_api_log_len().saturating_sub(1));
+        self.master_selected = self.master_selected
+            .min(self.filtered_master_settings().len().saturating_sub(1));
     }
 
     /// Clamp only the selection for the tab actively being typed/pasted into.
@@ -1139,6 +1159,8 @@ impl App {
                 .min(self.filtered_alerts_len().saturating_sub(1)),
             Tab::Api => self.api_log_selected = self.api_log_selected
                 .min(self.filtered_api_log_len().saturating_sub(1)),
+            Tab::Master => self.master_selected = self.master_selected
+                .min(self.filtered_master_settings().len().saturating_sub(1)),
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected = self.cache_selected
@@ -1325,6 +1347,7 @@ impl App {
             Tab::Jobs => &self.jobs_filter,
             Tab::Alerts => &self.alerts_filter,
             Tab::Api => &self.api_filter,
+            Tab::Master => &self.master_filter,
             _ => &self.filter_text,
         }
     }
@@ -1339,6 +1362,7 @@ impl App {
             Tab::Jobs => self.jobs_filter = text.to_string(),
             Tab::Alerts => self.alerts_filter = text.to_string(),
             Tab::Api => self.api_filter = text.to_string(),
+            Tab::Master => self.master_filter = text.to_string(),
             _ => {}
         }
     }
@@ -1778,7 +1802,7 @@ impl App {
             Tab::Events => Some(TableId::Events),
             Tab::Alerts => Some(TableId::Alerts),
             Tab::Api => Some(TableId::ApiLog),
-            Tab::Dashboard | Tab::Pulse => None,
+            Tab::Dashboard | Tab::Pulse | Tab::Master => None,
         }
     }
 
@@ -1839,6 +1863,32 @@ impl App {
             return self.alert_engine.alerts.len();
         }
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).count()
+    }
+
+    /// The Master tab's settings in display order, as indexes into
+    /// `master_config.settings`: those set in files first, in load order
+    /// (file, then line), then derived and default ones by name.
+    pub fn filtered_master_settings(&self) -> Vec<usize> {
+        let Some(mc) = &self.master_config else { return Vec::new() };
+        let terms = Self::filter_terms(self.filter_text_for(Tab::Master));
+        let mut rows: Vec<usize> = (0..mc.settings.len())
+            .filter(|&i| {
+                let s = &mc.settings[i];
+                terms.is_empty() || terms.iter().any(|t| {
+                    Self::matches_filter(&s.key, t)
+                        || Self::matches_filter(&s.line, t)
+                        || Self::matches_filter(s.kind.label(), t)
+                        || s.sources.iter().any(|&(f, _, _)| mc.files.get(f).is_some_and(|file| Self::matches_filter(&file.path, t)))
+                })
+            })
+            .collect();
+        let set_in = |i: usize| mc.settings[i].sources.first().map_or((usize::MAX, 0), |&(f, line, _)| (f, line));
+        rows.sort_by_key(|&i| {
+            let s = &mc.settings[i];
+            let group = if s.sources.is_empty() { s.kind } else { SettingKind::Explicit };
+            (group, set_in(i), s.key.clone())
+        });
+        rows
     }
 
     /// Alerts in display order: filtered, then sorted.
@@ -2333,7 +2383,7 @@ impl App {
         }
         keep_toggled!(show_cpu_graph, show_mem_graph, show_zmq_graph, show_events_graph, show_activity_graph,
             graph_style, mouse, tick_ms, minions_follow_filter, api_hide_stats_polls,
-            minions_split_pct, events_split_pct, jobs_split_pct, api_split_pct, pulse_split_pct);
+            minions_split_pct, events_split_pct, jobs_split_pct, api_split_pct, pulse_split_pct, master_split_pct);
         if !changed {
             return;
         }
@@ -2654,6 +2704,10 @@ impl App {
         }
         self.jobs = kept_jobs;
 
+        if self.current_tab == Tab::Master && self.master_config.is_none() && !self.master_config_loading && self.master_config_error.is_none() {
+            self.request_master_config();
+        }
+
         // Auto-load job cache when first viewing Jobs tab
         if self.current_tab == Tab::Jobs && !self.cache_loaded && !self.cache_loading && self.cache_load_error.is_none() {
             self.send_cache_jobs_list(None, true);
@@ -2710,6 +2764,7 @@ impl App {
             54..=63 => Some(Tab::Alerts),
             67..=73 => Some(Tab::Api),
             77..=85 => Some(Tab::Pulse),
+            89..=98 => Some(Tab::Master),
             _ => None,
         }
     }
@@ -2772,6 +2827,35 @@ fn parse_version(data: &serde_json::Value) -> ConfigSnapshot {
         salt_version: data["salt_version"].as_str().unwrap_or("?").to_string(),
         python_version: data["python_version"].as_str().unwrap_or("?").to_string(),
         ..Default::default()
+    }
+}
+
+pub(crate) fn parse_master_config(data: &serde_json::Value) -> MasterConfig {
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+    let files = data["files"].as_array().map(|a| a.iter().map(|f| ConfigFile {
+        path: text(&f["path"]),
+        text: text(&f["text"]),
+        mtime: f["mtime"].as_u64().unwrap_or(0),
+        error: f["error"].as_str().map(String::from),
+    }).collect()).unwrap_or_default();
+    let settings = data["settings"].as_array().map(|a| a.iter().map(|s| ConfigSetting {
+        key: text(&s["key"]),
+        kind: SettingKind::from_agent(s["kind"].as_str().unwrap_or("")),
+        sources: s["sources"].as_array().map(|src| src.iter().filter_map(|r| {
+            let r = r.as_array()?;
+            Some((r.first()?.as_u64()? as usize, r.get(1)?.as_u64()? as usize, r.get(2)?.as_u64()? as usize))
+        }).collect()).unwrap_or_default(),
+        line: text(&s["line"]),
+        full: text(&s["full"]),
+        default: s["default"].as_str().map(String::from),
+        redacted: s["redacted"].as_bool().unwrap_or(false),
+        suggest: s["suggest"].as_str().map(String::from),
+    }).collect()).unwrap_or_default();
+    MasterConfig {
+        conf_file: text(&data["conf_file"]),
+        files,
+        master_started: data["master_started"].as_u64().unwrap_or(0),
+        settings,
     }
 }
 

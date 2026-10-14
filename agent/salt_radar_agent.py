@@ -869,6 +869,257 @@ def cmd_config_snapshot(opts, req):
     result(req["id"], "config_snapshot", data=data)
 
 
+# ── Master configuration browser ────────────────────────────────────────────
+
+# Last parts of a setting's name that mark its value as a credential
+# (`mysql.pass`, `gitfs_password`, `vault: {token: ...}`, `secret_key`).
+_SECRET_LAST_PARTS = {
+    "pass", "passwd", "password", "passphrase", "pw", "bindpw", "secret",
+    "token", "apikey", "key", "credential", "credentials", "creds", "priv",
+}
+_SECRET_ANYWHERE = ("password", "passwd", "secret")
+_REDACTED = "<redacted>"
+
+
+def _is_secret_name(name):
+    name = str(name).lower()
+    if any(s in name for s in _SECRET_ANYWHERE):
+        return True
+    return re.split(r"[._\-]", name)[-1] in _SECRET_LAST_PARTS
+
+
+def _is_secret_value(value):
+    """A value worth hiding: text or a number, but not a flag, an empty value
+    or a filesystem path (`ssl_key: /etc/pki/key.pem` names a file, it isn't
+    the key)."""
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        return bool(value.strip()) and not value.startswith(("/", "~"))
+    return False
+
+
+def _plain(value):
+    """Salt's defaults are frozen (immutabletypes), which neither compare equal
+    to the plain lists and dicts master_config() builds nor dump as YAML."""
+    from collections.abc import Mapping
+    if isinstance(value, Mapping):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)) or type(value).__name__ == "ImmutableList":
+        return [_plain(v) for v in value]
+    return value
+
+
+def _redact(value):
+    """Copy of a config value with credential-looking entries replaced, at any
+    depth (ext_pillar lists, rest_cherrypy dicts, ...)."""
+    if isinstance(value, dict):
+        return {
+            k: (_REDACTED if _is_secret_name(k) and _is_secret_value(v) else _redact(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact(v) for v in value]
+    return value
+
+
+_YAML_ENTRY = re.compile(r"^(\s*(?:-\s+)?)([\"']?)([^\s:\"'#][^:\"'#]*)\2(\s*:\s*)(.*)$")
+
+
+def _redact_text(text):
+    """A config file's text with credential values blanked line by line,
+    including the indented lines of a block scalar (`password: |`)."""
+    out = []
+    block_indent = None
+    for line in text.splitlines():
+        if block_indent is not None:
+            indent = len(line) - len(line.lstrip())
+            if line.strip() and indent > block_indent:
+                out.append(" " * indent + _REDACTED)
+                continue
+            block_indent = None
+        m = _YAML_ENTRY.match(line)
+        if m and _is_secret_name(m.group(3)):
+            value = m.group(5).split(" #")[0].strip()
+            if value in ("|", ">", "|-", ">-", "|+", ">+"):
+                block_indent = len(m.group(1))
+                out.append(line)
+                continue
+            unquoted = value.strip("\"'")
+            if unquoted and unquoted.lower() not in ("true", "false", "yes", "no", "on", "off", "null", "~") \
+                    and not unquoted.startswith(("/", "~", "{", "[")):
+                out.append("{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED))
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def _config_text(value, flow):
+    import salt.utils.yaml
+    try:
+        if flow:
+            text = salt.utils.yaml.safe_dump(value, default_flow_style=True, width=1 << 30)
+        else:
+            text = salt.utils.yaml.safe_dump(value, default_flow_style=False)
+        text = text.strip()
+        if text.endswith("\n..."):
+            text = text[:-4].strip()
+        elif text.endswith("..."):
+            text = text[:-3].strip()
+        return text
+    except Exception:
+        return repr(value)
+
+
+def _top_level_blocks(text):
+    """{key: (start, end)} line ranges (1-based, end exclusive) of a YAML
+    file's top-level entries; trailing blank and comment lines aren't part
+    of a block."""
+    lines = text.splitlines()
+    starts = []
+    for i, line in enumerate(lines):
+        if not line or line[0] in " \t#-" or line.startswith("..."):
+            continue
+        m = re.match(r"^([\"']?)([^:\"']+)\1\s*:", line)
+        if m:
+            starts.append((m.group(2).strip(), i))
+    blocks = {}
+    for n, (key, start) in enumerate(starts):
+        end = starts[n + 1][1] if n + 1 < len(starts) else len(lines)
+        while end > start + 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+            end -= 1
+        blocks[key] = (start + 1, end + 1)
+    return blocks
+
+
+def _config_files(path):
+    """Salt's load order (salt.config.master_config): the main file, then
+    `default_include` (master.d/*.conf), then its `include`; an included
+    file's own `include` follows it. Later files override earlier ones."""
+    import glob
+    salt = _import_salt()
+    order = []
+
+    def read(fn):
+        try:
+            return salt.config._read_conf_file(fn) or {}, None
+        except Exception as exc:
+            return {}, str(exc)
+
+    def add_includes(patterns, base):
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        for pattern in patterns or []:
+            pattern = os.path.expanduser(pattern)
+            if not os.path.isabs(pattern):
+                pattern = os.path.join(os.path.dirname(base), pattern)
+            for fn in sorted(glob.glob(pattern)):
+                if fn in [f for f, _, _ in order]:
+                    continue
+                data, err = read(fn)
+                order.append((fn, data, err))
+                add_includes(data.get("include"), fn)
+
+    main, err = read(path)
+    order.append((path, main, err))
+    add_includes(main.get("default_include", salt.config.DEFAULT_MASTER_OPTS["default_include"]), path)
+    add_includes(main.get("include"), path)
+    return order
+
+
+def _salt_master_started():
+    """Epoch seconds the oldest salt-master process started, 0 if none."""
+    try:
+        with open("/proc/stat") as f:
+            btime = next(int(l.split()[1]) for l in f if l.startswith("btime"))
+        hz = os.sysconf("SC_CLK_TCK")
+        starts = []
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                with open("/proc/{}/cmdline".format(pid), "rb") as f:
+                    cmd = f.read().replace(b"\0", b" ")
+                if b"salt-master" not in cmd:
+                    continue
+                with open("/proc/{}/stat".format(pid)) as f:
+                    fields = f.read().rsplit(")", 1)[1].split()
+                starts.append(btime + int(fields[19]) / hz)
+            except (OSError, IndexError, ValueError):
+                continue
+        return int(min(starts)) if starts else 0
+    except Exception:
+        return 0
+
+
+def cmd_master_config(opts, req):
+    """Every master setting: where it's set (file and line range, in Salt's
+    load order), its effective value and Salt's default. Credentials are
+    redacted here, so they never reach the TUI."""
+    import difflib
+    salt = _import_salt()
+    path = opts.get("conf_file") or "/etc/salt/master"
+    defaults = salt.config.DEFAULT_MASTER_OPTS
+    effective = salt.config.master_config(path)
+    order = _config_files(path)
+
+    files = []
+    sources = {}
+    for idx, (fn, data, err) in enumerate(order):
+        try:
+            with open(fn) as f:
+                text = f.read()
+            mtime = int(os.path.getmtime(fn))
+        except OSError as exc:
+            text, mtime, err = "", 0, err or str(exc)
+        files.append({"path": fn, "text": _redact_text(text), "mtime": mtime, "error": err})
+        blocks = _top_level_blocks(text)
+        for key in data:
+            start, end = blocks.get(str(key), (0, 0))
+            sources.setdefault(str(key), []).append([idx, start, end])
+
+    settings = []
+    for key in sorted(set(effective) | set(sources), key=str):
+        if str(key).startswith("__"):
+            continue
+        in_files = str(key) in sources
+        known = key in defaults
+        actual = _plain(effective.get(key))
+        default = _plain(defaults[key]) if known else None
+        value = _redact({key: actual})[key]
+        if in_files and not known:
+            kind = "unknown"
+        elif in_files:
+            kind = "explicit"
+        elif known and actual == default:
+            kind = "default"
+        else:
+            kind = "derived"
+        entry = {
+            "key": str(key),
+            "kind": kind,
+            "sources": sources.get(str(key), []),
+            "line": _config_text(value, True),
+            "full": _config_text(value, False),
+            "default": _config_text(_redact({key: default})[key], False) if known else None,
+            "redacted": value != actual,
+        }
+        if kind == "unknown":
+            close = difflib.get_close_matches(str(key), [str(k) for k in defaults], n=1, cutoff=0.8)
+            if close:
+                entry["suggest"] = close[0]
+        settings.append(entry)
+
+    result(req["id"], "master_config", data={
+        "conf_file": path,
+        "files": files,
+        "master_started": _salt_master_started(),
+        "settings": settings,
+    })
+
+
 # mid -> {"mtime": int, "grains": {"os": ..., "osrelease": ..., ...}} — see
 # cmd_minion_cache_list for why this exists.
 _minion_grains_cache = {}
@@ -1843,6 +2094,7 @@ def _term_matcher(term):
 HANDLERS = {
     "version": cmd_version,
     "config_snapshot": cmd_config_snapshot,
+    "master_config": cmd_master_config,
     "minion_cache_list": cmd_minion_cache_list,
     "zmq_ping": cmd_zmq_ping,
     "job_ping": cmd_job_ping,

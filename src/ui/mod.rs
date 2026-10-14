@@ -4,6 +4,7 @@ mod events;
 mod jobs;
 mod alerts_view;
 mod pulse;
+mod master_config;
 mod minion_events;
 mod api_view;
 mod table;
@@ -566,6 +567,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
         Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused, &mut hits),
+        Tab::Master => master_config::draw_master(f, main_layout[1], app, tab_focused),
     }
     app.header_hits = hits;
 
@@ -719,7 +721,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     // Tab menu (left) and host/uptime (right) share the one content row.
-    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Pulse];
+    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Pulse, Tab::Master];
     let mut tab_spans: Vec<Span<'static>> = Vec::new();
     for (i, tab) in tabs.iter().enumerate() {
         if i > 0 {
@@ -886,6 +888,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 Tab::Alerts => (app.alert_selected + 1, app.filtered_alerts_len()),
                 Tab::Pulse => (app.pulse_selected + 1, app.pulse_minions_count()),
                 Tab::Api => (app.api_log_selected + 1, app.filtered_api_log_len()),
+                Tab::Master => (app.master_selected + 1, app.filtered_master_settings().len()),
                 _ => (0, 0),
             };
             if total > 0 {
@@ -893,7 +896,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             }
             let active_filter = match app.current_tab {
                 Tab::Events => app.applied_filter.as_str(),
-                Tab::Minions | Tab::Alerts | Tab::Api => app.filter_text_for(app.current_tab),
+                Tab::Minions | Tab::Alerts | Tab::Api | Tab::Master => app.filter_text_for(app.current_tab),
                 _ => "",
             };
             if !active_filter.is_empty() {
@@ -951,7 +954,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ("General", &[
         Shortcut { tab: "", key: "`q`", action: "Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once)" },
         Shortcut { tab: "", key: "`Tab` / `Shift+Tab`", action: "Next / previous tab" },
-        Shortcut { tab: "", key: "`1`–`7`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse)" },
+        Shortcut { tab: "", key: "`1`–`8`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse/Master)" },
         Shortcut { tab: "", key: "`↑`/`↓`", action: "Scroll / navigate" },
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Page scroll" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last row" },
@@ -964,7 +967,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`F3`", action: "Open Config Editor" },
         Shortcut { tab: "", key: "`+`/`-`", action: "Adjust refresh interval" },
         Shortcut { tab: "", key: "`m`", action: "Toggle sparkline style (Dashboard)" },
-        Shortcut { tab: "", key: "`Ctrl+←`/`Ctrl+→`", action: "Move the divider between the two panels (Minions, Events, Jobs, API, Pulse)" },
+        Shortcut { tab: "", key: "`Ctrl+←`/`Ctrl+→`", action: "Move the divider between the two panels (Minions, Events, Jobs, API, Pulse, Master)" },
         Shortcut { tab: "", key: "`F4`–`F8`", action: "Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard)" },
     ]),
     ("Per tab", &[
@@ -984,6 +987,8 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Jobs (Cache)", key: "`r`", action: "Refresh job cache" },
         Shortcut { tab: "Jobs (Cache)", key: "`←`/`→`", action: "Switch focus between Live Jobs and Cache panels" },
         Shortcut { tab: "Pulse", key: "`↑`/`↓`/`←`/`→`", action: "Navigate the minion grid" },
+        Shortcut { tab: "Master", key: "`Enter`", action: "The setting's full value, where it's set and Salt's default" },
+        Shortcut { tab: "Master", key: "`r`", action: "Read the configuration files again" },
         Shortcut { tab: "API", key: "`x`", action: "Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`)" },
     ]),
     ("Config Editor", &[
@@ -1337,6 +1342,48 @@ fn guide_help_lines() -> Vec<Line<'static>> {
         Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled("  masters from 3006.17, 3007.9 and 3008 reject v0 and v2 (minimum_auth_version: 3)", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Master tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  load order", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  /etc/salt/master, then master.d/*.conf (sorted), then include:; a later file", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  wins, nested values from included files are merged", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  set", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  in a file; Source is the file and line that wins, +N when others set it too", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  not core", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  in a file but not a Salt core setting: a module's own option or a typo,", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  which Salt ignores; a near miss names the setting it's probably meant to be", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  derived", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  in no file, but not Salt's default either: worked out at startup", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  default", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  Salt's default, in no file", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  restart pending", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  a file changed after salt-master started; the master isn't using it yet", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  <redacted>", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  values of credential-looking keys (*pass*, *secret*, *token, *_key), nested", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  ones too, blanked by the agent; the TUI never receives them", Style::default().fg(color::main_fg())),
         ]),
         Line::from(""),
         Line::from(Span::styled("  Events Preview", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),

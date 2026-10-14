@@ -32,6 +32,16 @@ impl App {
                         "config_snapshot" => {
                             self.config_snapshot = Some(parse_config_snapshot(&data));
                         }
+                        "master_config" => {
+                            self.master_config_loading = false;
+                            if ok {
+                                self.master_config = Some(parse_master_config(&data));
+                                self.master_config_error = None;
+                                self.clamp_selection();
+                            } else {
+                                self.master_config_error = Some(data["error"].as_str().unwrap_or("unknown error").to_string());
+                            }
+                        }
                         "minion_cache_list" if ok => {
                             let mut minions = parse_minion_list(&data);
                             for minion in &mut minions {
@@ -664,6 +674,12 @@ impl App {
 
     /// Send a command to the agent, returns the request id.
     /// Appends to the command file (avoids overwriting a concurrently-written command).
+    pub(crate) fn request_master_config(&mut self) {
+        self.master_config_loading = true;
+        self.master_config_error = None;
+        self.send_agent_cmd("master_config", None);
+    }
+
     pub fn send_agent_cmd(&mut self, cmd: &str, extra: Option<serde_json::Value>) -> u64 {
         self.agent_req_id += 1;
         let id = self.agent_req_id;

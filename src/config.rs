@@ -424,6 +424,7 @@ pub struct AppConfig {
     pub jobs_split_pct: u64,
     pub api_split_pct: u64,
     pub pulse_split_pct: u64,
+    pub master_split_pct: u64,
 }
 
 pub const SPLIT_PCT_MIN: u64 = 20;
@@ -438,6 +439,7 @@ impl AppConfig {
             Tab::Jobs => Some(&mut self.jobs_split_pct),
             Tab::Api => Some(&mut self.api_split_pct),
             Tab::Pulse => Some(&mut self.pulse_split_pct),
+            Tab::Master => Some(&mut self.master_split_pct),
             Tab::Dashboard | Tab::Alerts => None,
         }
     }
@@ -449,6 +451,7 @@ impl AppConfig {
             Tab::Jobs => self.jobs_split_pct,
             Tab::Api => self.api_split_pct,
             Tab::Pulse => self.pulse_split_pct,
+            Tab::Master => self.master_split_pct,
             Tab::Dashboard | Tab::Alerts => 100,
         };
         pct.min(100) as u16
@@ -562,6 +565,7 @@ impl Default for AppConfig {
             jobs_split_pct: 55,
             api_split_pct: 65,
             pulse_split_pct: 65,
+            master_split_pct: 55,
         }
     }
 }
@@ -673,6 +677,7 @@ struct UiConfig {
     jobs_split_pct: Option<u64>,
     api_split_pct: Option<u64>,
     pulse_split_pct: Option<u64>,
+    master_split_pct: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -793,6 +798,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("ui", "jobs_split_pct", c.jobs_split_pct.to_toml()),
         ("ui", "api_split_pct", c.api_split_pct.to_toml()),
         ("ui", "pulse_split_pct", c.pulse_split_pct.to_toml()),
+        ("ui", "master_split_pct", c.master_split_pct.to_toml()),
     ]
 }
 
@@ -945,6 +951,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = u.jobs_split_pct { cfg.jobs_split_pct = split(v); }
                 if let Some(v) = u.api_split_pct { cfg.api_split_pct = split(v); }
                 if let Some(v) = u.pulse_split_pct { cfg.pulse_split_pct = split(v); }
+                if let Some(v) = u.master_split_pct { cfg.master_split_pct = split(v); }
             }
         }
     }

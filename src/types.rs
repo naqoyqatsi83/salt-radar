@@ -12,6 +12,7 @@ pub enum Tab {
     Alerts,
     Pulse,
     Api,
+    Master,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,13 +33,15 @@ impl Tab {
             Self::Jobs => Self::Alerts,
             Self::Alerts => Self::Api,
             Self::Api => Self::Pulse,
-            Self::Pulse => Self::Dashboard,
+            Self::Pulse => Self::Master,
+            Self::Master => Self::Dashboard,
         }
     }
 
     pub fn prev(&self) -> Self {
         match self {
-            Self::Dashboard => Self::Pulse,
+            Self::Dashboard => Self::Master,
+            Self::Master => Self::Pulse,
             Self::Minions => Self::Dashboard,
             Self::Events => Self::Minions,
             Self::Jobs => Self::Events,
@@ -57,6 +60,7 @@ impl Tab {
             Self::Alerts => "Alerts",
             Self::Pulse => "Pulse",
             Self::Api => "API",
+            Self::Master => "Master",
         }
     }
 }
@@ -431,6 +435,97 @@ impl SnifferState {
             .collect()
     }
 
+}
+
+// ─── Master configuration ─────────────────────────────────────────────────
+
+/// The master's configuration as the agent read it from disk (see
+/// `cmd_master_config`), credentials already redacted.
+#[derive(Clone, Debug, Default)]
+pub struct MasterConfig {
+    pub conf_file: String,
+    /// In Salt's load order: later files override earlier ones.
+    pub files: Vec<ConfigFile>,
+    /// When the oldest salt-master process started (epoch secs, 0 unknown).
+    pub master_started: u64,
+    pub settings: Vec<ConfigSetting>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ConfigFile {
+    pub path: String,
+    pub text: String,
+    pub mtime: u64,
+    pub error: Option<String>,
+}
+
+impl ConfigFile {
+    /// Written after salt-master started, so the running master isn't using
+    /// what it says yet.
+    pub fn changed_since(&self, master_started: u64) -> bool {
+        master_started > 0 && self.mtime > master_started
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SettingKind {
+    /// Set in a file, and one of Salt's core settings.
+    Explicit,
+    /// Set in a file, but not a core setting: a module's own option
+    /// (`mysql.host`, `rest_cherrypy`) or a typo.
+    Unknown,
+    /// In no file, but not Salt's default either: computed at startup.
+    Derived,
+    Default,
+}
+
+impl SettingKind {
+    pub fn from_agent(kind: &str) -> Self {
+        match kind {
+            "explicit" => Self::Explicit,
+            "unknown" => Self::Unknown,
+            "derived" => Self::Derived,
+            _ => Self::Default,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Explicit => "set",
+            Self::Unknown => "not core",
+            Self::Derived => "derived",
+            Self::Default => "default",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigSetting {
+    pub key: String,
+    pub kind: SettingKind,
+    /// (file index, first line, end line exclusive; 1-based, 0 = unknown)
+    /// for every file that sets it, in load order: the last one wins.
+    pub sources: Vec<(usize, usize, usize)>,
+    /// The effective value on one line, and in full (YAML).
+    pub line: String,
+    pub full: String,
+    /// Salt's default, for a core setting.
+    pub default: Option<String>,
+    pub redacted: bool,
+    /// For an unknown key, the core setting it's closest to.
+    pub suggest: Option<String>,
+}
+
+impl ConfigSetting {
+    /// The setting as it would be written in a config file.
+    pub fn as_yaml(&self) -> String {
+        if self.full.contains('\n') {
+            let body: Vec<String> = self.full.lines().map(|l| format!("  {}", l)).collect();
+            format!("{}:\n{}", self.key, body.join("\n"))
+        } else {
+            format!("{}: {}", self.key, self.full)
+        }
+    }
 }
 
 // ─── Salt versions ────────────────────────────────────────────────────────

@@ -56,6 +56,15 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Clear, area);
             draw_api_request_detail(f, area, entry, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
+        DetailPopup::MasterSetting { index, scroll } => {
+            let area = centered_rect(75, 70, f.area());
+            if let Some(mc) = &app.master_config {
+                if let Some(setting) = mc.settings.get(*index) {
+                    let status = clipboard_status(app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+                    app.master_popup_scroll_max = draw_master_setting(f, area, mc, setting, *scroll, status);
+                }
+            }
+        }
     }
     // Clamp the stored offset to what's actually scrollable so keys pressed
     // past the end (End, repeated PgDn) don't leave dead presses behind.
@@ -1567,6 +1576,56 @@ fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiL
     let hints: [(&str, String); 3] = [("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string())];
     let status = clipboard_status(clipboard_at, save_at, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
+}
+
+/// A Master tab setting in full: where it's set, its value and Salt's
+/// default. Returns the last scroll position.
+fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfig, s: &crate::types::ConfigSetting, scroll: usize, status: Option<Line<'static>>) -> usize {
+    let mut lines = header_lines(&format!(" {} ", s.key), area.width);
+    lines.push(row("Kind", s.kind.label().to_string(), color::main_fg()));
+    for (n, &(file, start, end)) in s.sources.iter().enumerate().rev() {
+        let path = mc.files.get(file).map_or("?", |f| f.path.as_str());
+        let at = if start > 0 { format!(" {}", super::master_config::line_span(start, end)) } else { String::new() };
+        let label = if n + 1 == s.sources.len() { "Set in" } else { "Overrides" };
+        lines.push(row(label, format!("{}{}", path, at), if n + 1 == s.sources.len() { color::cyan() } else { color::inactive_fg() }));
+    }
+    if let Some(core) = &s.suggest {
+        lines.push(row("Did you mean", core.clone(), color::red()));
+    }
+    if s.redacted {
+        lines.push(row("Credentials", "shown as <redacted>".to_string(), color::inactive_fg()));
+    }
+    lines.push(Line::from(""));
+    let pinned = lines.len();
+
+    let value = |text: &str, fg| text.lines().map(|l| Line::from(Span::styled(format!("    {}", l), Style::default().fg(fg)))).collect::<Vec<_>>();
+    let heading = |text: &str| Line::from(Span::styled(format!("  {}", text), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)));
+    let mut body = vec![heading("Value")];
+    body.extend(value(&s.full, color::hi_fg()));
+    if let Some(default) = s.default.as_ref().filter(|d| **d != s.full) {
+        body.push(Line::from(""));
+        body.push(heading("Salt's default"));
+        body.extend(value(default, color::inactive_fg()));
+    }
+
+    // As tall as its content, up to the area it was given.
+    let chrome = 2 + pinned + usize::from(status.is_some());
+    let height = (chrome + body.len()).min(area.height as usize) as u16;
+    let area = Rect { y: area.y + (area.height - height) / 2, height, ..area };
+    let viewport_h = (area.height as usize).saturating_sub(chrome);
+    let max_scroll = body.len().saturating_sub(viewport_h);
+    let scroll = scroll.min(max_scroll);
+    let more = (scroll > 0, scroll + viewport_h < body.len());
+    lines.extend(body.into_iter().skip(scroll));
+    let hints: [(&str, String); 5] = [
+        ("Esc/q", "close".to_string()),
+        ("\u{2191}\u{2193}", "scroll".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("y", "copy".to_string()),
+        ("s", "save".to_string()),
+    ];
+    render_popup(f, area, &lines, &hints, status, more, 0, 0);
+    max_scroll
 }
 
 fn draw_admin_confirm(f: &mut Frame, area: Rect) {
