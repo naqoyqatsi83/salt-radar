@@ -448,6 +448,20 @@ pub struct JobEntry {
     pub finalized: bool,
     pub args: String,
     pub test_run: bool,
+    pub lag: JobLag,
+}
+
+/// A job's return times, for each minion's lag ratio (its time over the
+/// job's median). Collected until the job is settled -- every target
+/// returned, or `job_straggler_secs` passed -- then the median is fixed,
+/// and minions returning later are rated against it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum JobLag {
+    /// (minion, seconds from the job's publish to its return)
+    Collecting(Vec<(String, f64)>),
+    /// The median, or None when fewer than two minions returned in time,
+    /// or the job's publish time isn't known.
+    Settled(Option<f64>),
 }
 
 // ─── Cache job entry (from agent jobs.list_jobs) ──────────────────────────
@@ -531,7 +545,7 @@ impl TableId {
         match self {
             Self::LiveJobs => &["jid", "fun", "args", "target", "source", "tgt", "ok", "fail", "wait", "started"],
             Self::JobCache => &["jid", "user", "started", "target", "fun", "args"],
-            Self::Minions => &["id", "key", "os", "salt", "arch", "seen", "fail_pct"],
+            Self::Minions => &["id", "key", "os", "salt", "arch", "seen", "fail_pct", "lag", "ping"],
             Self::Events => &["local", "utc", "tag", "minion"],
             Self::Alerts => &["severity", "rule", "description", "since", "count"],
             Self::ApiLog => &["age", "method", "client", "path", "status", "time"],
@@ -588,6 +602,8 @@ pub enum Column {
     Arch,
     LastSeen,
     FailPct,
+    Lag,
+    Ping,
     Local,
     Utc,
     Tag,
@@ -624,6 +640,8 @@ const COLUMN_KEYS: &[(&str, Column)] = &[
     ("arch", Column::Arch),
     ("seen", Column::LastSeen),
     ("fail_pct", Column::FailPct),
+    ("lag", Column::Lag),
+    ("ping", Column::Ping),
     ("local", Column::Local),
     ("utc", Column::Utc),
     ("tag", Column::Tag),
@@ -670,6 +688,8 @@ impl Column {
             Self::Arch => "Arch",
             Self::LastSeen => "Seen",
             Self::FailPct => "Fail%",
+            Self::Lag => "Lag",
+            Self::Ping => "Ping",
             Self::Local => "Local",
             Self::Utc => "UTC",
             Self::Tag => "Tag",
@@ -696,7 +716,8 @@ impl Column {
                 | Self::MinionId | Self::EventMinion | Self::Started => 21,
             Self::Source | Self::Method | Self::Time => 8,
             Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count => 6,
-            Self::FailPct => 7,
+            Self::FailPct | Self::Lag => 7,
+            Self::Ping => 9,
             Self::User => 13,
             Self::KeyStatus | Self::Severity | Self::Arch => 10,
             Self::LastSeen | Self::Since => 13,
@@ -721,7 +742,7 @@ impl Column {
     }
 
     pub fn right_aligned(self) -> bool {
-        matches!(self, Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count | Self::Time | Self::FailPct)
+        matches!(self, Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count | Self::Time | Self::FailPct | Self::Lag | Self::Ping)
     }
 
     /// Parses a comma-separated column list from the config, keeping only

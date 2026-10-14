@@ -587,7 +587,10 @@ impl App {
 
                     // Track live jobs from events
                     if let Some(evt) = self.events.back() {
-                        track_job_from_event(&mut self.jobs, &mut self.jobs_index, evt);
+                        if let Some(timing) = track_job_from_event(&mut self.jobs, &mut self.jobs_index, evt) {
+                            let fun = evt.data["fun"].as_str().unwrap_or("").to_string();
+                            self.record_return_timing(timing, &fun);
+                        }
                     }
 
                     // Sniffer: inject matching events into sniffer buffer

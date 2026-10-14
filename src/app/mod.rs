@@ -544,12 +544,23 @@ pub const MINION_HEALTH_WINDOW: usize = 50;
 /// rule, column header, rule.
 pub const MINION_EVENTS_HEADER_ROWS: u16 = 5;
 
+/// Return times under this count as this for lag ratios: a `test.ping`
+/// answered in 30 ms by most minions would otherwise rate one answering in
+/// 120 ms 4x slow over jitter nobody would notice, and fast jobs would rate
+/// typical minions below 1.0x.
+const LAG_MIN_SECS: f64 = 0.5;
+
 #[derive(Debug, Default, PartialEq)]
 pub struct MinionHealth {
     /// Outcomes of the latest returns, oldest first; `true` = success.
     pub recent: VecDeque<bool>,
     /// When the newest failure happened, and the job's function and args.
     pub last_failure: Option<(f64, String)>,
+    /// Lag ratios of the latest jobs, oldest first: the minion's return
+    /// time over the median of the job's minions (see `JobLag`).
+    pub lag: VecDeque<f64>,
+    /// Seconds from publish to return of the minion's latest `test.ping`.
+    pub last_ping_secs: Option<f64>,
 }
 
 impl MinionHealth {
@@ -557,6 +568,18 @@ impl MinionHealth {
         self.recent.push_back(ok);
         if self.recent.len() > MINION_HEALTH_WINDOW { self.recent.pop_front(); }
         if let Some(what) = failure { self.last_failure = Some((ts, what)); }
+    }
+
+    fn record_lag(&mut self, secs: f64, job_median: f64) {
+        self.lag.push_back(secs.max(LAG_MIN_SECS) / job_median.max(LAG_MIN_SECS));
+        if self.lag.len() > MINION_HEALTH_WINDOW { self.lag.pop_front(); }
+    }
+
+    /// The lag ratio at percentile `p` (0.5 = median) of the latest jobs.
+    pub fn lag_at(&self, p: f64) -> Option<f64> {
+        let mut v: Vec<f64> = self.lag.iter().copied().collect();
+        v.sort_by(f64::total_cmp);
+        percentile(&v, p)
     }
 
     pub fn failed(&self) -> usize {
@@ -1509,6 +1532,25 @@ impl App {
         self.minion_returns.entry(minion_id.to_string()).or_default().record(ok, ts, failure);
     }
 
+    pub(crate) fn record_return_timing(&mut self, t: ReturnTiming, fun: &str) {
+        let h = self.minion_returns.entry(t.minion).or_default();
+        if fun == "test.ping" { h.last_ping_secs = Some(t.secs); }
+        if let Some(median) = t.late_median { h.record_lag(t.secs, median); }
+    }
+
+    /// Settles the lag of jobs that are complete or past
+    /// `job_straggler_secs`: fixes their median and rates the minions that
+    /// returned so far against it.
+    fn settle_job_lags(&mut self) {
+        for job in self.jobs.iter_mut() {
+            if let Some((times, median)) = settle_job_lag(job, self.config.job_straggler_secs) {
+                for (minion, secs) in times {
+                    self.minion_returns.entry(minion).or_default().record_lag(secs, median);
+                }
+            }
+        }
+    }
+
     /// Rolling percentage of job returns with success == true, over the last
     /// JOB_STATS_WINDOW returns. None until at least one return has been seen.
     pub fn job_success_pct(&self) -> Option<f64> {
@@ -1988,6 +2030,14 @@ impl App {
                 (Column::FailPct, a, b) => {
                     let ratio = |m: Option<&MinionInfo>| m.and_then(|m| self.minion_fail_ratio(&m.id)).unwrap_or(-1.0);
                     ratio(b).total_cmp(&ratio(a))
+                }
+                (Column::Lag, a, b) => {
+                    let lag = |m: Option<&MinionInfo>| m.and_then(|m| self.minion_health(&m.id)?.lag_at(0.5)).unwrap_or(-1.0);
+                    lag(b).total_cmp(&lag(a))
+                }
+                (Column::Ping, a, b) => {
+                    let ping = |m: Option<&MinionInfo>| m.and_then(|m| self.minion_health(&m.id)?.last_ping_secs).unwrap_or(-1.0);
+                    ping(b).total_cmp(&ping(a))
                 }
                 _ => std::cmp::Ordering::Equal,
             };
@@ -2578,6 +2628,8 @@ impl App {
                 if self.job_outcome_window.len() > JOB_STATS_WINDOW { self.job_outcome_window.pop_front(); }
             }
         }
+
+        self.settle_job_lags();
 
         // Age out old jobs — anything removed while still unfinished is a partial close-out
         let max_age = self.config.config_secs * 60; // 60 min default
@@ -3356,10 +3408,22 @@ fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
     result
 }
 
-fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, usize>, evt: &SaltEvent) {
+/// A return's timing, for the minion's `Lag` and `Ping`.
+#[derive(Debug, PartialEq)]
+pub(crate) struct ReturnTiming {
+    pub minion: String,
+    /// Seconds from the job's publish to this return.
+    pub secs: f64,
+    /// The job's median, when it was settled before this return came in.
+    pub late_median: Option<f64>,
+}
+
+/// Tracks the Live Jobs list from a job event; for the return of a job
+/// whose publish was seen, also how long the minion took.
+fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, usize>, evt: &SaltEvent) -> Option<ReturnTiming> {
     if evt.tag.ends_with("/new") {
         let jid = evt.data["jid"].as_str().unwrap_or("").to_string();
-        if jid.is_empty() { return; }
+        if jid.is_empty() { return None; }
         let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
         let tgt = match &evt.data["tgt"] {
             serde_json::Value::String(s) => s.clone(),
@@ -3388,7 +3452,9 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             job.local = false;
             job.args = args;
             job.test_run = test_run;
-            return;
+            // Its return times were measured from that return, not the publish.
+            job.lag = JobLag::Settled(None);
+            return None;
         }
         index.insert(jid.clone(), jobs.len());
         jobs.push(JobEntry {
@@ -3405,13 +3471,14 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             finalized: false,
             args,
             test_run,
+            lag: JobLag::Collecting(Vec::new()),
         });
     } else if evt.tag.contains("/ret/") {
         let jid = evt.tag
             .strip_prefix("salt/job/")
             .and_then(|s| s.split("/ret/").next())
             .unwrap_or("");
-        if jid.is_empty() { return; }
+        if jid.is_empty() { return None; }
         let (success, _) = return_outcome(&evt.data, &evt.data["return"]);
         if let Some(job) = index.get(jid).map(|&i| &mut jobs[i]) {
             job.returned += 1;
@@ -3422,6 +3489,17 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             // guess below) -- always widen to match reality rather than
             // show a target count smaller than what's actually come back.
             job.target_count = job.target_count.max(job.returned);
+            let minion = evt.tag.rsplit('/').next().unwrap_or("");
+            if job.local || minion.is_empty() { return None; }
+            let secs = (evt.ts - job.created_epoch).max(0.0);
+            let late_median = match &mut job.lag {
+                JobLag::Collecting(times) => {
+                    times.push((minion.to_string(), secs));
+                    None
+                }
+                JobLag::Settled(median) => *median,
+            };
+            return Some(ReturnTiming { minion: minion.to_string(), secs, late_median });
         } else {
             // Unknown JID → salt-call / local execution (no /new event was emitted)
             let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
@@ -3442,9 +3520,31 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
                 finalized: false,
                 args,
                 test_run,
+                lag: JobLag::Settled(None),
             });
         }
     }
+    None
+}
+
+/// Settles a job's lag once it's complete or older than `straggler_secs`,
+/// returning the return times collected so far and the job's median, when
+/// at least two minions returned.
+fn settle_job_lag(job: &mut JobEntry, straggler_secs: u64) -> Option<(Vec<(String, f64)>, f64)> {
+    let JobLag::Collecting(times) = &mut job.lag else { return None };
+    if !job.finalized && job.age_seconds <= straggler_secs { return None; }
+    let times = std::mem::take(times);
+    let mut secs: Vec<f64> = times.iter().map(|(_, s)| *s).collect();
+    secs.sort_by(f64::total_cmp);
+    let median = if secs.len() >= 2 { percentile(&secs, 0.5) } else { None };
+    job.lag = JobLag::Settled(median);
+    Some((times, median?))
+}
+
+/// The value at percentile `p` (0.0-1.0) of sorted values, nearest-rank.
+fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
+    let last = sorted.len().checked_sub(1)?;
+    Some(sorted[((last as f64 * p).round() as usize).min(last)])
 }
 
 fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
@@ -3558,7 +3658,7 @@ mod tests {
         let job = |tgt: &str| JobEntry {
             jid: "20261012133558123456".into(), fun: "state.apply".into(), tgt: tgt.into(),
             target_count: 1, returned: 0, succeeded: 0, failed: 0, age_seconds: 0, created_epoch: 0.0,
-            local: false, finalized: false, args: String::new(), test_run: false,
+            local: false, finalized: false, args: String::new(), test_run: false, lag: JobLag::Settled(None),
         };
         let known: HashSet<String> = ["web01".to_string(), "db01".to_string()].into();
         let (star, db) = (job("*"), job("db01"));
@@ -3732,6 +3832,54 @@ mod tests {
         assert_eq!(h.failed(), MINION_HEALTH_WINDOW / 10);
         assert_eq!(h.fail_ratio(), Some(0.1));
         assert_eq!(h.last_failure, Some((42.0, "job 40".to_string())));
+    }
+
+    #[test]
+    fn a_minion_is_rated_against_its_peers_in_the_same_job() {
+        let evt = |tag: &str, ts: f64| SaltEvent { tag: tag.into(), ts, data: json!({
+            "jid": "1", "fun": "state.apply", "tgt": "*", "minions": ["a", "b", "c", "d"],
+        }) };
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/new", 100.0));
+        for (mid, ts) in [("a", 110.0), ("b", 112.0), ("c", 140.0)] {
+            let t = track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/1/ret/{mid}"), ts)).unwrap();
+            assert_eq!((t.secs, t.late_median), (ts - 100.0, None), "collected until settled");
+        }
+        assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "not complete and not a straggler yet");
+        jobs[0].age_seconds = 301;
+        let (times, median) = settle_job_lag(&mut jobs[0], 300).unwrap();
+        assert_eq!((times.len(), median), (3, 12.0));
+        let mut c = MinionHealth::default();
+        c.record_lag(40.0, median);
+        assert_eq!(c.lag_at(0.5), Some(40.0 / 12.0));
+        let late = track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/ret/d", 190.0)).unwrap();
+        assert_eq!(late.late_median, Some(12.0), "a late return is rated against the settled median");
+        assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "settled once");
+    }
+
+    #[test]
+    fn fast_jobs_and_lone_returns_give_no_misleading_lag() {
+        let mut h = MinionHealth::default();
+        h.record_lag(0.12, 0.03);
+        h.record_lag(2.0, 0.03);
+        assert_eq!((h.lag[0], h.lag[1]), (1.0, 4.0), "ping jitter isn't 4x slow, a 2 s answer is");
+        let new = SaltEvent { tag: "salt/job/2/new".into(), ts: 0.0, data: json!({"jid": "2", "fun": "test.ping", "minions": ["a", "b"]}) };
+        let ret = SaltEvent { tag: "salt/job/2/ret/a".into(), ts: 1.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        track_job_from_event(&mut jobs, &mut index, &new);
+        track_job_from_event(&mut jobs, &mut index, &ret);
+        jobs[0].age_seconds = 999;
+        assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "one return has no peers");
+        assert_eq!(jobs[0].lag, JobLag::Settled(None));
+        let local = SaltEvent { tag: "salt/job/3/ret/a".into(), ts: 5.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+        assert_eq!(track_job_from_event(&mut jobs, &mut index, &local), None, "no publish seen, no timing");
+    }
+
+    #[test]
+    fn percentiles_use_the_nearest_rank() {
+        assert_eq!(percentile(&[], 0.5), None);
+        assert_eq!(percentile(&[1.0, 2.0, 9.0], 0.5), Some(2.0));
+        assert_eq!(percentile(&(1..=20).map(f64::from).collect::<Vec<_>>(), 0.95), Some(19.0));
     }
 
     #[test]

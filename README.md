@@ -109,12 +109,13 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Every panel above the sparklines — Host Resources, Services, Minion Key Status, Event Types, Job Pulse, salt-api — can be individually hidden via `show_host_resources`/`show_services`/`show_key_status`/`show_event_types`/`show_job_pulse`/`show_salt_api` in the Config Editor (`F3`), same on/off toggle as the sparkline panels' `show_*_graph`; hiding one of Services/Minion Key Status/Event Types reflows the remaining columns in that row to fill the freed width instead of leaving a gap
 
 ### Minions
-- Scrollable minion list: ID, key status, OS, Salt version, plus optional Arch, Seen (time since last check-in) and Fail% (share of the minion's last 50 returns that failed, worst first when sorted) columns; sorting keeps timed-out minions in their own section
+- Scrollable minion list: ID, key status, OS, Salt version, plus optional Arch, Seen (time since last check-in) and Fail% (share of the minion's last 50 returns that failed, worst first when sorted), Lag and Ping columns; sorting keeps timed-out minions in their own section
+- Lag: how slowly the minion answers compared with the other minions on the same jobs, so a minion that's consistently slow stands out whatever the jobs were. For every job with at least two returns, each minion's time from publish to return is divided by the job's median (a `state.apply` and a `test.ping` rate the same way); the column shows the median of the minion's last 50 ratios, gray up to 1.5x, yellow up to 3x, red beyond. A job is rated once every target returned or it passed `job_straggler_secs`, and minions returning later are rated against that median. Return times under 0.5 s count as 0.5 s, so ping jitter doesn't read as lag. Ping: the time to the minion's latest `test.ping` return, from any source. Both fill in from jobs seen while salt-radar runs
 - One row per key, so the list adds up to the Dashboard's Minion Key Status: pending, rejected and denied keys are listed too, and an ID with an accepted and a denied key (a minion that came back with a new key) shows twice, once per key
 - Freshly-active marker (`●`) next to minions that checked in recently, threshold adapts to the fleet's own median check-in age
 - Fleet overview panel: OS Distribution, Salt Version, and Architecture distribution bars
 - Detail popup with key info and connection status
-- Activity popup (`r`): the minion's recent jobs with function, args, result (OK / FAIL rc=N, or `2 ok 1 chg 1 fail` for state runs) and full JID, plus Job Cache entries that targeted it by name, glob or list; a summary line counts its last 50 returns and names the latest failure
+- Activity popup (`r`): the minion's recent jobs with function, args, result (OK / FAIL rc=N, or `2 ok 1 chg 1 fail` for state runs) and full JID, plus Job Cache entries that targeted it by name, glob or list; a summary line counts its last 50 returns, names the latest failure and shows the minion's lag (median and p95) and last ping
 - Filter by ID, key status (`denied`, `pending`, …), OS, or version (`/` key) — scopes the fleet overview breakdown to the matching minions too, when "follow filter" is on (`f` to toggle, on by default; startup default configurable via `follow_filter` under `[minions]`)
 
 ### Events
@@ -186,7 +187,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 ### Columns and sorting
 - The Minions, Events, Jobs (both tables), Alerts and API request log tables let you choose which columns are shown and in what order: `v` opens a picker for the focused table (`+`/`-` move a column, `Space` shows/hides it, `Enter` saves), also editable in the Config Editor — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their sections of `salt-radar.toml`
 - Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order). Sorting lasts for the session
-- Optional columns beyond the defaults: Live Jobs Started, Minions Arch/Seen/Fail%, Events Minion, Alerts Since/Count
+- Optional columns beyond the defaults: Live Jobs Started, Minions Arch/Seen/Fail%/Lag/Ping, Events Minion, Alerts Since/Count
 - When a panel is too narrow for every column, the text columns shrink together instead of cutting off the rightmost ones
 
 ### Config Editor

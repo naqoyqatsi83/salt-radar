@@ -123,6 +123,16 @@ fn health_line(app: &App, minion_id: &str, now: f64) -> Line<'static> {
             spans.push(Span::styled(what.clone(), Style::default().fg(color::yellow())));
         }
     }
+    if let (Some(median), Some(p95)) = (h.lag_at(0.5), h.lag_at(0.95)) {
+        spans.push(Span::styled(format!(" \u{b7} lag over {} jobs: ", h.lag.len()), Style::default().fg(color::label_fg())));
+        spans.push(Span::styled(super::format_lag(median), Style::default().fg(super::lag_color(median)).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(", p95 ", Style::default().fg(color::label_fg())));
+        spans.push(Span::styled(super::format_lag(p95), Style::default().fg(super::lag_color(p95))));
+    }
+    if let Some(ping) = h.last_ping_secs {
+        spans.push(Span::styled(" \u{b7} last ping ", Style::default().fg(color::label_fg())));
+        spans.push(Span::styled(super::format_secs_short(ping), Style::default().fg(color::main_fg())));
+    }
     Line::from(spans)
 }
 

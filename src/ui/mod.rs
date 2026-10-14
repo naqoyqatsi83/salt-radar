@@ -462,6 +462,22 @@ pub fn split_panes(area: Rect, app: &App) -> [Rect; 2] {
     Layout::horizontal([Constraint::Percentage(pct), Constraint::Percentage(100 - pct)]).areas(area)
 }
 
+/// A minion's lag ratio, like `1.0x` or `12x`.
+pub fn format_lag(ratio: f64) -> String {
+    if ratio < 10.0 { format!("{:.1}x", ratio) } else { format!("{:.0}x", ratio) }
+}
+
+/// Lag ratios up to 1.5x are normal spread between minions; beyond that a
+/// minion is noticeably slower than its peers, and from 3x, much slower.
+pub fn lag_color(ratio: f64) -> Color {
+    if ratio < 1.5 { color::inactive_fg() } else if ratio < 3.0 { color::yellow() } else { color::red() }
+}
+
+/// A duration in ms under 10 s (`85ms`, `2340ms`), whole seconds above.
+pub fn format_secs_short(secs: f64) -> String {
+    if secs < 10.0 { format!("{:.0}ms", secs * 1000.0) } else { format!("{:.0}s", secs) }
+}
+
 /// btop-style adjustable-value hint: `┤ -VALUE+ ├` with the `-`/`+` keys
 /// that step the value picked out in red, the live value shown plain
 /// between them (e.g. how btop shows its own update-interval in the box
