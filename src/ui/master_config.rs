@@ -5,7 +5,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::types::{ConfigSetting, MasterConfig, SettingKind, Tab};
+use crate::types::{ConfigSetting, MasterConfig, SettingKind, SourceRelation, Tab};
 
 use super::color;
 use super::table::cell;
@@ -39,6 +39,7 @@ fn kind_colors(s: &ConfigSetting) -> (Style, Style) {
         SettingKind::Explicit => (Style::default().fg(color::main_fg()).add_modifier(Modifier::BOLD), value),
         SettingKind::Unknown if s.suggest.is_some() => (Style::default().fg(color::red()).add_modifier(Modifier::BOLD), value),
         SettingKind::Unknown => (Style::default().fg(color::purple()).add_modifier(Modifier::BOLD), value),
+        SettingKind::Ignored => (Style::default().fg(color::red()).add_modifier(Modifier::BOLD), Style::default().fg(color::inactive_fg())),
         SettingKind::Derived => (Style::default().fg(color::yellow()), Style::default().fg(color::main_fg())),
         SettingKind::Default => (Style::default().fg(color::inactive_fg()), Style::default().fg(color::inactive_fg())),
     }
@@ -47,14 +48,24 @@ fn kind_colors(s: &ConfigSetting) -> (Style, Style) {
 /// Where a setting comes from, in a few characters: the winning file and
 /// line, `+N` when other files set it too.
 fn source_label(mc: &MasterConfig, s: &ConfigSetting) -> String {
-    match s.sources.last() {
-        Some(&(file, line, _)) => {
-            let name = mc.files.get(file).map_or("?", |f| file_name(&f.path));
+    match s.winner() {
+        Some(src) => {
+            let name = mc.files.get(src.file).map_or("?", |f| file_name(&f.path));
+            let at = if src.start > 0 { format!(":{}", src.start) } else { String::new() };
             let more = if s.sources.len() > 1 { format!(" +{}", s.sources.len() - 1) } else { String::new() };
-            if line > 0 { format!("{}:{}{}", name, line, more) } else { format!("{}{}", name, more) }
+            format!("{}{}{}", name, at, more)
         }
         None => s.kind.label().to_string(),
     }
+}
+
+/// `master.d/60-b.conf:9`-style name of a source, relative to the
+/// configuration directory.
+pub fn source_place(mc: &MasterConfig, file: usize, start: usize) -> String {
+    let path = mc.files.get(file).map_or("?", |f| f.path.as_str());
+    let dir = mc.conf_file.rsplit_once('/').map_or("", |(d, _)| d);
+    let shown = path.strip_prefix(dir).map_or(path, |p| p.trim_start_matches('/'));
+    if start > 0 { format!("{}:{}", shown, start) } else { shown.to_string() }
 }
 
 fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &[usize]) {
@@ -74,9 +85,11 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
         Some(mc) => {
             let count = |k: SettingKind| mc.settings.iter().filter(|s| s.kind == k).count();
             let stale = mc.files.iter().any(|file| file.changed_since(mc.master_started));
+            let rejected = mc.files.iter().filter(|file| file.error.is_some()).count();
             format!(
-                " Master Config ({} set, {} not core, {} derived, {} default){} ",
+                " Master Config ({} set, {} not core, {} derived, {} default){}{} ",
                 count(SettingKind::Explicit), count(SettingKind::Unknown), count(SettingKind::Derived), count(SettingKind::Default),
+                if rejected > 0 { format!(" \u{26a0} {} file(s) rejected", rejected) } else { String::new() },
                 if stale { " \u{26a0} restart pending" } else { "" },
             )
         }
@@ -146,7 +159,7 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
         f.render_widget(block, area);
         return;
     };
-    let winner = s.sources.last().and_then(|&(file, start, end)| mc.files.get(file).map(|fl| (fl, start, end)));
+    let winner = s.winner().and_then(|src| mc.files.get(src.file).map(|fl| (fl, src.start, src.end)));
     let title = match winner {
         Some((file, start, end)) if start > 0 => format!(" {} \u{b7} {} ", file.path, line_span(start, end)),
         Some((file, _, _)) => format!(" {} ", file.path),
@@ -171,17 +184,33 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
         }),
         SettingKind::Derived => lines.push(note("In no file; Salt worked this out at startup".to_string(), Style::default().fg(color::yellow()))),
         SettingKind::Default => lines.push(note("In no file; Salt's default".to_string(), dim)),
+        SettingKind::Ignored => lines.push(note("Only in a file Salt rejected: Salt's default is in use".to_string(), Style::default().fg(color::red()))),
         SettingKind::Explicit => {}
     }
-    for &(file, start, _) in s.sources.iter().rev().skip(1) {
-        let name = mc.files.get(file).map_or("?", |f| f.path.as_str());
-        let at = if start > 0 { format!(":{}", start) } else { String::new() };
-        lines.push(Line::from(vec![Span::styled(" overrides ", label), Span::styled(format!("{}{}", name, at), dim)]));
+    if s.sources.len() > 1 || s.kind == SettingKind::Ignored {
+        let width = s.sources.iter().map(|src| source_place(mc, src.file, src.start).chars().count()).max().unwrap_or(0);
+        for src in &s.sources {
+            let style = match src.relation {
+                SourceRelation::Ignored => Style::default().fg(color::red()),
+                SourceRelation::Replaces => Style::default().fg(color::yellow()),
+                _ => dim,
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {:<w$}  ", source_place(mc, src.file, src.start), w = width), label),
+                Span::styled(src.relation.describe(), style),
+            ]));
+            if !src.dropped.is_empty() {
+                lines.push(note(format!("  drops {}", src.dropped.join(", ")), Style::default().fg(color::yellow())));
+            }
+        }
     }
     if s.redacted {
         lines.push(note("Credentials in it are shown as <redacted>".to_string(), dim));
     }
     if let Some((file, _, _)) = winner {
+        if let Some(error) = &file.error {
+            lines.push(note(format!("\u{26a0} Salt rejected this file: {}", error), Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
+        }
         if file.changed_since(mc.master_started) {
             lines.push(note("\u{26a0} Changed after salt-master started: not in use until it restarts".to_string(), Style::default().fg(color::yellow())));
         }
@@ -201,8 +230,10 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
             for (n, line) in text.iter().enumerate().skip(first).take(room) {
                 let number = n + 1;
                 let inside = start > 0 && number >= start && number < end;
+                let at_fault = number == file.error_line;
+                let marker = if at_fault { color::red() } else { color::border_focus() };
                 let mut spans = vec![
-                    Span::styled(if inside { "\u{258c}" } else { " " }, Style::default().fg(color::border_focus())),
+                    Span::styled(if inside || at_fault { "\u{258c}" } else { " " }, Style::default().fg(marker)),
                     Span::styled(format!("{:>w$} ", number, w = gutter), dim),
                 ];
                 let body = if line.trim_start().starts_with('#') { dim } else { Style::default().fg(color::main_fg()) };

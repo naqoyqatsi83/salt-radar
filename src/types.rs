@@ -456,7 +456,11 @@ pub struct ConfigFile {
     pub path: String,
     pub text: String,
     pub mtime: u64,
+    /// Why Salt rejected the file (e.g. a key twice): none of its settings
+    /// are in use, they fall back to the defaults.
     pub error: Option<String>,
+    /// The line the error points at, 0 when unknown.
+    pub error_line: usize,
 }
 
 impl ConfigFile {
@@ -474,6 +478,8 @@ pub enum SettingKind {
     /// Set in a file, but not a core setting: a module's own option
     /// (`mysql.host`, `rest_cherrypy`) or a typo.
     Unknown,
+    /// Only in files Salt rejected, so not in use.
+    Ignored,
     /// In no file, but not Salt's default either: computed at startup.
     Derived,
     Default,
@@ -484,6 +490,7 @@ impl SettingKind {
         match kind {
             "explicit" => Self::Explicit,
             "unknown" => Self::Unknown,
+            "ignored" => Self::Ignored,
             "derived" => Self::Derived,
             _ => Self::Default,
         }
@@ -493,19 +500,70 @@ impl SettingKind {
         match self {
             Self::Explicit => "set",
             Self::Unknown => "not core",
+            Self::Ignored => "ignored",
             Self::Derived => "derived",
             Self::Default => "default",
         }
     }
 }
 
+/// What a file's value does to the ones loaded before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceRelation {
+    First,
+    /// A later file's scalar (or a value of another type) wins.
+    Overrides,
+    /// Dicts and lists from files of one include group combine.
+    Merged,
+    /// A later include group (master.d over the main file) replaces the
+    /// whole value, nested keys it doesn't set included.
+    Replaces,
+    /// In a file Salt rejected.
+    Ignored,
+}
+
+impl SourceRelation {
+    pub fn from_agent(relation: &str) -> Self {
+        match relation {
+            "overrides" => Self::Overrides,
+            "merged" => Self::Merged,
+            "replaces" => Self::Replaces,
+            "ignored" => Self::Ignored,
+            _ => Self::First,
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::First => "sets it",
+            Self::Overrides => "overrides the file above",
+            Self::Merged => "merged with the file above",
+            Self::Replaces => "replaces the whole value above",
+            Self::Ignored => "ignored: Salt rejected this file",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigSource {
+    pub file: usize,
+    /// First line and end line (exclusive) of its block, 1-based; 0 when
+    /// the agent couldn't place it.
+    pub start: usize,
+    pub end: usize,
+    pub relation: SourceRelation,
+    /// This file's own value (YAML).
+    pub value: String,
+    /// For `Replaces`: the nested keys of the value above that are lost.
+    pub dropped: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ConfigSetting {
     pub key: String,
     pub kind: SettingKind,
-    /// (file index, first line, end line exclusive; 1-based, 0 = unknown)
-    /// for every file that sets it, in load order: the last one wins.
-    pub sources: Vec<(usize, usize, usize)>,
+    /// Every file that sets it, in load order.
+    pub sources: Vec<ConfigSource>,
     /// The effective value on one line, and in full (YAML).
     pub line: String,
     pub full: String,
@@ -517,6 +575,12 @@ pub struct ConfigSetting {
 }
 
 impl ConfigSetting {
+    /// The file whose value is in use: the last one Salt didn't reject, or
+    /// for a setting only in rejected files, the last of those.
+    pub fn winner(&self) -> Option<&ConfigSource> {
+        self.sources.iter().rev().find(|s| s.relation != SourceRelation::Ignored).or(self.sources.last())
+    }
+
     /// The setting as it would be written in a config file.
     pub fn as_yaml(&self) -> String {
         if self.full.contains('\n') {

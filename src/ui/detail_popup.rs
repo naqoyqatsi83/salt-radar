@@ -1583,11 +1583,13 @@ fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiL
 fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfig, s: &crate::types::ConfigSetting, scroll: usize, status: Option<Line<'static>>) -> usize {
     let mut lines = header_lines(&format!(" {} ", s.key), area.width);
     lines.push(row("Kind", s.kind.label().to_string(), color::main_fg()));
-    for (n, &(file, start, end)) in s.sources.iter().enumerate().rev() {
-        let path = mc.files.get(file).map_or("?", |f| f.path.as_str());
-        let at = if start > 0 { format!(" {}", super::master_config::line_span(start, end)) } else { String::new() };
-        let label = if n + 1 == s.sources.len() { "Set in" } else { "Overrides" };
-        lines.push(row(label, format!("{}{}", path, at), if n + 1 == s.sources.len() { color::cyan() } else { color::inactive_fg() }));
+    if let [only] = s.sources.as_slice() {
+        let path = mc.files.get(only.file).map_or("?", |f| f.path.as_str());
+        let at = if only.start > 0 { format!(" {}", super::master_config::line_span(only.start, only.end)) } else { String::new() };
+        lines.push(row("Set in", format!("{}{}", path, at), color::cyan()));
+    }
+    for file in s.sources.iter().filter_map(|src| mc.files.get(src.file)).filter(|f| f.error.is_some()) {
+        lines.push(row("Rejected file", format!("{}: {}", file.path, file.error.as_deref().unwrap_or("")), color::red()));
     }
     if let Some(core) = &s.suggest {
         lines.push(row("Did you mean", core.clone(), color::red()));
@@ -1600,7 +1602,26 @@ fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfi
 
     let value = |text: &str, fg| text.lines().map(|l| Line::from(Span::styled(format!("    {}", l), Style::default().fg(fg)))).collect::<Vec<_>>();
     let heading = |text: &str| Line::from(Span::styled(format!("  {}", text), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)));
-    let mut body = vec![heading("Value")];
+    let mut body = Vec::new();
+    if s.sources.len() > 1 {
+        // Each file's own value, then what Salt made of them.
+        for src in &s.sources {
+            let place = super::master_config::source_place(mc, src.file, src.start);
+            let fg = if src.relation == crate::types::SourceRelation::Ignored { color::red() } else { color::label_fg() };
+            body.push(Line::from(vec![
+                Span::styled(format!("  {}", place), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("  {}", src.relation.describe()), Style::default().fg(fg)),
+            ]));
+            if !src.dropped.is_empty() {
+                body.push(Line::from(Span::styled(format!("    drops {}", src.dropped.join(", ")), Style::default().fg(color::yellow()))));
+            }
+            body.extend(value(&src.value, color::main_fg()));
+            body.push(Line::from(""));
+        }
+        body.push(heading("Result"));
+    } else {
+        body.push(heading("Value"));
+    }
     body.extend(value(&s.full, color::hi_fg()));
     if let Some(default) = s.default.as_ref().filter(|d| **d != s.full) {
         body.push(Line::from(""));

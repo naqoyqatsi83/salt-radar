@@ -995,10 +995,14 @@ def _top_level_blocks(text):
 
 
 def _config_files(path):
-    """Salt's load order (salt.config.master_config): the main file, then
-    `default_include` (master.d/*.conf), then its `include`; an included
-    file's own `include` follows it. Later files override earlier ones."""
+    """Salt's load order (salt.config.master_config) as (path, data, error,
+    group): the main file, then `default_include` (master.d/*.conf, sorted),
+    then the main file's `include`; an included file's own `include` follows
+    it in its group. A file Salt rejects (e.g. a key twice) contributes
+    nothing to it, so its data here is a lenient read, for showing what was
+    ignored."""
     import glob
+    import yaml
     salt = _import_salt()
     order = []
 
@@ -1006,9 +1010,14 @@ def _config_files(path):
         try:
             return salt.config._read_conf_file(fn) or {}, None
         except Exception as exc:
-            return {}, str(exc)
+            try:
+                with open(fn) as f:
+                    data = yaml.safe_load(f) or {}
+            except Exception:
+                data = {}
+            return (data if isinstance(data, dict) else {}), str(exc)
 
-    def add_includes(patterns, base):
+    def add_includes(patterns, base, group):
         if isinstance(patterns, str):
             patterns = [patterns]
         for pattern in patterns or []:
@@ -1016,17 +1025,69 @@ def _config_files(path):
             if not os.path.isabs(pattern):
                 pattern = os.path.join(os.path.dirname(base), pattern)
             for fn in sorted(glob.glob(pattern)):
-                if fn in [f for f, _, _ in order]:
+                if fn in [o[0] for o in order]:
                     continue
                 data, err = read(fn)
-                order.append((fn, data, err))
-                add_includes(data.get("include"), fn)
+                order.append((fn, data, err, group))
+                if not err:
+                    add_includes(data.get("include"), fn, group)
 
     main, err = read(path)
-    order.append((path, main, err))
-    add_includes(main.get("default_include", salt.config.DEFAULT_MASTER_OPTS["default_include"]), path)
-    add_includes(main.get("include"), path)
+    order.append((path, main, err, "main"))
+    if not err:
+        add_includes(main.get("default_include", salt.config.DEFAULT_MASTER_OPTS["default_include"]), path, "default_include")
+        add_includes(main.get("include"), path, "include")
     return order
+
+
+def _combine(base, value):
+    """How Salt combines one included file's value into the ones before it
+    in the same group (salt.utils.dictupdate.update with merge_lists)."""
+    import copy
+    if isinstance(base, dict) and isinstance(value, dict):
+        merged = copy.deepcopy(base)
+        for k, v in value.items():
+            merged[k] = _combine(merged[k], v) if k in merged else copy.deepcopy(v)
+        return merged
+    if isinstance(base, list) and isinstance(value, list):
+        return base + value
+    return value
+
+
+def _source_relations(key, sources, order):
+    """Each file's part in a setting, in load order: `first`; `overrides`
+    (a later file's scalar wins); `merged` (dicts and lists from files of one
+    include group combine); `replaces` (a later group, e.g. master.d over the
+    main file, replaces the whole value: nested keys it doesn't set are
+    dropped, and listed); `ignored` (in a file Salt rejected)."""
+    out = []
+    group, group_value, prev_group_value = None, None, None
+    for src in sources:
+        fn, data, err, file_group = order[src["file"]]
+        value = _plain(data.get(key))
+        if err:
+            src["relation"] = "ignored"
+        elif group is None:
+            src["relation"] = "first"
+            group, group_value = file_group, value
+        elif file_group != group:
+            src["relation"] = "replaces"
+            src["replaced"] = len(out)
+            prev_group_value, group, group_value = group_value, file_group, value
+        elif isinstance(group_value, (dict, list)) and type(group_value) is type(value):
+            src["relation"] = "merged"
+            group_value = _combine(group_value, value)
+        else:
+            src["relation"] = "overrides"
+            group_value = value
+        src["value"] = _config_text(_redact({key: value})[key], False)
+        out.append(src)
+    # What a replacing group dropped, once the group's own files are combined.
+    for src in out:
+        if src.get("relation") == "replaces" and isinstance(prev_group_value, dict) and isinstance(group_value, dict):
+            src["dropped"] = sorted(str(k) for k in prev_group_value if k not in group_value)
+        src.pop("replaced", None)
+    return out
 
 
 def _salt_master_started():
@@ -1056,8 +1117,9 @@ def _salt_master_started():
 
 def cmd_master_config(opts, req):
     """Every master setting: where it's set (file and line range, in Salt's
-    load order), its effective value and Salt's default. Credentials are
-    redacted here, so they never reach the TUI."""
+    load order) and how each file's value combines, its effective value and
+    Salt's default, plus the files Salt rejected. Credentials are redacted
+    here, so they never reach the TUI."""
     import difflib
     salt = _import_salt()
     path = opts.get("conf_file") or "/etc/salt/master"
@@ -1067,29 +1129,39 @@ def cmd_master_config(opts, req):
 
     files = []
     sources = {}
-    for idx, (fn, data, err) in enumerate(order):
+    for idx, (fn, data, err, _group) in enumerate(order):
         try:
             with open(fn) as f:
                 text = f.read()
             mtime = int(os.path.getmtime(fn))
         except OSError as exc:
             text, mtime, err = "", 0, err or str(exc)
-        files.append({"path": fn, "text": _redact_text(text), "mtime": mtime, "error": err})
+        # A YAML error names where the mapping starts first, then the line
+        # at fault; its message lines are interleaved with "in <file>" ones.
+        lines = re.findall(r"line (\d+)", err or "")
+        reason = [l.strip() for l in (err or "").splitlines()[1:] if l.strip() and not l.strip().startswith("in ")]
+        files.append({
+            "path": fn, "text": _redact_text(text), "mtime": mtime,
+            "error": (reason[-1] if reason else err), "error_line": int(lines[-1]) if lines else 0,
+        })
         blocks = _top_level_blocks(text)
         for key in data:
             start, end = blocks.get(str(key), (0, 0))
-            sources.setdefault(str(key), []).append([idx, start, end])
+            sources.setdefault(str(key), []).append({"file": idx, "start": start, "end": end})
 
     settings = []
     for key in sorted(set(effective) | set(sources), key=str):
         if str(key).startswith("__"):
             continue
-        in_files = str(key) in sources
+        srcs = _source_relations(key, sources.get(str(key), []), order)
+        in_files = any(s["relation"] != "ignored" for s in srcs)
         known = key in defaults
         actual = _plain(effective.get(key))
         default = _plain(defaults[key]) if known else None
         value = _redact({key: actual})[key]
-        if in_files and not known:
+        if srcs and not in_files:
+            kind = "ignored"
+        elif in_files and not known:
             kind = "unknown"
         elif in_files:
             kind = "explicit"
@@ -1100,7 +1172,7 @@ def cmd_master_config(opts, req):
         entry = {
             "key": str(key),
             "kind": kind,
-            "sources": sources.get(str(key), []),
+            "sources": srcs,
             "line": _config_text(value, True),
             "full": _config_text(value, False),
             "default": _config_text(_redact({key: default})[key], False) if known else None,

@@ -1347,15 +1347,27 @@ fn guide_help_lines() -> Vec<Line<'static>> {
         Line::from(Span::styled("  Master tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![
             Span::styled("  load order", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  /etc/salt/master, then master.d/*.conf (sorted), then include:; a later file", Style::default().fg(color::main_fg())),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled("  wins, nested values from included files are merged", Style::default().fg(color::main_fg())),
+            Span::styled("  /etc/salt/master, then master.d/*.conf (sorted), then include:", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
             Span::styled("  set", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled("  in a file; Source is the file and line that wins, +N when others set it too", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  replaces", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  a master.d file replaces the main file's whole value: nested keys it", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  doesn't set are dropped (named); include: files replace master.d ones", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  merged", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  between master.d files dicts merge and lists add up; other values override", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ignored", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  in a file Salt rejected (a key twice is enough): the whole file is skipped", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
             Span::styled("  not core", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),

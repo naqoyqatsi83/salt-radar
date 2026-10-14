@@ -1878,11 +1878,11 @@ impl App {
                     Self::matches_filter(&s.key, t)
                         || Self::matches_filter(&s.line, t)
                         || Self::matches_filter(s.kind.label(), t)
-                        || s.sources.iter().any(|&(f, _, _)| mc.files.get(f).is_some_and(|file| Self::matches_filter(&file.path, t)))
+                        || s.sources.iter().any(|src| mc.files.get(src.file).is_some_and(|file| Self::matches_filter(&file.path, t)))
                 })
             })
             .collect();
-        let set_in = |i: usize| mc.settings[i].sources.first().map_or((usize::MAX, 0), |&(f, line, _)| (f, line));
+        let set_in = |i: usize| mc.settings[i].sources.first().map_or((usize::MAX, 0), |src| (src.file, src.start));
         rows.sort_by_key(|&i| {
             let s = &mc.settings[i];
             let group = if s.sources.is_empty() { s.kind } else { SettingKind::Explicit };
@@ -2571,6 +2571,9 @@ impl App {
         if self.config_tick >= self.config.config_secs {
             self.config_tick = 0;
             self.send_agent_cmd("config_snapshot", None);
+            if !self.master_config_loading {
+                self.request_master_config();
+            }
         }
 
         // Alive detection every 5 ticks
@@ -2628,10 +2631,18 @@ impl App {
         let recent_events: Vec<&SaltEvent> = self.events.iter().rev().take(500).collect();
         let worker_busy_pct = self.worker_busy_pct();
         let master = self.config_snapshot.as_ref();
+        let rejected_config_files: Vec<String> = self.master_config.iter()
+            .flat_map(|mc| &mc.files)
+            .filter_map(|f| {
+                let error = f.error.as_ref()?;
+                Some(if f.error_line > 0 { format!("{}: {} (line {})", f.path, error, f.error_line) } else { format!("{}: {}", f.path, error) })
+            })
+            .collect();
         self.alert_engine.tick(
             &self.minion_info,
             master.map_or("", |s| s.salt_version.as_str()),
             master.map_or(0, |s| s.minimum_auth_version),
+            &rejected_config_files,
             &self.keys,
             &self.services,
             &self.system_info,
@@ -2837,13 +2848,18 @@ pub(crate) fn parse_master_config(data: &serde_json::Value) -> MasterConfig {
         text: text(&f["text"]),
         mtime: f["mtime"].as_u64().unwrap_or(0),
         error: f["error"].as_str().map(String::from),
+        error_line: f["error_line"].as_u64().unwrap_or(0) as usize,
     }).collect()).unwrap_or_default();
     let settings = data["settings"].as_array().map(|a| a.iter().map(|s| ConfigSetting {
         key: text(&s["key"]),
         kind: SettingKind::from_agent(s["kind"].as_str().unwrap_or("")),
-        sources: s["sources"].as_array().map(|src| src.iter().filter_map(|r| {
-            let r = r.as_array()?;
-            Some((r.first()?.as_u64()? as usize, r.get(1)?.as_u64()? as usize, r.get(2)?.as_u64()? as usize))
+        sources: s["sources"].as_array().map(|src| src.iter().map(|r| ConfigSource {
+            file: r["file"].as_u64().unwrap_or(0) as usize,
+            start: r["start"].as_u64().unwrap_or(0) as usize,
+            end: r["end"].as_u64().unwrap_or(0) as usize,
+            relation: SourceRelation::from_agent(r["relation"].as_str().unwrap_or("")),
+            value: text(&r["value"]),
+            dropped: r["dropped"].as_array().map(|d| d.iter().filter_map(|k| k.as_str().map(String::from)).collect()).unwrap_or_default(),
         }).collect()).unwrap_or_default(),
         line: text(&s["line"]),
         full: text(&s["full"]),

@@ -44,6 +44,7 @@ impl AlertEngine {
         minion_info: &[MinionInfo],
         master_salt_version: &str,
         minimum_auth_version: u64,
+        rejected_config_files: &[String],
         keys: &[KeyInfo],
         services: &[ServiceHealth],
         sys: &SystemInfo,
@@ -147,6 +148,18 @@ impl AlertEngine {
 
         // Rule 5: minions on the legacy auth protocol, or another Salt major
         active.extend(version_alerts(minion_info, master_salt_version, minimum_auth_version));
+
+        // A master config file Salt couldn't parse is skipped whole, with
+        // only a log line: everything in it silently falls back to defaults.
+        if !rejected_config_files.is_empty() {
+            active.push(ActiveAlert {
+                key: "config:rejected".to_string(),
+                rule: "Config file rejected",
+                severity: AlertSeverity::Crit,
+                description: format!("{} master config file(s) rejected by Salt; none of their settings are in use", rejected_config_files.len()),
+                details: rejected_config_files.to_vec(),
+            });
+        }
 
         // Rule 6: Salt warning events (ZMQ / protocol issues)
         let mut warnings: Vec<String> = Vec::new();

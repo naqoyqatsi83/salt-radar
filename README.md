@@ -51,7 +51,7 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Alerts** — 16 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
+**Alerts** — 17 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
 <img src="docs/screenshots/alerts.png" alt="Alerts tab">
 
 </td>
@@ -151,7 +151,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Detail panel on the side: key status, connection status, OS, Salt version, last return time
 
 ### Alerts
-16 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
+17 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
 
 - **Stale minion** — not seen within `stale_minion_secs`
 - **Pending key** — pending longer than `pending_key_secs`
@@ -160,6 +160,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **No replay protection** — minions on Salt's auth protocol v0, from before the March 2022 security releases (2014.x–3001.x, 3002.0–3002.7, 3003.0–3003.3, 3004.0)
 - **Legacy auth protocol** — minions on protocol v2, without per-minion session encryption (3002.8+, 3003.4+, 3004.1+, 3005, 3006.0–3006.11, 3007.0–3007.3)
 - Both are warnings, as masters from 3006.17, 3007.9 and 3008 reject v0 and v2 by default (`minimum_auth_version: 3`), and critical once this master enforces it
+- **Config file rejected** — a master config file Salt couldn't parse (e.g. the same key twice): Salt skips the whole file with only a log line, so all its settings silently fall back to their defaults; critical (see the Master tab)
 - **Minion newer than master** — minions on a newer Salt major than the master (e.g. 3008 minions on a 3006 master); older minions are supported, and the protocol rules cover the ones too old
 - **Salt warning** — `salt/warning/*` events on the bus
 - **Auth failure** — failed authentication on the ZMQ bus
@@ -187,12 +188,15 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 The master's configuration, as its files set it:
 
 - Every setting, collapsed to one line: the ones set in a file first, in Salt's load order (`/etc/salt/master`, then `master.d/*.conf` sorted, then `include:`), with the file and line that sets each; then values Salt worked out at startup (derived); then the defaults, greyed out. `/` filters by name, value, file or kind (`set`, `not core`, `derived`, `default`)
-- The right panel shows the file the selected setting comes from, its block marked, and the files it overrides when several set it (a later file wins; nested values from included files are merged)
-- `Enter` opens the full value next to Salt's default; `y` copies it as YAML, `s` saves it
+- The right panel shows the file the selected setting comes from, its block marked, and, when several files set it, what each one does, following Salt's own rules:
+  - a `master.d` file **replaces** the main file's whole value: a nested key it doesn't set is dropped, and the panel names it (`rest_cherrypy: {port: 9000}` in `master.d` drops every other `rest_cherrypy` option from `/etc/salt/master`); `include:` files replace `master.d` ones the same way
+  - between `master.d` files, dicts are **merged** and lists concatenated (two `ext_pillar` entries give both), while other values are **overridden** by the later file
+- `Enter` opens the full value next to Salt's default, and when several files set it, each file's own value before the result; `y` copies it as YAML, `s` saves it
+- **Rejected files** — a file Salt can't parse (the same key twice is enough) is skipped whole, with only a log line. The title says so, its settings are listed as **ignored** with Salt's reason, the line at fault is marked in the file, and the "Config file rejected" alert fires
 - **Not core** — a key in a file that isn't one of Salt's core settings: either a module's own option (`rest_cherrypy`, `mysql.host`) or a typo, which Salt silently ignores; a near miss names the setting it's probably meant to be (`worker_thread` → did you mean `worker_threads`)
 - **Restart pending** — a file changed after salt-master started, so the running master isn't using what it says yet
 - Credentials are redacted by the agent before they reach the TUI, in the list, the files, the popup and copies: values of keys like `*pass*`, `*password*`, `*secret*`, `*token`, `*_key` (nested ones too, as in `ext_pillar`), except flags and file paths
-- Read from the files when the tab is first opened and on `r`
+- Read from the files at start, with the config refresh (`config_secs`) and on `r`
 
 ### Admin Mode
 - Toggle with `a` (danger-zone confirmation dialog required)
@@ -465,7 +469,7 @@ src/
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management
-├── alerts/              # Alert engine (16 rules: staleness, keys, services, memory, disk, jobs, auth, api)
+├── alerts/              # Alert engine (17 rules: staleness, keys, services, memory, disk, jobs, auth, api)
 ├── collectors/          # OS-level data collection
 │   ├── keys.rs          # PKI key file parsing
 │   ├── processes.rs     # /proc scanning for salt processes
