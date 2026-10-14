@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use crate::types::{
-    AlertEntry, AlertSeverity, JobEntry, KeyInfo, KeyStatus, MinionInfo, SaltEvent, ServiceHealth,
-    ServiceTrendSnapshot, SystemInfo,
+    auth_protocol, enforces_minimum_auth_version, salt_major_minor, AlertEntry, AlertSeverity, JobEntry, KeyInfo, KeyStatus, MinionInfo,
+    SaltEvent, ServiceHealth, ServiceTrendSnapshot, SystemInfo,
 };
 
 /// Rule 13 per-unit overrides for the standard bundled Salt services — 0.0
@@ -42,6 +42,8 @@ impl AlertEngine {
     pub fn tick(
         &mut self,
         minion_info: &[MinionInfo],
+        master_salt_version: &str,
+        minimum_auth_version: u64,
         keys: &[KeyInfo],
         services: &[ServiceHealth],
         sys: &SystemInfo,
@@ -143,28 +145,8 @@ impl AlertEngine {
 
         // ── ZMQ / Security alert rules ──────────────────────────────────────
 
-        // Rule 5: Legacy protocol minions
-        // Scan events for tags containing "legacy" or "minion_legacy"
-        let mut legacy_minions: Vec<String> = Vec::new();
-        for evt in events {
-            if evt.tag.contains("minion_legacy") || evt.tag.contains("/legacy/") {
-                let mid = evt.tag.rsplit('/').next().unwrap_or("?");
-                let msg = evt.data["message"].as_str().unwrap_or("legacy protocol");
-                let detail = format!("{}: {}", mid, msg);
-                if !legacy_minions.contains(&detail) {
-                    legacy_minions.push(detail);
-                }
-            }
-        }
-        if !legacy_minions.is_empty() {
-            active.push(ActiveAlert {
-                key: "zmq:legacy".to_string(),
-                rule: "Legacy protocol",
-                severity: AlertSeverity::Warn,
-                description: format!("{} minion(s) using legacy protocol", legacy_minions.len()),
-                details: legacy_minions,
-            });
-        }
+        // Rule 5: minions on the legacy auth protocol, or another Salt major
+        active.extend(version_alerts(minion_info, master_salt_version, minimum_auth_version));
 
         // Rule 6: Salt warning events (ZMQ / protocol issues)
         let mut warnings: Vec<String> = Vec::new();
@@ -174,10 +156,6 @@ impl AlertEngine {
             }
             let msg = evt.data["message"].as_str().unwrap_or("");
             if msg.is_empty() {
-                continue;
-            }
-            // Already handled by rule 5
-            if msg.contains("legacy") {
                 continue;
             }
             let mid = evt.data["id"].as_str().unwrap_or("?");
@@ -386,5 +364,71 @@ impl AlertEngine {
 
     pub fn active_count(&self) -> usize {
         self.alerts.len()
+    }
+}
+
+/// Minions whose Salt version doesn't fit the master's: still on auth
+/// protocol 2, which masters from 3006.17, 3007.9 and 3008 reject by default
+/// (critical once this master does), or on another Salt major. Versions come
+/// from the master's minion data cache, so this needs no traffic to them.
+fn version_alerts(minion_info: &[MinionInfo], master_salt_version: &str, minimum_auth_version: u64) -> Vec<ActiveAlert> {
+    let mut alerts = Vec::new();
+    let named = |m: &MinionInfo| format!("{} ({})", m.id, m.salt_version);
+    let legacy: Vec<String> = minion_info.iter()
+        .filter(|m| auth_protocol(&m.salt_version) == Some(2))
+        .map(named)
+        .collect();
+    if !legacy.is_empty() {
+        let (severity, description) = if minimum_auth_version > 2 && enforces_minimum_auth_version(master_salt_version) {
+            (AlertSeverity::Crit, format!("{} minion(s) on auth protocol v2, rejected by this master's minimum_auth_version: {}", legacy.len(), minimum_auth_version))
+        } else {
+            (AlertSeverity::Warn, format!("{} minion(s) on auth protocol v2; masters from 3006.17, 3007.9 and 3008 reject it by default", legacy.len()))
+        };
+        alerts.push(ActiveAlert { key: "salt:auth_v2".to_string(), rule: "Legacy auth protocol", severity, description, details: legacy });
+    }
+    if let Some((master_major, _)) = salt_major_minor(master_salt_version) {
+        let other: Vec<String> = minion_info.iter()
+            .filter(|m| salt_major_minor(&m.salt_version).is_some_and(|(major, _)| major != master_major))
+            .map(named)
+            .collect();
+        if !other.is_empty() {
+            alerts.push(ActiveAlert {
+                key: "salt:major".to_string(),
+                rule: "Salt major mismatch",
+                severity: AlertSeverity::Warn,
+                description: format!("{} minion(s) on another Salt major than the master's {}", other.len(), master_salt_version),
+                details: other,
+            });
+        }
+    }
+    alerts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minion(id: &str, version: &str) -> MinionInfo {
+        MinionInfo { id: id.into(), salt_version: version.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn minions_on_auth_protocol_v2_warn_until_the_master_rejects_them() {
+        let fleet = [minion("old", "3006.9"), minion("new", "3006.27"), minion("unknown", "")];
+        let warn = version_alerts(&fleet, "3006.16", 0);
+        assert_eq!(warn.len(), 1);
+        assert_eq!((warn[0].severity, warn[0].details.clone()), (AlertSeverity::Warn, vec!["old (3006.9)".to_string()]));
+        assert_eq!(version_alerts(&fleet, "3006.27", 3)[0].severity, AlertSeverity::Crit);
+        assert_eq!(version_alerts(&fleet, "3006.16", 3)[0].severity, AlertSeverity::Warn, "3006.16 ignores the setting");
+        assert!(version_alerts(&fleet[1..], "3006.16", 3).is_empty());
+    }
+
+    #[test]
+    fn another_salt_major_than_the_master_warns() {
+        let fleet = [minion("a", "3008.1"), minion("b", "3006.16"), minion("c", "3007.10")];
+        let alerts = version_alerts(&fleet, "3006.16", 0);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].details, ["a (3008.1)", "c (3007.10)"]);
+        assert!(version_alerts(&fleet, "?", 0).is_empty(), "no master version, no comparison");
     }
 }

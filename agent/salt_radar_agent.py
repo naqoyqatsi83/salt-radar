@@ -843,6 +843,7 @@ def cmd_config_snapshot(opts, req):
             sys.version_info.major, sys.version_info.minor, sys.version_info.micro
         ),
         "worker_threads": opts.get("worker_threads"),
+        "minimum_auth_version": opts.get("minimum_auth_version", 0),
         "transport": opts.get("transport", "zeromq"),
         "sock_dir": opts.get("sock_dir", ""),
         "reactor_count": len(opts.get("reactor", []) if isinstance(opts.get("reactor"), list) else []),

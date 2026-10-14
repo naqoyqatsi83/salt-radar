@@ -295,6 +295,9 @@ pub struct ApiRequestRecord {
 #[derive(Clone, Debug, Default)]
 pub struct ConfigSnapshot {
     pub salt_version: String,
+    /// The lowest auth protocol the master accepts; 0 when it predates the
+    /// setting (before 3006.17 / 3007.9) and accepts any.
+    pub minimum_auth_version: u64,
     pub python_version: String,
     pub worker_threads: Option<i64>,
     pub transport: String,
@@ -430,6 +433,50 @@ impl SnifferState {
 
 }
 
+// ─── Salt versions ────────────────────────────────────────────────────────
+
+/// Major and minor of a Salt version (`3006.16`, `3008.0rc1`, `2019.2.8`).
+pub fn salt_major_minor(version: &str) -> Option<(u64, u64)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor_text = parts.next().unwrap_or("0");
+    let digits = minor_text.find(|c: char| !c.is_ascii_digit()).unwrap_or(minor_text.len());
+    Some((major, minor_text[..digits].parse().unwrap_or(0)))
+}
+
+/// The auth protocol a minion of this Salt version speaks: 3 from 3006.12,
+/// 3007.4 and 3008 on, 2 before. Masters from 3006.17, 3007.9 and 3008 reject
+/// 2 by default (`minimum_auth_version: 3`).
+pub fn auth_protocol(version: &str) -> Option<u64> {
+    let (major, minor) = salt_major_minor(version)?;
+    let v3 = match major {
+        3006 => minor >= 12,
+        3007 => minor >= 4,
+        m => m >= 3008,
+    };
+    Some(if v3 { 3 } else { 2 })
+}
+
+#[cfg(test)]
+#[test]
+fn auth_protocol_follows_salt_releases() {
+    let p = |v| auth_protocol(v);
+    assert_eq!([p("3006.11"), p("3006.12"), p("3007.3"), p("3007.4"), p("3008.0rc1")], [Some(2), Some(3), Some(2), Some(3), Some(3)]);
+    assert_eq!([p("3005.5"), p("2019.2.8"), p(""), p("?")], [Some(2), Some(2), None, None]);
+    assert_eq!(salt_major_minor("3008.0rc1"), Some((3008, 0)));
+    assert_eq!(["3006.16", "3006.17", "3007.8", "3007.9", "3008.0", "?"].map(enforces_minimum_auth_version), [false, true, false, true, true, false]);
+}
+
+/// Whether a master of this Salt version enforces `minimum_auth_version`
+/// (from 3006.17, 3007.9 and 3008; older ones ignore the setting).
+pub fn enforces_minimum_auth_version(master_version: &str) -> bool {
+    salt_major_minor(master_version).is_some_and(|(major, minor)| match major {
+        3006 => minor >= 17,
+        3007 => minor >= 9,
+        m => m >= 3008,
+    })
+}
+
 // ─── Job entry (live) ─────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -544,7 +591,7 @@ impl TableId {
         match self {
             Self::LiveJobs => &["jid", "fun", "args", "target", "source", "tgt", "ok", "fail", "wait", "started"],
             Self::JobCache => &["jid", "user", "started", "target", "fun", "args"],
-            Self::Minions => &["id", "key", "os", "salt", "arch", "seen", "fail_pct", "lag", "ping"],
+            Self::Minions => &["id", "key", "os", "salt", "proto", "arch", "seen", "fail_pct", "lag", "ping"],
             Self::Events => &["local", "utc", "tag", "minion"],
             Self::Alerts => &["severity", "rule", "description", "since", "count"],
             Self::ApiLog => &["age", "method", "client", "path", "status", "time"],
@@ -598,6 +645,7 @@ pub enum Column {
     KeyStatus,
     Os,
     SaltVersion,
+    Proto,
     Arch,
     LastSeen,
     FailPct,
@@ -636,6 +684,7 @@ const COLUMN_KEYS: &[(&str, Column)] = &[
     ("key", Column::KeyStatus),
     ("os", Column::Os),
     ("salt", Column::SaltVersion),
+    ("proto", Column::Proto),
     ("arch", Column::Arch),
     ("seen", Column::LastSeen),
     ("fail_pct", Column::FailPct),
@@ -688,6 +737,7 @@ impl Column {
             Self::LastSeen => "Seen",
             Self::FailPct => "Fail%",
             Self::Lag => "Lag",
+            Self::Proto => "Proto",
             Self::Ping => "Ping",
             Self::Local => "Local",
             Self::Utc => "UTC",
@@ -715,7 +765,7 @@ impl Column {
                 | Self::MinionId | Self::EventMinion | Self::Started => 21,
             Self::Source | Self::Method | Self::Time => 8,
             Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count => 6,
-            Self::FailPct | Self::Lag => 7,
+            Self::FailPct | Self::Lag | Self::Proto => 7,
             Self::Ping => 9,
             Self::User => 13,
             Self::KeyStatus | Self::Severity | Self::Arch => 10,

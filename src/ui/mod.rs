@@ -1326,6 +1326,14 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  ", Style::default()),
             Span::styled("  both fill in from jobs seen while salt-radar runs; v shows the columns", Style::default().fg(color::main_fg())),
         ]),
+        Line::from(vec![
+            Span::styled("  Proto", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  auth protocol by Salt version: v3 from 3006.12, 3007.4 and 3008, v2 before;", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  masters from 3006.17, 3007.9 and 3008 reject v2 (minimum_auth_version: 3)", Style::default().fg(color::main_fg())),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Events Preview", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![

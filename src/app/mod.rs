@@ -2026,6 +2026,7 @@ impl App {
                 // Key-only rows have no minion data; they sort as empty.
                 (Column::Os, a, b) => a.map(|m| m.os_label()).cmp(&b.map(|m| m.os_label())),
                 (Column::SaltVersion, a, b) => version_cmp(a.map_or("", |m| &m.salt_version), b.map_or("", |m| &m.salt_version)),
+                (Column::Proto, a, b) => a.and_then(|m| auth_protocol(&m.salt_version)).cmp(&b.and_then(|m| auth_protocol(&m.salt_version))),
                 (Column::Arch, a, b) => a.map(|m| &m.cpuarch).cmp(&b.map(|m| &m.cpuarch)),
                 // Most recently seen first, matching the Seen column's text.
                 (Column::LastSeen, a, b) => b.map_or(0, |m| m.last_seen_epoch).cmp(&a.map_or(0, |m| m.last_seen_epoch)),
@@ -2576,8 +2577,11 @@ impl App {
         // Alert engine checks
         let recent_events: Vec<&SaltEvent> = self.events.iter().rev().take(500).collect();
         let worker_busy_pct = self.worker_busy_pct();
+        let master = self.config_snapshot.as_ref();
         self.alert_engine.tick(
             &self.minion_info,
+            master.map_or("", |s| s.salt_version.as_str()),
+            master.map_or(0, |s| s.minimum_auth_version),
             &self.keys,
             &self.services,
             &self.system_info,
@@ -2774,6 +2778,7 @@ fn parse_version(data: &serde_json::Value) -> ConfigSnapshot {
 fn parse_config_snapshot(data: &serde_json::Value) -> ConfigSnapshot {
     ConfigSnapshot {
         salt_version: data["salt_version"].as_str().unwrap_or("?").to_string(),
+        minimum_auth_version: data["minimum_auth_version"].as_u64().unwrap_or(0),
         python_version: data["python_version"].as_str().unwrap_or("?").to_string(),
         worker_threads: data["worker_threads"].as_i64(),
         transport: data["transport"].as_str().unwrap_or("zeromq").to_string(),

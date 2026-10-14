@@ -51,7 +51,7 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Alerts** — 14 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
+**Alerts** — 15 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
 <img src="docs/screenshots/alerts.png" alt="Alerts tab">
 
 </td>
@@ -109,7 +109,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Every panel above the sparklines — Host Resources, Services, Minion Key Status, Event Types, Job Pulse, salt-api — can be individually hidden via `show_host_resources`/`show_services`/`show_key_status`/`show_event_types`/`show_job_pulse`/`show_salt_api` in the Config Editor (`F3`), same on/off toggle as the sparkline panels' `show_*_graph`; hiding one of Services/Minion Key Status/Event Types reflows the remaining columns in that row to fill the freed width instead of leaving a gap
 
 ### Minions
-- Scrollable minion list: ID, key status, OS, Salt version, plus optional Arch, Seen (time since last check-in) and Fail% (share of the minion's last 50 returns that failed, worst first when sorted), Lag and Ping columns; sorting keeps timed-out minions in their own section
+- Scrollable minion list: ID, key status, OS, Salt version, plus optional Proto (auth protocol, v2 in yellow), Arch, Seen (time since last check-in) and Fail% (share of the minion's last 50 returns that failed, worst first when sorted), Lag and Ping columns; sorting keeps timed-out minions in their own section
 - Lag: how slowly the minion answers compared with the other minions on the same jobs, so a minion that's consistently slow stands out whatever the jobs were. For every job with at least two returns, each minion's time from publish to return is divided by the job's median (a `state.apply` and a `test.ping` rate the same way); the column shows the median of the minion's last 50 ratios, gray up to 1.5x, yellow up to 3x, red beyond. A job is rated once every target returned or it passed `job_straggler_secs`, and minions returning later are rated against that median. Return times under 0.5 s count as 0.5 s, so ping jitter doesn't read as lag, and a job where both the minion and the median took under 0.5 s isn't rated at all (it says nothing about lag), so the column shows `—` until the minion has answered a job that took time. Ping: the time to the minion's latest `test.ping` return, from any source. Both fill in from jobs seen while salt-radar runs
 - One row per key, so the list adds up to the Dashboard's Minion Key Status: pending, rejected and denied keys are listed too, and an ID with an accepted and a denied key (a minion that came back with a new key) shows twice, once per key
 - Freshly-active marker (`●`) next to minions that checked in recently, threshold adapts to the fleet's own median check-in age
@@ -151,13 +151,14 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Detail panel on the side: key status, connection status, OS, Salt version, last return time
 
 ### Alerts
-14 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
+15 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
 
 - **Stale minion** — not seen within `stale_minion_secs`
 - **Pending key** — pending longer than `pending_key_secs`
 - **Service down** — a discovered `salt-*.service` unit is inactive
 - **Disk usage high** — cache or PKI disk over `disk_usage_pct`
-- **Legacy protocol** — minions still using Salt's legacy transport
+- **Legacy auth protocol** — minions on Salt's auth protocol v2 (3006.11 and older, 3007.0–3007.3), which masters from 3006.17, 3007.9 and 3008 reject by default (`minimum_auth_version: 3`): a warning, or critical once this master enforces it
+- **Salt major mismatch** — minions on another Salt major than the master (e.g. 3008 minions on a 3006 master)
 - **Salt warning** — `salt/warning/*` events on the bus
 - **Auth failure** — failed authentication on the ZMQ bus
 - **Stuck job** — dispatched but not fully returned within `job_straggler_secs`
@@ -187,7 +188,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 ### Columns and sorting
 - The Minions, Events, Jobs (both tables), Alerts and API request log tables let you choose which columns are shown and in what order: `v` opens a picker for the focused table (`+`/`-` move a column, `Space` shows/hides it, `Enter` saves), also editable in the Config Editor — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their sections of `salt-radar.toml`
 - Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order). Sorting lasts for the session
-- Optional columns beyond the defaults: Live Jobs Started, Minions Arch/Seen/Fail%/Lag/Ping, Events Minion, Alerts Since/Count
+- Optional columns beyond the defaults: Live Jobs Started, Minions Proto/Arch/Seen/Fail%/Lag/Ping, Events Minion, Alerts Since/Count
 - When a panel is too narrow for every column, the text columns shrink together instead of cutting off the rightmost ones
 
 ### Config Editor
@@ -449,7 +450,7 @@ src/
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management
-├── alerts/              # Alert engine (14 rules: staleness, keys, services, memory, disk, jobs, auth, api)
+├── alerts/              # Alert engine (15 rules: staleness, keys, services, memory, disk, jobs, auth, api)
 ├── collectors/          # OS-level data collection
 │   ├── keys.rs          # PKI key file parsing
 │   ├── processes.rs     # /proc scanning for salt processes
