@@ -1578,7 +1578,7 @@ fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiL
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
 }
 
-/// A Master tab setting in full: where it's set, its value and Salt's
+/// A Master Config tab setting in full: where it's set, its value and Salt's
 /// default. Returns the last scroll position.
 fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfig, s: &crate::types::ConfigSetting, scroll: usize, status: Option<Line<'static>>) -> usize {
     let mut lines = header_lines(&format!(" {} ", s.key), area.width);

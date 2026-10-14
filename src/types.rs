@@ -25,6 +25,17 @@ pub enum SparklineStyle {
 
 
 impl Tab {
+    /// The tab bar, left to right; `1`–`8` follow it.
+    pub const ORDER: [Tab; 8] = [
+        Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Master, Tab::Pulse,
+    ];
+
+    /// Its label in the tab bar, number included (` 7 Master Config `).
+    pub fn bar_label(self) -> String {
+        let n = Self::ORDER.iter().position(|&t| t == self).unwrap_or(0) + 1;
+        format!(" {} {} ", n, self.label())
+    }
+
     pub fn next(&self) -> Self {
         match self {
             Self::Dashboard => Self::Minions,
@@ -60,7 +71,7 @@ impl Tab {
             Self::Alerts => "Alerts",
             Self::Pulse => "Pulse",
             Self::Api => "API",
-            Self::Master => "Master",
+            Self::Master => "Master Config",
         }
     }
 }

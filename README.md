@@ -65,8 +65,8 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Master** — the master's configuration: what each file sets and how they combine, rejected files, typos, and settings a restart would change; credentials redacted
-<img src="docs/screenshots/master.png" alt="Master tab">
+**Master Config** — the master's configuration: what each file sets and how they combine, rejected files, typos, and settings a restart would change; credentials redacted
+<img src="docs/screenshots/master.png" alt="Master Config tab">
 
 </td>
 </tr>
@@ -161,7 +161,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **No replay protection** — minions on Salt's auth protocol v0, from before the March 2022 security releases (2014.x–3001.x, 3002.0–3002.7, 3003.0–3003.3, 3004.0)
 - **Legacy auth protocol** — minions on protocol v2, without per-minion session encryption (3002.8+, 3003.4+, 3004.1+, 3005, 3006.0–3006.11, 3007.0–3007.3)
 - Both are warnings, as masters from 3006.17, 3007.9 and 3008 reject v0 and v2 by default (`minimum_auth_version: 3`), and critical once this master enforces it
-- **Config file rejected** — a master config file Salt couldn't parse (e.g. the same key twice): Salt skips the whole file with only a log line, so all its settings silently fall back to their defaults; critical (see the Master tab)
+- **Config file rejected** — a master config file Salt couldn't parse (e.g. the same key twice): Salt skips the whole file with only a log line, so all its settings silently fall back to their defaults; critical (see the Master Config tab)
 - **Minion newer than master** — minions on a newer Salt major than the master (e.g. 3008 minions on a 3006 master); older minions are supported, and the protocol rules cover the ones too old
 - **Salt warning** — `salt/warning/*` events on the bus
 - **Auth failure** — failed authentication on the ZMQ bus
@@ -185,7 +185,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 - Only what cpstats records is ever visible: no request/response body, no headers — so no credentials, payload content, or which minion/job/user was involved
 - salt-radar's own `GET /stats` poll (the request that populates this log) is filtered out by default — `hide_stats_polls` (`[api]`, default `true`) — since at the Dashboard refresh interval it would otherwise drown out real traffic with one entry per tick. Set to `false`, or press `x` on the API tab to toggle it live — the filter applies at display time, so it hides/shows already-captured entries retroactively, not just ones captured from that point on. `/stats` requests are still always captured and still count against `log_cap`/`log_max_age_secs` even while hidden — this only controls what's shown.
 
-### Master
+### Master Config
 The master's configuration, as its files set it:
 
 - Every setting, collapsed to one line: the ones set in a file first, in Salt's load order (`/etc/salt/master`, then `master.d/*.conf` sorted, then `include:`), with the file and line that sets each; then values Salt worked out at startup (derived); then the defaults, greyed out. `/` filters by name, value, file or kind (`set`, `not core`, `derived`, `default`)
@@ -316,7 +316,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 |-----|--------|
 | `q` | Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once) |
 | `Tab` / `Shift+Tab` | Next / previous tab |
-| `1`–`8` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master/Pulse) |
+| `1`–`8` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Home`/`End` | First/last row |
@@ -329,7 +329,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval |
 | `m` | Toggle sparkline style (Dashboard) |
-| `Ctrl+←`/`Ctrl+→` | Move the divider between the two panels (Minions, Events, Jobs, API, Pulse, Master) |
+| `Ctrl+←`/`Ctrl+→` | Move the divider between the two panels (Minions, Events, Jobs, API, Master Config, Pulse) |
 | `F4`–`F8` | Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard) |
 
 Most of these are also shown live, btop-style, in the border of the panel they affect (e.g. the title frame's bottom border shows `-2000ms+` for the current refresh interval) — the table above is the full reference.
@@ -354,8 +354,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Jobs (Cache) | `r` | Refresh job cache |
 | Jobs (Cache) | `←`/`→` | Switch focus between Live Jobs and Cache panels |
 | Pulse | `↑`/`↓`/`←`/`→` | Navigate the minion grid |
-| Master | `Enter` | The setting's full value, where it's set and Salt's default |
-| Master | `r` | Read the configuration files again |
+| Master Config | `Enter` | The setting's full value, where it's set and Salt's default |
+| Master Config | `r` | Read the configuration files again |
 | API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |
 
 ### Config Editor

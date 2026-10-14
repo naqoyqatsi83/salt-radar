@@ -529,6 +529,8 @@ pub mod key {
 
 // ─── Master draw ───────────────────────────────────────────────────────────
 
+pub const TAB_SEPARATOR: &str = " \u{2502} ";
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.sync_theme();
     let main_layout = Layout::default()
@@ -721,13 +723,12 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     // Tab menu (left) and host/uptime (right) share the one content row.
-    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Master, Tab::Pulse];
     let mut tab_spans: Vec<Span<'static>> = Vec::new();
-    for (i, tab) in tabs.iter().enumerate() {
+    for (i, tab) in Tab::ORDER.iter().enumerate() {
         if i > 0 {
-            tab_spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::tab_separator())));
+            tab_spans.push(Span::styled(TAB_SEPARATOR, Style::default().fg(color::tab_separator())));
         }
-        let label = format!(" {} {} ", i + 1, tab.label());
+        let label = tab.bar_label();
         if *tab == app.current_tab {
             tab_spans.push(Span::styled(
                 label,
@@ -741,16 +742,25 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     let hostname = app.config_snapshot.as_ref().map(|c| c.hostname.as_str()).unwrap_or("?");
     let app_uptime = app.session_start.elapsed().as_secs();
     let host_uptime = app.system_info.uptime_secs;
-    let mut info_spans = vec![
-        Span::styled("host: ", Style::default().fg(color::label_fg())),
-        Span::styled(format!("{} ", hostname), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+    let label = |s: &'static str| Span::styled(s, Style::default().fg(color::label_fg()));
+    let value = |s: String| Span::styled(s, Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD));
+    let mut info_spans = vec![label("host: "), value(format!("{} ", hostname))];
+    let radar_up = [
         Span::styled("\u{2502} ", Style::default().fg(color::tab_separator())),
-        Span::styled("radar up: ", Style::default().fg(color::label_fg())),
-        Span::styled(format!("{} ", dashboard::format_duration(app_uptime)), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+        label("radar up: "),
+        value(format!("{} ", dashboard::format_duration(app_uptime))),
     ];
-    if host_uptime > 0 {
-        info_spans.push(Span::styled("| host up: ", Style::default().fg(color::label_fg())));
-        info_spans.push(Span::styled(format!("{} ", dashboard::format_uptime(host_uptime)), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)));
+    let host_up = [label("| host up: "), value(format!("{} ", dashboard::format_uptime(host_uptime)))];
+    // The tabs come first: the info drops host uptime, then radar uptime,
+    // to leave them room and a gap.
+    let room = (inner.width as usize).saturating_sub(Line::from(tab_spans.clone()).width() + 1);
+    let width = |spans: &[Span]| spans.iter().map(|s| s.width()).sum::<usize>();
+    let full = width(&info_spans) + width(&radar_up) + if host_uptime > 0 { width(&host_up) } else { 0 };
+    if full <= room || width(&info_spans) + width(&radar_up) <= room {
+        info_spans.extend(radar_up);
+        if host_uptime > 0 && full <= room {
+            info_spans.extend(host_up);
+        }
     }
     let info_line = Line::from(info_spans);
     let info_width = (info_line.width() as u16).min(inner.width);
@@ -954,7 +964,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ("General", &[
         Shortcut { tab: "", key: "`q`", action: "Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once)" },
         Shortcut { tab: "", key: "`Tab` / `Shift+Tab`", action: "Next / previous tab" },
-        Shortcut { tab: "", key: "`1`–`8`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master/Pulse)" },
+        Shortcut { tab: "", key: "`1`–`8`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Pulse)" },
         Shortcut { tab: "", key: "`↑`/`↓`", action: "Scroll / navigate" },
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Page scroll" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last row" },
@@ -967,7 +977,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`F3`", action: "Open Config Editor" },
         Shortcut { tab: "", key: "`+`/`-`", action: "Adjust refresh interval" },
         Shortcut { tab: "", key: "`m`", action: "Toggle sparkline style (Dashboard)" },
-        Shortcut { tab: "", key: "`Ctrl+←`/`Ctrl+→`", action: "Move the divider between the two panels (Minions, Events, Jobs, API, Pulse, Master)" },
+        Shortcut { tab: "", key: "`Ctrl+←`/`Ctrl+→`", action: "Move the divider between the two panels (Minions, Events, Jobs, API, Master Config, Pulse)" },
         Shortcut { tab: "", key: "`F4`–`F8`", action: "Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard)" },
     ]),
     ("Per tab", &[
@@ -987,8 +997,8 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Jobs (Cache)", key: "`r`", action: "Refresh job cache" },
         Shortcut { tab: "Jobs (Cache)", key: "`←`/`→`", action: "Switch focus between Live Jobs and Cache panels" },
         Shortcut { tab: "Pulse", key: "`↑`/`↓`/`←`/`→`", action: "Navigate the minion grid" },
-        Shortcut { tab: "Master", key: "`Enter`", action: "The setting's full value, where it's set and Salt's default" },
-        Shortcut { tab: "Master", key: "`r`", action: "Read the configuration files again" },
+        Shortcut { tab: "Master Config", key: "`Enter`", action: "The setting's full value, where it's set and Salt's default" },
+        Shortcut { tab: "Master Config", key: "`r`", action: "Read the configuration files again" },
         Shortcut { tab: "API", key: "`x`", action: "Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`)" },
     ]),
     ("Config Editor", &[
@@ -1344,7 +1354,7 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  masters from 3006.17, 3007.9 and 3008 reject v0 and v2 (minimum_auth_version: 3)", Style::default().fg(color::main_fg())),
         ]),
         Line::from(""),
-        Line::from(Span::styled("  Master tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("  Master Config tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![
             Span::styled("  load order", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled("  /etc/salt/master, then master.d/*.conf (sorted), then include:", Style::default().fg(color::main_fg())),

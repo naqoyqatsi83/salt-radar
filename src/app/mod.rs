@@ -307,7 +307,7 @@ pub struct App {
     pub api_requests_log: VecDeque<ApiLogEntry>,
     pub api_log_selected: usize,
 
-    /// The Master tab's configuration, fetched on first visit and on `r`.
+    /// The Master Config tab's configuration, fetched on first visit and on `r`.
     pub master_config: Option<MasterConfig>,
     pub master_config_loading: bool,
     pub master_config_error: Option<String>,
@@ -739,7 +739,7 @@ pub enum DetailPopup {
     AdminConfirm,
     MinionEvents { minion_id: String, selected: usize },
     ApiRequest(ApiLogEntry),
-    /// A Master tab setting's full value; the index is into
+    /// A Master Config tab setting's full value; the index is into
     /// `master_config.settings`.
     MasterSetting { index: usize, scroll: usize },
 }
@@ -1865,7 +1865,7 @@ impl App {
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).count()
     }
 
-    /// The Master tab's settings in display order, as indexes into
+    /// The Master Config tab's settings in display order, as indexes into
     /// `master_config.settings`: those set in files first, in load order
     /// (file, then line), then derived and default ones by name.
     pub fn filtered_master_settings(&self) -> Vec<usize> {
@@ -2768,17 +2768,18 @@ impl App {
     /// between them, or anything past the last one) — callers should treat
     /// that as "not a tab bar click" rather than defaulting to some tab.
     fn tab_at_col(col: u16) -> Option<Tab> {
-        match col {
-            0..=12 => Some(Tab::Dashboard),
-            16..=26 => Some(Tab::Minions),
-            30..=39 => Some(Tab::Events),
-            43..=50 => Some(Tab::Jobs),
-            54..=63 => Some(Tab::Alerts),
-            67..=73 => Some(Tab::Api),
-            77..=86 => Some(Tab::Master),
-            90..=98 => Some(Tab::Pulse),
-            _ => None,
+        // Laid out like draw_title_frame: after the frame's left border,
+        // each label, then a separator.
+        let col = col as usize;
+        let mut start = 1;
+        for tab in Tab::ORDER {
+            let end = start + tab.bar_label().chars().count();
+            if (start..end).contains(&col) {
+                return Some(tab);
+            }
+            start = end + crate::ui::TAB_SEPARATOR.chars().count();
         }
+        None
     }
 
     /// Navigate left in the grid (wraps).
@@ -3692,6 +3693,16 @@ fn matches_activity_item(item: &MinionActivityItem, terms: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_bar_clicks_land_on_the_drawn_labels() {
+        // As drawn at 160 columns: " 1 Dashboard " at 1..=13, " 6 API " at
+        // 68..=74, " 7 Master Config " at 78..=94, " 8 Pulse " at 98..=106.
+        let at = App::tab_at_col;
+        assert_eq!([at(0), at(1), at(13), at(14)], [None, Some(Tab::Dashboard), Some(Tab::Dashboard), None]);
+        assert_eq!([at(68), at(74), at(78), at(94), at(98), at(106), at(107)],
+            [Some(Tab::Api), Some(Tab::Api), Some(Tab::Master), Some(Tab::Master), Some(Tab::Pulse), Some(Tab::Pulse), None]);
+    }
 
     #[test]
     fn ansi_colors_follow_the_theme() {
