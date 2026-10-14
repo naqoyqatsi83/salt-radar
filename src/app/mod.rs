@@ -546,8 +546,10 @@ pub const MINION_EVENTS_HEADER_ROWS: u16 = 5;
 
 /// Return times under this count as this for lag ratios: a `test.ping`
 /// answered in 30 ms by most minions would otherwise rate one answering in
-/// 120 ms 4x slow over jitter nobody would notice, and fast jobs would rate
-/// typical minions below 1.0x.
+/// 120 ms 4x slow over jitter nobody would notice. A job where both the
+/// minion and the median are under it says nothing about lag and isn't
+/// rated at all, or a fleet running mostly fast jobs would read 1.0x for
+/// every minion, however slow it is on the jobs that take time.
 const LAG_MIN_SECS: f64 = 0.5;
 
 #[derive(Debug, Default, PartialEq)]
@@ -571,6 +573,7 @@ impl MinionHealth {
     }
 
     fn record_lag(&mut self, secs: f64, job_median: f64) {
+        if secs < LAG_MIN_SECS && job_median < LAG_MIN_SECS { return; }
         self.lag.push_back(secs.max(LAG_MIN_SECS) / job_median.max(LAG_MIN_SECS));
         if self.lag.len() > MINION_HEALTH_WINDOW { self.lag.pop_front(); }
     }
@@ -3861,8 +3864,10 @@ mod tests {
     fn fast_jobs_and_lone_returns_give_no_misleading_lag() {
         let mut h = MinionHealth::default();
         h.record_lag(0.12, 0.03);
+        assert!(h.lag.is_empty(), "a job too fast to tell lag from jitter isn't rated");
         h.record_lag(2.0, 0.03);
-        assert_eq!((h.lag[0], h.lag[1]), (1.0, 4.0), "ping jitter isn't 4x slow, a 2 s answer is");
+        h.record_lag(0.3, 0.9);
+        assert_eq!(Vec::from(h.lag.clone()), [4.0, 0.5 / 0.9], "a 2 s answer to a fast job is slow");
         let new = SaltEvent { tag: "salt/job/2/new".into(), ts: 0.0, data: json!({"jid": "2", "fun": "test.ping", "minions": ["a", "b"]}) };
         let ret = SaltEvent { tag: "salt/job/2/ret/a".into(), ts: 1.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
         let (mut jobs, mut index) = (Vec::new(), HashMap::new());
