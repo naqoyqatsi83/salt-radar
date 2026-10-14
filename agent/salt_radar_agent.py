@@ -879,6 +879,7 @@ _SECRET_LAST_PARTS = {
 }
 _SECRET_ANYWHERE = ("password", "passwd", "secret")
 _REDACTED = "<redacted>"
+_UNREADABLE = "<unreadable: the file isn't valid YAML>"
 
 
 def _is_secret_name(name):
@@ -1012,9 +1013,14 @@ def _config_files(path):
         except Exception as exc:
             try:
                 with open(fn) as f:
-                    data = yaml.safe_load(f) or {}
+                    text = f.read()
+            except OSError:
+                return {}, str(exc)
+            try:
+                data = yaml.safe_load(text) or {}
             except Exception:
-                data = {}
+                # Not YAML at all: still name the settings it tries to set.
+                data = {key: _UNREADABLE for key in _top_level_blocks(text)}
             return (data if isinstance(data, dict) else {}), str(exc)
 
     def add_includes(patterns, base, group):
@@ -1080,7 +1086,8 @@ def _source_relations(key, sources, order):
         else:
             src["relation"] = "overrides"
             group_value = value
-        src["value"] = _config_text(_redact({key: value})[key], False)
+        shown = _redact({key: value})[key]
+        src["value"] = shown if shown in (_UNREADABLE, _REDACTED) else _config_text(shown, False)
         out.append(src)
     # What a replacing group dropped, once the group's own files are combined.
     for src in out:
