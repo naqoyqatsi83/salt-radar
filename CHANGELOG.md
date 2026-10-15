@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0-rc6] - 2026-10-15
+
 ### Added
 
 - Harden the Master Config tab's restart check (`running_config_digests` under `[salt]`, off by default): the running master is asked only for a SHA-256 digest of each option, rendered in its own process, instead of the options themselves, so their values (credentials included) never go over the event bus or into the job cache; ↻ marks the same settings, without the running value
