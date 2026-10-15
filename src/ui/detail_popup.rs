@@ -895,6 +895,55 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
     render_popup(f, area, &lines, &hints, status, (more_above, more_below), 0, 0);
 }
 
+/// Job Detail's output pane for the selected return: Salt's own output for
+/// it, a note for a minion that didn't return, or the lookup in progress.
+pub(crate) fn job_preview_lines(lookup: Option<&crate::types::JidLookup>, selected_return: Option<usize>) -> Vec<Line<'static>> {
+    let mut right_lines: Vec<Line<'static>> = Vec::new();
+    if let Some(l) = lookup {
+        let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
+        if let Some(mid) = sel.checked_sub(l.returns.len()).and_then(|k| l.missing.get(k)) {
+            right_lines.push(Line::from(Span::styled(
+                format!("  {} was targeted by this job but hasn't returned.", mid),
+                Style::default().fg(color::outcome_missing()).add_modifier(Modifier::BOLD),
+            )));
+            right_lines.push(Line::from(""));
+            right_lines.push(Line::from(Span::styled(
+                "  It may still be running, or the minion is down or never received the job.",
+                Style::default().fg(color::inactive_fg()),
+            )));
+            right_lines.push(Line::from(Span::styled(
+                "  Reopen this job later to see whether a return arrived.",
+                Style::default().fg(color::inactive_fg()),
+            )));
+        } else if sel < l.returns.len() {
+            let ret = &l.returns[sel];
+            if !ret.formatted_text.is_empty() {
+                right_lines.extend(crate::app::App::ansi_text_to_lines(&ret.formatted_text, Style::default().fg(color::main_fg())));
+            } else {
+                // `salt-run jobs.lookup_jid` never passes an explicit `_retcode`
+                // to the nested outputter (that kwarg is a `salt`/exec-module
+                // concept, not a runner one) — it defaults to 0 in real Salt,
+                // so the real CLI's dict/list coloring is always the success
+                // colors regardless of any individual minion's own retcode.
+                // Passing `ret.retcode` here colored failed minions red, which
+                // doesn't happen in the actual command's output.
+                right_lines.extend(pretty_return_lines(&ret.minion_id, &ret.full_return, 0));
+            }
+        } else {
+            right_lines.push(Line::from(Span::styled(
+                "  No return data.",
+                Style::default().fg(color::inactive_fg()),
+            )));
+        }
+    } else {
+        right_lines.push(Line::from(Span::styled(
+            "  Querying Salt master...",
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
+        )));
+    }
+    right_lines
+}
+
 fn draw_job_detail(
     f: &mut Frame,
     area: Rect,
@@ -1174,49 +1223,7 @@ fn draw_job_detail(
         None => "Preview".to_string(),
     };
 
-    let mut right_lines: Vec<Line<'static>> = Vec::new();
-    if let Some(ref l) = lookup {
-        let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
-        if let Some(mid) = sel.checked_sub(l.returns.len()).and_then(|k| l.missing.get(k)) {
-            right_lines.push(Line::from(Span::styled(
-                format!("  {} was targeted by this job but hasn't returned.", mid),
-                Style::default().fg(color::outcome_missing()).add_modifier(Modifier::BOLD),
-            )));
-            right_lines.push(Line::from(""));
-            right_lines.push(Line::from(Span::styled(
-                "  It may still be running, or the minion is down or never received the job.",
-                Style::default().fg(color::inactive_fg()),
-            )));
-            right_lines.push(Line::from(Span::styled(
-                "  Reopen this job later to see whether a return arrived.",
-                Style::default().fg(color::inactive_fg()),
-            )));
-        } else if sel < l.returns.len() {
-            let ret = &l.returns[sel];
-            if !ret.formatted_text.is_empty() {
-                right_lines.extend(crate::app::App::ansi_text_to_lines(&ret.formatted_text, Style::default().fg(color::main_fg())));
-            } else {
-                // `salt-run jobs.lookup_jid` never passes an explicit `_retcode`
-                // to the nested outputter (that kwarg is a `salt`/exec-module
-                // concept, not a runner one) — it defaults to 0 in real Salt,
-                // so the real CLI's dict/list coloring is always the success
-                // colors regardless of any individual minion's own retcode.
-                // Passing `ret.retcode` here colored failed minions red, which
-                // doesn't happen in the actual command's output.
-                right_lines.extend(pretty_return_lines(&ret.minion_id, &ret.full_return, 0));
-            }
-        } else {
-            right_lines.push(Line::from(Span::styled(
-                "  No return data.",
-                Style::default().fg(color::inactive_fg()),
-            )));
-        }
-    } else {
-        right_lines.push(Line::from(Span::styled(
-            "  Querying Salt master...",
-            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
-        )));
-    }
+    let right_lines = job_preview_lines(lookup.as_ref(), selected_return);
 
     *fail_lines = right_lines.iter().enumerate()
         .filter(|(_, l)| {

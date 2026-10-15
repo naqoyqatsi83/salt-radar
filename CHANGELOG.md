@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Show only the time for today's events in the Events list: the Local and UTC columns read `17:25:08` for events from today (each column's own today) and keep the full date for older ones, giving the tag and minion columns 22 more characters; `time_format = "full"` under `[events]` (also in the Config Editor) keeps the date on every row. The preview, the detail popup, copies and saves always show the full date
 
+### Fixed
+
+- Job Detail search not jumping to its first match when the query was typed or pasted faster than a redraw: `Enter` matched against the previous frame; it now matches the output as shown, as Event Detail's search does
+
 ## [0.9.0-rc5] - 2026-10-15
 
 ### Changed

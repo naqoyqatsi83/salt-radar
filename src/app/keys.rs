@@ -261,11 +261,16 @@ impl App {
                                 }
                                 KeyCode::Enter => {
                                     self.job_searching = false;
-                                    if let Some(i) = step_match(&self.job_search_matches, None, *content_scroll, true) {
+                                    // Matched here, not taken from the last frame: keys typed
+                                    // (or pasted) faster than a redraw would leave it stale.
+                                    let shown = crate::ui::detail_popup::job_preview_lines(lookup.as_ref(), *selected_return);
+                                    let m = search_lines(&crate::ui::detail_popup::plain_text(&shown), &self.job_search);
+                                    if let Some(i) = step_match(&m, None, *content_scroll, true) {
                                         self.job_search_focus = Some(i);
                                         self.job_focus_line = None;
-                                        *content_scroll = self.job_search_matches[i].saturating_sub(2).min(self.job_detail_scroll_max);
+                                        *content_scroll = m[i].saturating_sub(2).min(self.job_detail_scroll_max);
                                     }
+                                    self.job_search_matches = m;
                                 }
                                 _ => { line_edit::edit(&mut self.job_search, &mut self.input_cursor, code); }
                             }
