@@ -486,8 +486,12 @@ impl ConfigFile {
 pub enum SettingKind {
     /// Set in a file, and one of Salt's core settings.
     Explicit,
-    /// Set in a file, but not a core setting: a module's own option
-    /// (`mysql.host`, `rest_cherrypy`) or a typo.
+    /// Set in a file, not a core setting, but read by something else
+    /// Salt runs: salt-api (`rest_cherrypy`), a module (`auth.ldap.uri`,
+    /// `mysql.host`), or a minion, syndic or salt-ssh option.
+    Module,
+    /// Set in a file, and nothing in Salt reads it: a typo, or an option
+    /// of a module Salt doesn't ship.
     Unknown,
     /// Only in files Salt rejected, so not in use.
     Ignored,
@@ -500,6 +504,7 @@ impl SettingKind {
     pub fn from_agent(kind: &str) -> Self {
         match kind {
             "explicit" => Self::Explicit,
+            "module" => Self::Module,
             "unknown" => Self::Unknown,
             "ignored" => Self::Ignored,
             "derived" => Self::Derived,
@@ -510,6 +515,7 @@ impl SettingKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Explicit => "set",
+            Self::Module => "module",
             Self::Unknown => "not core",
             Self::Ignored => "ignored",
             Self::Derived => "derived",
@@ -583,12 +589,25 @@ pub struct ConfigSetting {
     pub redacted: bool,
     /// For an unknown key, the core setting it's closest to.
     pub suggest: Option<String>,
+    /// For a module's setting, what reads it.
+    pub about: Option<String>,
+    /// Keys inside a salt-api section that salt-api doesn't read, each with
+    /// the option it's probably meant to be.
+    pub unknown_nested: Vec<(String, Option<String>)>,
+    /// Remarks on options salt-api reads differently than documented.
+    pub notes: Vec<String>,
 }
 
 impl ConfigSetting {
     /// Set in a file written after salt-master started, so its value may
     /// change when the master restarts. (What the running master holds in
     /// memory can't be read, only when the files changed.)
+    /// Keys Salt ignores: the setting itself when nothing reads it, plus
+    /// any it holds that salt-api doesn't read.
+    pub fn ignored_keys(&self) -> usize {
+        usize::from(self.kind == SettingKind::Unknown) + self.unknown_nested.len()
+    }
+
     pub fn restart_pending(&self, mc: &MasterConfig) -> bool {
         self.sources.iter().any(|src| mc.files.get(src.file).is_some_and(|f| f.changed_since(mc.master_started)))
     }

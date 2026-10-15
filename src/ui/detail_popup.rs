@@ -1594,6 +1594,16 @@ fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfi
     if let Some(core) = &s.suggest {
         lines.push(row("Did you mean", core.clone(), color::red()));
     }
+    if let Some(about) = &s.about {
+        lines.push(row("Read by", about.clone(), color::cyan()));
+    }
+    for (key, suggest) in &s.unknown_nested {
+        let hint = suggest.as_ref().map_or(String::new(), |k| format!(" (did you mean {}?)", k));
+        lines.push(row("Ignored option", format!("{}{}", key, hint), color::red()));
+    }
+    for remark in &s.notes {
+        lines.push(row("Note", remark.clone(), color::yellow()));
+    }
     if s.redacted {
         lines.push(row("Credentials", "shown as <redacted>".to_string(), color::inactive_fg()));
     }

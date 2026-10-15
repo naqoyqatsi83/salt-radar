@@ -37,7 +37,10 @@ fn kind_colors(s: &ConfigSetting) -> (Style, Style) {
     let value = Style::default().fg(color::cyan());
     match s.kind {
         SettingKind::Explicit => (Style::default().fg(color::main_fg()).add_modifier(Modifier::BOLD), value),
+        SettingKind::Module if !s.unknown_nested.is_empty() => (Style::default().fg(color::red()).add_modifier(Modifier::BOLD), value),
+        SettingKind::Module => (Style::default().fg(color::main_fg()).add_modifier(Modifier::BOLD), value),
         SettingKind::Unknown if s.suggest.is_some() => (Style::default().fg(color::red()).add_modifier(Modifier::BOLD), value),
+        SettingKind::Unknown if !s.notes.is_empty() => (Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD), value),
         SettingKind::Unknown => (Style::default().fg(color::purple()).add_modifier(Modifier::BOLD), value),
         SettingKind::Ignored => (Style::default().fg(color::red()).add_modifier(Modifier::BOLD), Style::default().fg(color::inactive_fg())),
         SettingKind::Derived => (Style::default().fg(color::yellow()), Style::default().fg(color::main_fg())),
@@ -84,14 +87,15 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
     let title = match &app.master_config {
         Some(mc) => {
             let count = |k: SettingKind| mc.settings.iter().filter(|s| s.kind == k).count();
+            let not_core: usize = mc.settings.iter().map(ConfigSetting::ignored_keys).sum();
             let pending = mc.settings.iter().filter(|s| s.restart_pending(mc)).count();
             let rejected = mc.files.iter().filter(|file| file.error.is_some()).count();
             // Warnings first: on a narrow panel the counts are what gets cut.
             format!(
-                " Master Config{}{} \u{b7} {} set, {} not core, {} derived, {} default ",
+                " Master Config{}{} \u{b7} {} set, {} module, {} not core, {} derived, {} default ",
                 if rejected > 0 { format!(" \u{26a0} {} file(s) rejected", rejected) } else { String::new() },
                 if pending > 0 { format!(" \u{21bb} {} on restart", pending) } else { String::new() },
-                count(SettingKind::Explicit), count(SettingKind::Unknown), count(SettingKind::Derived), count(SettingKind::Default),
+                count(SettingKind::Explicit), count(SettingKind::Module), not_core, count(SettingKind::Derived), count(SettingKind::Default),
             )
         }
         None => " Master Config ".to_string(),
@@ -184,9 +188,22 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
     let note = |text: String, style: Style| Line::from(Span::styled(format!(" {}", text), style));
     match s.kind {
         SettingKind::Unknown => lines.push(match &s.suggest {
-            Some(core) => note(format!("Not a Salt core setting \u{2014} did you mean {}?", core), Style::default().fg(color::red())),
-            None => note("Not a Salt core setting: a module's own option, or a typo".to_string(), Style::default().fg(color::purple())),
+            Some(meant) => note(format!("Nothing in Salt reads it \u{2014} did you mean {}?", meant), Style::default().fg(color::red())),
+            None if !s.notes.is_empty() => note(s.notes.join("; "), Style::default().fg(color::yellow())),
+            None => note("Nothing in Salt reads it: a typo, or an option of a module that isn't installed".to_string(), Style::default().fg(color::purple())),
         }),
+        SettingKind::Module => {
+            if let Some(about) = &s.about {
+                lines.push(note(format!("Not salt-master's own: {}", about), Style::default().fg(color::cyan())));
+            }
+            for (key, suggest) in &s.unknown_nested {
+                let hint = suggest.as_ref().map_or(String::new(), |k| format!(" \u{2014} did you mean {}?", k));
+                lines.push(note(format!("{}: not a {} option, ignored{}", key, s.key, hint), Style::default().fg(color::red())));
+            }
+            for remark in &s.notes {
+                lines.push(note(remark.clone(), Style::default().fg(color::yellow())));
+            }
+        }
         SettingKind::Derived => lines.push(note("In no file; Salt worked this out at startup".to_string(), Style::default().fg(color::yellow()))),
         SettingKind::Default => lines.push(note("In no file; Salt's default".to_string(), dim)),
         SettingKind::Ignored => lines.push(note("Only in a file Salt rejected: Salt's default is in use".to_string(), Style::default().fg(color::red()))),

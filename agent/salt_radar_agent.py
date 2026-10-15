@@ -1116,6 +1116,303 @@ def _salt_master_started():
         return 0
 
 
+# What salt-api's netapi modules read from their section of the master config
+# (Salt 3006), taken from the code that reads them as well as the docs.
+_NETAPI_OPTIONS = {
+    "rest_cherrypy": {
+        "app", "app_path", "collect_stats", "debug", "disable_ssl", "enable_sessions",
+        "expire_responses", "favicon", "host", "log_access_file", "log_error_file",
+        "max_request_body_size", "port", "queue_size", "root_prefix", "socket_queue_size",
+        "ssl_chain", "ssl_crt", "ssl_key", "static", "static_path", "stats_disable_auth",
+        "thread_pool", "webhook_disable_auth", "webhook_url",
+    },
+    "rest_tornado": {
+        "address", "backlog", "cors_origin", "debug", "disable_ssl", "num_processes",
+        "port", "ssl_crt", "ssl_key", "webhook_disable_auth", "websockets",
+    },
+    "rest_wsgi": {"port"},
+}
+_NETAPI_NOTES = {
+    ("rest_cherrypy", "socket_queue_size"): "documented, but salt-api reads queue_size, so this has no effect",
+    ("rest_cherrypy", "expire_responses"): "has no effect with CherryPy 12 or later",
+}
+# Loader directories whose modules read their own options from the master
+# config, the tag Salt's loader looks them up by, and what to call a module
+# of each.
+_LOADER_KINDS = {
+    "auth": (None, "eauth backend"), "beacons": (None, "beacon"), "cache": ("cache", "cache backend"),
+    "engines": (None, "engine"), "fileserver": (None, "fileserver backend"),
+    "modules": ("module", "execution module"), "netapi": (None, "salt-api module"),
+    "pillar": (None, "ext_pillar"), "proxy": (None, "proxy module"), "queues": ("queue", "queue"),
+    "returners": ("returner", "returner"), "roster": (None, "roster"), "runners": ("runner", "runner"),
+    "sdb": (None, "sdb module"), "states": (None, "state module"), "tokens": (None, "token backend"),
+    "tops": ("top", "master_tops"), "wheel": (None, "wheel module"),
+}
+# Modules Salt 3007 shipped and 3008 doesn't: moved out to Salt extensions
+# (saltext-vault, saltext-consul, ...), under their file names and
+# __virtualname__s. A setting for one of them does nothing on a master
+# without the extension.
+_LEFT_SALT_IN_3008 = frozenset("""
+    acme adb aix_account apcups apkpkg appoptics appoptics_return apt aptly asam augeas
+    augeas_cfg avahi_announce aws_sqs bamboohr bigip bluetooth bluez_bluetooth
+    bonjour_announce boto3_elasticache boto3_elasticsearch boto3_route53 boto3_sns
+    boto_apigateway boto_asg boto_cfn boto_cloudfront boto_cloudtrail boto_cloudwatch
+    boto_cloudwatch_alarm boto_cloudwatch_event boto_cognitoidentity boto_datapipeline
+    boto_dynamodb boto_ec2 boto_efs boto_elasticache boto_elasticsearch_domain boto_elb
+    boto_elbv2 boto_iam boto_iam_role boto_iot boto_kinesis boto_kms boto_lambda boto_lc
+    boto_rds boto_route53 boto_s3 boto_s3_bucket boto_secgroup boto_sns boto_sqs boto_ssm
+    boto_vpc bower bsd_shadow btmp btrfs buildout cabal capirca capirca_acl carbon
+    carbon_return cassandra_cql_return ceph chassis chronos_job cimc ciscoconfparse
+    ciscoconfparse_mod cisconso clustershell cmd_yamlex composer confidant consul_pillar
+    container_resource couchbase couchbase_return couchdb couchdb_return cpan csf csv
+    csvpillar cyg daemontools datadog datadog_api ddns deb_apache deb_postgres dellchassis
+    digicert digicertapi django django_orm djangomod dnsmasq docker docker_container
+    docker_events docker_image docker_network docker_volume dockercompose dockermod drac
+    dracr drbd dvs ebuildpkg ec2_pillar eix elasticsearch elasticsearch_index
+    elasticsearch_index_template elasticsearch_return eselect esxcluster esxdatacenter esxi
+    esxvm etcd_db etcd_pillar etcd_return f5 fluent foreman freebsd_sysctl freebsd_update
+    freebsdjail freebsdkmod freebsdpkg freebsdports freebsdservice freezer fx2 gcp gcp_addon
+    gem genesis gentoo_service gentoolkit gentoolkitmod github glance_image glanceng
+    glassfish glusterfs glxinfo gnome gnomedesktop google_chat grafana grafana4
+    grafana4_dashboard grafana4_datasource grafana4_org grafana4_user grafana_dashboard
+    grafana_datasource grub grub_legacy guestfs hadoop haproxy haproxyconn heat helm hg
+    hg_pillar hgfs hiera http_json http_logstash http_yaml hue icinga2 ifttt ilo imgadm
+    influxdb influxdb08 influxdb08_database influxdb08_user influxdb08mod
+    influxdb_continuous_query influxdb_database influxdb_retention_policy influxdb_return
+    influxdb_user influxdbmod infoblox infoblox_a infoblox_cname infoblox_host_record
+    infoblox_range inspectlib inspector introspect ipmi ircbot jail jboss7 jboss7_cli
+    jenkins jenkinsmod jira jira_mod junos_rre_keys junos_syslog k8s kafka kafka_return
+    kapacitor kerberos keyring keyring_db keystone keystone_domain keystone_endpoint
+    keystone_group keystone_project keystone_role keystone_role_grant keystone_service
+    keystone_user keystoneng keystore kubeadm kubernetes kubernetesmod launchctl_service
+    launchd layman ldap3 ldapmod libcloud_compute libcloud_dns libcloud_loadbalancer
+    libcloud_storage librato librato_return libvirt libvirt_events logadm logentries
+    logstash logstash_engine lvs lvs_server lvs_service lxc lxd lxd_container lxd_image
+    lxd_profile makostack mandrill marathon marathon_app mattermost mattermost_returner
+    mdata memcache memcache_return memcached modjk modjk_worker mongo_future_return
+    mongo_return mongodb mongodb_database mongodb_user monit moosefs mssql mssql_database
+    mssql_login mssql_role mssql_user msteams munin mysql_database mysql_grants mysql_query
+    mysql_user nagios nagios_nrdp nagios_nrdp_return nagios_rpc namecheap_domains
+    namecheap_domains_dns namecheap_domains_ns namecheap_ssl namecheap_users napalm_beacon
+    napalm_syslog net_napalm_yang netbox netbsd_sysctl netbsdservice netmiko netmiko_mod
+    netmiko_px netscaler neutron neutron_network neutron_secgroup neutron_secgroup_rule
+    neutron_subnet neutronng nexus nfs_export nginx nictagadm nilrt_ip nix nova nspawn odbc
+    omapi openbsd_sysctl openbsdpkg openbsdrcctl_service openbsdservice openscap
+    openstack_config openstack_mng openvswitch openvswitch_bridge openvswitch_db
+    openvswitch_port opkg opsgenie pagerduty pagerduty_escalation_policy pagerduty_schedule
+    pagerduty_service pagerduty_user pagerduty_util panos parallels pbm pcs pdbedit pecl
+    peeringdb pepa pf pgjsonb_queue philips_hue pillar_ldap portage_config ports postfix
+    poudriere powerpath purefa purefb pushbullet pushover pushover_notify pushover_returner
+    pyrax_queues qemu_img qemu_nbd rallydev random_org rbenv rebootmgr redis_return
+    redis_sdb redis_sentinel redismod rest_sample restconf rethinkdb rethinkdb_pillar riak
+    runit rvm s3 s3fs s6 sensehat sensors sentry sentry_return serverdensity_device
+    servicenow slack_bolt slack_bolt_engine slack_returner slack_webhook
+    slack_webhook_return slackware_service smartos smartos_imgadm smartos_nictagadm
+    smartos_virt smartos_vmadm sms sms_return smtp smtp_return solr solrcloud spacewalk
+    splunk splunk_search sqlcipher sqlite sqlite3_return sqlite_queue sqs_events ssh_sample
+    stalekey statuspage suse_apache suse_ip svn svn_pillar svnfs swarm swift sysbench sysrc
+    system_profiler telegram telegram_bot_msg telegram_return telemetry telemetry_alert
+    terraform testinfra testinframod thin tism tomcat trafficserver transactional_update
+    travisci tuned twilio twilio_notify twilio_txt_msg uwsgi varnish varstack_pillar vault
+    vbox_guest vboxmanage vcenter venafi venafiapi victorops virt virtkey vistara vmadm
+    vmctl vmware vmware_pillar wordpress wtmp xapi_virt xbpspkg xmpp xmpp_return yubico
+    zabbix zabbix_action zabbix_host zabbix_hostgroup zabbix_mediatype zabbix_return
+    zabbix_template zabbix_user zabbix_usergroup zabbix_usermacro zabbix_valuemap zcbuildout
+    zenoss zfs znc zone zookeeper zpool
+""".split())
+_module_index = (None, {})
+
+
+def _module_dirs(opts, kind):
+    """The directories Salt's loader reads `kind` modules from: its own,
+    installed Salt extensions, synced custom modules and `*_dirs` settings."""
+    import salt
+    import salt.loader
+    try:
+        return list(salt.loader._module_dirs(opts, kind, _LOADER_KINDS[kind][0]))
+    except Exception:
+        return [os.path.join(os.path.dirname(salt.__file__), kind)]
+
+
+def _module_origin(path, opts):
+    """Who provides a module: Salt itself, a Salt extension package, or a
+    custom module synced to the master."""
+    import salt
+    if path.startswith(os.path.dirname(salt.__file__) + os.sep):
+        return "Salt"
+    ext = opts.get("extension_modules")
+    if ext and path.startswith(os.path.join(ext, "")):
+        return "custom"
+    parts = path.split(os.sep)
+    if "site-packages" in parts:
+        pkg = parts[parts.index("site-packages") + 1:]
+        if pkg and pkg[0] == "saltext" and len(pkg) > 1:
+            return "saltext-" + pkg[1]
+        if pkg:
+            return pkg[0]
+    return "custom"
+
+
+def _loader_modules(opts):
+    """{module name: [(loader dir, source file, origin)]} for every module the
+    master's loader would find, under its file name and its __virtualname__,
+    read from the sources without importing any of them."""
+    global _module_index
+    dirs = [(kind, d) for kind in _LOADER_KINDS for d in _module_dirs(opts, kind)]
+    if _module_index[0] == dirs:
+        return _module_index[1]
+    index = {}
+    for kind, d in dirs:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for fn in names:
+            path = os.path.join(d, fn)
+            if fn.endswith(".py"):
+                stem = fn[:-3]
+            elif os.path.isfile(os.path.join(path, "__init__.py")):
+                stem, path = fn, os.path.join(path, "__init__.py")
+            else:
+                continue
+            if stem.startswith("_"):
+                continue
+            found = {stem}
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    m = re.search(r"^__virtualname__\s*=\s*[\"'](\w+)[\"']", f.read(), re.M)
+                if m:
+                    found.add(m.group(1))
+            except OSError:
+                pass
+            origin = _module_origin(path, opts)
+            for name in found:
+                index.setdefault(name, []).append((kind, path, origin))
+    _module_index = (dirs, index)
+    return index
+
+
+def _module_defaults(path):
+    """A module's `__defopts__` (e.g. auth.ldap's), parsed, not imported."""
+    import ast
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError):
+        return {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__defopts__" for t in node.targets):
+            try:
+                return ast.literal_eval(node.value)
+            except ValueError:
+                return {}
+    return {}
+
+
+_source_texts = {}
+
+
+def _source_text(path):
+    if path not in _source_texts:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                _source_texts[path] = f.read()
+        except OSError:
+            _source_texts[path] = ""
+    return _source_texts[path]
+
+
+def _mentions(path, key):
+    """Whether a module's source names the option, in its code or its docs,
+    literally or built from its prefix: auth.ldap reads `f"auth.ldap.{key}"`
+    with `_config("binddn")`, a returner `<name>.<option>` for each option in
+    the `attrs` it passes to `get_returner_options`."""
+    text = _source_text(path)
+    if re.search(r"(?<![\w.]){}(?![\w])".format(re.escape(key)), text):
+        return True
+    head, _, tail = key.rpartition(".")
+    if not re.search(r"[\"']{}[\"']".format(re.escape(tail)), text):
+        return False
+    return "get_returner_options" in text or re.search(r"(?<![\w.]){}\.\{{".format(re.escape(head)), text) is not None
+
+
+def _named_options(paths, name):
+    """Every `name.*` option (also `auth.name.*` and `cache.name.*`) the
+    sources name, to suggest from."""
+    pattern = re.compile(r"(?<![\w.])((?:auth\.|cache\.)?{}\.[a-z_][a-z0-9_.]*[a-z0-9_])(?![\w(])".format(re.escape(name)))
+    return {m for path in paths for m in pattern.findall(_source_text(path))}
+
+
+def _setting_owner(key, opts):
+    """For a key that isn't one of salt-master's own: ((what reads it, its
+    default or None), None) when Salt still reads it -- salt-api's options, a
+    module's options (`auth.ldap.uri`, `mysql.host`, `vault:`) from Salt, an
+    installed Salt extension or a synced custom module, or a valid Salt option
+    without a master default -- else (None, the option of that module it's
+    probably meant to be, or None)."""
+    import difflib
+    salt = _import_salt()
+    api = getattr(salt.config, "DEFAULT_API_OPTS", {})
+    if key in api:
+        return ("salt-api option", api[key]), None
+    if key in _NETAPI_OPTIONS:
+        return ("salt-api config ({})".format(key), None), None
+    if key in salt.config.VALID_OPTS:
+        return ("a valid Salt option, but not salt-master's: minion, syndic or salt-ssh", None), None
+    index = _loader_modules(opts)
+    parts = key.split(".")
+    if len(parts) > 2 and parts[0] in ("auth", "cache"):
+        name = parts[1]
+        mods = [m for m in index.get(name, []) if m[0] == parts[0]]
+    else:
+        name = parts[0]
+        mods = index.get(name, [])
+    if not mods and len(parts) > 2:
+        # A returner's alternative configuration: `<ret_config>.<name>.<option>`.
+        alt = [m for m in index.get(parts[-2], []) if m[0] == "returners" and _mentions(m[1], ".".join(parts[-2:]))]
+        if alt:
+            return ("option of the {} returner for ret_config {} ({})".format(
+                parts[-2], ".".join(parts[:-2]), ", ".join(sorted({o for _, _, o in alt}))), None), None
+    if not mods:
+        return None, None
+    reading = mods if len(parts) == 1 else [m for m in mods if _mentions(m[1], key)]
+    if not reading:
+        close = difflib.get_close_matches(key, sorted(_named_options([m[1] for m in mods], name)), n=1, cutoff=0.75)
+        return None, close[0] if close else None
+    kinds = sorted({_LOADER_KINDS[kind][1] for kind, _, _ in reading})
+    origins = sorted({origin for _, _, origin in reading})
+    default = next((d[key] for _, path, _ in reading for d in [_module_defaults(path)] if key in d), None)
+    what = "config" if len(parts) == 1 else "option"
+    return ("{} of the {} {} ({})".format(what, name, ", ".join(kinds), ", ".join(origins)), default), None
+
+
+def _missing_extension(key):
+    """Why nothing reads a setting meant for a module that left Salt in 3008,
+    or None."""
+    parts = key.split(".")
+    name = parts[1] if len(parts) > 2 and parts[0] in ("auth", "cache") else parts[0]
+    if name in _LEFT_SALT_IN_3008:
+        return "{} modules left Salt in 3008 for Salt extensions: this does nothing until the one providing them is installed".format(name)
+    return None
+
+
+def _netapi_problems(key, value):
+    """Keys inside a salt-api section that salt-api doesn't read (with the
+    one each is probably meant to be), and notes on ones it reads oddly."""
+    import difflib
+    known = _NETAPI_OPTIONS.get(key)
+    if not known or not isinstance(value, dict):
+        return [], []
+    unknown, notes = [], []
+    for k in map(str, value):
+        if k not in known:
+            close = difflib.get_close_matches(k, sorted(known), n=1, cutoff=0.75)
+            unknown.append({"key": k, "suggest": close[0] if close else None})
+        elif (key, k) in _NETAPI_NOTES:
+            notes.append("{}: {}".format(k, _NETAPI_NOTES[(key, k)]))
+    return unknown, notes
+
+
 def cmd_master_config(opts, req):
     """Every master setting: where it's set (file and line range, in Salt's
     load order) and how each file's value combines, its effective value and
@@ -1180,9 +1477,22 @@ def cmd_master_config(opts, req):
             "redacted": value != actual,
         }
         if kind == "unknown":
-            close = difflib.get_close_matches(str(key), [str(k) for k in defaults], n=1, cutoff=0.8)
-            if close:
-                entry["suggest"] = close[0]
+            owner, module_suggest = _setting_owner(str(key), effective)
+            missing = None if owner or module_suggest else _missing_extension(str(key))
+            if missing:
+                entry["notes"] = [missing]
+            elif module_suggest:
+                entry["suggest"] = module_suggest
+            elif owner:
+                kind = entry["kind"] = "module"
+                entry["about"], module_default = owner
+                if module_default is not None:
+                    entry["default"] = _config_text(_redact({key: _plain(module_default)})[key], False)
+                entry["unknown_nested"], entry["notes"] = _netapi_problems(str(key), actual)
+            else:
+                close = difflib.get_close_matches(str(key), [str(k) for k in defaults], n=1, cutoff=0.8)
+                if close:
+                    entry["suggest"] = close[0]
         settings.append(entry)
 
     result(req["id"], "master_config", data={

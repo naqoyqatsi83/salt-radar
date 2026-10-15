@@ -1373,7 +1373,7 @@ fn guide_help_lines() -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  / and r", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  filter by name, value, file or kind (set, not core, ignored, restart, ...);", Style::default().fg(color::main_fg())),
+            Span::styled("  filter by name, value, file or kind (set, module, not core, restart, ...);", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
             Span::styled("  ", Style::default()),
@@ -1400,12 +1400,24 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  in a file Salt rejected (a key twice is enough): the whole file is skipped", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
-            Span::styled("  not core", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  in a file but not a Salt core setting: a module's own option or a typo,", Style::default().fg(color::main_fg())),
+            Span::styled("  module", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  not salt-master's own, but read by salt-api (rest_cherrypy, whose options", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("  which Salt ignores; a near miss names the setting it's probably meant to be", Style::default().fg(color::main_fg())),
+            Span::styled("  are checked too), a module Salt ships (auth.ldap.*, mysql.*, vault) or a", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  minion, syndic or salt-ssh option", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  not core", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  in a file, but nothing in Salt reads it: a typo, which Salt ignores; a near", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  miss names the setting it's probably meant to be", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
             Span::styled("  derived", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),

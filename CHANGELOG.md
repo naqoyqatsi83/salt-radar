@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Tell module settings from typos in the Master Config tab (#185): keys that aren't salt-master's own but that Salt reads are a new `module` kind, named with what reads them: salt-api (`rest_cherrypy`, `rest_tornado`, `rest_wsgi`, `api_logfile`, `rest_timeout`), any module Salt ships, found in Salt's own sources (`auth.ldap.*` with the backend's defaults, `cache.redis.*`, `mysql.*`, `vault`), or a valid minion, syndic or salt-ssh option. Modules are found where the master's loader finds them, installed Salt extensions and synced custom modules included, and a dotted option counts only when the module's source names it (`redis.host` on 3008, whose redis cache reads `cache.redis.host`, is caught with that suggestion); a setting for a module Salt 3008 moved out to an extension says it needs the extension. Options inside a salt-api section are checked too: one salt-api doesn't read is flagged and counted as not core, with the option it's probably meant to be (`colect_stats` → `collect_stats`), and the documented `socket_queue_size`, which salt-api never reads, says so. "Not core" is left for keys nothing in Salt reads
+
 ### Fixed
 
 - Minions `Proto` column (#183): right-aligned like the other short columns, and `—` for a minion that timed out, as OS, Salt and Arch already were

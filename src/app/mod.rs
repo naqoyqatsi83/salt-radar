@@ -1878,6 +1878,8 @@ impl App {
                     Self::matches_filter(&s.key, t)
                         || Self::matches_filter(&s.line, t)
                         || Self::matches_filter(s.kind.label(), t)
+                        || s.about.as_deref().is_some_and(|a| Self::matches_filter(a, t))
+                        || (!s.unknown_nested.is_empty() && Self::matches_filter(SettingKind::Unknown.label(), t))
                         || (s.restart_pending(mc) && Self::matches_filter("restart", t))
                         || s.sources.iter().any(|src| mc.files.get(src.file).is_some_and(|file| Self::matches_filter(&file.path, t)))
                 })
@@ -2868,6 +2870,11 @@ pub(crate) fn parse_master_config(data: &serde_json::Value) -> MasterConfig {
         default: s["default"].as_str().map(String::from),
         redacted: s["redacted"].as_bool().unwrap_or(false),
         suggest: s["suggest"].as_str().map(String::from),
+        about: s["about"].as_str().map(String::from),
+        unknown_nested: s["unknown_nested"].as_array().map(|a| a.iter().map(|k| {
+            (text(&k["key"]), k["suggest"].as_str().map(String::from))
+        }).collect()).unwrap_or_default(),
+        notes: s["notes"].as_array().map(|a| a.iter().filter_map(|n| n.as_str().map(String::from)).collect()).unwrap_or_default(),
     }).collect()).unwrap_or_default();
     MasterConfig {
         conf_file: text(&data["conf_file"]),
@@ -3702,6 +3709,22 @@ mod tests {
         assert_eq!([at(0), at(1), at(13), at(14)], [None, Some(Tab::Dashboard), Some(Tab::Dashboard), None]);
         assert_eq!([at(68), at(74), at(78), at(94), at(98), at(106), at(107)],
             [Some(Tab::Api), Some(Tab::Api), Some(Tab::Master), Some(Tab::Master), Some(Tab::Pulse), Some(Tab::Pulse), None]);
+    }
+
+    #[test]
+    fn module_settings_count_their_ignored_options() {
+        let mc = parse_master_config(&serde_json::json!({"settings": [
+            {"key": "rest_cherrypy", "kind": "module", "about": "salt-api config (rest_cherrypy)",
+             "unknown_nested": [{"key": "colect_stats", "suggest": "collect_stats"}, {"key": "x", "suggest": null}],
+             "notes": ["socket_queue_size: documented, but salt-api reads queue_size"]},
+            {"key": "auth.ldap.uri", "kind": "module", "about": "option of the ldap eauth backend"},
+            {"key": "worker_thread", "kind": "unknown", "suggest": "worker_threads"},
+        ]}));
+        let [api, ldap, typo] = &mc.settings[..] else { panic!() };
+        assert_eq!(api.kind, SettingKind::Module);
+        assert_eq!(api.unknown_nested, vec![("colect_stats".to_string(), Some("collect_stats".to_string())), ("x".to_string(), None)]);
+        assert_eq!(api.notes.len(), 1);
+        assert_eq!([api.ignored_keys(), ldap.ignored_keys(), typo.ignored_keys()], [2, 0, 1]);
     }
 
     #[test]
