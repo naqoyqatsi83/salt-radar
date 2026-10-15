@@ -300,7 +300,7 @@ zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 
 #### Slow links (SSH proxies that record sessions)
 
-On a busy master, every list scrolls on every refresh, and a scrolled panel is redrawn row by row; the Dashboard graphs shift one column each refresh, so once they're full nearly every graph cell is redrawn too. That's a few KB/s, which a direct SSH session doesn't notice, but a proxy that records sessions (CyberArk PSM, for one) can fall behind it, and then the whole connection lags, tmux and other windows on it included. Set `max_output_kbs` under `[refresh]` (e.g. 4–8) to cap what salt-radar sends: over the cap, refreshes wait until it allows them, while key presses still redraw at once. The header shows the cap (`≤4KB/s`), yellow while a refresh is waiting. Hiding the graphs (`F4`–`F8`) or a slower refresh (`+`) cuts the output too.
+On a busy master, every list scrolls on every refresh, and a scrolled panel is redrawn row by row; the Dashboard graphs shift one column each refresh, so once they're full nearly every graph cell is redrawn too. That's a few KB/s, which a direct SSH session doesn't notice, but a proxy that records sessions can fall behind it, and then the whole connection lags, tmux and other windows on it included. Set `max_output_kbs` under `[refresh]` (e.g. 4–8) to cap what salt-radar sends: over the cap, refreshes wait until it allows them, while key presses still redraw at once. The header shows the cap (`≤4KB/s`), yellow while a refresh is waiting. Hiding the graphs (`F4`–`F8`) or a slower refresh (`+`) cuts the output too.
 
 #### Running through sudo, and several users at once
 

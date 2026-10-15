@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Search in Event Detail (#189) and Alert Detail: `/` searches the event (raw or pretty) or the alert's items, matches highlighted and counted (a whole-query `/regex/` works too), `n`/`N` move between them, as in Job Detail
 - Confirm before quitting (#173): `q` asks first, so extra `q` presses meant for a popup that lag already closed no longer quit the app; `confirm_quit = false` in `[ui]` turns it off, `Ctrl+C` still quits at once
 - Make the hotkey toggles settings (#174): the Dashboard graph style (`m`, `graph_style`), mouse capture (`F2`, `mouse`) and the refresh speed (`-`/`+`, `tick_ms`) start as last left, editable in the Config Editor too
-- Cap what salt-radar sends to the terminal with `max_output_kbs` under `[refresh]` (#172), for session-recording SSH proxies such as CyberArk that fall behind a busy master's few KB/s of redraws
+- Cap what salt-radar sends to the terminal with `max_output_kbs` under `[refresh]` (#172), for session-recording SSH proxies that fall behind a busy master's few KB/s of redraws
 
 ### Changed
 
