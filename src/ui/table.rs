@@ -77,16 +77,16 @@ const MAX_EXTRA_GAP: usize = 3;
 
 /// Which free-text columns `fitted_widths` trims first (lowest first), at
 /// width `w`: what's least needed to tell rows apart goes first (OS, a job's
-/// function and arguments, the wider of them first), the minion ID and a
-/// job's target last -- except a target longer than 40 characters (a list of
-/// minions), whose tail goes first.
+/// function and arguments, the wider of them first, an event's minion), the
+/// minion ID, a job's target and an event's tag last -- except a target
+/// longer than 40 characters (a list of minions), whose tail goes first.
 fn trim_order(col: Column, w: usize) -> u8 {
     match col {
-        Column::Os | Column::Fun | Column::Args => 0,
+        Column::Os | Column::Fun | Column::Args | Column::EventMinion => 0,
         Column::Target if w > 41 => 0,
         Column::SaltVersion | Column::User => 1,
         Column::Arch => 2,
-        Column::MinionId | Column::Target => 4,
+        Column::MinionId | Column::Target | Column::Tag => 4,
         _ => 3,
     }
 }

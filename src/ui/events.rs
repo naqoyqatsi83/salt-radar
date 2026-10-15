@@ -8,7 +8,7 @@ use crate::app::App;
 use crate::types::{Column, HeaderHit, TableId};
 
 use super::color;
-use super::table::{column_widths, header_line, pad};
+use super::table::{fitted_widths, header_line, pad};
 
 fn format_time_local(ts: f64) -> String {
     if ts < 1.0 {
@@ -87,7 +87,14 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
         )));
     } else {
         let cols = app.columns(TableId::Events);
-        let widths = column_widths(&cols, (inner.width as usize).saturating_sub(2));
+        // Sized to every event listed, so scrolling doesn't shift the columns.
+        let longest: Vec<Option<usize>> = cols.iter().map(|&col| match col {
+            Column::Local | Column::Utc => Some("2026-01-01 00:00:00".len()),
+            Column::Tag => Some(filtered.iter().map(|e| e.tag.chars().count()).max().unwrap_or(0)),
+            Column::EventMinion => Some(filtered.iter().map(|e| e.data["id"].as_str().map_or(0, |id| id.chars().count())).max().unwrap_or(0)),
+            _ => None,
+        }).collect();
+        let widths = fitted_widths(&cols, (inner.width as usize).saturating_sub(2), &longest);
         lines.push(header_line(TableId::Events, &cols, &widths, None, inner.x, inner.y + lines.len() as u16, hits));
 
         if total == 0 {
