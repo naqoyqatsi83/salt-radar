@@ -672,14 +672,14 @@ impl App {
         self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": jid, "timeout": timeout})))
     }
 
-    /// Send a command to the agent, returns the request id.
-    /// Appends to the command file (avoids overwriting a concurrently-written command).
     pub(crate) fn request_master_config(&mut self) {
         self.master_config_loading = true;
         self.master_config_error = None;
-        self.send_agent_cmd("master_config", None);
+        self.send_agent_cmd("master_config", Some(serde_json::json!({"digests": self.config.running_config_digests})));
     }
 
+    /// Send a command to the agent, returns the request id.
+    /// Appends to the command file (avoids overwriting a concurrently-written command).
     pub fn send_agent_cmd(&mut self, cmd: &str, extra: Option<serde_json::Value>) -> u64 {
         self.agent_req_id += 1;
         let id = self.agent_req_id;

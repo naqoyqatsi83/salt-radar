@@ -248,11 +248,7 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
     match (s.restart, mc.running_compared) {
         (Some(state), _) => {
             lines.push(note(format!("\u{21bb} May change on restart: {}", state.describe()), restart));
-            if let Some(running) = &s.running_line {
-                lines.push(note(format!("  running master: {}", running), restart));
-            } else {
-                lines.push(note("  running master: not set (it started before this was added)".to_string(), restart));
-            }
+            lines.push(note(format!("  running master: {}", s.running_shown()), restart));
         }
         (None, false) if s.restart_pending(mc) => lines.push(note(
             format!("\u{21bb} Set in a file changed after salt-master started: may change on restart (running master not asked: {})", mc.running_error.as_deref().unwrap_or("unknown")),

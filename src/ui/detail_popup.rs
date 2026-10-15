@@ -1672,7 +1672,7 @@ fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfi
     if let Some(state) = s.restart {
         lines.push(row("On restart", state.describe().to_string(), color::yellow()));
         if s.running_full.is_none() {
-            lines.push(row("Running master", "not set (it started before this was added)".to_string(), color::yellow()));
+            lines.push(row("Running master", s.running_shown(), color::yellow()));
         } else if let Some(running) = s.running_line.as_ref().filter(|r| !r.contains('\n') && r.chars().count() <= 60) {
             lines.push(row("Running master", running.clone(), color::yellow()));
         } else {

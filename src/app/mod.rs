@@ -2895,6 +2895,7 @@ pub(crate) fn parse_master_config(data: &serde_json::Value) -> MasterConfig {
         restart: s["restart"].as_str().and_then(crate::types::RestartState::from_agent),
         running_line: s["running_line"].as_str().map(String::from),
         running_full: s["running_full"].as_str().map(String::from),
+        running_absent: s["running_absent"].as_bool().unwrap_or(false),
     }).collect()).unwrap_or_default();
     MasterConfig {
         conf_file: text(&data["conf_file"]),

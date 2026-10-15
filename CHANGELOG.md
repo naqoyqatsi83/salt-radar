@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Harden the Master Config tab's restart check (`running_config_digests` under `[salt]`, off by default): the running master is asked only for a SHA-256 digest of each option, rendered in its own process, instead of the options themselves, so their values (credentials included) never go over the event bus or into the job cache; ↻ marks the same settings, without the running value
+
 ### Changed
 
 - Keep salt-radar's own runner job out of its lists: the `test.get_opts` job it sends once per master start to compare the master configuration (#190) no longer shows in Events, Live Jobs or the Job Cache; a `test.get_opts` you run yourself still does

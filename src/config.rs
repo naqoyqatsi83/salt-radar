@@ -251,6 +251,10 @@ fn parse_theme_color(value: &str) -> Option<Color> {
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub master_config: String,
+    /// Hardening: ask the running master for digests of its options instead
+    /// of their values, so they never go over the event bus or into the job
+    /// cache; the Master Config tab then can't show the running value.
+    pub running_config_digests: bool,
     pub python_bin: String,
     pub agent_path: String,
     pub dashboard_secs: u64,
@@ -495,6 +499,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             master_config: "/etc/salt/master".into(),
+            running_config_digests: false,
             python_bin: "/opt/saltstack/salt/bin/python3".into(),
             agent_path: "/usr/share/salt-radar/salt_radar_agent.py".into(),
             dashboard_secs: 2,
@@ -591,6 +596,7 @@ struct TomlConfig {
 #[derive(serde::Deserialize)]
 struct SaltConfig {
     master_config: Option<String>,
+    running_config_digests: Option<bool>,
     python_bin: Option<String>,
     agent_path: Option<String>,
 }
@@ -732,6 +738,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("salt", "agent_path", c.agent_path.to_toml()),
         ("salt", "python_bin", c.python_bin.to_toml()),
         ("salt", "master_config", c.master_config.to_toml()),
+        ("salt", "running_config_digests", c.running_config_digests.to_toml()),
         ("refresh", "dashboard_secs", c.dashboard_secs.to_toml()),
         ("refresh", "minions_secs", c.minions_secs.to_toml()),
         ("refresh", "config_secs", c.config_secs.to_toml()),
@@ -865,6 +872,7 @@ pub fn load_config(path: &Path) -> AppConfig {
         if let Ok(toml_cfg) = toml::from_str::<TomlConfig>(&data) {
             if let Some(s) = toml_cfg.salt {
                 if let Some(v) = s.master_config { cfg.master_config = v; }
+                if let Some(v) = s.running_config_digests { cfg.running_config_digests = v; }
                 if let Some(v) = s.python_bin { cfg.python_bin = v; }
                 if let Some(v) = s.agent_path { cfg.agent_path = v; }
             }
@@ -1203,6 +1211,7 @@ mod tests {
             event_time_format: "full".into(),
             disk_usage_pct: 91.5,
             api_hide_stats_polls: false,
+            running_config_digests: true,
             api_stats_auth_mode: "pillar".into(),
             zmq_latency_ceiling_ms: 250.0,
             graph_order: "zmq,cpu".into(),

@@ -639,6 +639,8 @@ pub struct ConfigSetting {
     /// differs and the master has one.
     pub running_line: Option<String>,
     pub running_full: Option<String>,
+    /// The running master doesn't have it at all.
+    pub running_absent: bool,
 }
 
 impl ConfigSetting {
@@ -646,6 +648,16 @@ impl ConfigSetting {
     /// any it holds that salt-api doesn't read.
     pub fn ignored_keys(&self) -> usize {
         usize::from(self.kind == SettingKind::Unknown) + self.unknown_nested.len()
+    }
+
+    /// What the running master holds, for a setting that differs: its
+    /// value, or why it isn't shown.
+    pub fn running_shown(&self) -> String {
+        match &self.running_line {
+            Some(value) => value.clone(),
+            None if self.running_absent => "not set (it started before this was added)".to_string(),
+            None => "another value (only its digest was asked for: running_config_digests)".to_string(),
+        }
     }
 
     /// Its value may change when salt-master restarts: it differs from the

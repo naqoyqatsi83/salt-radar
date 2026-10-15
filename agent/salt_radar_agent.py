@@ -1448,13 +1448,21 @@ def _netapi_problems(key, value):
 
 
 # The running master's own options, fetched once per master start (they
-# only change when it restarts): {"started": epoch, "opts": dict}.
-_running_opts = {"started": None, "opts": None}
+# only change when it restarts) and per mode: {(started, digests): dict}.
+_running_opts = {}
+# Renders, inside the process it runs in, a SHA-256 digest of each option
+# (as JSON) instead of its value. The same template rendered here over the
+# files' options gives digests to compare with, without the master's values
+# ever going over the event bus or into the job cache.
+_DIGEST_TEMPLATE = (
+    "{% set out = {} %}{% for k in opts %}{% if not k.startswith('__') %}"
+    "{% do out.update({k: (opts[k]|tojson)|sha256}) %}{% endif %}{% endfor %}{{ out|tojson }}"
+)
 # The runner jobs salt-radar starts itself to fetch them, kept out of the
 # events it forwards and the job cache it lists: they're its own plumbing,
 # not anything an admin ran. While a fetch is in flight its job's events can
 # arrive before its JID is known, so they're also recognised by function.
-_OWN_RUNNER_FUN = "runner.test.get_opts"
+_OWN_RUNNER_FUNS = ("runner.test.get_opts", "runner.salt.cmd")
 _own_jids = set()
 _own_fetch = threading.Event()
 
@@ -1466,20 +1474,22 @@ def _is_own_job_event(tag, data):
     jid = tag.split("/")[2] if tag.count("/") >= 2 else ""
     if jid in _own_jids:
         return True
-    if _own_fetch.is_set() and isinstance(data, dict) and data.get("fun") == _OWN_RUNNER_FUN:
+    if _own_fetch.is_set() and isinstance(data, dict) and data.get("fun") in _OWN_RUNNER_FUNS:
         _own_jids.add(jid)
         return True
     return False
 
 
-def _running_master_opts(path, started):
+def _running_master_opts(path, started, digests):
     """(the running salt-master's options, None) or (None, why not). Asked of
-    the master itself -- the `test.get_opts` runner sent to it runs in a
-    process forked from its worker, so it returns what the master loaded when
-    it started, not the files as they are now (which is all `salt-run`,
-    `salt-call --local` or `config.values` would read)."""
-    if started and _running_opts["started"] == started and _running_opts["opts"] is not None:
-        return _running_opts["opts"], None
+    the master itself -- a runner sent to it runs in a process forked from
+    its worker, so it returns what the master loaded when it started, not the
+    files as they are now (which is all `salt-run`, `salt-call --local` or
+    `config.values` would read). With `digests`, only a digest of each
+    option (see `_DIGEST_TEMPLATE`), through the `salt.cmd` runner."""
+    cached = _running_opts.get((started, digests))
+    if started and cached is not None:
+        return cached, None
     if not started:
         return None, "salt-master isn't running"
     try:
@@ -1491,7 +1501,12 @@ def _running_master_opts(path, started):
         events = salt.utils.event.get_master_event(client_opts, client_opts["sock_dir"], listen=True)
         _own_fetch.set()
         try:
-            pub = salt.runner.RunnerClient(client_opts).cmd_async({"fun": "test.get_opts", "key": key, "user": salt.utils.user.get_user()})
+            low = {"fun": "test.get_opts"}
+            if digests:
+                low = {"fun": "salt.cmd", "arg": ["slsutil.renderer"],
+                       "kwarg": {"string": _DIGEST_TEMPLATE, "default_renderer": "jinja"}}
+            low.update(key=key, user=salt.utils.user.get_user())
+            pub = salt.runner.RunnerClient(client_opts).cmd_async(low)
             jid = pub.get("jid") if isinstance(pub, dict) else None
             if not jid:
                 return None, "the master refused the request: {}".format(pub)
@@ -1501,9 +1516,11 @@ def _running_master_opts(path, started):
                 evt = events.get_event(wait=1, tag="salt/run/{}/ret".format(jid), full=True)
                 if evt:
                     running = evt["data"].get("return")
+                    if digests and isinstance(running, str):
+                        running = json.loads(running)
                     if not isinstance(running, dict):
                         return None, "unexpected answer from the master"
-                    _running_opts.update(started=started, opts=running)
+                    _running_opts[(started, digests)] = running
                     return running, None
             return None, "no answer from the master within 10s"
         finally:
@@ -1573,7 +1590,16 @@ def cmd_master_config(opts, req):
             sources.setdefault(str(key), []).append({"file": idx, "start": start, "end": end})
 
     started = _salt_master_started()
-    running_opts, running_error = _running_master_opts(path, started)
+    digests = bool(req.get("digests"))
+    running_opts, running_error = _running_master_opts(path, started, digests)
+    file_digests = {}
+    if digests and running_opts is not None:
+        try:
+            import salt.utils.templates
+            file_digests = json.loads(salt.utils.templates.render_jinja_tmpl(
+                _DIGEST_TEMPLATE, {"opts": effective, "saltenv": "base", "sls": ""}))
+        except Exception as exc:
+            running_opts, running_error = None, "couldn't digest the files' options: {}".format(exc)
     missing = object()
 
     settings = []
@@ -1609,10 +1635,12 @@ def cmd_master_config(opts, req):
         # at startup (grains, config_dir, its log settings) aren't in them.
         if running_opts is not None and key in effective:
             running = _plain(running_opts.get(key, missing))
-            state = _restart_state(str(key), actual, running, srcs, files, started)
+            here = file_digests.get(key) if digests else actual
+            state = _restart_state(str(key), here, running, srcs, files, started)
             if state:
                 entry["restart"] = state
-                if running is not missing:
+                entry["running_absent"] = running is missing
+                if running is not missing and not digests:
                     shown = _redact({key: running})[key]
                     entry["running_line"] = _config_text(shown, True)
                     entry["running_full"] = _config_text(shown, False)

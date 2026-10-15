@@ -17,6 +17,14 @@
 # Path to the bundled salt-radar-agent Python script
 # agent_path = "/usr/share/salt-radar/salt_radar_agent.py"
 
+# Hardening for the Master Config tab's restart check: ask the running master
+# only for a digest of each option instead of its value. The value-fetching
+# runner's return (the master's options, credentials included) otherwise goes
+# over the event bus and into the job cache like any job's return; with this,
+# only digests do, and the tab says a setting differs without showing the
+# running value.
+# running_config_digests = false
+
 [refresh]
 # How often (in seconds) to refresh dashboard collector data
 # dashboard_secs = 2
