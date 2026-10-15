@@ -153,7 +153,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Always shows full per-state detail (`--state-output=full --state-verbose=True`), regardless of the master's own `state_output`/`state_verbose` defaults — opening the popup is an explicit request to see everything about that one job, even a "terse"/"changes" master would otherwise hide unchanged/no-op states here
 
 ### Alerts
-17 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
+17 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries). `Enter` opens an alert's detail: severity, rule and the description (wrapped) stay at the top, the affected items (minions, units, jobs) scroll below them, and `/` searches them:
 
 - **Stale minion** — not seen within `stale_minion_secs`
 - **Pending key** — pending longer than `pending_key_secs`
@@ -389,8 +389,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `PgUp`/`PgDn` | Jump 10 returns |
 | `Home`/`End` | First/last return (job detail) |
 | `Enter` | Enter scroll mode (event/job detail) |
-| `/` | Search the return output (job detail, output pane), an event (event detail, raw or pretty view) or the help pages, matches highlighted |
-| `n`/`N` | Next/previous search match, marked in place (job detail, also from the returns list; event detail; help) |
+| `/` | Search the return output (job detail, output pane), an event (event detail, raw or pretty view), an alert's items (alert detail) or the help pages, matches highlighted |
+| `n`/`N` | Next/previous search match, marked in place (job detail, also from the returns list; event detail; alert detail; help) |
 | `f`/`F` | Next/previous failed state, marked in the output (job detail; also from the returns list) |
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |

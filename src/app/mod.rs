@@ -408,6 +408,9 @@ pub struct App {
     /// The body line of each match of the Event Detail search, in order,
     /// written back every render like `event_detail_scroll_max`.
     pub event_search_matches: Vec<usize>,
+    /// The same two, for the Alert Detail popup's item list.
+    pub alert_detail_scroll_max: usize,
+    pub alert_search_matches: Vec<usize>,
     /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
     /// content preview (right panel).
     pub job_detail_scroll_max: usize,
@@ -742,7 +745,9 @@ pub enum DetailPopup {
     /// `searching`), `search_focus` the match `n`/`N` last landed on.
     SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch, search: String, searching: bool, search_focus: Option<usize> },
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
-    Alert(AlertEntry),
+    /// An alert's detail: `scroll` and the search over its items work as
+    /// in `SaltEvent`.
+    Alert { alert: AlertEntry, scroll: usize, search: String, searching: bool, search_focus: Option<usize> },
     AdminConfirm,
     MinionEvents { minion_id: String, selected: usize },
     ApiRequest(ApiLogEntry),
@@ -752,6 +757,11 @@ pub enum DetailPopup {
 }
 
 impl DetailPopup {
+    /// Alert Detail for `alert`, at the top, no search.
+    pub fn alert(alert: AlertEntry) -> Self {
+        Self::Alert { alert, scroll: 0, search: String::new(), searching: false, search_focus: None }
+    }
+
     /// Event Detail for `evt`, in raw JSON, at the top, no search.
     pub fn event(evt: SaltEvent) -> Self {
         Self::SaltEvent { evt, scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle, search: String::new(), searching: false, search_focus: None }
@@ -850,6 +860,8 @@ impl App {
             return_to_minion_detail: None,
             event_detail_scroll_max: 0,
             event_search_matches: Vec::new(),
+            alert_detail_scroll_max: 0,
+            alert_search_matches: Vec::new(),
             job_detail_scroll_max: 0,
             job_detail_hits: JobDetailHits::default(),
             job_search: String::new(),

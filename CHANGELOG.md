@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Search an alert's items in Alert Detail: `/` finds the minions, units or jobs it lists (a whole-query `/regex/` works too), matches highlighted and counted, `n`/`N` move between them, as in Event and Job Detail
+
+### Fixed
+
+- Alert Detail cut off a long item list (the 23 minions of a protocol alert, say) at the bottom of the popup and ran a long description past its edge: the items now scroll (`↑↓`, `PgUp`/`PgDn`, `Home`/`End`) below a header that stays put, and the description wraps under its label
+
 ## [0.9.0-rc6] - 2026-10-15
 
 ### Added

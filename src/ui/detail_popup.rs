@@ -28,7 +28,7 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            let search = EventSearch { query: search, typing: *searching, focus: *search_focus, cursor: app.input_cursor };
+            let search = PopupSearch { query: search, typing: *searching, focus: *search_focus, cursor: app.input_cursor };
             draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, &mut app.event_search_matches, search, clipboard_at, save_at, clipboard_msg, highlight);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, job, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
@@ -39,10 +39,12 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
             draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &mut app.job_detail_hits, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
         }
-        DetailPopup::Alert(alert) => {
+        DetailPopup::Alert { alert, scroll, search, searching, search_focus } => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
             f.render_widget(Clear, area);
-            draw_alert_detail(f, area, alert, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+            let search = PopupSearch { query: search, typing: *searching, focus: *search_focus, cursor: app.input_cursor };
+            let clipboard = (app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+            draw_alert_detail(f, area, alert, *scroll, &mut app.alert_detail_scroll_max, &mut app.alert_search_matches, search, clipboard);
         }
         DetailPopup::AdminConfirm => {
             let area = centered_rect(55, 35, f.area());
@@ -214,7 +216,7 @@ fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> 
     ])
 }
 
-fn event_detail_hints(pretty: bool, search: &EventSearch, has_matches: bool) -> Vec<(&'static str, String)> {
+fn event_detail_hints(pretty: bool, search: &PopupSearch, has_matches: bool) -> Vec<(&'static str, String)> {
     if search.typing {
         return vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())];
     }
@@ -238,13 +240,34 @@ fn event_detail_hints(pretty: bool, search: &EventSearch, has_matches: bool) -> 
     hints
 }
 
-/// The Event Detail search: the query, whether it's being typed, the match
-/// `n`/`N` last landed on, and the input cursor.
-struct EventSearch<'a> {
+/// A popup's `/` search (Event and Alert Detail): the query, whether it's
+/// being typed, the match `n`/`N` last landed on, and the input cursor.
+struct PopupSearch<'a> {
     query: &'a str,
     typing: bool,
     focus: Option<usize>,
     cursor: Option<usize>,
+}
+
+impl PopupSearch<'_> {
+    /// The status line: the query being typed, or how many matches it found
+    /// and which one is current; None when there's no search.
+    fn status(&self, matches: usize) -> Option<Line<'static>> {
+        if self.typing {
+            return Some(Line::from(super::input_spans("  Search: ", self.query, self.cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD))));
+        }
+        if self.query.trim().is_empty() {
+            return None;
+        }
+        let found = match (self.focus.filter(|&i| i < matches), matches) {
+            (_, 0) => "no matches".to_string(),
+            (Some(i), n) => format!("match {} of {}", i + 1, n),
+            (None, 1) => "1 match".to_string(),
+            (None, n) => format!("{} matches", n),
+        };
+        let fg = if matches == 0 { color::red() } else { color::yellow() };
+        Some(Line::from(Span::styled(format!("  search {}: {}", self.query.trim(), found), Style::default().fg(fg))))
+    }
 }
 
 /// Shared popup chrome: shortcut hints go in the block's own border
@@ -819,7 +842,7 @@ fn raw_json_lines(evt: &crate::types::SaltEvent, highlight: Option<&str>) -> Vec
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, search_matches: &mut Vec<usize>, search: EventSearch, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, search_matches: &mut Vec<usize>, search: PopupSearch, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
     let mut lines = header_lines(" Event Detail ", area.width);
     lines.push(row("Tag", evt.tag.clone(), color::cyan()));
     lines.push(row("Timestamp", format_ts(evt.ts), color::inactive_fg()));
@@ -854,26 +877,16 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
     };
     let (body_lines, matches) = highlight_matches(body_lines, search.query, search.focus);
     *search_matches = matches;
-    let focus = search.focus.filter(|&i| i < search_matches.len());
     let total_data = body_lines.len();
 
     let status = if search.typing {
-        Some(Line::from(super::input_spans("  Search: ", search.query, search.cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD))))
+        search.status(search_matches.len())
     } else {
         clipboard_status(clipboard_at, save_at, clipboard_warning).or_else(|| {
             if pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Loading) {
                 Some(Line::from(Span::styled("  Fetching real salt-run output...", Style::default().fg(color::yellow()))))
-            } else if !search.query.trim().is_empty() {
-                let found = match (focus, search_matches.len()) {
-                    (_, 0) => "no matches".to_string(),
-                    (Some(i), n) => format!("match {} of {}", i + 1, n),
-                    (None, 1) => "1 match".to_string(),
-                    (None, n) => format!("{} matches", n),
-                };
-                let fg = if search_matches.is_empty() { color::red() } else { color::yellow() };
-                Some(Line::from(Span::styled(format!("  search {}: {}", search.query.trim(), found), Style::default().fg(fg))))
             } else {
-                None
+                search.status(search_matches.len())
             }
         })
     };
@@ -1578,7 +1591,10 @@ fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
     hints
 }
 
-fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
+/// The severity, rule and description stay at the top, the description
+/// wrapped under its label; the items scroll below them and `/` searches
+/// them.
+fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, scroll: usize, scroll_max: &mut usize, search_matches: &mut Vec<usize>, search: PopupSearch, clipboard: (Option<std::time::Instant>, Option<std::time::Instant>, Option<&str>)) {
     let sev_color = match alert.severity {
         crate::types::AlertSeverity::Info => color::cyan(),
         crate::types::AlertSeverity::Warn => color::yellow(),
@@ -1587,26 +1603,90 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
     let mut lines = header_lines(" Alert Detail ", area.width);
     lines.push(row("Severity", alert.severity.label().to_string(), sev_color));
     lines.push(row("Rule", alert.rule.to_string(), color::cyan()));
-    lines.push(row("Description", alert.description.clone(), color::hi_fg()));
+    // A row's value starts after its 2-space indent and 20-wide label.
+    let wrapped = wrap_words(&alert.description, (area.width as usize).saturating_sub(2 + 22 + 2));
+    for (i, part) in wrapped.into_iter().enumerate() {
+        let label = if i == 0 { "Description" } else { "" };
+        lines.push(row(label, part, color::hi_fg()));
+    }
     lines.push(Line::from(""));
-
     if !alert.details.is_empty() {
         lines.push(Line::from(Span::styled(
             format!("  Items ({}):", alert.details.len()),
             Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD),
         )));
-        for detail in &alert.details {
-            lines.push(Line::from(Span::styled(
-                format!("    {}", detail),
-                Style::default().fg(color::main_fg()),
-            )));
+    }
+    let pinned = lines.len();
+
+    let items: Vec<Line<'static>> = alert.details.iter()
+        .map(|d| Line::from(Span::styled(format!("    {}", d), Style::default().fg(color::main_fg()))))
+        .collect();
+    let (mut body, matches) = highlight_matches(items, search.query, search.focus);
+    *search_matches = matches;
+    body.push(Line::from(""));
+
+    let (clipboard_at, save_at, clipboard_warning) = clipboard;
+    let status = if search.typing {
+        search.status(search_matches.len())
+    } else {
+        clipboard_status(clipboard_at, save_at, clipboard_warning).or_else(|| search.status(search_matches.len()))
+    };
+    let viewport = (area.height as usize).saturating_sub(2 + pinned + usize::from(status.is_some()));
+    *scroll_max = body.len().saturating_sub(viewport);
+    let scroll = scroll.min(*scroll_max);
+    let more = (scroll > 0, scroll + viewport < body.len());
+    lines.extend(body.into_iter().skip(scroll));
+
+    let hints: Vec<(&str, String)> = if search.typing {
+        vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())]
+    } else {
+        let mut hints = vec![("Esc/q", "close".to_string())];
+        if *scroll_max > 0 {
+            hints.push(("\u{2191}\u{2193}", "scroll".to_string()));
+            hints.push(("PgUp/PgDn", "page".to_string()));
+        }
+        if !alert.details.is_empty() {
+            hints.push(("/", "search".to_string()));
+        }
+        if !search_matches.is_empty() {
+            hints.push(("n/N", "next/prev match".to_string()));
+        }
+        hints.extend([("y", "copy".to_string()), ("s", "save".to_string())]);
+        hints
+    };
+    render_popup(f, area, &lines, &hints, status, more, 0, 0);
+}
+
+/// `text` broken into lines of at most `width` characters at spaces; a word
+/// longer than a line is cut.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(10);
+    let mut out = vec![String::new()];
+    for word in text.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let line = out.last_mut().unwrap();
+            let used = line.chars().count();
+            let gap = usize::from(used > 0);
+            if used + gap + word.len() <= width {
+                if gap == 1 {
+                    line.push(' ');
+                }
+                line.extend(word.iter());
+                break;
+            }
+            if used > 0 {
+                out.push(String::new());
+                continue;
+            }
+            line.extend(word.drain(..width));
+            out.push(String::new());
         }
     }
-
-    lines.push(Line::from(""));
-    let hints: [(&str, String); 3] = [("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string())];
-    let status = clipboard_status(clipboard_at, save_at, clipboard_warning);
-    render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
+    if out.len() > 1 && out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
+    out
 }
 
 fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiLogEntry, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
@@ -2072,6 +2152,14 @@ fn format_ts(ts: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptions_wrap_at_spaces_and_cut_long_words() {
+        assert_eq!(wrap_words("one two three four", 10), ["one two", "three four"]);
+        assert_eq!(wrap_words("a 123456789012345 b", 10), ["a", "1234567890", "12345 b"]);
+        assert_eq!(wrap_words("", 10), [""]);
+        assert_eq!(wrap_words("short", 40), ["short"]);
+    }
 
     #[test]
     fn cut_lines_end_in_a_marker() {

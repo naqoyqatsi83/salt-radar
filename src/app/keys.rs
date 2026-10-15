@@ -685,8 +685,47 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::Alert(ref alert) => {
+                DetailPopup::Alert { ref alert, ref mut scroll, ref mut search, ref mut searching, ref mut search_focus } => {
+                    if *searching {
+                        match code {
+                            KeyCode::Esc => {
+                                *searching = false;
+                                search.clear();
+                            }
+                            KeyCode::Enter => {
+                                *searching = false;
+                                let m = search_lines(&alert.details.join("\n"), search);
+                                if let Some(i) = step_match(&m, None, *scroll, true) {
+                                    *search_focus = Some(i);
+                                    *scroll = m[i].saturating_sub(2).min(self.alert_detail_scroll_max);
+                                }
+                                self.alert_search_matches = m;
+                            }
+                            _ => { line_edit::edit(search, &mut self.input_cursor, code); }
+                        }
+                        return false;
+                    }
+                    let max = self.alert_detail_scroll_max;
                     match code {
+                        KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                        KeyCode::Down | KeyCode::Char('j') => *scroll = (*scroll + 1).min(max),
+                        KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                        KeyCode::PageDown => *scroll = (*scroll + 10).min(max),
+                        KeyCode::Home => *scroll = 0,
+                        KeyCode::End => *scroll = max,
+                        KeyCode::Char('/') => {
+                            *searching = true;
+                            search.clear();
+                            self.input_cursor = None;
+                            *search_focus = None;
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') => {
+                            let m = &self.alert_search_matches;
+                            if let Some(i) = step_match(m, *search_focus, *scroll, code == KeyCode::Char('n')) {
+                                *scroll = m[i].saturating_sub(2).min(max);
+                                *search_focus = Some(i);
+                            }
+                        }
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             if let Some((mid, sel)) = self.return_to_minion_events.take() {
                                 self.detail_popup = Some(DetailPopup::MinionEvents {
@@ -846,7 +885,7 @@ impl App {
                                         None
                                     }
                                     MinionActivityItem::Alert(alert) => {
-                                        self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                                        self.detail_popup = Some(DetailPopup::alert(alert.clone()));
                                         None
                                     }
                                 })
@@ -1839,7 +1878,7 @@ impl App {
                         }
                         MinionActivityItem::Alert(alert) => {
                             self.return_to_minion_events = Some((mid, item_idx));
-                            self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                            self.detail_popup = Some(DetailPopup::alert(alert.clone()));
                         }
                     }
                 }
@@ -2040,7 +2079,7 @@ impl App {
             }
             Tab::Alerts => {
                 if let Some(alert) = self.get_filtered_alert(self.alert_selected) {
-                    self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                    self.detail_popup = Some(DetailPopup::alert(alert.clone()));
                     self.popup_tab = Some(self.current_tab);
                 }
             }
