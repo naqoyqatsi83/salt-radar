@@ -46,6 +46,12 @@
 # Maximum number of events to keep in the Event Sniffer's own buffer
 # sniffer_buffer_size = 1000
 
+# How the Events list shows times: "today" shows only the time (17:25:08) for
+# events from today -- each column's own today, local or UTC -- and the full
+# date for older ones; "full" always shows the date (2026-10-15 17:25:08).
+# The preview, the detail popup, copies and saves always have the full date.
+# time_format = "today"
+
 # Which Events list columns are shown, and in what order (comma-separated;
 # any key left out is hidden). Keys: local, utc, tag, minion. Also editable
 # with 'v' on the Events tab. Events can't be sorted -- it's a live tail.

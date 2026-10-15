@@ -516,6 +516,8 @@ pub fn column_editor_items(value: &str, all: &[&'static str]) -> (Vec<&'static s
 }
 
 pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
+/// `[events] time_format`: only the time for today's events, or always the full date.
+pub const EVENT_TIME_FORMATS: &[&str] = &["today", "full"];
 pub const ON_OFF: &[&str] = &["on", "off"];
 pub const GRAPH_STYLES: &[&str] = &["dots", "bars"];
 pub const API_STATS_AUTH_MODES: &[&str] = &["none", "plaintext", "pillar"];

@@ -126,7 +126,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 
 ### Events
 - Live event stream from the Salt event bus (via ZMQ)
-- Full date/time in local and UTC columns, plus an optional Minion column (the event's minion ID)
+- Local and UTC time columns: only the time for today's events (each column's own today), the full date for older ones, so the tag gets the room; `time_format = "full"` under `[events]` always shows the date (the preview, the detail popup, copies and saves always do), plus an optional Minion column (the event's minion ID)
 - Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax, or a regex wrapped in slashes (`/web-0[1-5]$/`, case-sensitive unless written `/…/i`; a regex is matched against the event's pretty JSON line by line). A `/…/` term that isn't a usable regex, such as one with a `/g` flag or look-around, is matched as plain text and flagged with ⚠ and the reason in the filter bar. Each term of the filter is colored in its own color, in the order typed, from the theme's highlight palette (six colors before any repeat)
 - Event detail popup:
   - `t` toggles between raw JSON and a **pretty view** for job-return events — the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output (same subprocess call Job Detail uses), so formatting and colors are authoritative Salt output, not an approximation. Falls back to a client-side rendering only when no live fetch is possible (non-job-return events) or after a fetch failure/timeout

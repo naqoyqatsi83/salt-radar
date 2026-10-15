@@ -10,22 +10,21 @@ use crate::types::{Column, HeaderHit, TableId};
 use super::color;
 use super::table::{fitted_widths, header_line, pad};
 
-fn format_time_local(ts: f64) -> String {
-    if ts < 1.0 {
+/// An event's time in a zone, as of `now`: only the time when `today` is
+/// set and the event is from that zone's today, else the date too.
+fn format_time<Tz: chrono::TimeZone>(ts: f64, zone: &Tz, now: chrono::DateTime<chrono::Utc>, today: bool) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let Some(dt) = chrono::DateTime::from_timestamp(ts as i64, 0).filter(|_| ts >= 1.0) else {
         return "\u{2014}".to_string();
+    };
+    let dt = dt.with_timezone(zone);
+    if today && dt.date_naive() == now.with_timezone(zone).date_naive() {
+        dt.format("%H:%M:%S").to_string()
+    } else {
+        dt.format("%Y-%m-%d %H:%M:%S").to_string()
     }
-    chrono::DateTime::from_timestamp(ts as i64, 0)
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| "\u{2014}".to_string())
-}
-
-fn format_time_utc(ts: f64) -> String {
-    if ts < 1.0 {
-        return "\u{2014}".to_string();
-    }
-    chrono::DateTime::from_timestamp(ts as i64, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| "\u{2014}".to_string())
 }
 
 pub fn draw_events(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) {
@@ -87,9 +86,12 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
         )));
     } else {
         let cols = app.columns(TableId::Events);
+        let (now, today) = (chrono::Utc::now(), app.config.event_time_format == "today");
         // Sized to every event listed, so scrolling doesn't shift the columns.
         let longest: Vec<Option<usize>> = cols.iter().map(|&col| match col {
-            Column::Local | Column::Utc => Some("2026-01-01 00:00:00".len()),
+            // Events arrive in time order: the oldest one listed decides whether any shows a date.
+            Column::Local => Some(filtered.first().map_or(1, |e| format_time(e.ts, &chrono::Local, now, today).chars().count())),
+            Column::Utc => Some(filtered.first().map_or(1, |e| format_time(e.ts, &chrono::Utc, now, today).chars().count())),
             Column::Tag => Some(filtered.iter().map(|e| e.tag.chars().count()).max().unwrap_or(0)),
             Column::EventMinion => Some(filtered.iter().map(|e| e.data["id"].as_str().map_or(0, |id| id.chars().count())).max().unwrap_or(0)),
             _ => None,
@@ -108,8 +110,8 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
                 let mut spans = vec![Span::raw("  ")];
                 for (&col, &w) in cols.iter().zip(&widths) {
                     let (text, fg) = match col {
-                        Column::Local => (format_time_local(evt.ts), color::title()),
-                        Column::Utc => (format_time_utc(evt.ts), color::title()),
+                        Column::Local => (format_time(evt.ts, &chrono::Local, now, today), color::title()),
+                        Column::Utc => (format_time(evt.ts, &chrono::Utc, now, today), color::title()),
                         Column::Tag => (evt.tag.clone(), color::cyan()),
                         Column::EventMinion => (evt.data["id"].as_str().unwrap_or("").to_string(), color::yellow()),
                         _ => (String::new(), color::main_fg()),
@@ -178,10 +180,10 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
         Span::styled("  Timestamp", Style::default().fg(color::label_fg())),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  Local  {}", format_time_local(evt.ts)), Style::default().fg(color::inactive_fg())),
+        Span::styled(format!("  Local  {}", format_time(evt.ts, &chrono::Local, chrono::Utc::now(), false)), Style::default().fg(color::inactive_fg())),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  UTC   {}", format_time_utc(evt.ts)), Style::default().fg(color::inactive_fg())),
+        Span::styled(format!("  UTC   {}", format_time(evt.ts, &chrono::Utc, chrono::Utc::now(), false)), Style::default().fg(color::inactive_fg())),
     ]));
     lines.push(Line::from(""));
 
@@ -265,4 +267,23 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
         Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn todays_events_show_only_the_time() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-15T17:30:00Z").unwrap().with_timezone(&chrono::Utc);
+        let at = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp() as f64;
+        assert_eq!(format_time(at("2026-10-15T00:00:05Z"), &chrono::Utc, now, true), "00:00:05");
+        assert_eq!(format_time(at("2026-10-14T23:59:59Z"), &chrono::Utc, now, true), "2026-10-14 23:59:59");
+        assert_eq!(format_time(at("2026-10-15T09:00:00Z"), &chrono::Utc, now, false), "2026-10-15 09:00:00");
+        // "Today" is the zone's own: 23:30 UTC is already tomorrow at UTC+2.
+        let plus2 = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        assert_eq!(format_time(at("2026-10-15T21:30:00Z"), &plus2, now, true), "23:30:00");
+        assert_eq!(format_time(at("2026-10-15T22:30:00Z"), &plus2, now, true), "2026-10-16 00:30:00");
+        assert_eq!(format_time(0.0, &chrono::Utc, now, true), "\u{2014}");
+    }
 }

@@ -265,6 +265,9 @@ pub struct AppConfig {
     pub max_output_kbs: u64,
     pub event_buffer_size: usize,
     pub sniffer_buffer_size: usize,
+    /// How the Events list shows times: "today" (only the time for events
+    /// from the column's today, the full date for older ones) or "full".
+    pub event_time_format: String,
     pub stale_minion_secs: u64,
     pub pending_key_secs: u64,
     pub job_straggler_secs: u64,
@@ -501,6 +504,7 @@ impl Default for AppConfig {
             max_output_kbs: 0,
             event_buffer_size: 10000,
             sniffer_buffer_size: 1000,
+            event_time_format: "today".into(),
             stale_minion_secs: 3600,
             pending_key_secs: 3600,
             job_straggler_secs: 120,
@@ -604,6 +608,7 @@ struct RefreshConfig {
 struct EventsConfig {
     buffer_size: Option<usize>,
     sniffer_buffer_size: Option<usize>,
+    time_format: Option<String>,
     event_columns: Option<String>,
 }
 
@@ -734,6 +739,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("refresh", "max_output_kbs", c.max_output_kbs.to_toml()),
         ("events", "buffer_size", c.event_buffer_size.to_toml()),
         ("events", "sniffer_buffer_size", c.sniffer_buffer_size.to_toml()),
+        ("events", "time_format", c.event_time_format.to_toml()),
         ("events", "event_columns", c.event_columns.to_toml()),
         ("alerts", "stale_minion_secs", c.stale_minion_secs.to_toml()),
         ("alerts", "pending_key_secs", c.pending_key_secs.to_toml()),
@@ -872,6 +878,7 @@ pub fn load_config(path: &Path) -> AppConfig {
             if let Some(e) = toml_cfg.events {
                 if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
                 if let Some(v) = e.sniffer_buffer_size { cfg.sniffer_buffer_size = v; }
+                if let Some(v) = e.time_format.filter(|v| crate::app::EVENT_TIME_FORMATS.contains(&v.as_str())) { cfg.event_time_format = v; }
                 if let Some(v) = e.event_columns { cfg.event_columns = v; }
             }
             if let Some(a) = toml_cfg.alerts {
@@ -1193,6 +1200,7 @@ mod tests {
             tick_ms: 3500,
             max_output_kbs: 6,
             event_buffer_size: 1234,
+            event_time_format: "full".into(),
             disk_usage_pct: 91.5,
             api_hide_stats_polls: false,
             api_stats_auth_mode: "pillar".into(),
