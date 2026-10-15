@@ -5,6 +5,11 @@ edition = "2021"
 rust-version = "1.88"
 description = "A non-intrusive, read-only TUI for monitoring a Salt Master"
 license = "MIT"
+repository = "https://github.com/naqoyqatsi83/salt-radar"
+homepage = "https://github.com/naqoyqatsi83/salt-radar"
+readme = "README.md"
+keywords = ["salt", "saltstack", "tui", "monitoring", "ratatui"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 ratatui = "0.29"

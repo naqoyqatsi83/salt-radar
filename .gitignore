@@ -4,3 +4,4 @@ agent/__pycache__/
 __pycache__/
 *.swp
 *.swo
+salt-radar.toml
