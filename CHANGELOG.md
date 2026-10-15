@@ -254,117 +254,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] - 2026-10-08
 
-First stable release since 0.6.2. Besides the changes below, it includes everything from the 0.6.3 release candidates that follow: configurable and sortable table columns with a new Args column, save-to-file from every popup, the Event Detail pretty view, multi-term per-tab filtering, much faster Job Cache and Job Detail on large masters, and many fixes.
+First stable release since 0.6.2.
 
 ### Added
 
 - Add btop++-style color themes: `color_theme` in a new `[ui]` section of `salt-radar.toml` picks the built-in `Default` or a `*.theme` file from `/usr/share/salt-radar/themes/` or `~/.config/salt-radar/themes/` (or a path to one), `theme_background = false` keeps the terminal's own background, and the Config Editor previews each theme live while picking; `salt-radar.theme.example` documents every key (#114)
 - Ship ports of btop++'s 41 bundled themes plus its built-in default (as `btop`), installed to `/usr/share/salt-radar/themes/` — status colors keep their meaning (red stays red for failures) and text stays readable on each theme's background and cursor bar (#114)
+- Add per-table column choice and order for Minions, Events, Live Jobs, Job Cache, Alerts and the API request log — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their `salt-radar.toml` sections, editable with `v` on the table or in the Config Editor (`+`/`-` to move, `Space` to show/hide) — with new optional columns: Live Jobs Started, Minions Arch and Seen, Events Minion, Alerts Since and Count; when a panel is too narrow for every column, the free-text columns shrink together instead of the rightmost ones being cut off
+- Add column sorting to the Minions, Live Jobs, Job Cache, Alerts and API request log tables: click a column header (or `o` to step through columns, `O` to reverse) to cycle ascending, descending and the default order; the Job Cache is sorted by the agent across the whole cache before paging, Minions keep timed-out minions in their own section, and Salt versions sort numerically (3006.10 after 3006.9)
+- Add an Args column to Live Jobs and Job Cache showing what each job was run with — the requested formula for `state.apply`/`state.sls` (e.g. `apache.install`), `highstate` when none was named, a dimmed `(test)` marker for `test=True` runs, and the arguments of any other function (e.g. `uptime` for `cmd.run`); the `/` filter on both tables matches it too
+- Split the Live Jobs progress into four columns, `Tgt`/`OK`/`Fail`/`Wait`, taken from each return's own `success` field, instead of one `returned/target` count that read the same whether minions succeeded or failed
+- Add save-to-file (`s`/`S`) to every popup that can copy to the clipboard (`y`/`Y`): a filename is proposed and can be edited, an existing file is only overwritten after a warning, and files go to `~` or `save_dir` under `[export]` (#103)
+- Save every return of a job to one file from Job Detail's return list: `a` in Salt's outputter format, `A` as one JSON object keyed by minion ID (#103)
+- Add a pretty view to Event Detail (`t`) for job-return events: the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output, as Job Detail shows it, falling back to a client-side rendering only for other events or when the lookup fails; copying (`y`/`Y`) takes whichever view is shown (#99)
+- Filter with several terms at once (`/`) on Events, Minions, Jobs, Alerts and API: comma-separated terms are OR'd, each may be a glob (`web1,web2` or `web*`), like Salt's own `-L` and glob targeting, and every matched term keeps its own color everywhere, including the Event Sniffer, where the minion IDs it was launched with are colored too (#100)
+- Scope the Minions Fleet Overview (OS, Salt version, architecture) to the minions matching the list filter, with a "Filtered: N of M" label; `f` toggles it, and `follow_filter` under `[minions]` sets the default (on) (#101)
+- Add `lookup_timeout_secs` under a new `[jobs]` section (default 300 s) to bound how long a Job Detail lookup may run, replacing the fixed 60 s/65 s limits
 
 ### Changed
 
 - Dim the screen behind any open popup (detail views, Event Sniffer, Config Editor, admin confirm, help) so the popup stands out — fading toward the theme's background, so light themes wash out instead of going gray; a popup opened on top of another dims the one beneath it too, and the screen returns to normal when it closes (#111)
 - Make the selected row stand out in every table and list: a stronger blue cursor bar with bold text, dim text on it lifted so it stays readable, and the Job Detail Returns list now gets the same full-width bar instead of only a `▶` marker (#112)
+- Keep each tab's filter to itself: Minions, Jobs, Alerts and API shared one filter field, so a filter typed on one tab silently filtered the others
+- Make the Event Sniffer's `h` keywords filter the shown events, not only color them; it's a separate, optional narrowing on top of the sniffer's own minion relevance, which stays broad (a job sent to `*` still counts for a sniffed minion)
 
 ### Fixed
 
 - Fix the Dashboard ZMQ latency (`agent_ipc`) reading a flat ~100ms no matter how fast the agent answered: commands reached the agent through a temp file polled every 100ms, and replies were timed when the main loop next woke up rather than when they arrived; commands now go straight to the agent and replies are timed on receipt, so the figure is the real round trip (typically a few ms). This also stops commands appended while the file was being emptied from being silently lost, and saving the Config Editor no longer wipes the ZMQ graph unless `zmq_latency_source` changed
 - Fix the default (unsorted) order of the job tables: Job Cache now lists newest first (it re-sorted the agent's newest-first page oldest-first), Live Jobs runs oldest to newest by JID instead of event-arrival order, and jobs started within the same second — including under the Job Cache `Started` sort — are ordered by JID instead of coming out in disk-read order (#110)
 - Fix the Job Detail Returns list scrolling on `PgUp`/`PgDn`/`Home`/`End` when it already fits on screen (`End` pushed the last return to the top and the rest out of view); it now only scrolls as far as needed to keep the selection visible, those keys skip rows hidden by the return filter, and the Minion detail grains pane no longer leaves dead `↑` presses after `End` (#113)
+- Fix Job Detail on huge jobs (e.g. `grains.items` across thousands of minions) taking minutes or never loading: the colored and JSON lookups run concurrently, the JSON result is kept even when the colored rendering misses the deadline, the output is split per minion in one pass instead of one search per pair of minions, and a failed lookup says why in the popup
+- Fix the Job Cache re-reading the whole master job cache on every search, page, limit change and refresh: the agent keeps an index of the jobs it has read and only reads new ones (and forgets jobs Salt expired), concurrent requests share one read, and an older request's reply can't overwrite a newer search's results (`local_cache` backend)
+- Fix TUI lag on busy masters (hundreds of events/s): live jobs are indexed by JID, events aren't deep-cloned just to be counted, the minion index is kept between batches, all queued keys are handled before one redraw, and the Live Jobs filter runs once per frame instead of once per row (#104)
+- Fix the Events filter slowing the TUI down progressively on busy masters: the filtered list is kept up to date as events arrive and leave instead of being re-scanned from the whole buffer on every redraw, key and event, and the filter applies on Enter instead of per keystroke (#98)
+- Fix Live Jobs mistaking a broadcast job (`salt '*' ...`) for a one-off local run on one minion when the job's start event was dropped from a full agent queue: start events are no longer dropped, and a job's target count can no longer fall below the returns received
+- Fix Job Detail showing `OK` for a minion whose state run failed: a state return is judged by the `result` of each state inside it, not by a top-level `result` or `retcode` it doesn't have
+- Fix Job Detail's JSON fallback listing a state run's states alphabetically instead of in execution order (`__run_num__`)
+- Fix the Target column being blank (Job Cache) or `?` (Live Jobs) for list-targeted (`-L`) jobs
+- Fix any detail popup opened on another tab while the Event Sniffer ran discarding the sniffer, and the sniffer sometimes ignoring every key (even `q`) after a popup on the Events tab was closed; the sniffer now keeps capturing and comes back untouched
+- Fix Config Editor changes being silently lost: closing it with unsaved changes now asks first (Esc/q again discards), the title shows when there are unsaved changes, and `s` saves from anywhere in the editor instead of only from the Save button at the bottom
+- Fix quitting salt-radar overwriting `salt-radar.toml` with its whole in-memory config, which discarded anything saved to the file while it ran (by hand or from another instance); quitting now only merges in the hotkey toggles changed during the session (F4–F8 graphs, Minions `f`, API `x`)
 
 ### Removed
 
 - Remove the `c` high-contrast selection toggle; a high-contrast look is now a matter of picking (or writing) a theme (#114)
-
-## [0.6.3-rc13] - 2026-10-07
-
-### Added
-
-- Add an Args column to Live Jobs and Job Cache showing what each job was run with — the requested formula for `state.apply`/`state.sls` (e.g. `apache.install`), `highstate` when none was named, a dimmed `(test)` marker for `test=True` runs, and the arguments of any other function (e.g. `uptime` for `cmd.run`); the `/` filter on both tables also matches it
-- Add column sorting to the Minions, Live Jobs, Job Cache, Alerts and API request log tables: click a column header (or `o` to step through columns, `O` to reverse) to cycle ascending, descending and the default order; the Job Cache is sorted by the agent across the whole cache before paging, not just the page on screen, Minions keep timed-out minions in their own section, and Salt versions sort numerically (3006.10 after 3006.9)
-- Add per-table column choice and order for Minions, Events, Live Jobs, Job Cache, Alerts and the API request log — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their `salt-radar.toml` sections, editable with `v` on the table or in the Config Editor (`+`/`-` to move, `Space` to show/hide) — with new optional columns: Live Jobs Started, Minions Arch and Seen, Events Minion, Alerts Since and Count
-
-### Changed
-
-- Shrink a table's free-text columns to share the space when its panel is too narrow to fit every column, instead of cutting off the rightmost ones, and give spare width to the widest text column (e.g. Description, Tag, Args) rather than leaving it empty
-
-### Fixed
-
-- Fix the Target column being blank (Job Cache) or `?` (Live Jobs) for list-targeted (`-L`) jobs
-- Fix Config Editor changes being silently lost: closing it with unsaved changes now asks first (Esc/q again discards), the title shows when there are unsaved changes, and `s` saves from anywhere in the editor instead of only from the Save button at the bottom
-- Fix quitting salt-radar overwriting `salt-radar.toml` with its whole in-memory config, which discarded anything saved to the file while it ran (by hand or from another instance); quitting now only merges in the hotkey toggles changed during the session (F4–F8 graphs, Minions `f`, API `x`)
-
-## [0.6.3-rc12] - 2026-09-30
-
-### Fixed
-
-- Fix Job Cache re-reading the whole master job cache on every search, page, limit change and refresh: the agent now keeps an in-memory index of jobs it has already read and on each request only reads jobs that are new since the last one (and forgets jobs Salt has expired), so only the first load pays the full cost. Concurrent requests share one read, and a reply to an older Job Cache request can no longer overwrite the results of a newer search (`local_cache` job-cache backend only)
-
-## [0.6.3-rc11] - 2026-09-30
-
-### Added
-
-- Add `lookup_timeout_secs` under a new `[jobs]` section in `salt-radar.toml` / the Config Editor (default 300s) to bound how long a Job Detail lookup may run, replacing the hard-coded 60s agent / 65s UI limits
-
-### Fixed
-
-- Fix Job Detail failing to load huge jobs (e.g. `grains.items` across 4000 minions): run the colored and JSON `salt-run jobs.lookup_jid` calls concurrently instead of back to back, keep the JSON result even when the colored rendering misses the deadline, split the colored output into per-minion sections in one pass instead of one full-text search per minion, and show why a lookup failed in the popup instead of "No returns yet." or silently closing it
-
-## [0.6.3-rc10] - 2026-09-30
-
-### Fixed
-
-- Fix TUI lag on busy masters (hundreds of events/sec): index live jobs by JID instead of scanning the whole job table on every job event, stop deep-cloning every event just to count it and the last 500 events on every alert tick, keep the minion index between drains instead of rebuilding it each time, release the agent queue lock before processing a batch, handle all queued keypresses before one redraw instead of redrawing per key, resync the sniffer's following selection once per batch, and filter the Live Jobs list once per frame instead of once per row (#104)
-
-## [0.6.3-rc9] - 2026-09-27
-
-### Added
-
-- Every popup that already supports copy-to-clipboard (`y`/`Y`) now also supports saving that same content to a file (`s`/`S`) — proposes a filename from what's being saved, lets you edit it before confirming, and warns if it would overwrite an existing file. Default save directory is `~` (the launching user's home), configurable as `save_dir` under `[export]` in `salt-radar.toml` / the Config Editor (#103)
-- Job Detail: `a`/`A` on the return list save every return in the job to a single file (Salt outputter format, or one JSON object keyed by minion id) — previously `y`/`Y`/`s`/`S` only covered the currently-selected return, so a job with hundreds of targeted minions had no single-window copy/save of the full result set (#103)
-
-### Fixed
-
-- Save-to-file's in-popup confirmation showed "✓ Copied" (the clipboard indicator) instead of "✓ Saved", since both actions shared one timestamp; save now has its own (#103)
-
-## [0.6.3-rc8] - 2026-09-16
-
-### Added
-
-- Minions tab: the active list filter (`/`) can now also scope the Fleet Overview panel's OS/Salt-version/architecture breakdown to just the matching minions, instead of always aggregating the whole fleet — so filtering down to a single customer or host pattern shows that subset's distribution, with a "Filtered: N of M minions match /pattern/" label when scoped. Toggled live with `f` on the Minions tab (shown as a hint on the panel's bottom border), defaulting to on; the default is configurable via `follow_filter` under `[minions]` in `salt-radar.toml` / the config editor (#101)
-
-## [0.6.3-rc7] - 2026-09-11
-
-### Added
-
-- Live Jobs list: the single "Progress" column (a bare `returned/target` count that read identically whether every minion succeeded or some of them failed) is now four spelled-out, fixed-width columns — `Tgt`/`OK`/`Fail`/`Wait` — so targeted/succeeded/failed/still-pending are each their own number, aligned top to bottom, with no mental arithmetic or symbol legend needed. Sourced from the live return event's own `success` field (the same authoritative value Salt itself sets), not re-derived client-side
-
-### Fixed
-
-- Live Jobs could permanently mistrack a broadcast job (e.g. `salt '*' ...`) as a one-off local execution targeting a single minion, showing e.g. `Tgt: 1` while further returns for the job's real targets kept incrementing `OK`/`Fail` past it. Root cause: the inbound agent-message queue is capped (to bound memory during a burst) and drops the *oldest* queued message once full — on a sustained high job rate, that oldest message could be a job's own `/new` (job-start) event, which is the only place the real target/count is ever learned; once dropped, every `/ret/` for that jid fell into the "no `/new` seen → must be a one-off local execution" fallback and stayed there for the job's whole life. Fixed on two levels: the queue now protects `/new` events from eviction, evicting the next-oldest non-`/new` message instead; and as a backstop regardless of cause, a job's tracked target count now always widens to match however many returns have actually come in, so the display can never show fewer targets than returns received
-- Job Detail's per-minion return list could show `OK (retcode=0)` for a minion whose state run actually failed (e.g. a `state.apply` with no matching top file, or any state with `result: false`). The retcode/success derivation only checked for a top-level `result` or `retcode` key, but a state-return is a dict keyed by state ID with each state's own `result` nested one level down — finding neither at the top level, it silently defaulted to success. Now recognized as a state-return dict and considered failed if any state inside has `result: false`. Same latent bug fixed in the agent's parallel (currently unused by the Rust client) computation of the same values
-
-## [0.6.3-rc6] - 2026-09-10
-
-### Added
-
-- Event Detail popup: `t` toggles between raw JSON and a **pretty view** for job-return events. Fetches the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output — the same subprocess call Job Detail already uses — so formatting and colors are authoritative Salt output rather than an approximation; falls back to a client-side rendering only for non-job-return events or if the fetch fails/times out. While the fetch is in flight, the raw JSON stays on screen instead of a client-side approximation, so there's no "wrong colors, then right colors a moment later" flash once the real output lands (#99)
-- Multi-term filtering (`/`) on Events/Minions/Jobs/Alerts/API: a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax rather than introducing regex. Matched terms are colored consistently — same term, same color, everywhere and every session — via a deterministic hash into a small, fully-saturated palette kept separate from the existing severity colors (green/red/yellow already mean success/fail/warn elsewhere in the UI). Applied to the Events tab list and the Event Sniffer's captured content (#100)
-- Event Sniffer: the minion ID(s)/glob entered when launching it (`n`) are now colored wherever they occur in captured content (tag and JSON body) — previously only the capture filter used them, with no corresponding highlight (#100)
-
-### Changed
-
-- Filtering on Minions/Jobs/Alerts/API is now isolated per tab — each keeps its own filter text independently, so typing a filter on one tab (e.g. a host name on Events) no longer also silently filters an unrelated tab (e.g. request method/path/status on API) until manually cleared. Events already had its own isolated filter; this fixes the four tabs that were sharing one field
-- Event Sniffer's `h` keyword field now also filters the displayed events, not just colors matches within them — narrows to only events containing at least one active keyword, consistent with what a filter box is expected to do. It's deliberately a *separate, optional* search on top of the sniffer's own minion-ID relevance filter (which stays broad — e.g. a wildcard-targeted job counts even without literally naming the minion — see Fixed below for why those two needed to stay decoupled)
-- Event Detail popup: `y`/`Y` clipboard copy now matches whichever view is currently on screen (pretty or raw) instead of always copying raw JSON regardless of the toggle state
-
-### Fixed
-
-- Opening any detail popup (Minion/Job/Alert/API detail, Minion Events) on another tab while the Event Sniffer was running silently discarded it, since the sniffer shared the same single popup slot as every other, tab-scoped popup. The sniffer now lives independently of that slot, so it keeps capturing and reappears untouched when you come back to Events — while other popups on other tabs open normally instead of being blocked. A related stale-tab-tracking bug could also leave the sniffer completely unresponsive to input (including `q` to stop it) after any popup had been opened and closed on the Events tab, even though it kept rendering normally
-- Job Detail / Event Detail pretty view could take many minutes (or effectively never finish, well past the popup's own 65s lookup timeout) to load a job with a very large number of minions — e.g. `grains.items` across 1000+ minions, ~230k lines of `salt-run jobs.lookup_jid` output — despite the underlying `salt-run` command itself returning in seconds. The agent's per-minion text-splitting (extracting each minion's own slice of the combined CLI output) scanned every *other* minion for each minion to find its section boundary — O(minions²) string searches, fine for a handful of minions but ~1,000,000 searches over a multi-megabyte string at 1000+ minions. Now computed in one pass per minion instead of one pass per minion-pair; a synthetic 1200-minion benchmark went from an estimated ~18 minutes to ~1.25 seconds with byte-identical output.
-- Fix Events tab filtering causing progressive slowdown, sluggish tab-switching, and extended freezes on busy masters. The filtered event list is no longer re-scanned from the whole event buffer on every redraw, every keystroke, every incoming event, or even once per tick — it's now an incrementally maintained cache updated in O(1) per ingested/evicted event, with a full rebuild only when the filter itself changes (Enter/Esc). The filter is also applied on Enter instead of live per character (#98)
-- Event Detail pretty view rendered a state.apply return's states alphabetically by state ID instead of actual execution order, because this crate's `serde_json` doesn't enable the `preserve_order` feature and so silently re-sorted the raw dict's keys. States are now explicitly sorted by `__run_num__` (the same field Salt's own highstate outputter uses) whenever a dict looks like a state-return — Job Detail's raw-JSON fallback path (used when the real fetch's `formatted_text` is empty) had the same latent bug and gets the same fix, since both share the renderer
-- Event Sniffer: an early version tied the minion-ID coloring above directly to the keyword filter, which caused two bugs in sequence — coloring silently did nothing when the minion target was a glob (a glob never literally appears in rendered text to color), and, once that was fixed by seeding the filter from the minion target, wildcard-targeted jobs relevant to a sniffed minion were incorrectly hidden (their JSON doesn't literally contain that minion's name). The two concerns are now fully decoupled: minion-ID coloring is purely cosmetic and never filters, only `h` narrows the displayed view
 
 ## [0.6.2] - 2026-09-05
 

@@ -79,11 +79,18 @@ Kubernetes.  This is NOT the deployment target — it's only for development.
 ## Releases
 
 1. Update `version` in `Cargo.toml` (building updates `Cargo.lock`; commit both)
-2. Move `[Unreleased]` entries under a new dated `## [version]` heading in CHANGELOG.md
+2. Move `[Unreleased]` entries under a new dated `## [version]` heading in CHANGELOG.md.
+   For a **final** release, fold the sections of its release candidates into it
+   (e.g. `0.9.0-rc1`…`rc6` into `0.9.0`): one section listing everything since
+   the previous final, written for someone coming from it — a fix to something
+   added within the same cycle disappears into that feature's entry, several
+   steps of one feature become one entry, and the RC sections are removed (the
+   tags and GitHub pre-releases keep that history). The in-app "What's new"
+   page embeds this file, so it shows the folded section
 3. Commit with message: `chore: release v<version>`
 4. Tag: `git tag v<version>`
 5. Push commit and tag: `git push origin dev && git push origin v<version>`
-6. Merge `dev` into `main` with `--no-ff`, push `main` (this closes issues referenced as `Closes #N`)
+6. Final releases only: merge `dev` into `main` with `--no-ff`, push `main` (this closes issues referenced as `Closes #N`); release candidates stay on `dev`
 
 Pushing the tag runs the **Release** workflow (`.github/workflows/release.yml`):
 it builds the static musl binary and publishes a GitHub release with a
