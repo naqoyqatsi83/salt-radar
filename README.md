@@ -131,6 +131,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Event detail popup:
   - `t` toggles between raw JSON and a **pretty view** for job-return events — the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output (same subprocess call Job Detail uses), so formatting and colors are authoritative Salt output, not an approximation. Falls back to a client-side rendering only when no live fetch is possible (non-job-return events) or after a fetch failure/timeout
   - Copy to clipboard (`y` = tag/timestamp + body, `Y` = body only) matches whatever's currently on screen — pretty or raw
+  - `/` searches the event, in whichever view is shown, like Job Detail's output search: matches highlighted (a whole-query `/regex/` works too), `n`/`N` to the next/previous one, the count at the bottom
 - Advanced **Event Sniffer** (`n` key) — capture events by comma-separated terms: a minion ID or glob (events from or about those minions, including the jobs that target them), a keyword (anywhere in the tag or data, ignoring case) or a `/regex/` (`/…/i` ignores case; commas and slashes inside it are part of it), e.g. `web-*, nginx, /ret/(db|web)\d+/`; each term colors its matches:
   - An invalid regex keeps the prompt open and says what's wrong
   - `h` narrows the shown list to events matching further keywords or `/regex/` terms (empty input shows everything again)
@@ -388,8 +389,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `PgUp`/`PgDn` | Jump 10 returns |
 | `Home`/`End` | First/last return (job detail) |
 | `Enter` | Enter scroll mode (event/job detail) |
-| `/` | Search the return output (job detail, output pane) or the help pages, matches highlighted |
-| `n`/`N` | Next/previous search match, marked in place (job detail, also from the returns list; help) |
+| `/` | Search the return output (job detail, output pane), an event (event detail, raw or pretty view) or the help pages, matches highlighted |
+| `n`/`N` | Next/previous search match, marked in place (job detail, also from the returns list; event detail; help) |
 | `f`/`F` | Next/previous failed state, marked in the output (job detail; also from the returns list) |
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |

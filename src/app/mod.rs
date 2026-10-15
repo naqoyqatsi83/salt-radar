@@ -405,6 +405,9 @@ pub struct App {
     /// Down/PageDown/End against this real bound instead of guessing,
     /// which is what keeps PageUp responsive right after End.
     pub event_detail_scroll_max: usize,
+    /// The body line of each match of the Event Detail search, in order,
+    /// written back every render like `event_detail_scroll_max`.
+    pub event_search_matches: Vec<usize>,
     /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
     /// content preview (right panel).
     pub job_detail_scroll_max: usize,
@@ -733,7 +736,9 @@ impl MinionActivityItem {
 #[derive(Clone, Debug)]
 pub enum DetailPopup {
     Minion(String, PingState, Option<Vec<(String, String)>>, usize),
-    SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch },
+    /// `search` is the `/` query in the body (being typed while
+    /// `searching`), `search_focus` the match `n`/`N` last landed on.
+    SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch, search: String, searching: bool, search_focus: Option<usize> },
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     Alert(AlertEntry),
     AdminConfirm,
@@ -742,6 +747,13 @@ pub enum DetailPopup {
     /// A Master Config tab setting's full value; the index is into
     /// `master_config.settings`.
     MasterSetting { index: usize, scroll: usize },
+}
+
+impl DetailPopup {
+    /// Event Detail for `evt`, in raw JSON, at the top, no search.
+    pub fn event(evt: SaltEvent) -> Self {
+        Self::SaltEvent { evt, scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle, search: String::new(), searching: false, search_focus: None }
+    }
 }
 
 impl App {
@@ -835,6 +847,7 @@ impl App {
             return_to_minion_events: None,
             return_to_minion_detail: None,
             event_detail_scroll_max: 0,
+            event_search_matches: Vec::new(),
             job_detail_scroll_max: 0,
             job_detail_hits: JobDetailHits::default(),
             job_search: String::new(),
@@ -3048,6 +3061,26 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
 /// What `y`/`Y` copy for an event's body — matches whatever `draw_event_detail`
 /// is currently rendering (raw JSON vs. the highstate-style pretty view)
 /// rather than always copying JSON regardless of the on-screen mode.
+/// Event Detail's body as shown, as plain text: like the copied text, except
+/// that a pretty view still fetching shows the raw JSON.
+fn event_body_as_shown(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate::types::PrettyFetch) -> String {
+    let fetching = matches!(pretty_fetch, crate::types::PrettyFetch::Loading)
+        && crate::ui::detail_popup::job_return_wrapper(evt).is_some();
+    event_body_as_copied_text(evt, pretty && !fetching, pretty_fetch)
+}
+
+/// The line of each occurrence of a search `query` in `text`, in order, as
+/// `ui::detail_popup::highlight_matches` finds them.
+fn search_lines(text: &str, query: &str) -> Vec<usize> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    text.lines().enumerate()
+        .flat_map(|(i, line)| std::iter::repeat_n(i, crate::sniff::term_ranges(line, query).len()))
+        .collect()
+}
+
 fn event_body_as_copied_text(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate::types::PrettyFetch) -> String {
     if pretty {
         if let crate::types::PrettyFetch::Ready(text) = pretty_fetch {
@@ -3770,6 +3803,18 @@ mod tests {
         assert!(!App::glob_match("web-1", "web-[^0-9]"));
         assert!(App::glob_match("a]b", "a[]]b"));
         assert!(App::glob_match("web[1", "web[1"), "an unclosed [ is literal");
+    }
+
+    #[test]
+    fn event_search_finds_lines_as_shown() {
+        let evt = SaltEvent { tag: "salt/job/1/ret/web1".into(), ts: 0.0, data: serde_json::json!({"id": "web1", "fun": "test.ping", "jid": "1", "return": true}) };
+        let raw = event_body_as_shown(&evt, false, &crate::types::PrettyFetch::Idle);
+        assert_eq!(search_lines(&raw, "WEB1"), vec![raw.lines().position(|l| l.contains("web1")).unwrap()]);
+        // Still fetching the pretty view of a job return: the raw JSON is what's shown.
+        assert_eq!(event_body_as_shown(&evt, true, &crate::types::PrettyFetch::Loading), raw);
+        assert_eq!(search_lines("ab\nbab\nc", " b "), vec![0, 1, 1]);
+        assert_eq!(search_lines("fun: test.ping\nfun: x", "/fun: \\w+$/"), vec![1]);
+        assert!(search_lines("abc", "  ").is_empty());
     }
 
     #[test]

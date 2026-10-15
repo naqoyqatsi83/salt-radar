@@ -553,7 +553,28 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::SaltEvent { ref evt, scroll: ref mut scroll_offset, ref mut pretty, ref mut pretty_fetch } => {
+                DetailPopup::SaltEvent { ref evt, scroll: ref mut scroll_offset, ref mut pretty, ref mut pretty_fetch, ref mut search, ref mut searching, ref mut search_focus } => {
+                    if *searching {
+                        match code {
+                            KeyCode::Esc => {
+                                *searching = false;
+                                search.clear();
+                            }
+                            KeyCode::Enter => {
+                                *searching = false;
+                                // Matched here, not taken from the last frame: keys typed
+                                // (or pasted) faster than a redraw would leave it stale.
+                                let m = search_lines(&event_body_as_shown(evt, *pretty, pretty_fetch), search);
+                                if let Some(i) = step_match(&m, None, *scroll_offset, true) {
+                                    *search_focus = Some(i);
+                                    *scroll_offset = m[i].saturating_sub(2).min(self.event_detail_scroll_max);
+                                }
+                                self.event_search_matches = m;
+                            }
+                            _ => { line_edit::edit(search, &mut self.input_cursor, code); }
+                        }
+                        return false;
+                    }
                     // self.event_detail_scroll_max is the true viewport-aware
                     // last-scroll-position, recomputed and written back every
                     // render (see draw_event_detail) — clamping against it here
@@ -590,6 +611,19 @@ impl App {
                         }
                         KeyCode::Home => { *scroll_offset = 0; }
                         KeyCode::End => { *scroll_offset = self.event_detail_scroll_max; }
+                        KeyCode::Char('/') => {
+                            *searching = true;
+                            search.clear();
+                            self.input_cursor = None;
+                            *search_focus = None;
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') => {
+                            let m = &self.event_search_matches;
+                            if let Some(i) = step_match(m, *search_focus, *scroll_offset, code == KeyCode::Char('n')) {
+                                *scroll_offset = m[i].saturating_sub(2).min(self.event_detail_scroll_max);
+                                *search_focus = Some(i);
+                            }
+                        }
                         KeyCode::Char('y') => {
                             let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
                                 .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
@@ -626,6 +660,7 @@ impl App {
                         KeyCode::Char('t') | KeyCode::Char('T') => {
                             *pretty = !*pretty;
                             *scroll_offset = 0;
+                            *search_focus = None;
                             // Fetch the real `salt-run jobs.lookup_jid` text once
                             // per event (same subprocess + flags Job Detail uses
                             // -- see `cmd_jid_lookup` in the agent) instead of
@@ -855,7 +890,7 @@ impl App {
                             _ => None,
                         };
                         if let Some(evt) = evt_enter {
-                            self.detail_popup = Some(DetailPopup::SaltEvent { evt, scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
+                            self.detail_popup = Some(DetailPopup::event(evt));
                         }
                     }
                 }
@@ -955,7 +990,7 @@ impl App {
                             // `self.sniffer` isn't touched -- it keeps
                             // capturing underneath and reappears on its own
                             // once this SaltEvent popup closes.
-                            self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
+                            self.detail_popup = Some(DetailPopup::event(evt.clone()));
                             self.popup_tab = Some(self.current_tab);
                         }
                     }
@@ -1790,7 +1825,7 @@ impl App {
                             self.return_to_minion_events = Some((mid.clone(), item_idx));
                             match self.return_event_job(evt) {
                                 Some((jid, header)) => self.open_job_detail(jid, header, Some(mid)),
-                                None => self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle }),
+                                None => self.detail_popup = Some(DetailPopup::event(evt.clone())),
                             }
                         }
                         MinionActivityItem::CacheJob(job) => {
@@ -1976,7 +2011,7 @@ impl App {
             Tab::Events => {
                 self.return_to_minion_events = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
-                    self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
+                    self.detail_popup = Some(DetailPopup::event(evt.clone()));
                     self.popup_tab = Some(self.current_tab);
                 }
             }

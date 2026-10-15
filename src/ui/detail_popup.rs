@@ -21,14 +21,15 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
                 grains_scroll_max = Some(draw_minion_detail(f, area, minion, ping_state, grains, *grains_scroll, app));
             }
         }
-        DetailPopup::SaltEvent { evt, scroll, pretty, pretty_fetch } => {
+        DetailPopup::SaltEvent { evt, scroll, pretty, pretty_fetch, search, searching, search_focus } => {
             let area = centered_rect(75, 70, f.area());
             f.render_widget(Clear, area);
             let highlight = app.return_to_minion_events.as_ref().map(|(id, _)| id.as_str());
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, clipboard_at, save_at, clipboard_msg, highlight);
+            let search = EventSearch { query: search, typing: *searching, focus: *search_focus, cursor: app.input_cursor };
+            draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, &mut app.event_search_matches, search, clipboard_at, save_at, clipboard_msg, highlight);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, job, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
@@ -213,18 +214,37 @@ fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> 
     ])
 }
 
-fn event_detail_hints(pretty: bool) -> Vec<(&'static str, String)> {
-    vec![
+fn event_detail_hints(pretty: bool, search: &EventSearch, has_matches: bool) -> Vec<(&'static str, String)> {
+    if search.typing {
+        return vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())];
+    }
+    let mut hints = vec![
         ("q/Esc", "close".to_string()),
         ("\u{2191}\u{2193}", "scroll".to_string()),
         ("PgUp/PgDn", "page".to_string()),
         ("Home/End", "top/bottom".to_string()),
         ("t", if pretty { "raw json".to_string() } else { "pretty view".to_string() }),
+        ("/", "search".to_string()),
+    ];
+    if has_matches {
+        hints.push(("n/N", "next/prev match".to_string()));
+    }
+    hints.extend([
         ("y", "copy".to_string()),
         ("Y", "json".to_string()),
         ("s", "save".to_string()),
         ("S", "save json".to_string()),
-    ]
+    ]);
+    hints
+}
+
+/// The Event Detail search: the query, whether it's being typed, the match
+/// `n`/`N` last landed on, and the input cursor.
+struct EventSearch<'a> {
+    query: &'a str,
+    typing: bool,
+    focus: Option<usize>,
+    cursor: Option<usize>,
 }
 
 /// Shared popup chrome: shortcut hints go in the block's own border
@@ -798,7 +818,8 @@ fn raw_json_lines(evt: &crate::types::SaltEvent, highlight: Option<&str>) -> Vec
     }).collect()
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
+#[allow(clippy::too_many_arguments)]
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, search_matches: &mut Vec<usize>, search: EventSearch, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
     let mut lines = header_lines(" Event Detail ", area.width);
     lines.push(row("Tag", evt.tag.clone(), color::cyan()));
     lines.push(row("Timestamp", format_ts(evt.ts), color::inactive_fg()));
@@ -831,12 +852,37 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
     } else {
         raw_json_lines(evt, highlight)
     };
+    let (body_lines, matches) = highlight_matches(body_lines, search.query, search.focus);
+    *search_matches = matches;
+    let focus = search.focus.filter(|&i| i < search_matches.len());
     let total_data = body_lines.len();
+
+    let status = if search.typing {
+        Some(Line::from(super::input_spans("  Search: ", search.query, search.cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD))))
+    } else {
+        clipboard_status(clipboard_at, save_at, clipboard_warning).or_else(|| {
+            if pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Loading) {
+                Some(Line::from(Span::styled("  Fetching real salt-run output...", Style::default().fg(color::yellow()))))
+            } else if !search.query.trim().is_empty() {
+                let found = match (focus, search_matches.len()) {
+                    (_, 0) => "no matches".to_string(),
+                    (Some(i), n) => format!("match {} of {}", i + 1, n),
+                    (None, 1) => "1 match".to_string(),
+                    (None, n) => format!("{} matches", n),
+                };
+                let fg = if search_matches.is_empty() { color::red() } else { color::yellow() };
+                Some(Line::from(Span::styled(format!("  search {}: {}", search.query.trim(), found), Style::default().fg(fg))))
+            } else {
+                None
+            }
+        })
+    };
 
     // Clamp scroll_offset so the last line can appear at viewport bottom, and
     // write the true bound back so the key handler can clamp Down/PageDown/End
     // against it directly next time instead of guessing at a raw line count.
-    let viewport_h = (area.height as usize).saturating_sub(5); // borders(2) + header(3)
+    let chrome = 2 + lines.len() + usize::from(status.is_some());
+    let viewport_h = (area.height as usize).saturating_sub(chrome);
     let max_scroll = total_data.saturating_sub(viewport_h);
     *scroll_max = max_scroll;
     let effective_scroll = scroll_offset.min(max_scroll);
@@ -845,17 +891,7 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
 
     lines.extend(body_lines.into_iter().skip(effective_scroll));
 
-    let hints = event_detail_hints(pretty);
-    let status = clipboard_status(clipboard_at, save_at, clipboard_warning).or_else(|| {
-        if pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Loading) {
-            Some(Line::from(Span::styled(
-                "  Fetching real salt-run output...",
-                Style::default().fg(color::yellow()),
-            )))
-        } else {
-            None
-        }
-    });
+    let hints = event_detail_hints(pretty, &search, !search_matches.is_empty());
     render_popup(f, area, &lines, &hints, status, (more_above, more_below), 0, 0);
 }
 

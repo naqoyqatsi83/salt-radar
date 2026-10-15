@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Search in Event Detail (#189): `/` searches the event in the view shown, raw JSON or pretty, matches highlighted and counted (a whole-query `/regex/` works too), `n`/`N` move between them, as in Job Detail; a long `state.apply` return no longer has to be scrolled through by eye
+
 ### Changed
 
 - Tell module settings from typos in the Master Config tab (#185): keys that aren't salt-master's own but that Salt reads are a new `module` kind, named with what reads them: salt-api (`rest_cherrypy`, `rest_tornado`, `rest_wsgi`, `api_logfile`, `rest_timeout`), any module Salt ships, found in Salt's own sources (`auth.ldap.*` with the backend's defaults, `cache.redis.*`, `mysql.*`, `vault`), or a valid minion, syndic or salt-ssh option. Modules are found where the master's loader finds them, installed Salt extensions and synced custom modules included, and a dotted option counts only when the module's source names it (`redis.host` on 3008, whose redis cache reads `cache.redis.host`, is caught with that suggestion); a setting for a module Salt 3008 moved out to an extension says it needs the extension. Options inside a salt-api section are checked too: one salt-api doesn't read is flagged and counted as not core, with the option it's probably meant to be (`colect_stats` → `collect_stats`), and the documented `socket_queue_size`, which salt-api never reads, says so. "Not core" is left for keys nothing in Salt reads
@@ -14,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Event Detail's `End` stopping short: the scroll limit counted three lines too few above the body, so the last lines of a long event could never be scrolled into view
 - Credentials in URLs shown in the Master Config tab (#186): the password or token of a `scheme://user:password@host` URL (`gitfs_remotes`, git `ext_pillar`, `mongo.uri`, …) went through unredacted, in the list, the file view, the popup and copies, as only values of secret-looking keys were hidden. It's now blanked in every value, every key (gitfs per-remote options are keyed by URL) and every line of the files, comments included, keeping the scheme, user and host (`https://deploy:<redacted>@github.com/...`)
 - Minions `Proto` column (#183): right-aligned like the other short columns, and `—` for a minion that timed out, as OS, Salt and Arch already were
 - salt-api port never detected (#184): the Dashboard's ZMQ line now shows salt-api connection counts, the port read from the merged master config instead of hand-parsing the files; `/login` and `/stats` also follow salt-api's `host` and `root_prefix` instead of always using `127.0.0.1` at `/`
