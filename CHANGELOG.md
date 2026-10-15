@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Judge old minions' auth protocol by the running master's `minimum_auth_version` (#183): the "No replay protection" and "Legacy auth protocol" alerts read it from the running master (from the files only when it can't be asked; before, from the files as they were when salt-radar started) and say which case it is: critical when it rejects those minions, a warning naming the missing protection when it's lowered to let them in, and a warning about the upgrade on a master that doesn't enforce it yet
 - Leave Started out of the Job Cache's default columns: the JID already holds the start time, and without it the table fits a half-width panel; `v` on the Jobs tab (or `cache_columns`) brings it back
 - Keep salt-radar's own runner job out of its lists: the `test.get_opts` job it sends once per master start to compare the master configuration (#190) no longer shows in Events, Live Jobs or the Job Cache; a `test.get_opts` you run yourself still does
 - Show only the time for today's events in the Events list: the Local and UTC columns read `17:25:08` for events from today (each column's own today) and keep the full date for older ones, giving the tag and minion columns 22 more characters; `time_format = "full"` under `[events]` (also in the Config Editor) keeps the date on every row. The preview, the detail popup, copies and saves always show the full date

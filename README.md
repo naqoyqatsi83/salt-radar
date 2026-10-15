@@ -161,7 +161,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Disk usage high** — cache or PKI disk over `disk_usage_pct`
 - **No replay protection** — minions on Salt's auth protocol v0, from before the March 2022 security releases (2014.x–3001.x, 3002.0–3002.7, 3003.0–3003.3, 3004.0)
 - **Legacy auth protocol** — minions on protocol v2, without per-minion session encryption (3002.8+, 3003.4+, 3004.1+, 3005, 3006.0–3006.11, 3007.0–3007.3)
-- Both are warnings, as masters from 3006.17, 3007.9 and 3008 reject v0 and v2 by default (`minimum_auth_version: 3`), and critical once this master enforces it
+- Both go by this master's `minimum_auth_version` as the running master holds it (asked of the master, as for the Master Config tab; the files' value when it can't be asked): **critical** when it rejects those minions, so they can't connect; a **warning** when it's lowered to let them in, as they still lack replay protection (v0) or per-minion session encryption (v2); and a **warning** on a master that doesn't enforce it yet, as masters from 3006.17, 3007.9 and 3008 reject v0 and v2 by default (`minimum_auth_version: 3`)
 - **Config file rejected** — a master config file Salt couldn't parse (e.g. the same key twice): Salt skips the whole file with only a log line, so all its settings silently fall back to their defaults; critical (see the Master Config tab)
 - **Minion newer than master** — minions on a newer Salt major than the master (e.g. 3008 minions on a 3006 master); older minions are supported, and the protocol rules cover the ones too old
 - **Salt warning** — `salt/warning/*` events on the bus

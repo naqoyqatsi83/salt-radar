@@ -381,24 +381,34 @@ impl AlertEngine {
 }
 
 /// Minions whose Salt version doesn't fit the master's: on auth protocol 0
-/// or 2, which masters from 3006.17, 3007.9 and 3008 reject by default
-/// (critical once this master does), or on a newer Salt major. Versions come
-/// from the master's minion data cache, so this needs no traffic to them.
+/// or 2, which masters from 3006.17, 3007.9 and 3008 reject by default --
+/// critical when this master's `minimum_auth_version` (the running master's,
+/// when it could be asked) rejects them, still a warning when it's lowered to
+/// let them in, as they lack replay protection (v0) or per-minion session
+/// encryption (v2) -- or on a newer Salt major. Versions come from the
+/// master's minion data cache, so this needs no traffic to them.
 fn version_alerts(minion_info: &[MinionInfo], master_salt_version: &str, minimum_auth_version: u64) -> Vec<ActiveAlert> {
     let mut alerts = Vec::new();
     let named = |m: &MinionInfo| format!("{} ({})", m.id, m.salt_version);
     let enforced = enforces_minimum_auth_version(master_salt_version);
-    let protocols = [(0, "salt:auth_v0", "No replay protection"), (2, "salt:auth_v2", "Legacy auth protocol")];
-    for (protocol, key, rule) in protocols {
+    let protocols = [
+        (0, "salt:auth_v0", "No replay protection", "no replay protection"),
+        (2, "salt:auth_v2", "Legacy auth protocol", "no per-minion session encryption"),
+    ];
+    for (protocol, key, rule, lacking) in protocols {
         let minions: Vec<String> = minion_info.iter()
             .filter(|m| auth_protocol(&m.salt_version) == Some(protocol))
             .map(named)
             .collect();
         if minions.is_empty() { continue; }
-        let (severity, description) = if enforced && minimum_auth_version > protocol {
-            (AlertSeverity::Crit, format!("{} minion(s) on auth protocol v{}, rejected by this master's minimum_auth_version: {}", minions.len(), protocol, minimum_auth_version))
-        } else {
-            (AlertSeverity::Warn, format!("{} minion(s) on auth protocol v{}; masters from 3006.17, 3007.9 and 3008 reject it by default", minions.len(), protocol))
+        let n = minions.len();
+        let (severity, description) = match (enforced, minimum_auth_version > protocol) {
+            (true, true) => (AlertSeverity::Crit, format!(
+                "{} minion(s) on auth protocol v{}, rejected by this master (minimum_auth_version: {}): they can't connect", n, protocol, minimum_auth_version)),
+            (true, false) => (AlertSeverity::Warn, format!(
+                "{} minion(s) on auth protocol v{}, let in by this master's minimum_auth_version: {}, with {}", n, protocol, minimum_auth_version, lacking)),
+            (false, _) => (AlertSeverity::Warn, format!(
+                "{} minion(s) on auth protocol v{} ({}): accepted now, rejected once the master is on 3006.17, 3007.9 or 3008 unless minimum_auth_version is lowered", n, protocol, lacking)),
         };
         alerts.push(ActiveAlert { key: key.to_string(), rule, severity, description, details: minions });
     }
@@ -437,6 +447,12 @@ mod tests {
         assert_eq!(summary, [("salt:auth_v0", AlertSeverity::Warn, 1), ("salt:auth_v2", AlertSeverity::Warn, 2)]);
         assert!(version_alerts(&fleet, "3006.27", 3).iter().all(|a| a.severity == AlertSeverity::Crit));
         assert!(version_alerts(&fleet, "3006.16", 3).iter().all(|a| a.severity == AlertSeverity::Warn), "3006.16 ignores the setting");
+        // Let in on purpose: still a warning, saying so.
+        let allowed = version_alerts(&fleet, "3006.27", 0);
+        assert!(allowed.iter().all(|a| a.severity == AlertSeverity::Warn && a.description.contains("let in by this master's minimum_auth_version: 0")));
+        // Lowered to 2: v2 minions are let in, v0 ones still rejected.
+        let mixed: Vec<_> = version_alerts(&fleet, "3006.27", 2).iter().map(|a| (a.key.clone(), a.severity)).collect();
+        assert_eq!(mixed, [("salt:auth_v0".to_string(), AlertSeverity::Crit), ("salt:auth_v2".to_string(), AlertSeverity::Warn)]);
         assert!(version_alerts(&fleet[3..], "3006.16", 3).is_empty());
     }
 

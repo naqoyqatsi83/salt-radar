@@ -837,7 +837,7 @@ def cmd_config_snapshot(opts, req):
             sys.version_info.major, sys.version_info.minor, sys.version_info.micro
         ),
         "worker_threads": opts.get("worker_threads"),
-        "minimum_auth_version": opts.get("minimum_auth_version", 0),
+        "minimum_auth_version": _running_option(opts, req, "minimum_auth_version", 0),
         "transport": opts.get("transport", "zeromq"),
         "sock_dir": opts.get("sock_dir", ""),
         "reactor_count": len(opts.get("reactor", []) if isinstance(opts.get("reactor"), list) else []),
@@ -1538,6 +1538,33 @@ _SET_AT_STARTUP = {
     "log_fmt_console", "log_datefmt_console", "log_fmt_logfile", "log_datefmt_logfile",
     "log_rotate_backup_count", "log_rotate_max_bytes",
 }
+
+
+def _running_option(opts, req, key, default):
+    """A small whole-number master option as the running master holds it,
+    from the same cached request the Master Config tab uses -- with only
+    digests asked for, the one of 0..10 whose digest matches -- else as the
+    files set it now."""
+    salt = _import_salt()
+    path = opts.get("conf_file") or "/etc/salt/master"
+    try:
+        in_files = salt.config.master_config(path).get(key, default)
+    except Exception:
+        in_files = opts.get(key, default)
+    digests = bool(req.get("digests"))
+    running, _ = _running_master_opts(path, _salt_master_started(), digests)
+    if running is None or key not in running:
+        return in_files
+    if not digests:
+        return running[key]
+    import salt.utils.templates
+    for n in range(11):
+        # The same filters as one entry of `_DIGEST_TEMPLATE`.
+        digest = salt.utils.templates.render_jinja_tmpl(
+            "{{ (value|tojson)|sha256 }}", {"opts": opts, "value": n, "saltenv": "base", "sls": ""}).strip()
+        if digest == running[key]:
+            return n
+    return in_files
 
 
 def _restart_state(key, actual, running, srcs, files, started):

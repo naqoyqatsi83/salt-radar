@@ -2590,7 +2590,7 @@ impl App {
         self.config_tick += 1;
         if self.config_tick >= self.config.config_secs {
             self.config_tick = 0;
-            self.send_agent_cmd("config_snapshot", None);
+            self.send_agent_cmd("config_snapshot", Some(serde_json::json!({"digests": self.config.running_config_digests})));
             if !self.master_config_loading {
                 self.request_master_config();
             }
