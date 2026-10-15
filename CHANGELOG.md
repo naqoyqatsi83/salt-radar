@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0-rc7] - 2026-10-15
+
 ### Added
 
 - Search an alert's items in Alert Detail: `/` finds the minions, units or jobs it lists (a whole-query `/regex/` works too), matches highlighted and counted, `n`/`N` move between them, as in Event and Job Detail
