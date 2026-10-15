@@ -1450,6 +1450,26 @@ def _netapi_problems(key, value):
 # The running master's own options, fetched once per master start (they
 # only change when it restarts): {"started": epoch, "opts": dict}.
 _running_opts = {"started": None, "opts": None}
+# The runner jobs salt-radar starts itself to fetch them, kept out of the
+# events it forwards and the job cache it lists: they're its own plumbing,
+# not anything an admin ran. While a fetch is in flight its job's events can
+# arrive before its JID is known, so they're also recognised by function.
+_OWN_RUNNER_FUN = "runner.test.get_opts"
+_own_jids = set()
+_own_fetch = threading.Event()
+
+
+def _is_own_job_event(tag, data):
+    """Whether an event belongs to one of salt-radar's own runner jobs."""
+    if not tag.startswith("salt/run/"):
+        return False
+    jid = tag.split("/")[2] if tag.count("/") >= 2 else ""
+    if jid in _own_jids:
+        return True
+    if _own_fetch.is_set() and isinstance(data, dict) and data.get("fun") == _OWN_RUNNER_FUN:
+        _own_jids.add(jid)
+        return True
+    return False
 
 
 def _running_master_opts(path, started):
@@ -1469,11 +1489,13 @@ def _running_master_opts(path, started):
         client_opts = salt.config.client_config(path)
         key = salt.utils.master.get_master_key(salt.utils.user.get_user(), client_opts)
         events = salt.utils.event.get_master_event(client_opts, client_opts["sock_dir"], listen=True)
+        _own_fetch.set()
         try:
             pub = salt.runner.RunnerClient(client_opts).cmd_async({"fun": "test.get_opts", "key": key, "user": salt.utils.user.get_user()})
             jid = pub.get("jid") if isinstance(pub, dict) else None
             if not jid:
                 return None, "the master refused the request: {}".format(pub)
+            _own_jids.add(jid)
             deadline = time.time() + 10
             while time.time() < deadline:
                 evt = events.get_event(wait=1, tag="salt/run/{}/ret".format(jid), full=True)
@@ -1485,6 +1507,7 @@ def _running_master_opts(path, started):
                     return running, None
             return None, "no answer from the master within 10s"
         finally:
+            _own_fetch.clear()
             events.destroy()
     except Exception as exc:
         return None, str(exc)
@@ -2226,6 +2249,8 @@ def _event_loop(opts):
                 continue
             tag = evt.get("tag", "")
             evt_data = evt.get("data", {})
+            if _is_own_job_event(tag, evt_data):
+                continue
             ts = _parse_stamp(evt_data.get("_stamp"))
             event(tag, evt_data, ts)
     except Exception as exc:
@@ -2464,7 +2489,7 @@ def cmd_jobs_list(opts, req):
 
     jobs = []
     for jid, info in result_data.items():
-        if not isinstance(info, dict):
+        if not isinstance(info, dict) or jid in _own_jids:
             continue
         fun = info.get("Function", info.get("fun", ""))
         tgt = info.get("Target", info.get("tgt", ""))
