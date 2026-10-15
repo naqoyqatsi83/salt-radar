@@ -32,6 +32,16 @@ impl App {
                         "config_snapshot" => {
                             self.config_snapshot = Some(parse_config_snapshot(&data));
                         }
+                        "master_config" => {
+                            self.master_config_loading = false;
+                            if ok {
+                                self.master_config = Some(parse_master_config(&data));
+                                self.master_config_error = None;
+                                self.clamp_selection();
+                            } else {
+                                self.master_config_error = Some(data["error"].as_str().unwrap_or("unknown error").to_string());
+                            }
+                        }
                         "minion_cache_list" if ok => {
                             let mut minions = parse_minion_list(&data);
                             for minion in &mut minions {
@@ -41,13 +51,14 @@ impl App {
                                 // Preserve enriched fields from event processing
                                 if let Some(&i) = self.minion_index.get(&minion.id) {
                                     let existing = &self.minion_info[i];
-                                    if !existing.osfinger.is_empty() { minion.osfinger.clone_from(&existing.osfinger); }
-                                    if !existing.osrelease.is_empty() { minion.osrelease.clone_from(&existing.osrelease); }
-                                    if !existing.salt_version.is_empty() { minion.salt_version.clone_from(&existing.salt_version); }
-                                    if !existing.cpuarch.is_empty() { minion.cpuarch.clone_from(&existing.cpuarch); }
-                                    if !existing.os.is_empty() { minion.os.clone_from(&existing.os); }
-                                    if existing.last_seen_epoch > minion.last_seen_epoch { minion.last_seen_epoch = existing.last_seen_epoch; }
-                                    if existing.cache_updated_epoch > minion.cache_updated_epoch { minion.cache_updated_epoch = existing.cache_updated_epoch; }
+                                    // The cache's grains win, so an upgraded minion shows its
+                                    // new version; a fleet scan or grains return fills the gaps.
+                                    if minion.osfinger.is_empty() { minion.osfinger.clone_from(&existing.osfinger); }
+                                    if minion.osrelease.is_empty() { minion.osrelease.clone_from(&existing.osrelease); }
+                                    if minion.salt_version.is_empty() { minion.salt_version.clone_from(&existing.salt_version); }
+                                    if minion.cpuarch.is_empty() { minion.cpuarch.clone_from(&existing.cpuarch); }
+                                    if minion.os.is_empty() { minion.os.clone_from(&existing.os); }
+                                    minion.last_seen_epoch = existing.last_seen_epoch;
                                     // Fleet scan timed_out status is not known to the cache — preserve it
                                     if existing.timed_out { minion.timed_out = true; }
                                     // Being present in the master's minion cache means it was
@@ -470,8 +481,7 @@ impl App {
                     if tag.contains("/ret/") {
                         self.note_return_for_open_job(&tag);
                         self.current_sec_returns += 1;
-                        let success = data["success"].as_bool()
-                            .unwrap_or_else(|| derive_success_retcode(&data["return"]).1);
+                        let (success, _) = return_outcome(&data, &data["return"]);
                         self.job_returns_window.push_back(success);
                         if self.job_returns_window.len() > JOB_STATS_WINDOW { self.job_returns_window.pop_front(); }
                         if let Some(mid) = tag.rsplit('/').next() {
@@ -570,7 +580,7 @@ impl App {
                     // per event (or even once per tick) here is what made the
                     // TUI stall/black out while an Events filter was active
                     // (#98).
-                    Self::sync_filtered_events_cache(
+                    let dropped_shown = Self::sync_filtered_events_cache(
                         &mut self.filtered_events_cache,
                         &self.applied_filter,
                         &self.events_matcher,
@@ -582,13 +592,16 @@ impl App {
                     self.last_event_time = Some(Instant::now());
                     if self.applied_filter.is_empty() {
                         Self::advance_tail_selection(&mut self.event_selected, self.events_following, events_evicted, self.events.len());
-                    } else if self.events_following {
-                        self.event_selected = self.filtered_events_cache.len().saturating_sub(1);
+                    } else {
+                        Self::advance_tail_selection(&mut self.event_selected, self.events_following, dropped_shown, self.filtered_events_cache.len());
                     }
 
                     // Track live jobs from events
                     if let Some(evt) = self.events.back() {
-                        track_job_from_event(&mut self.jobs, &mut self.jobs_index, evt);
+                        if let Some(timing) = track_job_from_event(&mut self.jobs, &mut self.jobs_index, evt) {
+                            let fun = evt.data["fun"].as_str().unwrap_or("").to_string();
+                            self.record_return_timing(timing, &fun);
+                        }
                     }
 
                     // Sniffer: inject matching events into sniffer buffer
@@ -657,6 +670,12 @@ impl App {
     pub(crate) fn send_jid_lookup(&mut self, jid: &str) -> u64 {
         let timeout = self.config.lookup_timeout_secs;
         self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": jid, "timeout": timeout})))
+    }
+
+    pub(crate) fn request_master_config(&mut self) {
+        self.master_config_loading = true;
+        self.master_config_error = None;
+        self.send_agent_cmd("master_config", Some(serde_json::json!({"digests": self.config.running_config_digests})));
     }
 
     /// Send a command to the agent, returns the request id.

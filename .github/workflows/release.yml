@@ -170,6 +170,8 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           name: salt-radar v${{ env.VERSION_STRIPPED }}
+          # Release candidates are pre-releases, so the last final release stays "Latest".
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
           body: |
             ## salt-radar v${{ env.VERSION_STRIPPED }}
 

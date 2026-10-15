@@ -344,7 +344,7 @@ fn spark_panel_hints(panel: SparkPanel, app: &App) -> Vec<(&'static str, String)
     };
     let mut hints = vec![(fkey, "hide".to_string())];
     if enabled_spark_panels(app).first() == Some(&panel) {
-        let style_label = if app.sparkline_style == SparklineStyle::Dots { "bars" } else { "dots" };
+        let style_label = if app.config.sparkline_style() == SparklineStyle::Dots { "bars" } else { "dots" };
         hints.push(("m", style_label.to_string()));
     }
     hints
@@ -562,12 +562,17 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
         Some(pct) => format!("  Workers {:.0}% busy", pct),
         None => "  Workers --".to_string(),
     };
+    // Accepted keys, as Minion Key Status counts them.
+    let minions = match count_keys_with_status(&app.keys, crate::types::KeyStatus::Accepted) {
+        0 => app.pulse_minions_count(),
+        n => n,
+    };
     let gauge = Gauge::default()
         .gauge_style(mem_gauge_style(mem_pct))
         .percent((mem_pct.round() as u16).min(100))
         .label(format!(
             "Salt RSS {} MB ({} proc)  {} minions{}",
-            total_rss_used / 1024, proc_count, app.filtered_minions_len(), workers_label,
+            total_rss_used / 1024, proc_count, minions, workers_label,
         ));
 
     let mut service_lines: Vec<Line<'static>> = vec![];
@@ -886,7 +891,7 @@ fn draw_zmq_row(f: &mut Frame, area: Rect, app: &App) {
             (latency_level(ordered_lat[start + i], ceiling) * 100.0).round() as u64
         })
         .collect();
-    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel(color::gradient), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel(color::gradient), app.config.sparkline_style());
 }
 
 // ── Event Type Breakdown ────────────────────────────────────────────────────
@@ -1006,7 +1011,7 @@ fn draw_events_row(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    render_sparkline(f, inner, &spark_data, GraphColor::Solid(color::cyan()), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::Solid(color::cyan()), app.config.sparkline_style());
 }
 
 // ── Minion Activity Matrix ───────────────────────────────────────────────────
@@ -1077,7 +1082,7 @@ fn draw_activity_matrix(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    render_sparkline(f, inner, &spark_data, GraphColor::Solid(color::green()), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::Solid(color::green()), app.config.sparkline_style());
 }
 
 // ── CPU / Memory history ────────────────────────────────────────────────────
@@ -1139,7 +1144,7 @@ fn draw_cpu_row(f: &mut Frame, area: Rect, app: &App) {
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel(color::gradient), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel(color::gradient), app.config.sparkline_style());
 }
 
 fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
@@ -1196,7 +1201,7 @@ fn draw_mem_row(f: &mut Frame, area: Rect, app: &App) {
     let start = ordered.len().saturating_sub(points);
     let spark_data: Vec<u64> = (start..ordered.len()).map(|i| ordered[i].round() as u64).collect();
 
-    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel(color::mem_gradient), app.sparkline_style);
+    render_sparkline(f, inner, &spark_data, GraphColor::ByLevel(color::mem_gradient), app.config.sparkline_style());
 }
 
 // ── Job Pulse ────────────────────────────────────────────────────────────────

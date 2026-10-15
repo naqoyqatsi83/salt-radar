@@ -5,6 +5,9 @@
 # For single color graphs leave "mid" and "end" variable empty.
 # Use "start" and "end" variables for two color gradient
 # Use "start", "mid" and "end" for three color gradient
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Everforest palette.
 
 theme[main_bg]="#fdf6e3"
 theme[meter_bg]="#dbdbcc"
@@ -47,4 +50,4 @@ theme[tab_separator]="#4f585e"
 theme[highlight_1]="#3994c5"
 theme[highlight_2]="#d464b1"
 theme[highlight_3]="#8da101"
-theme[highlight_4]="#aa50ff"
+theme[highlight_4]="#ab72f2"

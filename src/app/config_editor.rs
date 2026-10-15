@@ -274,13 +274,17 @@ impl App {
                 ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
                 ConfigField { label: "python_bin", label_value: cfg.python_bin.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
                 ConfigField { label: "master_config", label_value: cfg.master_config.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
+                ConfigField { label: "running_config_digests", label_value: on_off(cfg.running_config_digests), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[refresh]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "dashboard_secs", label_value: cfg.dashboard_secs.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "minions_secs", label_value: cfg.minions_secs.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "config_secs", label_value: cfg.config_secs.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "tick_ms", label_value: cfg.tick_ms.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "max_output_kbs", label_value: cfg.max_output_kbs.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "[events]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "buffer_size", label_value: cfg.event_buffer_size.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "sniffer_buffer_size", label_value: cfg.sniffer_buffer_size.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "time_format", label_value: cfg.event_time_format.clone(), kind: ConfigFieldKind::Choice(EVENT_TIME_FORMATS) },
                 self.columns_field(TableId::Events),
                 ConfigField { label: "[alerts]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "stale_minion_secs", label_value: cfg.stale_minion_secs.to_string(), kind: ConfigFieldKind::U64 },
@@ -331,6 +335,7 @@ impl App {
                 ConfigField { label: "show_job_pulse", label_value: on_off(cfg.show_job_pulse), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "show_salt_api", label_value: on_off(cfg.show_salt_api), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "graph_order", label_value: cfg.graph_order.clone(), kind: ConfigFieldKind::Order },
+                ConfigField { label: "graph_style", label_value: cfg.graph_style.clone(), kind: ConfigFieldKind::Choice(GRAPH_STYLES) },
                 ConfigField { label: "[minions]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "follow_filter", label_value: on_off(cfg.minions_follow_filter), kind: ConfigFieldKind::Choice(ON_OFF) },
                 self.columns_field(TableId::Minions),
@@ -344,6 +349,14 @@ impl App {
                 ConfigField { label: "color_theme", label_value: cfg.color_theme.clone(), kind: ConfigFieldKind::Theme },
                 ConfigField { label: "theme_background", label_value: on_off(cfg.theme_background), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "popup_dim_pct", label_value: cfg.popup_dim_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "confirm_quit", label_value: on_off(cfg.confirm_quit), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "mouse", label_value: on_off(cfg.mouse), kind: ConfigFieldKind::Choice(ON_OFF) },
+                ConfigField { label: "minions_split_pct", label_value: cfg.minions_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "events_split_pct", label_value: cfg.events_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "jobs_split_pct", label_value: cfg.jobs_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "api_split_pct", label_value: cfg.api_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "pulse_split_pct", label_value: cfg.pulse_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "master_split_pct", label_value: cfg.master_split_pct.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -383,16 +396,21 @@ impl App {
         let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
         let parse_bool = |key| vals.get(key) == Some(&"on");
         let columns = |key, table: TableId| vals.get(key).copied().unwrap_or(table.default_columns()).to_string();
+        let split = |key| parse_u64(key).map(|v| v.clamp(crate::config::SPLIT_PCT_MIN, crate::config::SPLIT_PCT_MAX));
 
         let new_config = AppConfig {
             agent_path: vals.get("agent_path").unwrap_or(&"").to_string(),
             python_bin: vals.get("python_bin").unwrap_or(&"").to_string(),
             master_config: vals.get("master_config").unwrap_or(&"").to_string(),
+            running_config_digests: parse_bool("running_config_digests"),
             dashboard_secs: parse_u64("dashboard_secs")?,
             minions_secs: parse_u64("minions_secs")?,
             config_secs: parse_u64("config_secs")?,
+            tick_ms: parse_u64("tick_ms")?.clamp(crate::config::TICK_MS_MIN, crate::config::TICK_MS_MAX),
+            max_output_kbs: parse_u64("max_output_kbs")?,
             event_buffer_size: parse_usize("buffer_size")?,
             sniffer_buffer_size: parse_usize("sniffer_buffer_size")?,
+            event_time_format: vals.get("time_format").unwrap_or(&"today").to_string(),
             stale_minion_secs: parse_u64("stale_minion_secs")?,
             pending_key_secs: parse_u64("pending_key_secs")?,
             job_straggler_secs: parse_u64("job_straggler_secs")?,
@@ -431,6 +449,7 @@ impl App {
             show_cpu_graph: parse_bool("show_cpu_graph"),
             show_mem_graph: parse_bool("show_mem_graph"),
             graph_order: vals.get("graph_order").unwrap_or(&"cpu,mem,zmq,events,activity").to_string(),
+            graph_style: vals.get("graph_style").unwrap_or(&"dots").to_string(),
             show_host_resources: parse_bool("show_host_resources"),
             show_services: parse_bool("show_services"),
             show_key_status: parse_bool("show_key_status"),
@@ -452,11 +471,20 @@ impl App {
             color_theme: vals.get("color_theme").unwrap_or(&crate::config::DEFAULT_THEME).to_string(),
             theme_background: parse_bool("theme_background"),
             popup_dim_pct: parse_u64("popup_dim_pct")?.min(100),
+            confirm_quit: parse_bool("confirm_quit"),
+            mouse: parse_bool("mouse"),
+            minions_split_pct: split("minions_split_pct")?,
+            events_split_pct: split("events_split_pct")?,
+            jobs_split_pct: split("jobs_split_pct")?,
+            api_split_pct: split("api_split_pct")?,
+            pulse_split_pct: split("pulse_split_pct")?,
+            master_split_pct: split("master_split_pct")?,
         };
 
         crate::config::write_config(&self.config_path, &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
         let latency_source_changed = new_config.zmq_latency_source != self.config.zmq_latency_source;
+        self.needs_mouse_toggle |= new_config.mouse != self.config.mouse;
         self.persisted_config = new_config.clone();
         self.config = new_config;
         // A sort on a column that was just hidden would keep reordering the

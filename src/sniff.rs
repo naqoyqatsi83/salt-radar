@@ -146,6 +146,26 @@ pub fn regex_term(term: &str) -> Option<Regex> {
     })
 }
 
+/// Why `term`, written as a `/…/` regex, is matched as plain text instead:
+/// a flag other than `i` (`/x/g`), or, with `check_syntax`, a pattern this
+/// regex engine can't compile. `None` for a usable regex or a plain term
+/// (`/etc/salt` is a path, not a regex with flags `salt`).
+pub fn regex_problem(term: &str, check_syntax: bool) -> Option<String> {
+    let t = term.trim();
+    let close = t.rfind('/').filter(|&c| c > 0 && t.starts_with('/'))?;
+    let flags = &t[close + 1..];
+    if !flags.is_empty() && flags != "i" {
+        return flags.chars().all(|c| "gimsuxy".contains(c))
+            .then(|| format!("only the /i flag is supported, not /{}", flags));
+    }
+    let body = t[1..close].replace("\\/", "/");
+    if !check_syntax || body.is_empty() || regex_term(t).is_some() {
+        return None;
+    }
+    let err = RegexBuilder::new(&body).build().err()?.to_string();
+    Some(err.lines().last().unwrap_or("invalid regex").trim().trim_start_matches("error: ").to_string())
+}
+
 /// Byte ranges of `term`'s matches in `text`: a regex term's matches, or the
 /// term's case-insensitive occurrences.
 pub fn term_ranges(text: &str, term: &str) -> Vec<(usize, usize)> {
@@ -320,6 +340,17 @@ mod tests {
             SniffTerm::Keyword { text, .. } => format!("keyword {text}"),
             SniffTerm::Regex(re) => format!("regex {}", re.as_str()),
         }).collect()
+    }
+
+    #[test]
+    fn regex_problem_names_why_a_term_is_matched_as_text() {
+        assert_eq!(regex_problem("/fit/g", true).as_deref(), Some("only the /i flag is supported, not /g"));
+        let lookahead = regex_problem("/(?!db)fit/", true).unwrap();
+        assert!(lookahead.contains("look-around"), "{lookahead}");
+        assert_eq!(regex_problem("/(?!db)fit/", false), None, "the agent's Python regex has look-around");
+        for fine in ["/fit/", "/fit/i", r"/^salt\/job/", "fit", "/etc/salt", "/fit", "web*"] {
+            assert_eq!(regex_problem(fine, true), None, "{fine}");
+        }
     }
 
     #[test]

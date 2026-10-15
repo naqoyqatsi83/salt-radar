@@ -12,6 +12,7 @@ pub enum Tab {
     Alerts,
     Pulse,
     Api,
+    Master,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +25,17 @@ pub enum SparklineStyle {
 
 
 impl Tab {
+    /// The tab bar, left to right; `1`–`8` follow it.
+    pub const ORDER: [Tab; 8] = [
+        Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Master, Tab::Pulse,
+    ];
+
+    /// Its label in the tab bar, number included (` 7 Master Config `).
+    pub fn bar_label(self) -> String {
+        let n = Self::ORDER.iter().position(|&t| t == self).unwrap_or(0) + 1;
+        format!(" {} {} ", n, self.label())
+    }
+
     pub fn next(&self) -> Self {
         match self {
             Self::Dashboard => Self::Minions,
@@ -31,7 +43,8 @@ impl Tab {
             Self::Events => Self::Jobs,
             Self::Jobs => Self::Alerts,
             Self::Alerts => Self::Api,
-            Self::Api => Self::Pulse,
+            Self::Api => Self::Master,
+            Self::Master => Self::Pulse,
             Self::Pulse => Self::Dashboard,
         }
     }
@@ -39,12 +52,13 @@ impl Tab {
     pub fn prev(&self) -> Self {
         match self {
             Self::Dashboard => Self::Pulse,
+            Self::Pulse => Self::Master,
             Self::Minions => Self::Dashboard,
             Self::Events => Self::Minions,
             Self::Jobs => Self::Events,
             Self::Alerts => Self::Jobs,
             Self::Api => Self::Alerts,
-            Self::Pulse => Self::Api,
+            Self::Master => Self::Api,
         }
     }
 
@@ -57,6 +71,7 @@ impl Tab {
             Self::Alerts => "Alerts",
             Self::Pulse => "Pulse",
             Self::Api => "API",
+            Self::Master => "Master Config",
         }
     }
 }
@@ -101,7 +116,6 @@ pub struct MinionInfo {
     pub salt_version: String,
     pub cpuarch: String,
     pub last_seen_epoch: u64,
-    pub cache_updated_epoch: u64,
     pub connected: bool,
     pub timed_out: bool,
 }
@@ -296,6 +310,9 @@ pub struct ApiRequestRecord {
 #[derive(Clone, Debug, Default)]
 pub struct ConfigSnapshot {
     pub salt_version: String,
+    /// The lowest auth protocol the master accepts; 0 when it predates the
+    /// setting (before 3006.17 / 3007.9) and accepts any.
+    pub minimum_auth_version: u64,
     pub python_version: String,
     pub worker_threads: Option<i64>,
     pub transport: String,
@@ -431,6 +448,298 @@ impl SnifferState {
 
 }
 
+// ─── Master configuration ─────────────────────────────────────────────────
+
+/// The master's configuration as the agent read it from disk (see
+/// `cmd_master_config`), credentials already redacted.
+#[derive(Clone, Debug, Default)]
+pub struct MasterConfig {
+    pub conf_file: String,
+    /// In Salt's load order: later files override earlier ones.
+    pub files: Vec<ConfigFile>,
+    /// When the oldest salt-master process started (epoch secs, 0 unknown).
+    pub master_started: u64,
+    /// Whether each setting was compared with the running master's own
+    /// options (`ConfigSetting::restart`); if not, why, and `restart_pending`
+    /// falls back to file times.
+    pub running_compared: bool,
+    pub running_error: Option<String>,
+    pub settings: Vec<ConfigSetting>,
+}
+
+/// Why a setting may change when salt-master restarts: its value in the
+/// files differs from the one the running master holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestartState {
+    /// A file setting it changed after the master started.
+    Changed,
+    /// Its files are older than the master, yet the value differs: put back
+    /// with their old time, or edited keeping it.
+    Restored,
+    /// No file sets it any more; the master still has its old value.
+    Removed,
+}
+
+impl RestartState {
+    pub fn from_agent(state: &str) -> Option<Self> {
+        match state {
+            "changed" => Some(Self::Changed),
+            "restored" => Some(Self::Restored),
+            "removed" => Some(Self::Removed),
+            _ => None,
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Changed => "changed after salt-master started",
+            Self::Restored => "differs from the running master, though its files are older than it (restored, or edited keeping their time)",
+            Self::Removed => "no longer in the files, but the running master still has it",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ConfigFile {
+    pub path: String,
+    pub text: String,
+    pub mtime: u64,
+    /// Why Salt rejected the file (e.g. a key twice): none of its settings
+    /// are in use, they fall back to the defaults.
+    pub error: Option<String>,
+    /// The line the error points at, 0 when unknown.
+    pub error_line: usize,
+}
+
+impl ConfigFile {
+    /// Written after salt-master started, so the running master isn't using
+    /// what it says yet.
+    pub fn changed_since(&self, master_started: u64) -> bool {
+        master_started > 0 && self.mtime > master_started
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SettingKind {
+    /// Set in a file, and one of Salt's core settings.
+    Explicit,
+    /// Set in a file, not a core setting, but read by something else
+    /// Salt runs: salt-api (`rest_cherrypy`), a module (`auth.ldap.uri`,
+    /// `mysql.host`), or a minion, syndic or salt-ssh option.
+    Module,
+    /// Set in a file, and nothing in Salt reads it: a typo, or an option
+    /// of a module Salt doesn't ship.
+    Unknown,
+    /// Only in files Salt rejected, so not in use.
+    Ignored,
+    /// In no file, but not Salt's default either: computed at startup.
+    Derived,
+    Default,
+}
+
+impl SettingKind {
+    pub fn from_agent(kind: &str) -> Self {
+        match kind {
+            "explicit" => Self::Explicit,
+            "module" => Self::Module,
+            "unknown" => Self::Unknown,
+            "ignored" => Self::Ignored,
+            "derived" => Self::Derived,
+            _ => Self::Default,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Explicit => "set",
+            Self::Module => "module",
+            Self::Unknown => "not core",
+            Self::Ignored => "ignored",
+            Self::Derived => "derived",
+            Self::Default => "default",
+        }
+    }
+}
+
+/// What a file's value does to the ones loaded before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceRelation {
+    First,
+    /// A later file's scalar (or a value of another type) wins.
+    Overrides,
+    /// Dicts and lists from files of one include group combine.
+    Merged,
+    /// A later include group (master.d over the main file) replaces the
+    /// whole value, nested keys it doesn't set included.
+    Replaces,
+    /// In a file Salt rejected.
+    Ignored,
+}
+
+impl SourceRelation {
+    pub fn from_agent(relation: &str) -> Self {
+        match relation {
+            "overrides" => Self::Overrides,
+            "merged" => Self::Merged,
+            "replaces" => Self::Replaces,
+            "ignored" => Self::Ignored,
+            _ => Self::First,
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::First => "sets it",
+            Self::Overrides => "overrides the file above",
+            Self::Merged => "merged with the file above",
+            Self::Replaces => "replaces the whole value above",
+            Self::Ignored => "ignored: Salt rejected this file",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigSource {
+    pub file: usize,
+    /// First line and end line (exclusive) of its block, 1-based; 0 when
+    /// the agent couldn't place it.
+    pub start: usize,
+    pub end: usize,
+    pub relation: SourceRelation,
+    /// This file's own value (YAML).
+    pub value: String,
+    /// For `Replaces`: the nested keys of the value above that are lost.
+    pub dropped: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigSetting {
+    pub key: String,
+    pub kind: SettingKind,
+    /// Every file that sets it, in load order.
+    pub sources: Vec<ConfigSource>,
+    /// The effective value on one line, and in full (YAML).
+    pub line: String,
+    pub full: String,
+    /// Salt's default, for a core setting.
+    pub default: Option<String>,
+    pub redacted: bool,
+    /// For an unknown key, the core setting it's closest to.
+    pub suggest: Option<String>,
+    /// For a module's setting, what reads it.
+    pub about: Option<String>,
+    /// Keys inside a salt-api section that salt-api doesn't read, each with
+    /// the option it's probably meant to be.
+    pub unknown_nested: Vec<(String, Option<String>)>,
+    /// Remarks on options salt-api reads differently than documented.
+    pub notes: Vec<String>,
+    /// How it differs from the running master, when compared.
+    pub restart: Option<RestartState>,
+    /// The running master's value, on one line and in full (YAML), when it
+    /// differs and the master has one.
+    pub running_line: Option<String>,
+    pub running_full: Option<String>,
+    /// The running master doesn't have it at all.
+    pub running_absent: bool,
+}
+
+impl ConfigSetting {
+    /// Keys Salt ignores: the setting itself when nothing reads it, plus
+    /// any it holds that salt-api doesn't read.
+    pub fn ignored_keys(&self) -> usize {
+        usize::from(self.kind == SettingKind::Unknown) + self.unknown_nested.len()
+    }
+
+    /// What the running master holds, for a setting that differs: its
+    /// value, or why it isn't shown.
+    pub fn running_shown(&self) -> String {
+        match &self.running_line {
+            Some(value) => value.clone(),
+            None if self.running_absent => "not set (it started before this was added)".to_string(),
+            None => "another value (only its digest was asked for: running_config_digests)".to_string(),
+        }
+    }
+
+    /// Its value may change when salt-master restarts: it differs from the
+    /// running master's, or, when that couldn't be asked, it's set in a file
+    /// written after the master started.
+    pub fn restart_pending(&self, mc: &MasterConfig) -> bool {
+        if mc.running_compared {
+            return self.restart.is_some();
+        }
+        self.sources.iter().any(|src| mc.files.get(src.file).is_some_and(|f| f.changed_since(mc.master_started)))
+    }
+
+    /// The file whose value is in use: the last one Salt didn't reject, or
+    /// for a setting only in rejected files, the last of those.
+    pub fn winner(&self) -> Option<&ConfigSource> {
+        self.sources.iter().rev().find(|s| s.relation != SourceRelation::Ignored).or(self.sources.last())
+    }
+
+    /// The setting as it would be written in a config file.
+    pub fn as_yaml(&self) -> String {
+        if self.full.contains('\n') {
+            let body: Vec<String> = self.full.lines().map(|l| format!("  {}", l)).collect();
+            format!("{}:\n{}", self.key, body.join("\n"))
+        } else {
+            format!("{}: {}", self.key, self.full)
+        }
+    }
+}
+
+// ─── Salt versions ────────────────────────────────────────────────────────
+
+/// Major and minor of a Salt version (`3006.16`, `3008.0rc1`, `2019.2.8`).
+pub fn salt_major_minor(version: &str) -> Option<(u64, u64)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor_text = parts.next().unwrap_or("0");
+    let digits = minor_text.find(|c: char| !c.is_ascii_digit()).unwrap_or(minor_text.len());
+    Some((major, minor_text[..digits].parse().unwrap_or(0)))
+}
+
+/// The request protocol a minion of this Salt version speaks, the `version`
+/// in its payloads: 0 (none sent) before the March 2022 security releases,
+/// 2 with their nonce and signed replies (3002.8, 3003.4, 3004.1, 3005), 3
+/// with per-minion session encryption (3006.12, 3007.4, 3008). Masters from
+/// 3006.17, 3007.9 and 3008 reject anything below 3 by default
+/// (`minimum_auth_version: 3`).
+pub fn auth_protocol(version: &str) -> Option<u64> {
+    let (major, minor) = salt_major_minor(version)?;
+    let first = |v2: u64, v3: u64| if minor >= v3 { 3 } else if minor >= v2 { 2 } else { 0 };
+    Some(match major {
+        ..3002 => 0,
+        3002 => first(8, u64::MAX),
+        3003 => first(4, u64::MAX),
+        3004 => first(1, u64::MAX),
+        3005 => 2,
+        3006 => first(0, 12),
+        3007 => first(0, 4),
+        _ => 3,
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn auth_protocol_follows_salt_releases() {
+    let p = |v| auth_protocol(v);
+    assert_eq!([p("3006.11"), p("3006.12"), p("3007.3"), p("3007.4"), p("3008.0rc1")], [Some(2), Some(3), Some(2), Some(3), Some(3)]);
+    assert_eq!([p("3002.7"), p("3002.8"), p("3003.3"), p("3003.4"), p("3004"), p("3004.1"), p("3005.1")], [Some(0), Some(2), Some(0), Some(2), Some(0), Some(2), Some(2)]);
+    assert_eq!([p("2014.7.1"), p("2019.2.8"), p("3000.9"), p("3001.8"), p(""), p("?")], [Some(0), Some(0), Some(0), Some(0), None, None]);
+    assert_eq!(salt_major_minor("3008.0rc1"), Some((3008, 0)));
+    assert_eq!(["3006.16", "3006.17", "3007.8", "3007.9", "3008.0", "?"].map(enforces_minimum_auth_version), [false, true, false, true, true, false]);
+}
+
+/// Whether a master of this Salt version enforces `minimum_auth_version`
+/// (from 3006.17, 3007.9 and 3008; older ones ignore the setting).
+pub fn enforces_minimum_auth_version(master_version: &str) -> bool {
+    salt_major_minor(master_version).is_some_and(|(major, minor)| match major {
+        3006 => minor >= 17,
+        3007 => minor >= 9,
+        m => m >= 3008,
+    })
+}
+
 // ─── Job entry (live) ─────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -448,6 +757,20 @@ pub struct JobEntry {
     pub finalized: bool,
     pub args: String,
     pub test_run: bool,
+    pub lag: JobLag,
+}
+
+/// A job's return times, for each minion's lag ratio (its time over the
+/// job's median). Collected until the job is settled -- every target
+/// returned, or `job_straggler_secs` passed -- then the median is fixed,
+/// and minions returning later are rated against it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum JobLag {
+    /// (minion, seconds from the job's publish to its return)
+    Collecting(Vec<(String, f64)>),
+    /// The median, or None when fewer than two minions returned in time,
+    /// or the job's publish time isn't known.
+    Settled(Option<f64>),
 }
 
 // ─── Cache job entry (from agent jobs.list_jobs) ──────────────────────────
@@ -531,7 +854,7 @@ impl TableId {
         match self {
             Self::LiveJobs => &["jid", "fun", "args", "target", "source", "tgt", "ok", "fail", "wait", "started"],
             Self::JobCache => &["jid", "user", "started", "target", "fun", "args"],
-            Self::Minions => &["id", "key", "os", "salt", "arch", "seen", "fail_pct"],
+            Self::Minions => &["id", "key", "os", "salt", "proto", "arch", "seen", "fail_pct", "lag", "ping"],
             Self::Events => &["local", "utc", "tag", "minion"],
             Self::Alerts => &["severity", "rule", "description", "since", "count"],
             Self::ApiLog => &["age", "method", "client", "path", "status", "time"],
@@ -541,7 +864,7 @@ impl TableId {
     pub fn default_columns(self) -> &'static str {
         match self {
             Self::LiveJobs => "jid,fun,args,target,source,tgt,ok,fail,wait",
-            Self::JobCache => "jid,user,started,target,fun,args",
+            Self::JobCache => "jid,user,target,fun,args",
             Self::Minions => "id,key,os,salt",
             Self::Events => "local,utc,tag",
             Self::Alerts => "severity,rule,description",
@@ -585,9 +908,12 @@ pub enum Column {
     KeyStatus,
     Os,
     SaltVersion,
+    Proto,
     Arch,
     LastSeen,
     FailPct,
+    Lag,
+    Ping,
     Local,
     Utc,
     Tag,
@@ -621,9 +947,12 @@ const COLUMN_KEYS: &[(&str, Column)] = &[
     ("key", Column::KeyStatus),
     ("os", Column::Os),
     ("salt", Column::SaltVersion),
+    ("proto", Column::Proto),
     ("arch", Column::Arch),
     ("seen", Column::LastSeen),
     ("fail_pct", Column::FailPct),
+    ("lag", Column::Lag),
+    ("ping", Column::Ping),
     ("local", Column::Local),
     ("utc", Column::Utc),
     ("tag", Column::Tag),
@@ -670,6 +999,9 @@ impl Column {
             Self::Arch => "Arch",
             Self::LastSeen => "Seen",
             Self::FailPct => "Fail%",
+            Self::Lag => "Lag",
+            Self::Proto => "Proto",
+            Self::Ping => "Ping",
             Self::Local => "Local",
             Self::Utc => "UTC",
             Self::Tag => "Tag",
@@ -696,7 +1028,8 @@ impl Column {
                 | Self::MinionId | Self::EventMinion | Self::Started => 21,
             Self::Source | Self::Method | Self::Time => 8,
             Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count => 6,
-            Self::FailPct => 7,
+            Self::FailPct | Self::Lag | Self::Proto => 7,
+            Self::Ping => 9,
             Self::User => 13,
             Self::KeyStatus | Self::Severity | Self::Arch => 10,
             Self::LastSeen | Self::Since => 13,
@@ -713,15 +1046,17 @@ impl Column {
     /// (JIDs, timestamps, counts) that would be unreadable truncated.
     pub fn min_width(self) -> Option<usize> {
         match self {
-            Self::Fun | Self::Args | Self::Tag | Self::Description => Some(12),
-            Self::Target | Self::Rule | Self::Os | Self::MinionId | Self::EventMinion | Self::Client | Self::Path => Some(10),
-            Self::User | Self::Status | Self::SaltVersion => Some(6),
+            Self::Fun | Self::Tag | Self::Description => Some(12),
+            Self::Args => Some(6),
+            Self::Target | Self::Rule | Self::MinionId | Self::EventMinion | Self::Client | Self::Path => Some(10),
+            Self::Os => Some(8),
+            Self::User | Self::Status | Self::SaltVersion | Self::Arch => Some(6),
             _ => None,
         }
     }
 
     pub fn right_aligned(self) -> bool {
-        matches!(self, Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count | Self::Time | Self::FailPct)
+        matches!(self, Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count | Self::Time | Self::FailPct | Self::Lag | Self::Ping | Self::Proto)
     }
 
     /// Parses a comma-separated column list from the config, keeping only

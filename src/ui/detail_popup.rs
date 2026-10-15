@@ -21,14 +21,15 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
                 grains_scroll_max = Some(draw_minion_detail(f, area, minion, ping_state, grains, *grains_scroll, app));
             }
         }
-        DetailPopup::SaltEvent { evt, scroll, pretty, pretty_fetch } => {
+        DetailPopup::SaltEvent { evt, scroll, pretty, pretty_fetch, search, searching, search_focus } => {
             let area = centered_rect(75, 70, f.area());
             f.render_widget(Clear, area);
             let highlight = app.return_to_minion_events.as_ref().map(|(id, _)| id.as_str());
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, clipboard_at, save_at, clipboard_msg, highlight);
+            let search = PopupSearch { query: search, typing: *searching, focus: *search_focus, cursor: app.input_cursor };
+            draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, &mut app.event_search_matches, search, clipboard_at, save_at, clipboard_msg, highlight);
         }
         DetailPopup::JobDetail { jid, lookup, selected_return, job, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
@@ -38,10 +39,12 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
             draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &mut app.job_detail_hits, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
         }
-        DetailPopup::Alert(alert) => {
+        DetailPopup::Alert { alert, scroll, search, searching, search_focus } => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
             f.render_widget(Clear, area);
-            draw_alert_detail(f, area, alert, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+            let search = PopupSearch { query: search, typing: *searching, focus: *search_focus, cursor: app.input_cursor };
+            let clipboard = (app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+            draw_alert_detail(f, area, alert, *scroll, &mut app.alert_detail_scroll_max, &mut app.alert_search_matches, search, clipboard);
         }
         DetailPopup::AdminConfirm => {
             let area = centered_rect(55, 35, f.area());
@@ -55,6 +58,15 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let area = centered_rect(65, 40, f.area());
             f.render_widget(Clear, area);
             draw_api_request_detail(f, area, entry, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+        }
+        DetailPopup::MasterSetting { index, scroll } => {
+            let area = centered_rect(75, 70, f.area());
+            if let Some(mc) = &app.master_config {
+                if let Some(setting) = mc.settings.get(*index) {
+                    let status = clipboard_status(app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
+                    app.master_popup_scroll_max = draw_master_setting(f, area, mc, setting, *scroll, status);
+                }
+            }
         }
     }
     // Clamp the stored offset to what's actually scrollable so keys pressed
@@ -110,6 +122,24 @@ pub fn draw_save_prompt(f: &mut Frame, app: &App) {
     render_popup(f, area, &lines, &hints, None, (false, false), 0, 0);
 }
 
+pub fn draw_quit_confirm(f: &mut Frame) {
+    let screen = f.area();
+    let (width, height) = (40.min(screen.width), 6.min(screen.height));
+    let area = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("  Quit salt-radar?", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("  Any other key cancels.", Style::default().fg(color::inactive_fg()))),
+    ];
+    let hints = [("y/Enter", "quit".to_string()), ("Esc/n/q", "cancel".to_string())];
+    render_popup(f, area, &lines, &hints, None, (false, false), 0, 0);
+}
+
 /// The sniffer isn't a `detail_popup` variant (see its field doc in
 /// `app.rs`) so it gets its own draw entry point instead of a match arm here.
 pub fn draw_sniffer_overlay(f: &mut Frame, app: &App) {
@@ -157,6 +187,25 @@ fn header_lines(title: &str, area_width: u16) -> Vec<Line<'static>> {
     ]
 }
 
+/// A line cut to `width` columns, its last one a `…` when anything was cut.
+fn clip_marked(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width || width == 0 {
+        return line;
+    }
+    let mut room = width - 1;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        if room == 0 {
+            break;
+        }
+        let text: String = span.content.chars().take(room).collect();
+        room -= text.chars().count();
+        spans.push(Span::styled(text, span.style));
+    }
+    spans.push(Span::styled("\u{2026}", Style::default().fg(color::border_focus())));
+    Line::from(spans)
+}
+
 fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> {
     Line::from(vec![
         Span::styled(
@@ -167,18 +216,58 @@ fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> 
     ])
 }
 
-fn event_detail_hints(pretty: bool) -> Vec<(&'static str, String)> {
-    vec![
+fn event_detail_hints(pretty: bool, search: &PopupSearch, has_matches: bool) -> Vec<(&'static str, String)> {
+    if search.typing {
+        return vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())];
+    }
+    let mut hints = vec![
         ("q/Esc", "close".to_string()),
         ("\u{2191}\u{2193}", "scroll".to_string()),
         ("PgUp/PgDn", "page".to_string()),
         ("Home/End", "top/bottom".to_string()),
         ("t", if pretty { "raw json".to_string() } else { "pretty view".to_string() }),
+        ("/", "search".to_string()),
+    ];
+    if has_matches {
+        hints.push(("n/N", "next/prev match".to_string()));
+    }
+    hints.extend([
         ("y", "copy".to_string()),
         ("Y", "json".to_string()),
         ("s", "save".to_string()),
         ("S", "save json".to_string()),
-    ]
+    ]);
+    hints
+}
+
+/// A popup's `/` search (Event and Alert Detail): the query, whether it's
+/// being typed, the match `n`/`N` last landed on, and the input cursor.
+struct PopupSearch<'a> {
+    query: &'a str,
+    typing: bool,
+    focus: Option<usize>,
+    cursor: Option<usize>,
+}
+
+impl PopupSearch<'_> {
+    /// The status line: the query being typed, or how many matches it found
+    /// and which one is current; None when there's no search.
+    fn status(&self, matches: usize) -> Option<Line<'static>> {
+        if self.typing {
+            return Some(Line::from(super::input_spans("  Search: ", self.query, self.cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD))));
+        }
+        if self.query.trim().is_empty() {
+            return None;
+        }
+        let found = match (self.focus.filter(|&i| i < matches), matches) {
+            (_, 0) => "no matches".to_string(),
+            (Some(i), n) => format!("match {} of {}", i + 1, n),
+            (None, 1) => "1 match".to_string(),
+            (None, n) => format!("{} matches", n),
+        };
+        let fg = if matches == 0 { color::red() } else { color::yellow() };
+        Some(Line::from(Span::styled(format!("  search {}: {}", self.query.trim(), found), Style::default().fg(fg))))
+    }
 }
 
 /// Shared popup chrome: shortcut hints go in the block's own border
@@ -573,8 +662,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
 pub(crate) fn job_return_wrapper(evt: &crate::types::SaltEvent) -> Option<(String, serde_json::Value, i64)> {
     let ret = evt.data.get("return")?.clone();
     let id = evt.data.get("id")?.as_str()?.to_string();
-    let retcode = evt.data.get("retcode").and_then(|v| v.as_i64())
-        .unwrap_or_else(|| crate::app::derive_success_retcode(&ret).0);
+    let (_, retcode) = crate::app::return_outcome(&evt.data, &ret);
     Some((id, ret, retcode))
 }
 
@@ -753,7 +841,8 @@ fn raw_json_lines(evt: &crate::types::SaltEvent, highlight: Option<&str>) -> Vec
     }).collect()
 }
 
-fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
+#[allow(clippy::too_many_arguments)]
+fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, scroll_offset: usize, pretty: bool, pretty_fetch: &crate::types::PrettyFetch, scroll_max: &mut usize, search_matches: &mut Vec<usize>, search: PopupSearch, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>, highlight: Option<&str>) {
     let mut lines = header_lines(" Event Detail ", area.width);
     lines.push(row("Tag", evt.tag.clone(), color::cyan()));
     lines.push(row("Timestamp", format_ts(evt.ts), color::inactive_fg()));
@@ -786,12 +875,27 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
     } else {
         raw_json_lines(evt, highlight)
     };
+    let (body_lines, matches) = highlight_matches(body_lines, search.query, search.focus);
+    *search_matches = matches;
     let total_data = body_lines.len();
+
+    let status = if search.typing {
+        search.status(search_matches.len())
+    } else {
+        clipboard_status(clipboard_at, save_at, clipboard_warning).or_else(|| {
+            if pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Loading) {
+                Some(Line::from(Span::styled("  Fetching real salt-run output...", Style::default().fg(color::yellow()))))
+            } else {
+                search.status(search_matches.len())
+            }
+        })
+    };
 
     // Clamp scroll_offset so the last line can appear at viewport bottom, and
     // write the true bound back so the key handler can clamp Down/PageDown/End
     // against it directly next time instead of guessing at a raw line count.
-    let viewport_h = (area.height as usize).saturating_sub(5); // borders(2) + header(3)
+    let chrome = 2 + lines.len() + usize::from(status.is_some());
+    let viewport_h = (area.height as usize).saturating_sub(chrome);
     let max_scroll = total_data.saturating_sub(viewport_h);
     *scroll_max = max_scroll;
     let effective_scroll = scroll_offset.min(max_scroll);
@@ -800,18 +904,57 @@ fn draw_event_detail(f: &mut Frame, area: Rect, evt: &crate::types::SaltEvent, s
 
     lines.extend(body_lines.into_iter().skip(effective_scroll));
 
-    let hints = event_detail_hints(pretty);
-    let status = clipboard_status(clipboard_at, save_at, clipboard_warning).or_else(|| {
-        if pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Loading) {
-            Some(Line::from(Span::styled(
-                "  Fetching real salt-run output...",
-                Style::default().fg(color::yellow()),
-            )))
-        } else {
-            None
-        }
-    });
+    let hints = event_detail_hints(pretty, &search, !search_matches.is_empty());
     render_popup(f, area, &lines, &hints, status, (more_above, more_below), 0, 0);
+}
+
+/// Job Detail's output pane for the selected return: Salt's own output for
+/// it, a note for a minion that didn't return, or the lookup in progress.
+pub(crate) fn job_preview_lines(lookup: Option<&crate::types::JidLookup>, selected_return: Option<usize>) -> Vec<Line<'static>> {
+    let mut right_lines: Vec<Line<'static>> = Vec::new();
+    if let Some(l) = lookup {
+        let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
+        if let Some(mid) = sel.checked_sub(l.returns.len()).and_then(|k| l.missing.get(k)) {
+            right_lines.push(Line::from(Span::styled(
+                format!("  {} was targeted by this job but hasn't returned.", mid),
+                Style::default().fg(color::outcome_missing()).add_modifier(Modifier::BOLD),
+            )));
+            right_lines.push(Line::from(""));
+            right_lines.push(Line::from(Span::styled(
+                "  It may still be running, or the minion is down or never received the job.",
+                Style::default().fg(color::inactive_fg()),
+            )));
+            right_lines.push(Line::from(Span::styled(
+                "  Reopen this job later to see whether a return arrived.",
+                Style::default().fg(color::inactive_fg()),
+            )));
+        } else if sel < l.returns.len() {
+            let ret = &l.returns[sel];
+            if !ret.formatted_text.is_empty() {
+                right_lines.extend(crate::app::App::ansi_text_to_lines(&ret.formatted_text, Style::default().fg(color::main_fg())));
+            } else {
+                // `salt-run jobs.lookup_jid` never passes an explicit `_retcode`
+                // to the nested outputter (that kwarg is a `salt`/exec-module
+                // concept, not a runner one) — it defaults to 0 in real Salt,
+                // so the real CLI's dict/list coloring is always the success
+                // colors regardless of any individual minion's own retcode.
+                // Passing `ret.retcode` here colored failed minions red, which
+                // doesn't happen in the actual command's output.
+                right_lines.extend(pretty_return_lines(&ret.minion_id, &ret.full_return, 0));
+            }
+        } else {
+            right_lines.push(Line::from(Span::styled(
+                "  No return data.",
+                Style::default().fg(color::inactive_fg()),
+            )));
+        }
+    } else {
+        right_lines.push(Line::from(Span::styled(
+            "  Querying Salt master...",
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
+        )));
+    }
+    right_lines
 }
 
 fn draw_job_detail(
@@ -1093,49 +1236,7 @@ fn draw_job_detail(
         None => "Preview".to_string(),
     };
 
-    let mut right_lines: Vec<Line<'static>> = Vec::new();
-    if let Some(ref l) = lookup {
-        let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
-        if let Some(mid) = sel.checked_sub(l.returns.len()).and_then(|k| l.missing.get(k)) {
-            right_lines.push(Line::from(Span::styled(
-                format!("  {} was targeted by this job but hasn't returned.", mid),
-                Style::default().fg(color::outcome_missing()).add_modifier(Modifier::BOLD),
-            )));
-            right_lines.push(Line::from(""));
-            right_lines.push(Line::from(Span::styled(
-                "  It may still be running, or the minion is down or never received the job.",
-                Style::default().fg(color::inactive_fg()),
-            )));
-            right_lines.push(Line::from(Span::styled(
-                "  Reopen this job later to see whether a return arrived.",
-                Style::default().fg(color::inactive_fg()),
-            )));
-        } else if sel < l.returns.len() {
-            let ret = &l.returns[sel];
-            if !ret.formatted_text.is_empty() {
-                right_lines.extend(crate::app::App::ansi_text_to_lines(&ret.formatted_text, Style::default().fg(color::main_fg())));
-            } else {
-                // `salt-run jobs.lookup_jid` never passes an explicit `_retcode`
-                // to the nested outputter (that kwarg is a `salt`/exec-module
-                // concept, not a runner one) — it defaults to 0 in real Salt,
-                // so the real CLI's dict/list coloring is always the success
-                // colors regardless of any individual minion's own retcode.
-                // Passing `ret.retcode` here colored failed minions red, which
-                // doesn't happen in the actual command's output.
-                right_lines.extend(pretty_return_lines(&ret.minion_id, &ret.full_return, 0));
-            }
-        } else {
-            right_lines.push(Line::from(Span::styled(
-                "  No return data.",
-                Style::default().fg(color::inactive_fg()),
-            )));
-        }
-    } else {
-        right_lines.push(Line::from(Span::styled(
-            "  Querying Salt master...",
-            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
-        )));
-    }
+    let right_lines = job_preview_lines(lookup.as_ref(), selected_return);
 
     *fail_lines = right_lines.iter().enumerate()
         .filter(|(_, l)| {
@@ -1490,7 +1591,10 @@ fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
     hints
 }
 
-fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
+/// The severity, rule and description stay at the top, the description
+/// wrapped under its label; the items scroll below them and `/` searches
+/// them.
+fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, scroll: usize, scroll_max: &mut usize, search_matches: &mut Vec<usize>, search: PopupSearch, clipboard: (Option<std::time::Instant>, Option<std::time::Instant>, Option<&str>)) {
     let sev_color = match alert.severity {
         crate::types::AlertSeverity::Info => color::cyan(),
         crate::types::AlertSeverity::Warn => color::yellow(),
@@ -1499,26 +1603,90 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry
     let mut lines = header_lines(" Alert Detail ", area.width);
     lines.push(row("Severity", alert.severity.label().to_string(), sev_color));
     lines.push(row("Rule", alert.rule.to_string(), color::cyan()));
-    lines.push(row("Description", alert.description.clone(), color::hi_fg()));
+    // A row's value starts after its 2-space indent and 20-wide label.
+    let wrapped = wrap_words(&alert.description, (area.width as usize).saturating_sub(2 + 22 + 2));
+    for (i, part) in wrapped.into_iter().enumerate() {
+        let label = if i == 0 { "Description" } else { "" };
+        lines.push(row(label, part, color::hi_fg()));
+    }
     lines.push(Line::from(""));
-
     if !alert.details.is_empty() {
         lines.push(Line::from(Span::styled(
             format!("  Items ({}):", alert.details.len()),
             Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD),
         )));
-        for detail in &alert.details {
-            lines.push(Line::from(Span::styled(
-                format!("    {}", detail),
-                Style::default().fg(color::main_fg()),
-            )));
+    }
+    let pinned = lines.len();
+
+    let items: Vec<Line<'static>> = alert.details.iter()
+        .map(|d| Line::from(Span::styled(format!("    {}", d), Style::default().fg(color::main_fg()))))
+        .collect();
+    let (mut body, matches) = highlight_matches(items, search.query, search.focus);
+    *search_matches = matches;
+    body.push(Line::from(""));
+
+    let (clipboard_at, save_at, clipboard_warning) = clipboard;
+    let status = if search.typing {
+        search.status(search_matches.len())
+    } else {
+        clipboard_status(clipboard_at, save_at, clipboard_warning).or_else(|| search.status(search_matches.len()))
+    };
+    let viewport = (area.height as usize).saturating_sub(2 + pinned + usize::from(status.is_some()));
+    *scroll_max = body.len().saturating_sub(viewport);
+    let scroll = scroll.min(*scroll_max);
+    let more = (scroll > 0, scroll + viewport < body.len());
+    lines.extend(body.into_iter().skip(scroll));
+
+    let hints: Vec<(&str, String)> = if search.typing {
+        vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())]
+    } else {
+        let mut hints = vec![("Esc/q", "close".to_string())];
+        if *scroll_max > 0 {
+            hints.push(("\u{2191}\u{2193}", "scroll".to_string()));
+            hints.push(("PgUp/PgDn", "page".to_string()));
+        }
+        if !alert.details.is_empty() {
+            hints.push(("/", "search".to_string()));
+        }
+        if !search_matches.is_empty() {
+            hints.push(("n/N", "next/prev match".to_string()));
+        }
+        hints.extend([("y", "copy".to_string()), ("s", "save".to_string())]);
+        hints
+    };
+    render_popup(f, area, &lines, &hints, status, more, 0, 0);
+}
+
+/// `text` broken into lines of at most `width` characters at spaces; a word
+/// longer than a line is cut.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(10);
+    let mut out = vec![String::new()];
+    for word in text.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let line = out.last_mut().unwrap();
+            let used = line.chars().count();
+            let gap = usize::from(used > 0);
+            if used + gap + word.len() <= width {
+                if gap == 1 {
+                    line.push(' ');
+                }
+                line.extend(word.iter());
+                break;
+            }
+            if used > 0 {
+                out.push(String::new());
+                continue;
+            }
+            line.extend(word.drain(..width));
+            out.push(String::new());
         }
     }
-
-    lines.push(Line::from(""));
-    let hints: [(&str, String); 3] = [("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string())];
-    let status = clipboard_status(clipboard_at, save_at, clipboard_warning);
-    render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
+    if out.len() > 1 && out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
+    out
 }
 
 fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiLogEntry, clipboard_at: Option<std::time::Instant>, save_at: Option<std::time::Instant>, clipboard_warning: Option<&str>) {
@@ -1550,6 +1718,116 @@ fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiL
     let hints: [(&str, String); 3] = [("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string())];
     let status = clipboard_status(clipboard_at, save_at, clipboard_warning);
     render_popup(f, area, &lines, &hints, status, (false, false), 0, 0);
+}
+
+/// A Master Config tab setting in full: where it's set, its value and Salt's
+/// default. Returns the last scroll position.
+fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfig, s: &crate::types::ConfigSetting, scroll: usize, status: Option<Line<'static>>) -> usize {
+    let mut lines = header_lines(&format!(" {} ", s.key), area.width);
+    lines.push(row("Kind", s.kind.label().to_string(), color::main_fg()));
+    if let [only] = s.sources.as_slice() {
+        let path = mc.files.get(only.file).map_or("?", |f| f.path.as_str());
+        let at = if only.start > 0 { format!(" {}", super::master_config::line_span(only.start, only.end)) } else { String::new() };
+        lines.push(row("Set in", format!("{}{}", path, at), color::cyan()));
+    }
+    for file in s.sources.iter().filter_map(|src| mc.files.get(src.file)).filter(|f| f.error.is_some()) {
+        lines.push(row("Rejected file", format!("{}: {}", file.path, file.error.as_deref().unwrap_or("")), color::red()));
+    }
+    if let Some(core) = &s.suggest {
+        lines.push(row("Did you mean", core.clone(), color::red()));
+    }
+    if let Some(about) = &s.about {
+        lines.push(row("Read by", about.clone(), color::cyan()));
+    }
+    for (key, suggest) in &s.unknown_nested {
+        let hint = suggest.as_ref().map_or(String::new(), |k| format!(" (did you mean {}?)", k));
+        lines.push(row("Ignored option", format!("{}{}", key, hint), color::red()));
+    }
+    for remark in &s.notes {
+        lines.push(row("Note", remark.clone(), color::yellow()));
+    }
+    if s.redacted {
+        lines.push(row("Credentials", "shown as <redacted>".to_string(), color::inactive_fg()));
+    }
+    if let Some(state) = s.restart {
+        lines.push(row("On restart", state.describe().to_string(), color::yellow()));
+        if s.running_full.is_none() {
+            lines.push(row("Running master", s.running_shown(), color::yellow()));
+        } else if let Some(running) = s.running_line.as_ref().filter(|r| !r.contains('\n') && r.chars().count() <= 60) {
+            lines.push(row("Running master", running.clone(), color::yellow()));
+        } else {
+            lines.push(row("Running master", "differs, shown below".to_string(), color::yellow()));
+        }
+    }
+    let default_differs = s.default.as_ref().filter(|d| **d != s.full);
+    match (&s.default, default_differs) {
+        (Some(_), None) if !s.sources.is_empty() => lines.push(row("Default", "same as Salt's default".to_string(), color::inactive_fg())),
+        (_, Some(d)) if !d.contains('\n') => lines.push(row("Salt's default", d.clone(), color::yellow())),
+        (_, Some(_)) => lines.push(row("Salt's default", "differs, shown below".to_string(), color::yellow())),
+        _ => {}
+    }
+    lines.push(Line::from(""));
+    let pinned = lines.len();
+
+    let value = |text: &str, fg| text.lines().map(|l| Line::from(Span::styled(format!("    {}", l), Style::default().fg(fg)))).collect::<Vec<_>>();
+    let heading = |text: &str| Line::from(Span::styled(format!("  {}", text), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)));
+    let mut body = Vec::new();
+    if s.sources.len() > 1 {
+        // Each file's own value, then what Salt made of them.
+        for src in &s.sources {
+            let place = super::master_config::source_place(mc, src.file, src.start);
+            let fg = if src.relation == crate::types::SourceRelation::Ignored { color::red() } else { color::label_fg() };
+            body.push(Line::from(vec![
+                Span::styled(format!("  {}", place), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("  {}", src.relation.describe()), Style::default().fg(fg)),
+            ]));
+            if !src.dropped.is_empty() {
+                body.push(Line::from(Span::styled(format!("    drops {}", src.dropped.join(", ")), Style::default().fg(color::yellow()))));
+            }
+            body.extend(value(&src.value, color::main_fg()));
+            body.push(Line::from(""));
+        }
+        body.push(heading("Result"));
+    } else {
+        body.push(heading("Value"));
+    }
+    body.extend(value(&s.full, color::hi_fg()));
+    if let Some(running) = s.running_full.as_ref().filter(|_| s.running_line.as_ref().is_none_or(|r| r.chars().count() > 60)) {
+        body.push(Line::from(""));
+        body.push(heading("Running master"));
+        body.extend(value(running, color::yellow()));
+    }
+    if let Some(default) = default_differs.filter(|d| d.contains('\n')) {
+        body.push(Line::from(""));
+        body.push(heading("Salt's default"));
+        body.extend(value(default, color::inactive_fg()));
+    }
+    body.push(Line::from(""));
+    // Lines wider than the popup end in a marker instead of just stopping.
+    let width = (area.width as usize).saturating_sub(2);
+    let header = header_lines("", area.width).len();
+    let lines: Vec<Line<'static>> = lines.into_iter().enumerate().map(|(i, l)| if i < header { l } else { clip_marked(l, width) }).collect();
+    let body: Vec<Line<'static>> = body.into_iter().map(|l| clip_marked(l, width)).collect();
+
+    // As tall as its content, up to the area it was given.
+    let chrome = 2 + pinned + usize::from(status.is_some());
+    let height = (chrome + body.len()).min(area.height as usize) as u16;
+    let area = Rect { y: area.y + (area.height - height) / 2, height, ..area };
+    let viewport_h = (area.height as usize).saturating_sub(chrome);
+    let max_scroll = body.len().saturating_sub(viewport_h);
+    let scroll = scroll.min(max_scroll);
+    let more = (scroll > 0, scroll + viewport_h < body.len());
+    let mut lines = lines;
+    lines.extend(body.into_iter().skip(scroll));
+    let hints: [(&str, String); 5] = [
+        ("Esc/q", "close".to_string()),
+        ("\u{2191}\u{2193}", "scroll".to_string()),
+        ("PgUp/PgDn", "page".to_string()),
+        ("y", "copy".to_string()),
+        ("s", "save".to_string()),
+    ];
+    render_popup(f, area, &lines, &hints, status, more, 0, 0);
+    max_scroll
 }
 
 fn draw_admin_confirm(f: &mut Frame, area: Rect) {
@@ -1874,6 +2152,22 @@ fn format_ts(ts: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptions_wrap_at_spaces_and_cut_long_words() {
+        assert_eq!(wrap_words("one two three four", 10), ["one two", "three four"]);
+        assert_eq!(wrap_words("a 123456789012345 b", 10), ["a", "1234567890", "12345 b"]);
+        assert_eq!(wrap_words("", 10), [""]);
+        assert_eq!(wrap_words("short", 40), ["short"]);
+    }
+
+    #[test]
+    fn cut_lines_end_in_a_marker() {
+        let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let line = Line::from(vec![Span::raw("  key "), Span::raw("long value")]);
+        assert_eq!(text(clip_marked(line.clone(), 16)), "  key long value");
+        assert_eq!(text(clip_marked(line, 10)), "  key lon\u{2026}");
+    }
 
     #[test]
     fn long_names_are_cut_in_the_middle() {

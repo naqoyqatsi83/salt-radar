@@ -3,6 +3,9 @@
 #
 # Btop gruvbox_light theme
 # by kk9uk
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the gruvbox light palette.
 
 theme[main_bg]="#fbf1c7"
 theme[meter_bg]="#f5e9c0"
@@ -22,10 +25,10 @@ theme[subtitle_fg]="#72685d"
 theme[version_fg]="#076678"
 theme[hint_fg]="#948a74"
 theme[badge_bg]="#e1be8b"
-theme[green]="#427b58"
+theme[green]="#79740e"
 theme[cyan]="#076678"
-theme[yellow]="#79740e"
-theme[orange]="#b25e1c"
+theme[yellow]="#b57614"
+theme[orange]="#af3a03"
 theme[red]="#cc241d"
 theme[purple]="#a26ce6"
 theme[gradient_start]="#427b58"
@@ -37,12 +40,12 @@ theme[mem_gradient_mid]="#d65d0e"
 theme[mem_gradient_high]="#d14016"
 theme[mem_gradient_end]="#cc241d"
 theme[pulse_fresh]="#639565"
-theme[pulse_aging]="#b25e1c"
+theme[pulse_aging]="#af3a03"
 theme[tab_active_bg]="#f6eac0"
 theme[tab_active_fg]="#cc241d"
 theme[tab_inactive_fg]="#948a74"
 theme[tab_separator]="#a89984"
-theme[highlight_1]="#3282ff"
+theme[highlight_1]="#458588"
 theme[highlight_2]="#8f3f71"
 theme[highlight_3]="#076678"
-theme[highlight_4]="#aa50ff"
+theme[highlight_4]="#b16286"

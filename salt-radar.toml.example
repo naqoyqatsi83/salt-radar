@@ -17,6 +17,14 @@
 # Path to the bundled salt-radar-agent Python script
 # agent_path = "/usr/share/salt-radar/salt_radar_agent.py"
 
+# Hardening for the Master Config tab's restart check: ask the running master
+# only for a digest of each option instead of its value. The value-fetching
+# runner's return (the master's options, credentials included) otherwise goes
+# over the event bus and into the job cache like any job's return; with this,
+# only digests do, and the tab says a setting differs without showing the
+# running value.
+# running_config_digests = false
+
 [refresh]
 # How often (in seconds) to refresh dashboard collector data
 # dashboard_secs = 2
@@ -27,12 +35,30 @@
 # How often to re-fetch config snapshot from the agent
 # config_secs = 60
 
+# How often (ms) the screen redraws and timed work runs, 500-30000. Also
+# changed in steps of 500 with '-'/'+'; the header shows it as -2000ms+.
+# tick_ms = 2000
+
+# Cap on what redraws send to the terminal, in KB/s; 0 = no cap. Through a
+# slow link, such as an SSH proxy that records sessions, a busy master's
+# scrolling lists can send more than the link passes on, and the whole
+# connection lags (other windows and tmux on it too). Over the cap, redraws
+# wait (key presses still redraw at once); the header shows the cap, yellow
+# while a redraw is waiting. Try 4-8 behind such a proxy.
+# max_output_kbs = 0
+
 [events]
 # Maximum number of events to keep in the ring buffer
 # buffer_size = 10000
 
 # Maximum number of events to keep in the Event Sniffer's own buffer
 # sniffer_buffer_size = 1000
+
+# How the Events list shows times: "today" shows only the time (17:25:08) for
+# events from today -- each column's own today, local or UTC -- and the full
+# date for older ones; "full" always shows the date (2026-10-15 17:25:08).
+# The preview, the detail popup, copies and saves always have the full date.
+# time_format = "today"
 
 # Which Events list columns are shown, and in what order (comma-separated;
 # any key left out is hidden). Keys: local, utc, tag, minion. Also editable
@@ -189,6 +215,9 @@
 # ignored; any panel missing from the list is appended after the ones named.
 # graph_order = "cpu,mem,zmq,events,activity"
 
+# How the sparklines are drawn: "dots" or "bars". Also toggled with 'm'.
+# graph_style = "dots"
+
 # Which of the Dashboard's other (non-sparkline) panels are shown — all six
 # default on. salt-api still only ever renders when the process is actually
 # detected on this master; this just adds an opt-out on top of that.
@@ -232,7 +261,7 @@
 #   live_columns:  jid, fun, args, target, source, tgt, ok, fail, wait, started
 #   cache_columns: jid, user, started, target, fun, args
 # live_columns = "jid,fun,args,target,source,tgt,ok,fail,wait"
-# cache_columns = "jid,user,started,target,fun,args"
+# cache_columns = "jid,user,target,fun,args"
 
 [ui]
 # Color theme: "Default" (built in), the name of a *.theme file in
@@ -247,3 +276,19 @@
 # How strongly the screen behind a popup is dimmed (faded toward the theme's
 # background), 0-100%. 0 turns dimming off.
 # popup_dim_pct = 70
+
+# Ask before quitting with 'q' (Ctrl+C always quits at once). Keeps extra 'q'
+# presses meant for a popup -- e.g. while the screen lags -- from quitting.
+# confirm_quit = true
+
+# Mouse capture (clicks, wheel scrolling). Also toggled with F2.
+# mouse = true
+
+# Width of the left panel on the tabs split in two side by side, in percent
+# (20-80). Also moved 1% at a time with Ctrl+Left/Right on the tab itself.
+# minions_split_pct = 55
+# events_split_pct = 50
+# jobs_split_pct = 55
+# api_split_pct = 65
+# pulse_split_pct = 65
+# master_split_pct = 55

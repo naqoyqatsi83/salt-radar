@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -8,31 +8,27 @@ use crate::app::App;
 use crate::types::{Column, HeaderHit, TableId};
 
 use super::color;
-use super::table::{column_widths, header_line, pad};
+use super::table::{fitted_widths, header_line, pad};
 
-fn format_time_local(ts: f64) -> String {
-    if ts < 1.0 {
+/// An event's time in a zone, as of `now`: only the time when `today` is
+/// set and the event is from that zone's today, else the date too.
+fn format_time<Tz: chrono::TimeZone>(ts: f64, zone: &Tz, now: chrono::DateTime<chrono::Utc>, today: bool) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let Some(dt) = chrono::DateTime::from_timestamp(ts as i64, 0).filter(|_| ts >= 1.0) else {
         return "\u{2014}".to_string();
+    };
+    let dt = dt.with_timezone(zone);
+    if today && dt.date_naive() == now.with_timezone(zone).date_naive() {
+        dt.format("%H:%M:%S").to_string()
+    } else {
+        dt.format("%Y-%m-%d %H:%M:%S").to_string()
     }
-    chrono::DateTime::from_timestamp(ts as i64, 0)
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| "\u{2014}".to_string())
-}
-
-fn format_time_utc(ts: f64) -> String {
-    if ts < 1.0 {
-        return "\u{2014}".to_string();
-    }
-    chrono::DateTime::from_timestamp(ts as i64, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| "\u{2014}".to_string())
 }
 
 pub fn draw_events(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    let cols = super::split_panes(area, app);
 
     // Filtered once per frame and shared by both panels -- avoids each of
     // them separately re-scanning the whole (possibly `event_buffer_size`,
@@ -74,17 +70,13 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
     let filter_terms = app.events_filter_terms();
 
     // Filter bar
-    if app.is_filtering {
-        let mut spans = super::input_spans(" filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
-        spans.extend([
-            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
-        ]);
-        lines.push(Line::from(spans));
-    } else if !app.applied_filter.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(format!(" filter: {} ", app.applied_filter), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
-        ]));
+    let (filter, count) = if app.is_filtering {
+        (&app.filter_text, format!("{} items", total))
+    } else {
+        (&app.applied_filter, format!("{} items", total))
+    };
+    if let Some(bar) = super::filter_bar(filter, app.is_filtering, app.input_cursor, count, true) {
+        lines.push(bar);
     }
 
     if app.events.is_empty() {
@@ -94,7 +86,17 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
         )));
     } else {
         let cols = app.columns(TableId::Events);
-        let widths = column_widths(&cols, (inner.width as usize).saturating_sub(2));
+        let (now, today) = (chrono::Utc::now(), app.config.event_time_format == "today");
+        // Sized to every event listed, so scrolling doesn't shift the columns.
+        let longest: Vec<Option<usize>> = cols.iter().map(|&col| match col {
+            // Events arrive in time order: the oldest one listed decides whether any shows a date.
+            Column::Local => Some(filtered.first().map_or(1, |e| format_time(e.ts, &chrono::Local, now, today).chars().count())),
+            Column::Utc => Some(filtered.first().map_or(1, |e| format_time(e.ts, &chrono::Utc, now, today).chars().count())),
+            Column::Tag => Some(filtered.iter().map(|e| e.tag.chars().count()).max().unwrap_or(0)),
+            Column::EventMinion => Some(filtered.iter().map(|e| e.data["id"].as_str().map_or(0, |id| id.chars().count())).max().unwrap_or(0)),
+            _ => None,
+        }).collect();
+        let widths = fitted_widths(&cols, (inner.width as usize).saturating_sub(2), &longest);
         lines.push(header_line(TableId::Events, &cols, &widths, None, inner.x, inner.y + lines.len() as u16, hits));
 
         if total == 0 {
@@ -108,8 +110,8 @@ fn draw_event_list(f: &mut Frame, area: Rect, app: &App, focused: bool, filtered
                 let mut spans = vec![Span::raw("  ")];
                 for (&col, &w) in cols.iter().zip(&widths) {
                     let (text, fg) = match col {
-                        Column::Local => (format_time_local(evt.ts), color::title()),
-                        Column::Utc => (format_time_utc(evt.ts), color::title()),
+                        Column::Local => (format_time(evt.ts, &chrono::Local, now, today), color::title()),
+                        Column::Utc => (format_time(evt.ts, &chrono::Utc, now, today), color::title()),
                         Column::Tag => (evt.tag.clone(), color::cyan()),
                         Column::EventMinion => (evt.data["id"].as_str().unwrap_or("").to_string(), color::yellow()),
                         _ => (String::new(), color::main_fg()),
@@ -161,15 +163,16 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
     let selected = app.event_selected.min(total.saturating_sub(1));
     let evt = filtered[selected];
 
+    let width = inner.width as usize;
     let mut lines = Vec::new();
 
     // Tag
     lines.push(Line::from(vec![
         Span::styled("  Tag", Style::default().fg(color::label_fg())),
     ]));
-    lines.push(Line::from(vec![
+    lines.extend(super::wrap_spans(vec![
         Span::styled(format!("  {}", evt.tag), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
-    ]));
+    ], width));
     lines.push(Line::from(""));
 
     // Timestamps
@@ -177,10 +180,10 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
         Span::styled("  Timestamp", Style::default().fg(color::label_fg())),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  Local  {}", format_time_local(evt.ts)), Style::default().fg(color::inactive_fg())),
+        Span::styled(format!("  Local  {}", format_time(evt.ts, &chrono::Local, chrono::Utc::now(), false)), Style::default().fg(color::inactive_fg())),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  UTC   {}", format_time_utc(evt.ts)), Style::default().fg(color::inactive_fg())),
+        Span::styled(format!("  UTC   {}", format_time(evt.ts, &chrono::Utc, chrono::Utc::now(), false)), Style::default().fg(color::inactive_fg())),
     ]));
     lines.push(Line::from(""));
 
@@ -196,22 +199,64 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
         lines.push(Line::from(""));
     }
 
-    // JSON body — render as pretty-printed, truncate to available height
+    // JSON body — pretty-printed and wrapped, cut to the available height
     lines.push(Line::from(vec![
         Span::styled("  Body", Style::default().fg(color::label_fg())),
     ]));
 
     let json_str = serde_json::to_string_pretty(&evt.data).unwrap_or_default();
     let data_lines: Vec<&str> = json_str.lines().collect();
-    let max_body = (inner.height as usize).saturating_sub(lines.len() + 2);
+    let mut max_body = (inner.height as usize).saturating_sub(lines.len() + 2);
 
-    for data_line in data_lines.iter().take(max_body) {
+    // Start at the first match when it would be cut off, so the reason an
+    // event passed the filter is on screen.
+    let terms = app.events_filter_terms();
+    let hit = |l: &str| terms.iter().any(|t| !t.ranges(l).is_empty());
+    let rows = |l: &str| super::wrapped_rows(&format!("  {}", l), width);
+    // Skip only as far as needed, keeping the panel full and a couple of
+    // rows below the match (one row goes to the "lines above" marker).
+    let skip = match data_lines.iter().position(|l| hit(l)) {
+        Some(first) if data_lines[..=first].iter().map(|l| rows(l)).sum::<usize>() > max_body => {
+            let room = max_body.saturating_sub(3);
+            let mut skip = first;
+            let mut need = rows(data_lines[first]);
+            while skip > 0 && need + rows(data_lines[skip - 1]) <= room {
+                skip -= 1;
+                need += rows(data_lines[skip]);
+            }
+            skip
+        }
+        _ => 0,
+    };
+    if skip > 0 {
         lines.push(Line::from(Span::styled(
-            format!("  {}", data_line),
-            Style::default().fg(color::main_fg()),
+            format!("  ... ({} lines above)", skip),
+            Style::default().fg(color::inactive_fg()),
         )));
+        max_body = max_body.saturating_sub(1);
     }
-    if data_lines.len() > max_body {
+
+    let mut used = 0;
+    let mut shown = skip;
+    for data_line in data_lines.iter().skip(skip) {
+        let text = format!("  {}", data_line);
+        let spans = if hit(data_line) {
+            super::highlight_keywords(&text, &terms)
+        } else {
+            vec![Span::styled(text, Style::default().fg(color::main_fg()))]
+        };
+        let wrapped = super::wrap_spans(spans, width);
+        let fits = wrapped.len() <= max_body - used;
+        let take = wrapped.len().min(max_body - used);
+        lines.extend(wrapped.into_iter().take(take));
+        used += take;
+        if !fits || used == max_body {
+            shown += usize::from(fits);
+            break;
+        }
+        shown += 1;
+    }
+    if shown < data_lines.len() {
         lines.push(Line::from(Span::styled(
             "  ... (press 'Enter' to view full)",
             Style::default().fg(color::yellow()),
@@ -222,4 +267,23 @@ fn draw_event_preview(f: &mut Frame, area: Rect, app: &App, filtered: &[&crate::
         Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn todays_events_show_only_the_time() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-15T17:30:00Z").unwrap().with_timezone(&chrono::Utc);
+        let at = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp() as f64;
+        assert_eq!(format_time(at("2026-10-15T00:00:05Z"), &chrono::Utc, now, true), "00:00:05");
+        assert_eq!(format_time(at("2026-10-14T23:59:59Z"), &chrono::Utc, now, true), "2026-10-14 23:59:59");
+        assert_eq!(format_time(at("2026-10-15T09:00:00Z"), &chrono::Utc, now, false), "2026-10-15 09:00:00");
+        // "Today" is the zone's own: 23:30 UTC is already tomorrow at UTC+2.
+        let plus2 = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        assert_eq!(format_time(at("2026-10-15T21:30:00Z"), &plus2, now, true), "23:30:00");
+        assert_eq!(format_time(at("2026-10-15T22:30:00Z"), &plus2, now, true), "2026-10-16 00:30:00");
+        assert_eq!(format_time(0.0, &chrono::Utc, now, true), "\u{2014}");
+    }
 }

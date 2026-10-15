@@ -143,6 +143,11 @@ pub struct App {
     /// `color::set_theme`, so `sync_theme` only reloads on a change.
     applied_theme: Option<(String, bool)>,
 
+    /// The "Quit salt-radar?" prompt `q` opens (`confirm_quit`). A global
+    /// overlay rather than a `detail_popup`, which may hold a popup parked on
+    /// another tab.
+    pub quit_confirm: bool,
+
     // Admin mode
     pub admin_mode: bool,
     pub admin_mode_pending: bool,
@@ -167,6 +172,7 @@ pub struct App {
     pub jobs_filter: String,
     pub alerts_filter: String,
     pub api_filter: String,
+    pub master_filter: String,
     /// Events-tab filter actually applied to `self.events` — committed from
     /// `filter_text` on Enter rather than re-filtered on every keystroke.
     /// See `filtered_events`/`get_filtered_event`.
@@ -243,7 +249,8 @@ pub struct App {
     /// Active "save to file" prompt (the 's'/'S' counterpart of 'y'/'Y'
     /// clipboard copy), if one is open. Global overlay, like ConfigEditor.
     pub save_prompt: Option<SaveFilePrompt>,
-    pub sparkline_style: SparklineStyle,
+    /// A redraw is waiting for `max_output_kbs` to allow it; the header says so.
+    pub output_held: bool,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
     /// Set to true when config editor saves — main loop will restart
@@ -300,6 +307,14 @@ pub struct App {
     pub api_requests_log: VecDeque<ApiLogEntry>,
     pub api_log_selected: usize,
 
+    /// The Master Config tab's configuration, fetched on first visit and on `r`.
+    pub master_config: Option<MasterConfig>,
+    pub master_config_loading: bool,
+    pub master_config_error: Option<String>,
+    pub master_selected: usize,
+    /// Last scroll position of the setting popup, set when it's drawn.
+    pub master_popup_scroll_max: usize,
+
     /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
     /// used to compute cpu_percent from the delta between polls.
     prev_proc_cpu: HashMap<u32, (u64, Instant)>,
@@ -348,9 +363,6 @@ pub struct App {
     /// Animation frame index for radar spinner in header
     pub header_radar_frame: u8,
 
-    /// User-adjustable tick interval in milliseconds (default 2000 = 2s)
-    pub tick_interval_ms: u64,
-
     // Network rate tracking
     prev_network_rx_bytes: u64,
     prev_network_tx_bytes: u64,
@@ -362,7 +374,6 @@ pub struct App {
     prev_cpu_time: Option<Instant>,
 
     // Mouse support
-    pub mouse_enabled: bool,
     pub needs_mouse_toggle: bool,
     last_click_at: Option<Instant>,
     last_click_col: u16,
@@ -394,6 +405,12 @@ pub struct App {
     /// Down/PageDown/End against this real bound instead of guessing,
     /// which is what keeps PageUp responsive right after End.
     pub event_detail_scroll_max: usize,
+    /// The body line of each match of the Event Detail search, in order,
+    /// written back every render like `event_detail_scroll_max`.
+    pub event_search_matches: Vec<usize>,
+    /// The same two, for the Alert Detail popup's item list.
+    pub alert_detail_scroll_max: usize,
+    pub alert_search_matches: Vec<usize>,
     /// Same as `event_detail_scroll_max`, for the Job Detail popup's return
     /// content preview (right panel).
     pub job_detail_scroll_max: usize,
@@ -502,7 +519,10 @@ pub fn column_editor_items(value: &str, all: &[&'static str]) -> (Vec<&'static s
 }
 
 pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
+/// `[events] time_format`: only the time for today's events, or always the full date.
+pub const EVENT_TIME_FORMATS: &[&str] = &["today", "full"];
 pub const ON_OFF: &[&str] = &["on", "off"];
+pub const GRAPH_STYLES: &[&str] = &["dots", "bars"];
 pub const API_STATS_AUTH_MODES: &[&str] = &["none", "plaintext", "pillar"];
 
 fn on_off(b: bool) -> String {
@@ -541,12 +561,25 @@ pub const MINION_HEALTH_WINDOW: usize = 50;
 /// rule, column header, rule.
 pub const MINION_EVENTS_HEADER_ROWS: u16 = 5;
 
+/// Return times under this count as this for lag ratios: a `test.ping`
+/// answered in 30 ms by most minions would otherwise rate one answering in
+/// 120 ms 4x slow over jitter nobody would notice. A job where both the
+/// minion and the median are under it says nothing about lag and isn't
+/// rated at all, or a fleet running mostly fast jobs would read 1.0x for
+/// every minion, however slow it is on the jobs that take time.
+const LAG_MIN_SECS: f64 = 0.5;
+
 #[derive(Debug, Default, PartialEq)]
 pub struct MinionHealth {
     /// Outcomes of the latest returns, oldest first; `true` = success.
     pub recent: VecDeque<bool>,
     /// When the newest failure happened, and the job's function and args.
     pub last_failure: Option<(f64, String)>,
+    /// Lag ratios of the latest jobs, oldest first: the minion's return
+    /// time over the median of the job's minions (see `JobLag`).
+    pub lag: VecDeque<f64>,
+    /// Seconds from publish to return of the minion's latest `test.ping`.
+    pub last_ping_secs: Option<f64>,
 }
 
 impl MinionHealth {
@@ -554,6 +587,19 @@ impl MinionHealth {
         self.recent.push_back(ok);
         if self.recent.len() > MINION_HEALTH_WINDOW { self.recent.pop_front(); }
         if let Some(what) = failure { self.last_failure = Some((ts, what)); }
+    }
+
+    fn record_lag(&mut self, secs: f64, job_median: f64) {
+        if secs < LAG_MIN_SECS && job_median < LAG_MIN_SECS { return; }
+        self.lag.push_back(secs.max(LAG_MIN_SECS) / job_median.max(LAG_MIN_SECS));
+        if self.lag.len() > MINION_HEALTH_WINDOW { self.lag.pop_front(); }
+    }
+
+    /// The lag ratio at percentile `p` (0.5 = median) of the latest jobs.
+    pub fn lag_at(&self, p: f64) -> Option<f64> {
+        let mut v: Vec<f64> = self.lag.iter().copied().collect();
+        v.sort_by(f64::total_cmp);
+        percentile(&v, p)
     }
 
     pub fn failed(&self) -> usize {
@@ -572,6 +618,58 @@ pub struct ReturnResult {
     pub counts: Option<StateCounts>,
 }
 
+/// A row of the Minions list.
+#[derive(Clone, Copy)]
+pub enum MinionRow<'a> {
+    /// An accepted minion, with what the master knows about it.
+    Minion(&'a MinionInfo),
+    /// A key with no minion data: pending, rejected or denied (a denied key
+    /// often duplicates an accepted ID), or accepted but never seen.
+    Key(&'a KeyInfo),
+    /// The collapsible "Timed out" section header.
+    TimedOutHeader,
+}
+
+impl<'a> MinionRow<'a> {
+    pub fn minion(&self) -> Option<&'a MinionInfo> {
+        match *self {
+            Self::Minion(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Minion(m) => &m.id,
+            Self::Key(k) => &k.id,
+            Self::TimedOutHeader => "",
+        }
+    }
+
+    pub fn key_status(&self) -> Option<KeyStatus> {
+        match self {
+            Self::Minion(_) => Some(KeyStatus::Accepted),
+            Self::Key(k) => Some(k.status),
+            Self::TimedOutHeader => None,
+        }
+    }
+
+    fn timed_out(&self) -> bool {
+        matches!(self, Self::Minion(m) if m.timed_out)
+    }
+}
+
+/// The Minions list's rows, one per key (see `App::minion_entries`).
+fn minion_list_rows<'a>(keys: &'a [KeyInfo], minions: &'a [MinionInfo], index: &HashMap<String, usize>) -> Vec<MinionRow<'a>> {
+    if keys.is_empty() {
+        return minions.iter().filter(|m| m.key_status == Some(KeyStatus::Accepted)).map(MinionRow::Minion).collect();
+    }
+    keys.iter().map(|k| match (k.status, index.get(&k.id)) {
+        (KeyStatus::Accepted, Some(&i)) => MinionRow::Minion(&minions[i]),
+        _ => MinionRow::Key(k),
+    }).collect()
+}
+
 /// The JID of a `salt/job/<jid>/ret/<minion>` event.
 pub fn return_event_jid(evt: &SaltEvent) -> Option<&str> {
     let mut parts = evt.tag.split('/');
@@ -581,15 +679,12 @@ pub fn return_event_jid(evt: &SaltEvent) -> Option<&str> {
     }
 }
 
-/// Outcome of a job return event: Salt's own `success`/`retcode` when the
-/// event carries them, and what the return data itself says (a failed state
-/// inside a state run, an `ERROR:` string, ...).
+/// Outcome of a job return event, by the same rule as every other view (see
+/// `return_outcome`).
 pub fn return_event_result(data: &serde_json::Value) -> ReturnResult {
     let ret = &data["return"];
-    let (derived_rc, derived_ok) = derive_success_retcode(ret);
-    let retcode = data["retcode"].as_i64().unwrap_or(derived_rc);
-    let success = data["success"].as_bool().unwrap_or(true) && derived_ok && retcode == 0;
-    ReturnResult { success, retcode: if success { 0 } else { retcode.max(1) }, counts: state_counts(ret) }
+    let (success, retcode) = return_outcome(data, ret);
+    ReturnResult { success, retcode, counts: state_counts(ret) }
 }
 
 /// Whether a Job Cache entry targeted this minion. Only targets that can be
@@ -646,12 +741,31 @@ impl MinionActivityItem {
 #[derive(Clone, Debug)]
 pub enum DetailPopup {
     Minion(String, PingState, Option<Vec<(String, String)>>, usize),
-    SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch },
+    /// `search` is the `/` query in the body (being typed while
+    /// `searching`), `search_focus` the match `n`/`N` last landed on.
+    SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch, search: String, searching: bool, search_focus: Option<usize> },
     JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
-    Alert(AlertEntry),
+    /// An alert's detail: `scroll` and the search over its items work as
+    /// in `SaltEvent`.
+    Alert { alert: AlertEntry, scroll: usize, search: String, searching: bool, search_focus: Option<usize> },
     AdminConfirm,
     MinionEvents { minion_id: String, selected: usize },
     ApiRequest(ApiLogEntry),
+    /// A Master Config tab setting's full value; the index is into
+    /// `master_config.settings`.
+    MasterSetting { index: usize, scroll: usize },
+}
+
+impl DetailPopup {
+    /// Alert Detail for `alert`, at the top, no search.
+    pub fn alert(alert: AlertEntry) -> Self {
+        Self::Alert { alert, scroll: 0, search: String::new(), searching: false, search_focus: None }
+    }
+
+    /// Event Detail for `evt`, in raw JSON, at the top, no search.
+    pub fn event(evt: SaltEvent) -> Self {
+        Self::SaltEvent { evt, scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle, search: String::new(), searching: false, search_focus: None }
+    }
 }
 
 impl App {
@@ -745,6 +859,9 @@ impl App {
             return_to_minion_events: None,
             return_to_minion_detail: None,
             event_detail_scroll_max: 0,
+            event_search_matches: Vec::new(),
+            alert_detail_scroll_max: 0,
+            alert_search_matches: Vec::new(),
             job_detail_scroll_max: 0,
             job_detail_hits: JobDetailHits::default(),
             job_search: String::new(),
@@ -761,7 +878,6 @@ impl App {
             minion_events_is_filtering: false,
             hide_timed_out: false,
             timed_out_collapsed: false,
-            mouse_enabled: true,
             needs_mouse_toggle: false,
             last_click_at: None,
             last_click_col: 0,
@@ -790,6 +906,7 @@ impl App {
             cache_load_progress: None,
 
             admin_mode: false,
+            quit_confirm: false,
             admin_mode_pending: false,
             fleet_scanning: false,
             fleet_scan_completed: false,
@@ -801,6 +918,7 @@ impl App {
             jobs_filter: String::new(),
             alerts_filter: String::new(),
             api_filter: String::new(),
+            master_filter: String::new(),
             applied_filter: String::new(),
 
             event_selected: 0,
@@ -834,7 +952,7 @@ impl App {
             save_at: None,
             clipboard_msg: None,
             save_prompt: None,
-            sparkline_style: SparklineStyle::default(),
+            output_held: false,
             needs_terminal_clear: false,
             needs_restart: false,
             zmq_latency_ms: 0.0,
@@ -853,6 +971,11 @@ impl App {
             api_login_latencies: VecDeque::new(),
             api_requests_log: VecDeque::new(),
             api_log_selected: 0,
+            master_config: None,
+            master_config_loading: false,
+            master_config_error: None,
+            master_selected: 0,
+            master_popup_scroll_max: 0,
             job_outcome_window: VecDeque::new(),
             prev_proc_cpu: HashMap::new(),
             clk_tck: 100.0,
@@ -874,7 +997,6 @@ impl App {
             last_activity_at: Instant::now(),
             header_radar_frame: 0,
 
-            tick_interval_ms: 2000,
 
             prev_network_rx_bytes: 0,
             prev_network_tx_bytes: 0,
@@ -1038,6 +1160,8 @@ impl App {
             .min(self.pulse_minions_count().saturating_sub(1));
         self.api_log_selected = self.api_log_selected
             .min(self.filtered_api_log_len().saturating_sub(1));
+        self.master_selected = self.master_selected
+            .min(self.filtered_master_settings().len().saturating_sub(1));
     }
 
     /// Clamp only the selection for the tab actively being typed/pasted into.
@@ -1062,6 +1186,8 @@ impl App {
                 .min(self.filtered_alerts_len().saturating_sub(1)),
             Tab::Api => self.api_log_selected = self.api_log_selected
                 .min(self.filtered_api_log_len().saturating_sub(1)),
+            Tab::Master => self.master_selected = self.master_selected
+                .min(self.filtered_master_settings().len().saturating_sub(1)),
             Tab::Jobs => {
                 if self.cache_focus {
                     self.cache_selected = self.cache_selected
@@ -1216,16 +1342,7 @@ impl App {
         })
     }
 
-    /// The Minions-tab filter as a predicate, its terms resolved once per
-    /// pass (see `FilterTerm`).
-    pub fn minion_matcher(pat: &str) -> impl Fn(&MinionInfo) -> bool {
-        let terms: Vec<FilterTerm> = Self::filter_terms(pat).into_iter().map(FilterTerm::new).collect();
-        move |m| terms.is_empty() || terms.iter().any(|t| {
-            t.host(&m.id) || t.text(&m.os) || t.text(&m.osrelease) || t.text(&m.salt_version)
-        })
-    }
-
-    /// Same matching rules as `minion_matcher`, for the separate `FleetMinion`
+    /// The Minions filter's rules, for the separate `FleetMinion`
     /// type used by the Fleet Overview scan — lets the Minions-tab filter also
     /// scope the OS/version/arch breakdown, not just the list.
     pub fn fleet_minion_matcher(pat: &str) -> impl Fn(&crate::types::FleetMinion) -> bool {
@@ -1257,6 +1374,7 @@ impl App {
             Tab::Jobs => &self.jobs_filter,
             Tab::Alerts => &self.alerts_filter,
             Tab::Api => &self.api_filter,
+            Tab::Master => &self.master_filter,
             _ => &self.filter_text,
         }
     }
@@ -1271,6 +1389,7 @@ impl App {
             Tab::Jobs => self.jobs_filter = text.to_string(),
             Tab::Alerts => self.alerts_filter = text.to_string(),
             Tab::Api => self.api_filter = text.to_string(),
+            Tab::Master => self.master_filter = text.to_string(),
             _ => {}
         }
     }
@@ -1372,24 +1491,26 @@ impl App {
     ///
     /// Takes its fields individually (rather than `&mut self`) so callers
     /// already holding an unrelated borrow through `self` can still call it.
+    /// Returns whether the oldest event shown was dropped, so the selection
+    /// can stay on its event as the list moves up.
     fn sync_filtered_events_cache(
         cache: &mut VecDeque<SaltEvent>,
         pat: &str,
         matcher: &EventMatcher,
         new_evt: &SaltEvent,
         evicted: Option<&SaltEvent>,
-    ) {
+    ) -> bool {
         if pat.is_empty() {
-            return;
+            return false;
         }
-        if let Some(evicted_evt) = evicted {
-            if matcher.matches(evicted_evt) {
-                cache.pop_front();
-            }
+        let dropped = evicted.is_some_and(|e| matcher.matches(e));
+        if dropped {
+            cache.pop_front();
         }
         if matcher.matches(new_evt) {
             cache.push_back(new_evt.clone());
         }
+        dropped
     }
 
     /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
@@ -1465,6 +1586,25 @@ impl App {
             format!("{} {}", fun, args).trim_end().to_string()
         });
         self.minion_returns.entry(minion_id.to_string()).or_default().record(ok, ts, failure);
+    }
+
+    pub(crate) fn record_return_timing(&mut self, t: ReturnTiming, fun: &str) {
+        let h = self.minion_returns.entry(t.minion).or_default();
+        if fun == "test.ping" { h.last_ping_secs = Some(t.secs); }
+        if let Some(median) = t.late_median { h.record_lag(t.secs, median); }
+    }
+
+    /// Settles the lag of jobs that are complete or past
+    /// `job_straggler_secs`: fixes their median and rates the minions that
+    /// returned so far against it.
+    fn settle_job_lags(&mut self) {
+        for job in self.jobs.iter_mut() {
+            if let Some((times, median)) = settle_job_lag(job, self.config.job_straggler_secs) {
+                for (minion, secs) in times {
+                    self.minion_returns.entry(minion).or_default().record_lag(secs, median);
+                }
+            }
+        }
     }
 
     /// Rolling percentage of job returns with success == true, over the last
@@ -1691,7 +1831,7 @@ impl App {
             Tab::Events => Some(TableId::Events),
             Tab::Alerts => Some(TableId::Alerts),
             Tab::Api => Some(TableId::ApiLog),
-            Tab::Dashboard | Tab::Pulse => None,
+            Tab::Dashboard | Tab::Pulse | Tab::Master => None,
         }
     }
 
@@ -1752,6 +1892,35 @@ impl App {
             return self.alert_engine.alerts.len();
         }
         self.alert_engine.alerts.iter().filter(|a| Self::matches_alert(a, pat)).count()
+    }
+
+    /// The Master Config tab's settings in display order, as indexes into
+    /// `master_config.settings`: those set in files first, in load order
+    /// (file, then line), then derived and default ones by name.
+    pub fn filtered_master_settings(&self) -> Vec<usize> {
+        let Some(mc) = &self.master_config else { return Vec::new() };
+        let terms = Self::filter_terms(self.filter_text_for(Tab::Master));
+        let mut rows: Vec<usize> = (0..mc.settings.len())
+            .filter(|&i| {
+                let s = &mc.settings[i];
+                terms.is_empty() || terms.iter().any(|t| {
+                    Self::matches_filter(&s.key, t)
+                        || Self::matches_filter(&s.line, t)
+                        || Self::matches_filter(s.kind.label(), t)
+                        || s.about.as_deref().is_some_and(|a| Self::matches_filter(a, t))
+                        || (!s.unknown_nested.is_empty() && Self::matches_filter(SettingKind::Unknown.label(), t))
+                        || (s.restart_pending(mc) && Self::matches_filter("restart", t))
+                        || s.sources.iter().any(|src| mc.files.get(src.file).is_some_and(|file| Self::matches_filter(&file.path, t)))
+                })
+            })
+            .collect();
+        let set_in = |i: usize| mc.settings[i].sources.first().map_or((usize::MAX, 0), |src| (src.file, src.start));
+        rows.sort_by_key(|&i| {
+            let s = &mc.settings[i];
+            let group = if s.sources.is_empty() { s.kind } else { SettingKind::Explicit };
+            (group, set_in(i), s.key.clone())
+        });
+        rows
     }
 
     /// Alerts in display order: filtered, then sorted.
@@ -1877,95 +2046,111 @@ impl App {
             .count()
     }
 
+    /// Minions list entries matching its filter, split into responsive rows
+    /// and timed-out minions. One row per key, so the list adds up to the
+    /// Dashboard's key counts: an accepted key shows its minion (or just the
+    /// key while the master knows nothing more), any other key its status.
+    /// Without readable keys, the accepted minions the master knows.
+    fn minion_entries(&self) -> (Vec<MinionRow<'_>>, Vec<MinionRow<'_>>) {
+        let matches = Self::minion_row_matcher(self.filter_text_for(Tab::Minions));
+        minion_list_rows(&self.keys, &self.minion_info, &self.minion_index).into_iter()
+            .filter(|r| matches(r))
+            .partition(|r| !r.timed_out())
+    }
+
+    /// The Minions filter: ID, key status and, for minions, OS and version.
+    fn minion_row_matcher(pat: &str) -> impl Fn(&MinionRow<'_>) -> bool {
+        let terms: Vec<FilterTerm> = Self::filter_terms(pat).into_iter().map(FilterTerm::new).collect();
+        move |r| terms.is_empty() || terms.iter().any(|t| {
+            t.host(r.id())
+                || r.key_status().is_some_and(|ks| t.text(ks.label()))
+                || matches!(r, MinionRow::Minion(m) if t.text(&m.os) || t.text(&m.osrelease) || t.text(&m.salt_version))
+        })
+    }
+
+    /// Rows the Minions list shows, the "Timed out" header included.
     pub fn filtered_minions_len(&self) -> usize {
-        let accepted = &self.accepted_id_set;
-        let hide = self.hide_timed_out;
-        let matches = Self::minion_matcher(self.filter_text_for(Tab::Minions));
-        let resp_count = self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| matches(m))
-            .filter(|m| !m.timed_out)
-            .count();
-        let to_count = self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| matches(m))
-            .filter(|m| m.timed_out)
-            .count();
-        if hide || to_count == 0 {
-            resp_count
+        let (live, timed_out) = self.minion_entries();
+        if self.hide_timed_out || timed_out.is_empty() {
+            live.len()
         } else {
-            resp_count + 1 + if self.timed_out_collapsed { 0 } else { to_count }
+            live.len() + 1 + if self.timed_out_collapsed { 0 } else { timed_out.len() }
         }
     }
 
-    /// Minions list rows in display order: responsive minions, then (unless
-    /// hidden) the collapsible "Timed out" section header as `None` and,
-    /// unless collapsed, the timed-out minions — each group sorted on its own
-    /// so a sort never mixes timed-out minions in with responsive ones.
-    pub fn minion_rows(&self) -> Vec<Option<&MinionInfo>> {
-        let accepted = &self.accepted_id_set;
-        let matches = Self::minion_matcher(self.filter_text_for(Tab::Minions));
-        let (mut live, mut timed_out): (Vec<&MinionInfo>, Vec<&MinionInfo>) = self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| matches(m))
-            .partition(|m| !m.timed_out);
-        if let Some((col, desc)) = self.sort_of(TableId::Minions) {
-            let keys = self.key_status_map();
-            let key_rank = |m: &MinionInfo| match keys.get(m.id.as_str()).copied().or(m.key_status) {
-                Some(KeyStatus::Accepted) => 0,
-                Some(KeyStatus::Pending) => 1,
-                Some(KeyStatus::Rejected) => 2,
-                Some(KeyStatus::Denied) => 3,
-                None => 4,
+    /// Keys and minions matching the Minions filter, collapsed or hidden
+    /// timed-out ones included: the count the list's title shows.
+    pub fn minion_entry_count(&self) -> usize {
+        let (live, timed_out) = self.minion_entries();
+        live.len() + timed_out.len()
+    }
+
+    /// Minions list rows in display order: responsive rows, then (unless
+    /// hidden) the collapsible "Timed out" header and, unless collapsed, the
+    /// timed-out minions -- each group sorted on its own so a sort never
+    /// mixes timed-out minions in with responsive ones. An ID with two keys
+    /// (accepted and denied) gets two rows, next to each other by default.
+    pub fn minion_rows(&self) -> Vec<MinionRow<'_>> {
+        let (mut live, mut timed_out) = self.minion_entries();
+        let rank = |r: &MinionRow| match r.key_status() {
+            Some(KeyStatus::Accepted) => 0,
+            Some(KeyStatus::Pending) => 1,
+            Some(KeyStatus::Rejected) => 2,
+            Some(KeyStatus::Denied) => 3,
+            None => 4,
+        };
+        let sort = self.sort_of(TableId::Minions);
+        let cmp = |a: &MinionRow, b: &MinionRow| {
+            let by_id = a.id().cmp(b.id()).then(rank(a).cmp(&rank(b)));
+            let Some((col, desc)) = sort else { return by_id };
+            let ord = match (col, a.minion(), b.minion()) {
+                (Column::KeyStatus, _, _) => rank(a).cmp(&rank(b)),
+                // Key-only rows have no minion data; they sort as empty.
+                (Column::Os, a, b) => a.map(|m| m.os_label()).cmp(&b.map(|m| m.os_label())),
+                (Column::SaltVersion, a, b) => version_cmp(a.map_or("", |m| &m.salt_version), b.map_or("", |m| &m.salt_version)),
+                (Column::Proto, a, b) => a.and_then(|m| auth_protocol(&m.salt_version)).cmp(&b.and_then(|m| auth_protocol(&m.salt_version))),
+                (Column::Arch, a, b) => a.map(|m| &m.cpuarch).cmp(&b.map(|m| &m.cpuarch)),
+                // Most recently seen first, matching the Seen column's text.
+                (Column::LastSeen, a, b) => b.map_or(0, |m| m.last_seen_epoch).cmp(&a.map_or(0, |m| m.last_seen_epoch)),
+                // Worst first; rows with no returns yet go last.
+                (Column::FailPct, a, b) => {
+                    let ratio = |m: Option<&MinionInfo>| m.and_then(|m| self.minion_fail_ratio(&m.id)).unwrap_or(-1.0);
+                    ratio(b).total_cmp(&ratio(a))
+                }
+                (Column::Lag, a, b) => {
+                    let lag = |m: Option<&MinionInfo>| m.and_then(|m| self.minion_health(&m.id)?.lag_at(0.5)).unwrap_or(-1.0);
+                    lag(b).total_cmp(&lag(a))
+                }
+                (Column::Ping, a, b) => {
+                    let ping = |m: Option<&MinionInfo>| m.and_then(|m| self.minion_health(&m.id)?.last_ping_secs).unwrap_or(-1.0);
+                    ping(b).total_cmp(&ping(a))
+                }
+                _ => std::cmp::Ordering::Equal,
             };
-            let cmp = |a: &&MinionInfo, b: &&MinionInfo| {
-                let ord = match col {
-                    Column::KeyStatus => key_rank(a).cmp(&key_rank(b)),
-                    Column::Os => a.os_label().cmp(&b.os_label()),
-                    Column::SaltVersion => version_cmp(&a.salt_version, &b.salt_version),
-                    Column::Arch => a.cpuarch.cmp(&b.cpuarch),
-                    // Most recently seen first, matching the Seen column's text.
-                    Column::LastSeen => b.last_seen_epoch.cmp(&a.last_seen_epoch),
-                    // Worst first; minions with no returns yet go last.
-                    Column::FailPct => {
-                        let ratio = |m: &MinionInfo| self.minion_fail_ratio(&m.id).unwrap_or(-1.0);
-                        ratio(b).total_cmp(&ratio(a))
-                    }
-                    _ => a.id.cmp(&b.id),
-                };
-                if desc { ord.reverse() } else { ord }
-            };
-            live.sort_by(cmp);
-            timed_out.sort_by(cmp);
-        }
-        let mut rows: Vec<Option<&MinionInfo>> = live.into_iter().map(Some).collect();
+            let ord = if desc { ord.reverse() } else { ord };
+            ord.then(by_id)
+        };
+        live.sort_by(cmp);
+        timed_out.sort_by(cmp);
         if !self.hide_timed_out && !timed_out.is_empty() {
-            rows.push(None);
+            live.push(MinionRow::TimedOutHeader);
             if !self.timed_out_collapsed {
-                rows.extend(timed_out.into_iter().map(Some));
+                live.extend(timed_out);
             }
         }
-        rows
+        live
     }
 
+    /// The minion on a Minions list row; `None` for the header and for keys
+    /// the master has no minion data for.
     pub fn get_filtered_minion(&self, index: usize) -> Option<&MinionInfo> {
-        self.minion_rows().get(index).copied().flatten()
+        self.minion_rows().get(index).and_then(MinionRow::minion)
     }
 
     /// Timed-out minions matching the list filter, whether or not their
-    /// section is collapsed — the count its header shows.
+    /// section is collapsed -- the count its header shows.
     pub fn filtered_timed_out_count(&self) -> usize {
-        let accepted = &self.accepted_id_set;
-        let matches = Self::minion_matcher(self.filter_text_for(Tab::Minions));
-        self.minion_info.iter()
-            .filter(|m| accepted.contains(m.id.as_str()) || m.key_status == Some(KeyStatus::Accepted))
-            .filter(|m| matches(m))
-            .filter(|m| m.timed_out)
-            .count()
-    }
-
-    pub fn key_status_map(&self) -> HashMap<&str, KeyStatus> {
-        self.keys.iter().map(|k| (k.id.as_str(), k.status)).collect()
+        self.minion_entries().1.len()
     }
 
     /// Strip ANSI escape sequences from a string.
@@ -2207,26 +2392,36 @@ impl App {
         let _ = std::fs::remove_file(&self.copy_path);
         let _ = std::fs::remove_file(&self.clip_log_path);
         let _ = std::fs::remove_file(&self.clip_debug_path);
+    }
 
-        // Persist the session's hotkey toggles (F4-F8 graphs, Minions `f`,
-        // API `x`) so they survive a restart — merged into the file as it is
-        // now instead of writing back the whole in-memory config, which
-        // clobbered anything saved to the file (by hand, or from another
-        // salt-radar instance) while this one was running.
+    /// Saves the hotkey toggles (F2 mouse, F4-F8 graphs, `m` graph style,
+    /// `-`/`+` refresh speed, Minions `f`, API `x`, `Ctrl+←`/`→` splits) the moment they change, so the next start looks
+    /// the same even when the session doesn't end with a clean quit (the
+    /// terminal window closed, the SSH session dropped). Merged into the
+    /// file as it is now instead of writing back the whole in-memory config,
+    /// which would clobber anything saved to it meanwhile, by hand or from
+    /// another salt-radar instance.
+    pub(crate) fn save_toggles(&mut self) {
         let mut on_disk = load_config_or_fallback(&self.config_path);
         let (cur, base) = (&self.config, &self.persisted_config);
         let mut changed = false;
         macro_rules! keep_toggled {
             ($($field:ident),*) => {$(
                 if cur.$field != base.$field {
-                    on_disk.$field = cur.$field;
+                    on_disk.$field = cur.$field.clone();
                     changed = true;
                 }
             )*};
         }
-        keep_toggled!(show_cpu_graph, show_mem_graph, show_zmq_graph, show_events_graph, show_activity_graph, minions_follow_filter, api_hide_stats_polls);
-        if changed {
-            let _ = crate::config::write_config(&self.config_path, &on_disk);
+        keep_toggled!(show_cpu_graph, show_mem_graph, show_zmq_graph, show_events_graph, show_activity_graph,
+            graph_style, mouse, tick_ms, minions_follow_filter, api_hide_stats_polls,
+            minions_split_pct, events_split_pct, jobs_split_pct, api_split_pct, pulse_split_pct, master_split_pct);
+        if !changed {
+            return;
+        }
+        match crate::config::write_config(&self.config_path, &on_disk) {
+            Ok(()) => self.persisted_config = self.config.clone(),
+            Err(e) => self.clipboard_msg = Some((format!("Settings not saved: {}", e), Instant::now())),
         }
     }
 
@@ -2407,7 +2602,10 @@ impl App {
         self.config_tick += 1;
         if self.config_tick >= self.config.config_secs {
             self.config_tick = 0;
-            self.send_agent_cmd("config_snapshot", None);
+            self.send_agent_cmd("config_snapshot", Some(serde_json::json!({"digests": self.config.running_config_digests})));
+            if !self.master_config_loading {
+                self.request_master_config();
+            }
         }
 
         // Alive detection every 5 ticks
@@ -2464,8 +2662,19 @@ impl App {
         // Alert engine checks
         let recent_events: Vec<&SaltEvent> = self.events.iter().rev().take(500).collect();
         let worker_busy_pct = self.worker_busy_pct();
+        let master = self.config_snapshot.as_ref();
+        let rejected_config_files: Vec<String> = self.master_config.iter()
+            .flat_map(|mc| &mc.files)
+            .filter_map(|f| {
+                let error = f.error.as_ref()?;
+                Some(if f.error_line > 0 { format!("{}: {} (line {})", f.path, error, f.error_line) } else { format!("{}: {}", f.path, error) })
+            })
+            .collect();
         self.alert_engine.tick(
             &self.minion_info,
+            master.map_or("", |s| s.salt_version.as_str()),
+            master.map_or(0, |s| s.minimum_auth_version),
+            &rejected_config_files,
             &self.keys,
             &self.services,
             &self.system_info,
@@ -2520,6 +2729,8 @@ impl App {
             }
         }
 
+        self.settle_job_lags();
+
         // Age out old jobs — anything removed while still unfinished is a partial close-out
         let max_age = self.config.config_secs * 60; // 60 min default
         let mut kept_jobs = Vec::with_capacity(self.jobs.len());
@@ -2535,6 +2746,10 @@ impl App {
             self.jobs_index = kept_jobs.iter().enumerate().map(|(i, j)| (j.jid.clone(), i)).collect();
         }
         self.jobs = kept_jobs;
+
+        if self.current_tab == Tab::Master && self.master_config.is_none() && !self.master_config_loading && self.master_config_error.is_none() {
+            self.request_master_config();
+        }
 
         // Auto-load job cache when first viewing Jobs tab
         if self.current_tab == Tab::Jobs && !self.cache_loaded && !self.cache_loading && self.cache_load_error.is_none() {
@@ -2584,16 +2799,18 @@ impl App {
     /// between them, or anything past the last one) — callers should treat
     /// that as "not a tab bar click" rather than defaulting to some tab.
     fn tab_at_col(col: u16) -> Option<Tab> {
-        match col {
-            0..=12 => Some(Tab::Dashboard),
-            16..=26 => Some(Tab::Minions),
-            30..=39 => Some(Tab::Events),
-            43..=50 => Some(Tab::Jobs),
-            54..=63 => Some(Tab::Alerts),
-            67..=73 => Some(Tab::Api),
-            77..=85 => Some(Tab::Pulse),
-            _ => None,
+        // Laid out like draw_title_frame: after the frame's left border,
+        // each label, then a separator.
+        let col = col as usize;
+        let mut start = 1;
+        for tab in Tab::ORDER {
+            let end = start + tab.bar_label().chars().count();
+            if (start..end).contains(&col) {
+                return Some(tab);
+            }
+            start = end + crate::ui::TAB_SEPARATOR.chars().count();
         }
+        None
     }
 
     /// Navigate left in the grid (wraps).
@@ -2657,9 +2874,55 @@ fn parse_version(data: &serde_json::Value) -> ConfigSnapshot {
     }
 }
 
+pub(crate) fn parse_master_config(data: &serde_json::Value) -> MasterConfig {
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+    let files = data["files"].as_array().map(|a| a.iter().map(|f| ConfigFile {
+        path: text(&f["path"]),
+        text: text(&f["text"]),
+        mtime: f["mtime"].as_u64().unwrap_or(0),
+        error: f["error"].as_str().map(String::from),
+        error_line: f["error_line"].as_u64().unwrap_or(0) as usize,
+    }).collect()).unwrap_or_default();
+    let settings = data["settings"].as_array().map(|a| a.iter().map(|s| ConfigSetting {
+        key: text(&s["key"]),
+        kind: SettingKind::from_agent(s["kind"].as_str().unwrap_or("")),
+        sources: s["sources"].as_array().map(|src| src.iter().map(|r| ConfigSource {
+            file: r["file"].as_u64().unwrap_or(0) as usize,
+            start: r["start"].as_u64().unwrap_or(0) as usize,
+            end: r["end"].as_u64().unwrap_or(0) as usize,
+            relation: SourceRelation::from_agent(r["relation"].as_str().unwrap_or("")),
+            value: text(&r["value"]),
+            dropped: r["dropped"].as_array().map(|d| d.iter().filter_map(|k| k.as_str().map(String::from)).collect()).unwrap_or_default(),
+        }).collect()).unwrap_or_default(),
+        line: text(&s["line"]),
+        full: text(&s["full"]),
+        default: s["default"].as_str().map(String::from),
+        redacted: s["redacted"].as_bool().unwrap_or(false),
+        suggest: s["suggest"].as_str().map(String::from),
+        about: s["about"].as_str().map(String::from),
+        unknown_nested: s["unknown_nested"].as_array().map(|a| a.iter().map(|k| {
+            (text(&k["key"]), k["suggest"].as_str().map(String::from))
+        }).collect()).unwrap_or_default(),
+        notes: s["notes"].as_array().map(|a| a.iter().filter_map(|n| n.as_str().map(String::from)).collect()).unwrap_or_default(),
+        restart: s["restart"].as_str().and_then(crate::types::RestartState::from_agent),
+        running_line: s["running_line"].as_str().map(String::from),
+        running_full: s["running_full"].as_str().map(String::from),
+        running_absent: s["running_absent"].as_bool().unwrap_or(false),
+    }).collect()).unwrap_or_default();
+    MasterConfig {
+        conf_file: text(&data["conf_file"]),
+        files,
+        master_started: data["master_started"].as_u64().unwrap_or(0),
+        running_compared: data["running_compared"].as_bool().unwrap_or(false),
+        running_error: data["running_error"].as_str().map(String::from),
+        settings,
+    }
+}
+
 fn parse_config_snapshot(data: &serde_json::Value) -> ConfigSnapshot {
     ConfigSnapshot {
         salt_version: data["salt_version"].as_str().unwrap_or("?").to_string(),
+        minimum_auth_version: data["minimum_auth_version"].as_u64().unwrap_or(0),
         python_version: data["python_version"].as_str().unwrap_or("?").to_string(),
         worker_threads: data["worker_threads"].as_i64(),
         transport: data["transport"].as_str().unwrap_or("zeromq").to_string(),
@@ -2699,8 +2962,6 @@ fn parse_minion_list(data: &serde_json::Value) -> Vec<MinionInfo> {
                 osfinger: entry["osfinger"].as_str().unwrap_or("").to_string(),
                 salt_version: entry["saltversion"].as_str().unwrap_or("").to_string(),
                 cpuarch: entry["cpuarch"].as_str().unwrap_or("").to_string(),
-                last_seen_epoch: entry["last_seen"].as_u64().unwrap_or(0),
-                cache_updated_epoch: entry["cache_updated"].as_u64().unwrap_or(0),
                 ..Default::default()
             });
         }
@@ -2795,10 +3056,11 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
             }
             other => other.to_string(),
         };
+        let (success, retcode) = return_outcome(&evt.data, &full_return);
         returns.push(JidReturn {
             minion_id,
-            success: evt.data["success"].as_bool().unwrap_or(false),
-            retcode: evt.data["retcode"].as_i64().unwrap_or(0),
+            success,
+            retcode,
             summary,
             full_return,
             formatted_text: String::new(), // computed on-demand in y handler
@@ -2821,6 +3083,26 @@ fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Opti
 /// What `y`/`Y` copy for an event's body — matches whatever `draw_event_detail`
 /// is currently rendering (raw JSON vs. the highstate-style pretty view)
 /// rather than always copying JSON regardless of the on-screen mode.
+/// Event Detail's body as shown, as plain text: like the copied text, except
+/// that a pretty view still fetching shows the raw JSON.
+fn event_body_as_shown(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate::types::PrettyFetch) -> String {
+    let fetching = matches!(pretty_fetch, crate::types::PrettyFetch::Loading)
+        && crate::ui::detail_popup::job_return_wrapper(evt).is_some();
+    event_body_as_copied_text(evt, pretty && !fetching, pretty_fetch)
+}
+
+/// The line of each occurrence of a search `query` in `text`, in order, as
+/// `ui::detail_popup::highlight_matches` finds them.
+fn search_lines(text: &str, query: &str) -> Vec<usize> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    text.lines().enumerate()
+        .flat_map(|(i, line)| std::iter::repeat_n(i, crate::sniff::term_ranges(line, query).len()))
+        .collect()
+}
+
 fn event_body_as_copied_text(evt: &SaltEvent, pretty: bool, pretty_fetch: &crate::types::PrettyFetch) -> String {
     if pretty {
         if let crate::types::PrettyFetch::Ready(text) = pretty_fetch {
@@ -2880,36 +3162,33 @@ impl FilterTerm {
 }
 
 /// The Events filter, resolved when the filter or the accepted keys change
-/// rather than per event: checked on every incoming event, settling per
-/// event whether each term names a known minion — and whether a job's
-/// target names one — scanned every accepted key.
+/// rather than per event: checked on every incoming event, so which known
+/// minions each term names is settled once instead of scanning every
+/// accepted key per event.
 #[derive(Default)]
 pub(crate) struct EventMatcher {
-    terms: Vec<(FilterTerm, bool)>,
-    minions_lower: Vec<String>,
-    /// Whether a target names a known minion, per target seen: a busy
-    /// master sends the same few targets over and over.
-    tgt_names_minion: std::cell::RefCell<HashMap<String, bool>>,
+    /// Each term and the known minions it names, lowercased.
+    terms: Vec<(FilterTerm, HashSet<String>)>,
+    /// Whether a job's target covers one of a term's minions, per term and
+    /// target seen: a busy master sends the same few targets over and over.
+    tgt_covers: std::cell::RefCell<HashMap<(usize, String), bool>>,
 }
 
 impl EventMatcher {
     fn new(pat: &str, known_minions: &HashSet<String>) -> Self {
-        let terms: Vec<(FilterTerm, bool)> = App::filter_terms(pat).into_iter()
-            .map(|term| FilterTerm::with_minion_check(term, known_minions))
-            .collect();
-        let minions_lower = if terms.iter().any(|&(_, names_minion)| names_minion) {
-            known_minions.iter().map(|m| m.to_lowercase()).collect()
-        } else {
-            Vec::new()
-        };
-        Self { terms, minions_lower, tgt_names_minion: Default::default() }
+        let terms = App::filter_terms(pat).into_iter().map(|term| {
+            let term = FilterTerm::new(term);
+            let named = known_minions.iter().filter(|m| term.host(m)).map(|m| m.to_lowercase()).collect();
+            (term, named)
+        }).collect();
+        Self { terms, tgt_covers: Default::default() }
     }
 
     fn matches(&self, evt: &SaltEvent) -> bool {
-        self.terms.is_empty() || self.terms.iter().any(|(term, names_minion)| self.matches_term(evt, term, *names_minion))
+        self.terms.is_empty() || self.terms.iter().enumerate().any(|(i, (term, named))| self.matches_term(evt, i, term, named))
     }
 
-    fn matches_term(&self, evt: &SaltEvent, term: &FilterTerm, names_minion: bool) -> bool {
+    fn matches_term(&self, evt: &SaltEvent, i: usize, term: &FilterTerm, named: &HashSet<String>) -> bool {
         if term.text(&evt.tag)
             || evt.data["fun"].as_str().is_some_and(|f| term.text(f))
             || evt.data["id"].as_str().is_some_and(|i| term.host(i))
@@ -2921,20 +3200,46 @@ impl EventMatcher {
         {
             return true;
         }
-        // A term naming a known minion also shows events targeted at all
-        // minions ("*") or whose tgt names a known minion.
-        names_minion && evt.data["tgt"].as_str().is_some_and(|tgt| tgt == "*" || self.names_minion(tgt))
-    }
-
-    fn names_minion(&self, tgt: &str) -> bool {
-        if let Some(&hit) = self.tgt_names_minion.borrow().get(tgt) {
+        let tokens = target_tokens(&evt.data["tgt"]);
+        if tokens.iter().any(|t| term.host(t)) {
+            return true;
+        }
+        // A term naming known minions also shows the jobs sent to them.
+        if named.is_empty() || tokens.is_empty() {
+            return false;
+        }
+        if tokens.iter().any(|t| t == "*") {
+            return true;
+        }
+        let key = (i, tokens.join(","));
+        if let Some(&hit) = self.tgt_covers.borrow().get(&key) {
             return hit;
         }
-        let lower = tgt.to_lowercase();
-        let hit = self.minions_lower.iter().any(|m| lower.contains(m.as_str()));
-        self.tgt_names_minion.borrow_mut().insert(tgt.to_string(), hit);
+        let hit = tokens.iter().any(|t| {
+            let t = t.to_lowercase();
+            if App::is_glob(&t) { named.iter().any(|m| App::glob_match(m, &t)) } else { named.contains(&t) }
+        });
+        self.tgt_covers.borrow_mut().insert(key, hit);
         hit
     }
+}
+
+/// The minion names and globs in a job's target: a list (`a,b` or a JSON
+/// array), a glob, or the `L@`/`G@`… words of a compound target.
+fn target_tokens(tgt: &serde_json::Value) -> Vec<String> {
+    let words: Vec<&str> = match tgt {
+        serde_json::Value::String(s) => s.split(|c: char| c == ',' || c.is_whitespace()).collect(),
+        serde_json::Value::Array(a) => a.iter().filter_map(|v| v.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    words.into_iter()
+        .map(|w| match w.split_once('@') {
+            Some((kind, rest)) if kind.len() == 1 && kind.chars().all(|c| c.is_ascii_uppercase()) => rest,
+            _ => w,
+        })
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// A parsed glob `[…]` class: its character ranges, whether it's negated
@@ -3129,7 +3434,7 @@ pub fn state_counts(full_return: &serde_json::Value) -> Option<StateCounts> {
     Some(counts)
 }
 
-pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
+fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
     match full_return {
         serde_json::Value::Object(obj) => {
             // state dict: check 'result' key
@@ -3159,22 +3464,26 @@ pub fn derive_success_retcode(full_return: &serde_json::Value) -> (i64, bool) {
         serde_json::Value::Bool(b) => (0, *b),
         serde_json::Value::Null => (1, false),
         // Salt returns error strings starting with "ERROR:" for cmd.run etc.
-        serde_json::Value::String(s) if s.starts_with("ERROR:") || s.starts_with("error:") || s.trim().is_empty() => (1, false),
+        // An empty string is a valid result (`config.get` of a missing key).
+        serde_json::Value::String(s) if s.starts_with("ERROR:") || s.starts_with("error:") => (1, false),
         _ => (0, true),
     }
 }
 
-/// A looked-up return's outcome: the agent's verdict (which includes the
-/// retcode Salt stored in the job cache) combined with what the return data
-/// itself shows, so neither a non-zero exit nor a failed state is missed.
-fn lookup_return_outcome(entry: &serde_json::Value, full_return: &serde_json::Value) -> (bool, i64) {
+/// A return's `(success, retcode)`, shared by Live Jobs, Job Detail and
+/// minion health so they never disagree. `salt` is a return event or a
+/// looked-up return: its `success`/`retcode` are Salt's verdict (the agent
+/// reads the retcode stored in the job cache). The return data can only add
+/// failures Salt misses -- a failed state, an `ERROR:` string -- never clear
+/// one.
+pub(crate) fn return_outcome(salt: &serde_json::Value, full_return: &serde_json::Value) -> (bool, i64) {
     let (derived_rc, derived_ok) = derive_success_retcode(full_return);
-    let agent_ok = entry["success"].as_bool().unwrap_or(true);
-    let agent_rc = entry["retcode"].as_i64().unwrap_or(0);
-    if agent_ok && derived_ok && agent_rc == 0 {
+    let salt_ok = salt["success"].as_bool().unwrap_or(true);
+    let salt_rc = salt["retcode"].as_i64().unwrap_or(0);
+    if salt_ok && derived_ok && salt_rc == 0 {
         (true, 0)
     } else {
-        (false, [agent_rc, derived_rc, 1].into_iter().find(|&rc| rc != 0).unwrap_or(1))
+        (false, [salt_rc, derived_rc, 1].into_iter().find(|&rc| rc != 0).unwrap_or(1))
     }
 }
 
@@ -3195,7 +3504,7 @@ fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     if let Some(arr) = data["returns"].as_array() {
         for entry in arr {
             let full_return = entry["full_return"].clone();
-            let (success, retcode) = lookup_return_outcome(entry, &full_return);
+            let (success, retcode) = return_outcome(entry, &full_return);
             result.returns.push(JidReturn {
                 minion_id: entry["minion_id"].as_str().unwrap_or("?").to_string(),
                 success,
@@ -3269,17 +3578,33 @@ fn parse_cache_jobs(data: &serde_json::Value) -> Vec<CacheJobEntry> {
     result
 }
 
-fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, usize>, evt: &SaltEvent) {
+/// A return's timing, for the minion's `Lag` and `Ping`.
+#[derive(Debug, PartialEq)]
+pub(crate) struct ReturnTiming {
+    pub minion: String,
+    /// Seconds from the job's publish to this return.
+    pub secs: f64,
+    /// The job's median, when it was settled before this return came in.
+    pub late_median: Option<f64>,
+}
+
+/// Tracks the Live Jobs list from a job event; for the return of a job
+/// whose publish was seen, also how long the minion took.
+fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, usize>, evt: &SaltEvent) -> Option<ReturnTiming> {
     if evt.tag.ends_with("/new") {
         let jid = evt.data["jid"].as_str().unwrap_or("").to_string();
-        if jid.is_empty() { return; }
+        if jid.is_empty() { return None; }
         let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
         let tgt = match &evt.data["tgt"] {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Array(ids) => ids.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","),
             _ => "?".to_string(),
         };
-        let minions = evt.data["minions"].as_array().map(|a| a.len()).unwrap_or(0);
+        // Distinct IDs: a list target naming a minion twice (`-L a,b,a`) is
+        // passed through as given, but that minion returns once.
+        let minions = evt.data["minions"].as_array()
+            .map(|a| a.iter().filter_map(|m| m.as_str()).collect::<HashSet<_>>().len())
+            .unwrap_or(0);
         let (args, test_run) = format_job_args(&fun, &evt.data["arg"]);
         if let Some(job) = index.get(&jid).map(|&i| &mut jobs[i]) {
             // A `/ret/` for this jid was processed before this `/new` --
@@ -3297,7 +3622,9 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             job.local = false;
             job.args = args;
             job.test_run = test_run;
-            return;
+            // Its return times were measured from that return, not the publish.
+            job.lag = JobLag::Settled(None);
+            return None;
         }
         index.insert(jid.clone(), jobs.len());
         jobs.push(JobEntry {
@@ -3314,18 +3641,15 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             finalized: false,
             args,
             test_run,
+            lag: JobLag::Collecting(Vec::new()),
         });
     } else if evt.tag.contains("/ret/") {
         let jid = evt.tag
             .strip_prefix("salt/job/")
             .and_then(|s| s.split("/ret/").next())
             .unwrap_or("");
-        if jid.is_empty() { return; }
-        // The event bus's own `success` (set by Salt itself from the real
-        // return, not re-derived here) is authoritative -- unlike the
-        // best-effort reconstruction `derive_success_retcode` has to do for
-        // the cached `jobs.lookup_jid` return shown in Job Detail.
-        let success = evt.data["success"].as_bool().unwrap_or(true);
+        if jid.is_empty() { return None; }
+        let (success, _) = return_outcome(&evt.data, &evt.data["return"]);
         if let Some(job) = index.get(jid).map(|&i| &mut jobs[i]) {
             job.returned += 1;
             if success { job.succeeded += 1; } else { job.failed += 1; }
@@ -3335,6 +3659,17 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             // guess below) -- always widen to match reality rather than
             // show a target count smaller than what's actually come back.
             job.target_count = job.target_count.max(job.returned);
+            let minion = evt.tag.rsplit('/').next().unwrap_or("");
+            if job.local || minion.is_empty() { return None; }
+            let secs = (evt.ts - job.created_epoch).max(0.0);
+            let late_median = match &mut job.lag {
+                JobLag::Collecting(times) => {
+                    times.push((minion.to_string(), secs));
+                    None
+                }
+                JobLag::Settled(median) => *median,
+            };
+            return Some(ReturnTiming { minion: minion.to_string(), secs, late_median });
         } else {
             // Unknown JID → salt-call / local execution (no /new event was emitted)
             let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
@@ -3355,9 +3690,31 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
                 finalized: false,
                 args,
                 test_run,
+                lag: JobLag::Settled(None),
             });
         }
     }
+    None
+}
+
+/// Settles a job's lag once it's complete or older than `straggler_secs`,
+/// returning the return times collected so far and the job's median, when
+/// at least two minions returned.
+fn settle_job_lag(job: &mut JobEntry, straggler_secs: u64) -> Option<(Vec<(String, f64)>, f64)> {
+    let JobLag::Collecting(times) = &mut job.lag else { return None };
+    if !job.finalized && job.age_seconds <= straggler_secs { return None; }
+    let times = std::mem::take(times);
+    let mut secs: Vec<f64> = times.iter().map(|(_, s)| *s).collect();
+    secs.sort_by(f64::total_cmp);
+    let median = if secs.len() >= 2 { percentile(&secs, 0.5) } else { None };
+    job.lag = JobLag::Settled(median);
+    Some((times, median?))
+}
+
+/// The value at percentile `p` (0.0-1.0) of sorted values, nearest-rank.
+fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
+    let last = sorted.len().checked_sub(1)?;
+    Some(sorted[((last as f64 * p).round() as usize).min(last)])
 }
 
 fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
@@ -3398,6 +3755,51 @@ fn matches_activity_item(item: &MinionActivityItem, terms: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_bar_clicks_land_on_the_drawn_labels() {
+        // As drawn at 160 columns: " 1 Dashboard " at 1..=13, " 6 API " at
+        // 68..=74, " 7 Master Config " at 78..=94, " 8 Pulse " at 98..=106.
+        let at = App::tab_at_col;
+        assert_eq!([at(0), at(1), at(13), at(14)], [None, Some(Tab::Dashboard), Some(Tab::Dashboard), None]);
+        assert_eq!([at(68), at(74), at(78), at(94), at(98), at(106), at(107)],
+            [Some(Tab::Api), Some(Tab::Api), Some(Tab::Master), Some(Tab::Master), Some(Tab::Pulse), Some(Tab::Pulse), None]);
+    }
+
+    #[test]
+    fn restart_follows_the_running_master_and_falls_back_to_file_times() {
+        let files = json!([{"path": "/etc/salt/master", "mtime": 200}]);
+        let settings = json!([
+            {"key": "timeout", "kind": "explicit", "sources": [{"file": 0}], "restart": "changed", "running_line": "5", "running_full": "5"},
+            {"key": "worker_threads", "kind": "explicit", "sources": [{"file": 0}]},
+            {"key": "keep_jobs", "kind": "default", "restart": "removed", "running_line": "48", "running_full": "48"},
+        ]);
+        let compared = parse_master_config(&json!({"files": files, "master_started": 100, "running_compared": true, "settings": settings}));
+        let [timeout, workers, removed] = &compared.settings[..] else { panic!() };
+        assert_eq!((timeout.restart, timeout.running_line.as_deref()), (Some(crate::types::RestartState::Changed), Some("5")));
+        // Its file is newer than the master, but the running value is the same: no ↻.
+        assert!(timeout.restart_pending(&compared) && !workers.restart_pending(&compared) && removed.restart_pending(&compared));
+        // Not compared: any setting in a file newer than the master.
+        let by_time = parse_master_config(&json!({"files": files, "master_started": 100, "running_compared": false, "running_error": "salt-master isn't running", "settings": settings}));
+        assert!(by_time.settings[1].restart_pending(&by_time) && !by_time.settings[2].restart_pending(&by_time));
+        assert_eq!(by_time.running_error.as_deref(), Some("salt-master isn't running"));
+    }
+
+    #[test]
+    fn module_settings_count_their_ignored_options() {
+        let mc = parse_master_config(&serde_json::json!({"settings": [
+            {"key": "rest_cherrypy", "kind": "module", "about": "salt-api config (rest_cherrypy)",
+             "unknown_nested": [{"key": "colect_stats", "suggest": "collect_stats"}, {"key": "x", "suggest": null}],
+             "notes": ["socket_queue_size: documented, but salt-api reads queue_size"]},
+            {"key": "auth.ldap.uri", "kind": "module", "about": "option of the ldap eauth backend"},
+            {"key": "worker_thread", "kind": "unknown", "suggest": "worker_threads"},
+        ]}));
+        let [api, ldap, typo] = &mc.settings[..] else { panic!() };
+        assert_eq!(api.kind, SettingKind::Module);
+        assert_eq!(api.unknown_nested, vec![("colect_stats".to_string(), Some("collect_stats".to_string())), ("x".to_string(), None)]);
+        assert_eq!(api.notes.len(), 1);
+        assert_eq!([api.ignored_keys(), ldap.ignored_keys(), typo.ignored_keys()], [2, 0, 1]);
+    }
 
     #[test]
     fn ansi_colors_follow_the_theme() {
@@ -3445,6 +3847,18 @@ mod tests {
     }
 
     #[test]
+    fn event_search_finds_lines_as_shown() {
+        let evt = SaltEvent { tag: "salt/job/1/ret/web1".into(), ts: 0.0, data: serde_json::json!({"id": "web1", "fun": "test.ping", "jid": "1", "return": true}) };
+        let raw = event_body_as_shown(&evt, false, &crate::types::PrettyFetch::Idle);
+        assert_eq!(search_lines(&raw, "WEB1"), vec![raw.lines().position(|l| l.contains("web1")).unwrap()]);
+        // Still fetching the pretty view of a job return: the raw JSON is what's shown.
+        assert_eq!(event_body_as_shown(&evt, true, &crate::types::PrettyFetch::Loading), raw);
+        assert_eq!(search_lines("ab\nbab\nc", " b "), vec![0, 1, 1]);
+        assert_eq!(search_lines("fun: test.ping\nfun: x", "/fun: \\w+$/"), vec![1]);
+        assert!(search_lines("abc", "  ").is_empty());
+    }
+
+    #[test]
     fn step_match_moves_by_occurrence_and_wraps() {
         // Two occurrences on line 3, one on 9.
         let m = [3, 3, 9];
@@ -3471,7 +3885,7 @@ mod tests {
         let job = |tgt: &str| JobEntry {
             jid: "20261012133558123456".into(), fun: "state.apply".into(), tgt: tgt.into(),
             target_count: 1, returned: 0, succeeded: 0, failed: 0, age_seconds: 0, created_epoch: 0.0,
-            local: false, finalized: false, args: String::new(), test_run: false,
+            local: false, finalized: false, args: String::new(), test_run: false, lag: JobLag::Settled(None),
         };
         let known: HashSet<String> = ["web01".to_string(), "db01".to_string()].into();
         let (star, db) = (job("*"), job("db01"));
@@ -3503,6 +3917,37 @@ mod tests {
         let plain = EventMatcher::new("mail", &known);
         assert!(plain.matches(&other) && !plain.matches(&star), "a term naming no minion leaves * jobs out");
         assert!(EventMatcher::new("", &known).matches(&other));
+
+        let only_db = evt("salt/job/5/new", json!({"fun": "test.ping", "tgt": "db01"}));
+        let web01 = EventMatcher::new("web01", &known);
+        assert!(!web01.matches(&only_db), "a job sent to another known minion isn't one of web01's");
+        for tgt in [json!("web*"), json!(["db01", "web01"]), json!("L@web01,db02 or G@os:Debian")] {
+            assert!(web01.matches(&evt("salt/job/6/new", json!({"fun": "test.ping", "tgt": tgt.clone()}))), "{tgt}");
+        }
+        assert!(!web01.matches(&evt("salt/job/7/new", json!({"fun": "test.ping", "tgt": "web1*"}))));
+    }
+
+    #[test]
+    fn filtered_selection_stays_on_its_event_as_the_buffer_rotates() {
+        // A full buffer of 6 with a filter showing every other event; the
+        // user selected one and isn't following the tail.
+        let evt = |n: usize| SaltEvent { tag: format!("salt/test/{}/{}", if n.is_multiple_of(2) { "keep" } else { "skip" }, n), data: json!({}), ts: n as f64 };
+        let matcher = EventMatcher::new("keep", &HashSet::new());
+        let mut events: VecDeque<SaltEvent> = (0..6).map(evt).collect();
+        let mut cache: VecDeque<SaltEvent> = events.iter().filter(|e| matcher.matches(e)).cloned().collect();
+        let mut selected = 1;
+        assert_eq!(cache[selected].tag, "salt/test/keep/2");
+        for n in 6..10 {
+            let evicted = events.pop_front();
+            let dropped = App::sync_filtered_events_cache(&mut cache, "keep", &matcher, &evt(n), evicted.as_ref());
+            events.push_back(evt(n));
+            App::advance_tail_selection(&mut selected, false, dropped, cache.len());
+            if n < 8 {
+                assert_eq!(cache[selected].tag, "salt/test/keep/2", "after event {n}");
+            }
+        }
+        // Its own event rotated out: the oldest one left is selected.
+        assert_eq!(cache[selected].tag, "salt/test/keep/4");
     }
 
     #[test]
@@ -3520,7 +3965,7 @@ mod tests {
         assert_eq!(derive_success_retcode(&json!(false)), (0, false));
         assert_eq!(derive_success_retcode(&json!(null)), (1, false));
         assert_eq!(derive_success_retcode(&json!("ERROR: no such function")), (1, false));
-        assert_eq!(derive_success_retcode(&json!("  ")), (1, false));
+        assert_eq!(derive_success_retcode(&json!("")), (0, true), "config.get of a missing key");
         assert_eq!(derive_success_retcode(&json!("15:01 up 3 days")), (0, true));
         assert_eq!(derive_success_retcode(&json!({"retcode": 2, "stdout": ""})), (2, false));
         let states_ok = json!({"file_|-a_|-/a_|-managed": {"result": true, "__run_num__": 0}});
@@ -3559,13 +4004,70 @@ mod tests {
 
     #[test]
     fn lookup_outcome_trusts_the_stored_retcode_and_the_return_data() {
-        let out = |entry: serde_json::Value| lookup_return_outcome(&entry, &entry["full_return"]);
+        let out = |entry: serde_json::Value| return_outcome(&entry, &entry["full_return"]);
         assert_eq!(out(json!({"success": true, "retcode": 0, "full_return": "up 3 days"})), (true, 0));
         assert_eq!(out(json!({"success": false, "retcode": 127, "full_return": "/bin/sh: uptime: not found"})), (false, 127),
             "an exit code the output text doesn't show");
         assert_eq!(out(json!({"success": true, "retcode": 0, "full_return": "ERROR: boom"})), (false, 1),
             "an error the agent missed");
         assert_eq!(out(json!({"full_return": "up 3 days"})), (true, 0), "missing fields default to success");
+    }
+
+    #[test]
+    fn minions_list_has_a_row_per_key() {
+        let key = |id: &str, status| KeyInfo { id: id.into(), status, mtime_epoch: 0 };
+        let keys = [
+            key("web01", KeyStatus::Accepted),
+            key("db01", KeyStatus::Accepted),
+            key("new01", KeyStatus::Pending),
+            key("web01", KeyStatus::Denied),
+        ];
+        let minions = [MinionInfo { id: "web01".into(), key_status: Some(KeyStatus::Accepted), ..Default::default() }];
+        let index: HashMap<String, usize> = [("web01".to_string(), 0)].into();
+        let rows = minion_list_rows(&keys, &minions, &index);
+        let shown: Vec<(&str, Option<KeyStatus>, bool)> = rows.iter().map(|r| (r.id(), r.key_status(), r.minion().is_some())).collect();
+        assert_eq!(shown, [
+            ("web01", Some(KeyStatus::Accepted), true),
+            ("db01", Some(KeyStatus::Accepted), false),
+            ("new01", Some(KeyStatus::Pending), false),
+            ("web01", Some(KeyStatus::Denied), false),
+        ], "the denied duplicate is its own row; db01 is listed before the master knows it");
+        assert_eq!(minion_list_rows(&[], &minions, &HashMap::new()).len(), 1, "without keys, the known accepted minions");
+    }
+
+    #[test]
+    fn live_jobs_counts_a_minion_targeted_twice_once() {
+        let evt = |tag: &str, data: serde_json::Value| SaltEvent { tag: tag.into(), data, ts: 0.0 };
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/new", json!({
+            "jid": "1", "fun": "test.ping", "tgt": "web01,db01,web01", "tgt_type": "list",
+            "minions": ["web01", "db01", "web01"],
+        })));
+        for mid in ["web01", "db01"] {
+            track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/1/ret/{mid}"),
+                json!({"id": mid, "fun": "test.ping", "return": true, "retcode": 0, "success": true})));
+        }
+        assert_eq!((jobs[0].target_count, jobs[0].returned), (2, 2), "nothing left waiting");
+    }
+
+    #[test]
+    fn live_jobs_and_job_detail_agree_on_a_return() {
+        let cases = [
+            (json!(""), true, "config.get of a missing key"),
+            (json!("ERROR: boom"), false, "an error Salt reported as a success"),
+            (json!({"pkg_|-vim_|-vim_|-installed": {"result": false}}), false, "a failed state"),
+        ];
+        for (ret, ok, what) in cases {
+            let evt = SaltEvent {
+                tag: "salt/job/1/ret/web01".into(),
+                data: json!({"id": "web01", "fun": "config.get", "return": ret, "retcode": 0, "success": true}),
+                ts: 0.0,
+            };
+            let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+            track_job_from_event(&mut jobs, &mut index, &evt);
+            let detail = build_jid_lookup_from_events("1", &VecDeque::from([evt])).unwrap();
+            assert_eq!((jobs[0].failed == 0, detail.returns[0].success), (ok, ok), "{what}");
+        }
     }
 
     #[test]
@@ -3580,6 +4082,56 @@ mod tests {
         assert_eq!(h.failed(), MINION_HEALTH_WINDOW / 10);
         assert_eq!(h.fail_ratio(), Some(0.1));
         assert_eq!(h.last_failure, Some((42.0, "job 40".to_string())));
+    }
+
+    #[test]
+    fn a_minion_is_rated_against_its_peers_in_the_same_job() {
+        let evt = |tag: &str, ts: f64| SaltEvent { tag: tag.into(), ts, data: json!({
+            "jid": "1", "fun": "state.apply", "tgt": "*", "minions": ["a", "b", "c", "d"],
+        }) };
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/new", 100.0));
+        for (mid, ts) in [("a", 110.0), ("b", 112.0), ("c", 140.0)] {
+            let t = track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/1/ret/{mid}"), ts)).unwrap();
+            assert_eq!((t.secs, t.late_median), (ts - 100.0, None), "collected until settled");
+        }
+        assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "not complete and not a straggler yet");
+        jobs[0].age_seconds = 301;
+        let (times, median) = settle_job_lag(&mut jobs[0], 300).unwrap();
+        assert_eq!((times.len(), median), (3, 12.0));
+        let mut c = MinionHealth::default();
+        c.record_lag(40.0, median);
+        assert_eq!(c.lag_at(0.5), Some(40.0 / 12.0));
+        let late = track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/ret/d", 190.0)).unwrap();
+        assert_eq!(late.late_median, Some(12.0), "a late return is rated against the settled median");
+        assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "settled once");
+    }
+
+    #[test]
+    fn fast_jobs_and_lone_returns_give_no_misleading_lag() {
+        let mut h = MinionHealth::default();
+        h.record_lag(0.12, 0.03);
+        assert!(h.lag.is_empty(), "a job too fast to tell lag from jitter isn't rated");
+        h.record_lag(2.0, 0.03);
+        h.record_lag(0.3, 0.9);
+        assert_eq!(Vec::from(h.lag.clone()), [4.0, 0.5 / 0.9], "a 2 s answer to a fast job is slow");
+        let new = SaltEvent { tag: "salt/job/2/new".into(), ts: 0.0, data: json!({"jid": "2", "fun": "test.ping", "minions": ["a", "b"]}) };
+        let ret = SaltEvent { tag: "salt/job/2/ret/a".into(), ts: 1.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        track_job_from_event(&mut jobs, &mut index, &new);
+        track_job_from_event(&mut jobs, &mut index, &ret);
+        jobs[0].age_seconds = 999;
+        assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "one return has no peers");
+        assert_eq!(jobs[0].lag, JobLag::Settled(None));
+        let local = SaltEvent { tag: "salt/job/3/ret/a".into(), ts: 5.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+        assert_eq!(track_job_from_event(&mut jobs, &mut index, &local), None, "no publish seen, no timing");
+    }
+
+    #[test]
+    fn percentiles_use_the_nearest_rank() {
+        assert_eq!(percentile(&[], 0.5), None);
+        assert_eq!(percentile(&[1.0, 2.0, 9.0], 0.5), Some(2.0));
+        assert_eq!(percentile(&(1..=20).map(f64::from).collect::<Vec<_>>(), 0.95), Some(19.0));
     }
 
     #[test]

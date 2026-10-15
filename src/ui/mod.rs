@@ -4,6 +4,7 @@ mod events;
 mod jobs;
 mod alerts_view;
 mod pulse;
+mod master_config;
 mod minion_events;
 mod api_view;
 mod table;
@@ -222,8 +223,81 @@ pub fn highlight_keywords(text: &str, terms: &[crate::app::HighlightTerm]) -> Ve
     colored_ranges(text, matches)
 }
 
+/// Hard-wraps a styled line at `width` columns, continuation rows hanging
+/// two columns in from the line's own indent so a wrapped JSON value stays
+/// under its key. Unlike `Paragraph`'s word wrap the row count is known up
+/// front (`wrapped_rows`), which a panel budgeting its height needs.
+pub fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![Line::from(spans)];
+    }
+    let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    let indent = hang_indent(&text, width);
+    let mut rows = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        let mut chunk = String::new();
+        for c in span.content.chars() {
+            if used == width {
+                if !chunk.is_empty() {
+                    row.push(Span::styled(std::mem::take(&mut chunk), span.style));
+                }
+                rows.push(Line::from(std::mem::replace(&mut row, vec![Span::raw(" ".repeat(indent))])));
+                used = indent;
+            }
+            chunk.push(c);
+            used += 1;
+        }
+        if !chunk.is_empty() {
+            row.push(Span::styled(chunk, span.style));
+        }
+    }
+    rows.push(Line::from(row));
+    rows
+}
+
+/// How many rows `wrap_spans` makes of `text` at `width`.
+pub fn wrapped_rows(text: &str, width: usize) -> usize {
+    let n = text.chars().count();
+    if width == 0 || n <= width {
+        return 1;
+    }
+    1 + (n - width).div_ceil(width - hang_indent(text, width))
+}
+
+fn hang_indent(text: &str, width: usize) -> usize {
+    (text.len() - text.trim_start_matches(' ').len() + 2).min(width / 2)
+}
+
 /// A text input's `prefix` and content with its cursor: the character under
 /// it, or a space past the end, in reverse video (readable in any theme).
+/// A list's filter bar: the filter being typed (with its cursor) or the one
+/// applied, the item count, and a warning when a `/…/` term is matched as
+/// plain text instead of a regex. `check_syntax` is false where the agent
+/// applies the filter, as Python's regex syntax differs from this one.
+pub fn filter_bar(text: &str, typing: bool, cursor: Option<usize>, count: String, check_syntax: bool) -> Option<Line<'static>> {
+    if !typing && text.is_empty() {
+        return None;
+    }
+    let style = Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD);
+    let mut spans = if typing {
+        input_spans(" filter: ", text, cursor, style)
+    } else {
+        vec![Span::styled(format!(" filter: {} ", text), style)]
+    };
+    spans.push(Span::styled(if typing { format!("  {}", count) } else { count }, Style::default().fg(color::inactive_fg())));
+    let problem = crate::sniff::filter_terms(text).into_iter()
+        .find_map(|t| crate::sniff::regex_problem(t, check_syntax).map(|why| (t, why)));
+    if let Some((term, why)) = problem {
+        spans.push(Span::styled(
+            format!("  \u{26a0} {}: {}, matched as text", term, why),
+            Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
+        ));
+    }
+    Some(Line::from(spans))
+}
+
 pub fn input_spans(prefix: &str, text: &str, cursor: Option<usize>, style: Style) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     let at = cursor.unwrap_or(chars.len()).min(chars.len());
@@ -382,6 +456,29 @@ pub fn bracket_title(mut spans: Vec<Span<'static>>, border_color: Color) -> Vec<
     wrapped
 }
 
+/// A tab's left and right panels, split where `Ctrl+←`/`→` left it. Mouse
+/// hit-testing goes through here too, so clicks follow the divider.
+pub fn split_panes(area: Rect, app: &App) -> [Rect; 2] {
+    let pct = app.config.split_pct(app.current_tab);
+    Layout::horizontal([Constraint::Percentage(pct), Constraint::Percentage(100 - pct)]).areas(area)
+}
+
+/// A minion's lag ratio, like `1.0x` or `12x`.
+pub fn format_lag(ratio: f64) -> String {
+    if ratio < 10.0 { format!("{:.1}x", ratio) } else { format!("{:.0}x", ratio) }
+}
+
+/// Lag ratios up to 1.5x are normal spread between minions; beyond that a
+/// minion is noticeably slower than its peers, and from 3x, much slower.
+pub fn lag_color(ratio: f64) -> Color {
+    if ratio < 1.5 { color::inactive_fg() } else if ratio < 3.0 { color::yellow() } else { color::red() }
+}
+
+/// A duration in ms under 10 s (`85ms`, `2340ms`), whole seconds above.
+pub fn format_secs_short(secs: f64) -> String {
+    if secs < 10.0 { format!("{:.0}ms", secs * 1000.0) } else { format!("{:.0}s", secs) }
+}
+
 /// btop-style adjustable-value hint: `┤ -VALUE+ ├` with the `-`/`+` keys
 /// that step the value picked out in red, the live value shown plain
 /// between them (e.g. how btop shows its own update-interval in the box
@@ -432,6 +529,8 @@ pub mod key {
 
 // ─── Master draw ───────────────────────────────────────────────────────────
 
+pub const TAB_SEPARATOR: &str = " \u{2502} ";
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.sync_theme();
     let main_layout = Layout::default()
@@ -470,6 +569,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
         Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused, &mut hits),
+        Tab::Master => master_config::draw_master(f, main_layout[1], app, tab_focused),
     }
     app.header_hits = hits;
 
@@ -499,6 +599,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.save_prompt.is_some() {
         dim_background(f, dim);
         detail_popup::draw_save_prompt(f, app);
+    }
+
+    if app.quit_confirm {
+        dim_background(f, dim);
+        detail_popup::draw_quit_confirm(f);
     }
 }
 
@@ -561,7 +666,16 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(color::title()),
     ));
     let dropped = app.agent_backlog_dropped.load(std::sync::atomic::Ordering::Relaxed);
-    let mut right_spans = value_hint("-", format!("{}ms", app.tick_interval_ms), "+", color::border());
+    let mut right_spans = value_hint("-", format!("{}ms", app.config.tick_ms), "+", color::border());
+    if app.config.max_output_kbs > 0 {
+        // Yellow while redraws wait for the output cap.
+        right_spans.push(Span::styled("\u{2524}", Style::default().fg(color::border())));
+        right_spans.push(Span::styled(
+            format!(" \u{2264}{}KB/s ", app.config.max_output_kbs),
+            Style::default().fg(if app.output_held { color::yellow() } else { color::inactive_fg() }),
+        ));
+        right_spans.push(Span::styled("\u{251C}", Style::default().fg(color::border())));
+    }
     if dropped > 0 {
         right_spans.push(Span::styled("\u{2524}", Style::default().fg(color::border())));
         right_spans.push(Span::styled(
@@ -579,7 +693,7 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     right_spans.push(Span::styled("\u{251C}", Style::default().fg(color::border())));
     let right_title = Line::from(right_spans);
 
-    let mouse_hint = if app.mouse_enabled { "mouse off".to_string() } else { "mouse on".to_string() };
+    let mouse_hint = if app.config.mouse { "mouse off".to_string() } else { "mouse on".to_string() };
     let admin_hint = if app.admin_mode { "admin off".to_string() } else { "admin on".to_string() };
     let global_hints = border_hints(&[
         ("?/F1", "help".to_string()),
@@ -609,13 +723,12 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     // Tab menu (left) and host/uptime (right) share the one content row.
-    let tabs = [Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Pulse];
     let mut tab_spans: Vec<Span<'static>> = Vec::new();
-    for (i, tab) in tabs.iter().enumerate() {
+    for (i, tab) in Tab::ORDER.iter().enumerate() {
         if i > 0 {
-            tab_spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::tab_separator())));
+            tab_spans.push(Span::styled(TAB_SEPARATOR, Style::default().fg(color::tab_separator())));
         }
-        let label = format!(" {} {} ", i + 1, tab.label());
+        let label = tab.bar_label();
         if *tab == app.current_tab {
             tab_spans.push(Span::styled(
                 label,
@@ -629,16 +742,25 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
     let hostname = app.config_snapshot.as_ref().map(|c| c.hostname.as_str()).unwrap_or("?");
     let app_uptime = app.session_start.elapsed().as_secs();
     let host_uptime = app.system_info.uptime_secs;
-    let mut info_spans = vec![
-        Span::styled("host: ", Style::default().fg(color::label_fg())),
-        Span::styled(format!("{} ", hostname), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+    let label = |s: &'static str| Span::styled(s, Style::default().fg(color::label_fg()));
+    let value = |s: String| Span::styled(s, Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD));
+    let mut info_spans = vec![label("host: "), value(format!("{} ", hostname))];
+    let radar_up = [
         Span::styled("\u{2502} ", Style::default().fg(color::tab_separator())),
-        Span::styled("radar up: ", Style::default().fg(color::label_fg())),
-        Span::styled(format!("{} ", dashboard::format_duration(app_uptime)), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+        label("radar up: "),
+        value(format!("{} ", dashboard::format_duration(app_uptime))),
     ];
-    if host_uptime > 0 {
-        info_spans.push(Span::styled("| host up: ", Style::default().fg(color::label_fg())));
-        info_spans.push(Span::styled(format!("{} ", dashboard::format_uptime(host_uptime)), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)));
+    let host_up = [label("| host up: "), value(format!("{} ", dashboard::format_uptime(host_uptime)))];
+    // The tabs come first: the info drops host uptime, then radar uptime,
+    // to leave them room and a gap.
+    let room = (inner.width as usize).saturating_sub(Line::from(tab_spans.clone()).width() + 1);
+    let width = |spans: &[Span]| spans.iter().map(|s| s.width()).sum::<usize>();
+    let full = width(&info_spans) + width(&radar_up) + if host_uptime > 0 { width(&host_up) } else { 0 };
+    if full <= room || width(&info_spans) + width(&radar_up) <= room {
+        info_spans.extend(radar_up);
+        if host_uptime > 0 && full <= room {
+            info_spans.extend(host_up);
+        }
     }
     let info_line = Line::from(info_spans);
     let info_width = (info_line.width() as u16).min(inner.width);
@@ -737,7 +859,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     // the key, not whether it's currently on or off; this is the actual
     // current state, same convention as admin mode.
     spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::tab_separator())));
-    if app.mouse_enabled {
+    if app.config.mouse {
         spans.push(Span::styled(" mouse: ON ", Style::default().fg(color::hi_fg()).bg(color::badge_bg()).add_modifier(Modifier::BOLD)));
     } else {
         spans.push(Span::styled(" mouse: off ", Style::default().fg(color::inactive_fg())));
@@ -776,6 +898,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 Tab::Alerts => (app.alert_selected + 1, app.filtered_alerts_len()),
                 Tab::Pulse => (app.pulse_selected + 1, app.pulse_minions_count()),
                 Tab::Api => (app.api_log_selected + 1, app.filtered_api_log_len()),
+                Tab::Master => (app.master_selected + 1, app.filtered_master_settings().len()),
                 _ => (0, 0),
             };
             if total > 0 {
@@ -783,7 +906,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             }
             let active_filter = match app.current_tab {
                 Tab::Events => app.applied_filter.as_str(),
-                Tab::Minions | Tab::Alerts | Tab::Api => app.filter_text_for(app.current_tab),
+                Tab::Minions | Tab::Alerts | Tab::Api | Tab::Master => app.filter_text_for(app.current_tab),
                 _ => "",
             };
             if !active_filter.is_empty() {
@@ -839,9 +962,9 @@ pub struct Shortcut {
 /// Every shortcut, grouped like the README's keyboard tables.
 pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ("General", &[
-        Shortcut { tab: "", key: "`q`", action: "Quit" },
+        Shortcut { tab: "", key: "`q`", action: "Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once)" },
         Shortcut { tab: "", key: "`Tab` / `Shift+Tab`", action: "Next / previous tab" },
-        Shortcut { tab: "", key: "`1`–`7`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse)" },
+        Shortcut { tab: "", key: "`1`–`8`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Pulse)" },
         Shortcut { tab: "", key: "`↑`/`↓`", action: "Scroll / navigate" },
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Page scroll" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last row" },
@@ -854,6 +977,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`F3`", action: "Open Config Editor" },
         Shortcut { tab: "", key: "`+`/`-`", action: "Adjust refresh interval" },
         Shortcut { tab: "", key: "`m`", action: "Toggle sparkline style (Dashboard)" },
+        Shortcut { tab: "", key: "`Ctrl+←`/`Ctrl+→`", action: "Move the divider between the two panels (Minions, Events, Jobs, API, Master Config, Pulse)" },
         Shortcut { tab: "", key: "`F4`–`F8`", action: "Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard)" },
     ]),
     ("Per tab", &[
@@ -873,6 +997,8 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Jobs (Cache)", key: "`r`", action: "Refresh job cache" },
         Shortcut { tab: "Jobs (Cache)", key: "`←`/`→`", action: "Switch focus between Live Jobs and Cache panels" },
         Shortcut { tab: "Pulse", key: "`↑`/`↓`/`←`/`→`", action: "Navigate the minion grid" },
+        Shortcut { tab: "Master Config", key: "`Enter`", action: "The setting's full value, where it's set and Salt's default" },
+        Shortcut { tab: "Master Config", key: "`r`", action: "Read the configuration files again" },
         Shortcut { tab: "API", key: "`x`", action: "Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`)" },
     ]),
     ("Config Editor", &[
@@ -898,8 +1024,8 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Jump 10 returns" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last return (job detail)" },
         Shortcut { tab: "", key: "`Enter`", action: "Enter scroll mode (event/job detail)" },
-        Shortcut { tab: "", key: "`/`", action: "Search the return output (job detail, output pane) or the help pages, matches highlighted" },
-        Shortcut { tab: "", key: "`n`/`N`", action: "Next/previous search match, marked in place (job detail, also from the returns list; help)" },
+        Shortcut { tab: "", key: "`/`", action: "Search the return output (job detail, output pane), an event (event detail, raw or pretty view), an alert's items (alert detail) or the help pages, matches highlighted" },
+        Shortcut { tab: "", key: "`n`/`N`", action: "Next/previous search match, marked in place (job detail, also from the returns list; event detail; alert detail; help)" },
         Shortcut { tab: "", key: "`f`/`F`", action: "Next/previous failed state, marked in the output (job detail; also from the returns list)" },
         Shortcut { tab: "", key: "`Esc`", action: "Exit scroll mode" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "Jump to start/end of output (scroll mode)" },
@@ -1043,12 +1169,13 @@ fn filter_help_lines() -> Vec<Line<'static>> {
         &[
             ("plain", "nginx", "the text anywhere, any case"),
             ("glob", "web-*  db?", "a whole minion ID, like Salt's targeting"),
-            ("regex", "/web-0[1-5]$/", "a regex; /…/i ignores case"),
+            ("regex", "/web-0[1-5]$/", "a regex, case-sensitive; /…/i ignores case"),
             ("several", "web-*, /^db-0[0-9]$/", "any of the terms matches"),
             ("search", "/Result: (False|None)/", "output and help search: one query"),
         ],
         &[
             "Text that isn't a complete /…/ is plain, so /etc/salt/minion finds the path.",
+            "A /…/ that isn't a usable regex (/x/g, look-around) is matched as text, flagged ⚠.",
             "Filter terms get a color each; search matches are tinted, the current one solid.",
             "Job Cache filters on the master: globs match the target, regexes use Python's re.",
         ],
@@ -1162,11 +1289,169 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  state detail", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
             Span::styled("  always full/verbose, overriding the master's own state_output/state_verbose", Style::default().fg(color::main_fg())),
         ]),
+        Line::from(vec![
+            Span::styled("  OK / FAIL", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  Salt's success and retcode, plus a failed state or an ERROR: string Salt missed;", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  Live Jobs, Job Detail and Fail% all use this rule (an empty result is OK)", Style::default().fg(color::main_fg())),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Minion Detail", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![
             Span::styled("  Last Seen", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  newer of: Salt's own minion-cache mtime, or the last /ret/ event seen live", Style::default().fg(color::main_fg())),
+            Span::styled("  the minion's last job return seen live, since salt-radar started", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Minions list", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  one row per key", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  adds up to Minion Key Status; pending, rejected and denied keys too", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  listed twice", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  an ID with an accepted and a denied key (it came back with a new key)", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  Lag", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  the minion's return time ÷ the job's median, median of its last 50 jobs:", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  1.0x typical, yellow from 1.5x, red from 3x, whatever the jobs were", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  rated once all targets returned or after job_straggler_secs, later returns", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  against that median; times under 0.5 s count as 0.5 s, jobs where both the", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  minion and the median took under 0.5 s aren't rated (\u{2014} until one is)", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ping", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  time to the minion's latest test.ping return, whoever sent it", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  both fill in from jobs seen while salt-radar runs; v shows the columns", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  Proto", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  auth protocol by Salt version: v0 before the March 2022 security releases,", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  v2 from 3002.8, 3003.4, 3004.1 and 3005, v3 from 3006.12, 3007.4 and 3008;", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  masters from 3006.17, 3007.9 and 3008 reject v0 and v2 by default (minimum_auth_version)", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Master Config tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  load order", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  /etc/salt/master, then master.d/*.conf (sorted), then include:", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  list", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  settings set in a file first (load order), then derived, then defaults", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  right panel", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  the file the setting comes from, its block marked, and what each file", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  setting it does; Enter shows each file's own value, then the result", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  / and r", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  filter by name, value, file or kind (set, module, not core, restart, ...);", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  r reads the files again (also at start and every config_secs)", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  set", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  in a file; Source is the file and line that wins, +N when others set it too", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  replaces", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  a master.d file replaces the main file's whole value: nested keys it", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  doesn't set are dropped (named); include: files replace master.d ones", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  merged", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  between master.d files dicts merge and lists add up; other values override", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ignored", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  in a file Salt rejected (a key twice is enough): the whole file is skipped", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  module", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  not salt-master's own, but read by salt-api (rest_cherrypy, whose options", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  are checked too), a module Salt ships (auth.ldap.*, mysql.*, vault) or a", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  minion, syndic or salt-ssh option", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  not core", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  in a file, but nothing in Salt reads it: a typo, which Salt ignores; a near", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  miss names the setting it's probably meant to be", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  derived", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  in no file, but not Salt's default either: worked out at startup", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  default", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  Salt's default, in no file", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  \u{21bb}", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  differs from what the running master holds: may change on restart (changed", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  after it started, restored with an old file time, or removed from the files)", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  <redacted>", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  values of credential-looking keys (*pass*, *secret*, *token, *_key), nested", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  ones too, and the password or token in any URL, blanked by the agent", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Events Preview", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(vec![
+            Span::styled("  long lines", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  wrap under their key; Enter opens the whole event", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  filter match", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+            Span::styled("  highlighted; the body starts at the first one when it would be cut off", Style::default().fg(color::main_fg())),
         ]),
         Line::from(""),
         Line::from(Span::styled(format!("  salt-radar v{} \u{2014} Salt Master Monitor", env!("CARGO_PKG_VERSION")), Style::default().fg(color::inactive_fg()))),
@@ -1183,6 +1468,20 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    #[test]
+    fn wrap_spans_hangs_under_the_key_and_keeps_styles() {
+        let red = Style::default().fg(Color::Red);
+        let spans = vec![Span::raw("    \"tgt\": \""), Span::styled("web01,web02,web03", red), Span::raw("\",")];
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        let rows = wrap_spans(spans, 16);
+        let plain: Vec<String> = rows.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
+        assert_eq!(plain, ["    \"tgt\": \"web0", "      1,web02,we", "      b03\","]);
+        assert_eq!(rows.len(), wrapped_rows(&text, 16));
+        assert!(rows[1].spans.iter().any(|s| s.content == "1,web02,we" && s.style == red), "a style carries across a break");
+        assert_eq!(wrapped_rows("short", 16), 1);
+        assert_eq!(wrap_spans(vec![Span::raw("exactly 16 chars")], 16).len(), 1);
+    }
 
     #[test]
     fn help_pages_split_keys_from_the_guide() {

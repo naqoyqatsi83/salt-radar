@@ -51,7 +51,7 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Alerts** — 14 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
+**Alerts** — 17 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
 <img src="docs/screenshots/alerts.png" alt="Alerts tab">
 
 </td>
@@ -65,11 +65,17 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Pulse** — per-minion return activity at a glance, with connection detail on the side
-<img src="docs/screenshots/pulse.png" alt="Pulse tab">
+**Master Config** — the master's configuration: what each file sets and how they combine, rejected files, typos, and settings a restart would change; credentials redacted
+<img src="docs/screenshots/master.png" alt="Master Config tab">
 
 </td>
 </tr>
+<tr><td colspan="2">
+
+**Pulse** — per-minion return activity at a glance, with connection detail on the side
+<img src="docs/screenshots/pulse.png" alt="Pulse tab">
+
+</td></tr>
 <tr><td colspan="2">
 
 **Job Detail** — every minion's return for one job, side by side with its full Salt output; the screen behind any popup is dimmed
@@ -109,20 +115,23 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Every panel above the sparklines — Host Resources, Services, Minion Key Status, Event Types, Job Pulse, salt-api — can be individually hidden via `show_host_resources`/`show_services`/`show_key_status`/`show_event_types`/`show_job_pulse`/`show_salt_api` in the Config Editor (`F3`), same on/off toggle as the sparkline panels' `show_*_graph`; hiding one of Services/Minion Key Status/Event Types reflows the remaining columns in that row to fill the freed width instead of leaving a gap
 
 ### Minions
-- Scrollable minion list: ID, key status, OS, Salt version, plus optional Arch, Seen (time since last check-in) and Fail% (share of the minion's last 50 returns that failed, worst first when sorted) columns; sorting keeps timed-out minions in their own section
+- Scrollable minion list: ID, key status, OS, Salt version, plus optional Proto (auth protocol from the Salt version: v0 red, v2 yellow, v3), Arch, Seen (time since last check-in) and Fail% (share of the minion's last 50 returns that failed, worst first when sorted), Lag and Ping columns; sorting keeps timed-out minions in their own section
+- Lag: how slowly the minion answers compared with the other minions on the same jobs, so a minion that's consistently slow stands out whatever the jobs were. For every job with at least two returns, each minion's time from publish to return is divided by the job's median (a `state.apply` and a `test.ping` rate the same way); the column shows the median of the minion's last 50 ratios, gray up to 1.5x, yellow up to 3x, red beyond. A job is rated once every target returned or it passed `job_straggler_secs`, and minions returning later are rated against that median. Return times under 0.5 s count as 0.5 s, so ping jitter doesn't read as lag, and a job where both the minion and the median took under 0.5 s isn't rated at all (it says nothing about lag), so the column shows `—` until the minion has answered a job that took time. Ping: the time to the minion's latest `test.ping` return, from any source. Both fill in from jobs seen while salt-radar runs
+- One row per key, so the list adds up to the Dashboard's Minion Key Status: pending, rejected and denied keys are listed too, and an ID with an accepted and a denied key (a minion that came back with a new key) shows twice, once per key
 - Freshly-active marker (`●`) next to minions that checked in recently, threshold adapts to the fleet's own median check-in age
 - Fleet overview panel: OS Distribution, Salt Version, and Architecture distribution bars
 - Detail popup with key info and connection status
-- Activity popup (`r`): the minion's recent jobs with function, args, result (OK / FAIL rc=N, or `2 ok 1 chg 1 fail` for state runs) and full JID, plus Job Cache entries that targeted it by name, glob or list; a summary line counts its last 50 returns and names the latest failure
-- Filter by ID, OS, or version (`/` key) — scopes the fleet overview breakdown to the matching minions too, when "follow filter" is on (`f` to toggle, on by default; startup default configurable via `follow_filter` under `[minions]`)
+- Activity popup (`r`): the minion's recent jobs with function, args, result (OK / FAIL rc=N, or `2 ok 1 chg 1 fail` for state runs) and full JID, plus Job Cache entries that targeted it by name, glob or list; a summary line counts its last 50 returns, names the latest failure and shows the minion's lag (median and p95) and last ping
+- Filter by ID, key status (`denied`, `pending`, …), OS, or version (`/` key) — scopes the fleet overview breakdown to the matching minions too, when "follow filter" is on (`f` to toggle, on by default; startup default configurable via `follow_filter` under `[minions]`)
 
 ### Events
 - Live event stream from the Salt event bus (via ZMQ)
-- Full date/time in local and UTC columns, plus an optional Minion column (the event's minion ID)
-- Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax, or a regex wrapped in slashes (`/web-0[1-5]$/`, `/…/i` ignores case; a regex is matched against the event's pretty JSON line by line). Each term of the filter is colored in its own color, in the order typed, from the theme's highlight palette (six colors before any repeat)
+- Local and UTC time columns: only the time for today's events (each column's own today), the full date for older ones, so the tag gets the room; `time_format = "full"` under `[events]` always shows the date (the preview, the detail popup, copies and saves always do), plus an optional Minion column (the event's minion ID)
+- Filter by tag, function, minion ID, or any JSON field — a comma-separated list of terms is OR'd together, and each term may be a glob (`web1,web2` or `web*`), mirroring Salt's own `-L`/glob targeting syntax, or a regex wrapped in slashes (`/web-0[1-5]$/`, case-sensitive unless written `/…/i`; a regex is matched against the event's pretty JSON line by line). A `/…/` term that isn't a usable regex, such as one with a `/g` flag or look-around, is matched as plain text and flagged with ⚠ and the reason in the filter bar. Each term of the filter is colored in its own color, in the order typed, from the theme's highlight palette (six colors before any repeat)
 - Event detail popup:
   - `t` toggles between raw JSON and a **pretty view** for job-return events — the exact `salt-run jobs.lookup_jid --force-color --state-output=full --state-verbose=True` output (same subprocess call Job Detail uses), so formatting and colors are authoritative Salt output, not an approximation. Falls back to a client-side rendering only when no live fetch is possible (non-job-return events) or after a fetch failure/timeout
   - Copy to clipboard (`y` = tag/timestamp + body, `Y` = body only) matches whatever's currently on screen — pretty or raw
+  - `/` searches the event, in whichever view is shown, like Job Detail's output search: matches highlighted (a whole-query `/regex/` works too), `n`/`N` to the next/previous one, the count at the bottom
 - Advanced **Event Sniffer** (`n` key) — capture events by comma-separated terms: a minion ID or glob (events from or about those minions, including the jobs that target them), a keyword (anywhere in the tag or data, ignoring case) or a `/regex/` (`/…/i` ignores case; commas and slashes inside it are part of it), e.g. `web-*, nginx, /ret/(db|web)\d+/`; each term colors its matches:
   - An invalid regex keeps the prompt open and says what's wrong
   - `h` narrows the shown list to events matching further keywords or `/regex/` terms (empty input shows everything again)
@@ -143,19 +152,18 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Job detail popup shows correct OK/FAIL status derived from return values
 - Always shows full per-state detail (`--state-output=full --state-verbose=True`), regardless of the master's own `state_output`/`state_verbose` defaults — opening the popup is an explicit request to see everything about that one job, even a "terse"/"changes" master would otherwise hide unchanged/no-op states here
 
-### Pulse
-- Per-minion return activity at a glance: every minion as a dot in a wrapped grid, color- *and* shape-tiered by recency (`●` bright green flash → `•` green → `·` orange → `·` grey → `·` red for timed out) so adjacent tiers stay distinguishable even at a glance
-- Scales from a handful of minions to 4,000+ without layout changes
-- Detail panel on the side: key status, connection status, OS, Salt version, last return time
-
 ### Alerts
-14 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries):
+17 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries). `Enter` opens an alert's detail: severity, rule and the description (wrapped) stay at the top, the affected items (minions, units, jobs) scroll below them, and `/` searches them:
 
 - **Stale minion** — not seen within `stale_minion_secs`
 - **Pending key** — pending longer than `pending_key_secs`
 - **Service down** — a discovered `salt-*.service` unit is inactive
 - **Disk usage high** — cache or PKI disk over `disk_usage_pct`
-- **Legacy protocol** — minions still using Salt's legacy transport
+- **No replay protection** — minions on Salt's auth protocol v0, from before the March 2022 security releases (2014.x–3001.x, 3002.0–3002.7, 3003.0–3003.3, 3004.0)
+- **Legacy auth protocol** — minions on protocol v2, without per-minion session encryption (3002.8+, 3003.4+, 3004.1+, 3005, 3006.0–3006.11, 3007.0–3007.3)
+- Both go by this master's `minimum_auth_version` as the running master holds it (asked of the master, as for the Master Config tab; the files' value when it can't be asked): **critical** when it rejects those minions, so they can't connect; a **warning** when it's lowered to let them in, as they still lack replay protection (v0) or per-minion session encryption (v2); and a **warning** on a master that doesn't enforce it yet, as masters from 3006.17, 3007.9 and 3008 reject v0 and v2 by default (`minimum_auth_version: 3`)
+- **Config file rejected** — a master config file Salt couldn't parse (e.g. the same key twice): Salt skips the whole file with only a log line, so all its settings silently fall back to their defaults; critical (see the Master Config tab)
+- **Minion newer than master** — minions on a newer Salt major than the master (e.g. 3008 minions on a 3006 master); older minions are supported, and the protocol rules cover the ones too old
 - **Salt warning** — `salt/warning/*` events on the bus
 - **Auth failure** — failed authentication on the ZMQ bus
 - **Stuck job** — dispatched but not fully returned within `job_straggler_secs`
@@ -178,15 +186,35 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 - Only what cpstats records is ever visible: no request/response body, no headers — so no credentials, payload content, or which minion/job/user was involved
 - salt-radar's own `GET /stats` poll (the request that populates this log) is filtered out by default — `hide_stats_polls` (`[api]`, default `true`) — since at the Dashboard refresh interval it would otherwise drown out real traffic with one entry per tick. Set to `false`, or press `x` on the API tab to toggle it live — the filter applies at display time, so it hides/shows already-captured entries retroactively, not just ones captured from that point on. `/stats` requests are still always captured and still count against `log_cap`/`log_max_age_secs` even while hidden — this only controls what's shown.
 
+### Master Config
+The master's configuration, as its files set it:
+
+- Every setting, collapsed to one line: the ones set in a file first, in Salt's load order (`/etc/salt/master`, then `master.d/*.conf` sorted, then `include:`), with the file and line that sets each; then values Salt worked out at startup (derived); then the defaults, greyed out. `/` filters by name, value, file or kind (`set`, `module`, `not core`, `derived`, `default`), and module settings by what reads them (`salt-api`, `eauth`)
+- The right panel shows the file the selected setting comes from, its block marked, and, when several files set it, what each one does, following Salt's own rules:
+  - a `master.d` file **replaces** the main file's whole value: a nested key it doesn't set is dropped, and the panel names it (`rest_cherrypy: {port: 9000}` in `master.d` drops every other `rest_cherrypy` option from `/etc/salt/master`); `include:` files replace `master.d` ones the same way
+  - between `master.d` files, dicts are **merged** and lists concatenated (two `ext_pillar` entries give both), while other values are **overridden** by the later file
+- `Enter` opens the full value next to Salt's default, and when several files set it, each file's own value before the result; `y` copies it as YAML, `s` saves it
+- **Rejected files** — a file Salt can't parse (the same key twice is enough) is skipped whole, with only a log line. The title says so, its settings are listed as **ignored** with Salt's reason (named from its top-level lines when the file isn't valid YAML at all), the line at fault is marked in the file, and the "Config file rejected" alert fires
+- **Module** — a key that isn't salt-master's own but that Salt still reads, named with what reads it and where that comes from: salt-api (`rest_cherrypy`, `rest_tornado`, `rest_wsgi`, `api_logfile`, `rest_timeout`), a module's option (`auth.ldap.uri` with the backend's default, `cache.redis.host`, `mysql.host`, a returner's `pgjsonb.host` or `alternative.pgjsonb.host`, `vault`), or a valid minion, syndic or salt-ssh option. Modules are found where the master's loader finds them: Salt itself, installed Salt extensions (`saltext-vault`) and synced custom modules, and a dotted option only counts when the module's source names it, so `redis.host` on a 3008 master, whose redis cache reads `cache.redis.host`, is caught (did you mean `cache.redis.host`). A setting for one of the modules Salt 3008 moved out to extensions says so while the extension isn't installed. Options inside `rest_cherrypy`/`rest_tornado`/`rest_wsgi` are checked against what salt-api reads: one it doesn't is flagged, with a near miss named (`colect_stats` → `collect_stats`), and so is the documented `socket_queue_size`, which salt-api 3006 never reads (it reads `queue_size`)
+- **Not core** — a key in a file that nothing in Salt reads: a typo, which Salt silently ignores; a near miss names the setting it's probably meant to be (`worker_thread` → did you mean `worker_threads`). The title's count includes ignored keys inside a salt-api section
+- **↻ may change on restart** — the setting's value in the files differs from the one the running master holds, so a restart will change it; the title counts them (`↻ 10 on restart`) and `/restart` lists them. The running master's own options are asked of it (the `test.get_opts` runner, sent to the master so it runs in a process forked from its worker, once per master start and salt-radar instance). That's an ordinary runner job: its return, the master's options as loaded, credentials included, goes over the event bus and into the job cache like any other job's return (pillar data in state returns, for one), so whoever can read those -- the job cache's files, salt-api's `/events` stream, an `event_return` or external job cache -- can read it too. salt-radar keeps this job of its own out of Events, Live Jobs and the Job Cache list; `salt-run jobs.list_jobs` still shows it, as `runner.test.get_opts`. To harden this, set `running_config_digests = true` under `[salt]` (or in the Config Editor): the master is then asked only for a SHA-256 digest of each option (the `salt.cmd` runner rendering a template in its own process), compared with digests of the files' options, so no option value leaves it; ↻ marks the same settings, but the panel can't show what the running master holds. compared value by value with the files as Salt loads them, and the panel and the popup show the running value next to why: **changed** after the master started, **restored** (it differs although its files are older than the master: put back with their old time, or edited keeping it), or **removed** from the files while the master still has it. A file only touched, or rewritten with the same values, isn't marked. When the master can't be asked (not running, the request refused), ↻ falls back to settings in files changed after the master started, and the title says `(file times only)`. The master's start is taken from the salt-master processes themselves, not from anything mentioning salt-master (a `journalctl -u salt-master -f` left running made the master look older than it was)
+- Credentials are redacted by the agent before they reach the TUI, in the list, the files, the popup and copies: values of keys like `*pass*`, `*password*`, `*secret*`, `*token`, `*_key` (nested ones too, as in `ext_pillar`), except flags and file paths, and the password or token in any URL, wherever it is (`https://deploy:<redacted>@github.com/...` in `gitfs_remotes`, `ext_pillar` or a comment)
+- Read from the files at start, with the config refresh (`config_secs`) and on `r`
+
+### Pulse
+- Per-minion return activity at a glance: every minion as a dot in a wrapped grid, color- *and* shape-tiered by recency (`●` bright green flash → `•` green → `·` orange → `·` grey → `·` red for timed out) so adjacent tiers stay distinguishable even at a glance
+- Scales from a handful of minions to 4,000+ without layout changes
+- Detail panel on the side: key status, connection status, OS, Salt version, last return time
+
 ### Admin Mode
 - Toggle with `a` (danger-zone confirmation dialog required)
-- **Fleet scan** (`s`): runs `grains.items` on all minions via Salt LocalClient, populates OS/Salt Version/Arch data; it finishes as soon as every minion has answered, and marks any still silent after 60s as timed out
+- **Fleet scan** (`s`): runs `grains.items` on all minions via Salt LocalClient to refresh OS/Salt Version/Arch, which otherwise come from the master's minion data cache at start (as fresh as each minion's last pillar refresh), and to find the minions that don't answer; it finishes as soon as every minion has answered, and marks any still silent after 60s as timed out
 
 ### Columns and sorting
 - The Minions, Events, Jobs (both tables), Alerts and API request log tables let you choose which columns are shown and in what order: `v` opens a picker for the focused table (`+`/`-` move a column, `Space` shows/hides it, `Enter` saves), also editable in the Config Editor — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their sections of `salt-radar.toml`
 - Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order). Sorting lasts for the session
-- Optional columns beyond the defaults: Live Jobs Started, Minions Arch/Seen/Fail%, Events Minion, Alerts Since/Count
-- When a panel is too narrow for every column, the text columns shrink together instead of cutting off the rightmost ones
+- Optional columns beyond the defaults: Live Jobs and Job Cache Started (the JID already holds the start time), Minions Proto/Arch/Seen/Fail%/Lag/Ping, Events Minion, Alerts Since/Count
+- Columns are as wide as their longest value, not a fixed width, so short columns don't spread a table out and long values aren't cut while there's room; spare room widens the gaps between columns up to 4 spaces. When a panel is too narrow, the least needed text gives way first: Minions' OS, then Salt and Arch before the minion ID; a job's Function and Args before its Target (except a list target over 40 characters); an event's Minion before its Tag
 
 ### Config Editor
 - `F3` opens an in-app editor for every setting in `salt-radar.toml`, grouped by section
@@ -195,6 +223,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 - `color_theme` opens a picker of every theme found (see [Themes](#themes)) and previews each one live as you move through the list; `Esc`, or closing without saving, puts the saved theme back
 - `graph_order` opens as a reorderable list instead of free text — `↑↓` selects an item, `+`/`-` moves it up/down, `Enter` confirms, `Esc` reverts — since hand-typing a comma-separated list makes it easy to typo or drop a panel
 - The `*_columns` settings open the same way, plus `Space` to show/hide a column (hidden columns are listed unchecked below the shown ones)
+- The hotkey toggles are settings too and are saved the moment they change, so the next start looks the same however the session ended (a clean quit, a closed terminal window, a dropped SSH session): the Dashboard graphs (`F4`–`F8`, `show_*_graph`) and their style (`m`, `graph_style` = dots/bars), mouse capture (`F2`, `mouse`), the refresh speed (`-`/`+`, `tick_ms`), the Minions `f` follow filter, the API `x` stats-poll filter and where `Ctrl+←`/`→` left each tab's panel divider (`*_split_pct` in `[ui]`, 20-80%). Saving merges them into the file as it is, so it doesn't undo other edits made to it meanwhile
 - `Save & Restart` (or `s` from anywhere in the editor) writes the TOML file and applies the new config immediately, no process restart needed. Only settings that differ from the defaults are written, so everything you haven't changed keeps following the defaults of future versions (a file saved by an older version, which held every setting, slims down on its next save). Confirming a field with `Enter` only stages it — the title shows `● unsaved changes` until saved, and closing with unsaved changes asks first (`Esc`/`q` again discards)
 
 ### Clipboard and save-to-file
@@ -269,11 +298,15 @@ service_mem_abs_threshold_mb = 2048.0
 zmq_latency_source = "agent_ipc"  # or "job_ping", "master_stats"
 ```
 
+#### Slow links (SSH proxies that record sessions)
+
+On a busy master, every list scrolls on every refresh, and a scrolled panel is redrawn row by row; the Dashboard graphs shift one column each refresh, so once they're full nearly every graph cell is redrawn too. That's a few KB/s, which a direct SSH session doesn't notice, but a proxy that records sessions (CyberArk PSM, for one) can fall behind it, and then the whole connection lags, tmux and other windows on it included. Set `max_output_kbs` under `[refresh]` (e.g. 4–8) to cap what salt-radar sends: over the cap, refreshes wait until it allows them, while key presses still redraw at once. The header shows the cap (`≤4KB/s`), yellow while a refresh is waiting. Hiding the graphs (`F4`–`F8`) or a slower refresh (`+`) cuts the output too.
+
 #### Running through sudo, and several users at once
 
 salt-radar needs root (or the Salt user) to read the master's PKI and job cache, so it's often started with `sudo`. sudo resets `HOME` to root's, which would make every user share root's config — so when salt-radar runs as root with `SUDO_USER` set, it uses the invoking user's files instead: their `~/.config/salt-radar/salt-radar.toml` (a user without one yet starts from root's config, or the defaults, and their first save creates their own), their `~/.config/salt-radar/themes/`, their "updated to vX" marker, and their home for `~` (e.g. the default export directory). Whatever salt-radar creates in their home is owned by them. `./salt-radar.toml` in the current directory still wins, and `sudo -i` or a real root login behave as before. Config saves are atomic (a temp file renamed into place).
 
-Several users can run salt-radar on the same master at the same time: each instance starts its own agent and talks only to it, and nothing is locked or written into Salt's directories. What adds up is load — each agent takes about 60 MB and runs its own polling (`systemctl`, `/proc`, keys, salt-api `/stats`), plus Job Cache loads and Job Detail lookups when someone uses them. The only things that reach minions are admin-mode actions (fleet scan, minion ping, grains) and the opt-in `job_ping` latency source (a `test.ping` to every minion every few seconds), so with several users keep `zmq_latency_source` on its default. Each instance's Job Detail lookups are real runner jobs (`jobs.lookup_jid`), so users see each other's in Live Jobs and Events.
+Several users can run salt-radar on the same master at the same time: each instance starts its own agent and talks only to it, and nothing is locked or written into Salt's directories. What adds up is load — each agent takes about 60 MB and runs its own polling (`systemctl`, `/proc`, keys, salt-api `/stats`), plus Job Cache loads and Job Detail lookups when someone uses them. The only things that reach minions are admin-mode actions (fleet scan, minion ping, grains) and the opt-in `job_ping` latency source (a `test.ping` to every minion every few seconds), so with several users keep `zmq_latency_source` on its default. Each instance's Job Detail lookups are real runner jobs (`jobs.lookup_jid`), so users see each other's in Live Jobs and Events; each instance also sends one runner job per master start for the Master Config tab's restart check (see there), kept out of its own lists.
 
 ### Themes
 
@@ -283,9 +316,9 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 
 | Key | Action |
 |-----|--------|
-| `q` | Quit |
+| `q` | Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once) |
 | `Tab` / `Shift+Tab` | Next / previous tab |
-| `1`–`7` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Pulse) |
+| `1`–`8` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Home`/`End` | First/last row |
@@ -298,6 +331,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 | `F3` | Open Config Editor |
 | `+`/`-` | Adjust refresh interval |
 | `m` | Toggle sparkline style (Dashboard) |
+| `Ctrl+←`/`Ctrl+→` | Move the divider between the two panels (Minions, Events, Jobs, API, Master Config, Pulse) |
 | `F4`–`F8` | Toggle CPU/Memory/ZMQ/Events/Minion-activity graphs (Dashboard) |
 
 Most of these are also shown live, btop-style, in the border of the panel they affect (e.g. the title frame's bottom border shows `-2000ms+` for the current refresh interval) — the table above is the full reference.
@@ -322,6 +356,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Jobs (Cache) | `r` | Refresh job cache |
 | Jobs (Cache) | `←`/`→` | Switch focus between Live Jobs and Cache panels |
 | Pulse | `↑`/`↓`/`←`/`→` | Navigate the minion grid |
+| Master Config | `Enter` | The setting's full value, where it's set and Salt's default |
+| Master Config | `r` | Read the configuration files again |
 | API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |
 
 ### Config Editor
@@ -353,8 +389,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `PgUp`/`PgDn` | Jump 10 returns |
 | `Home`/`End` | First/last return (job detail) |
 | `Enter` | Enter scroll mode (event/job detail) |
-| `/` | Search the return output (job detail, output pane) or the help pages, matches highlighted |
-| `n`/`N` | Next/previous search match, marked in place (job detail, also from the returns list; help) |
+| `/` | Search the return output (job detail, output pane), an event (event detail, raw or pretty view), an alert's items (alert detail) or the help pages, matches highlighted |
+| `n`/`N` | Next/previous search match, marked in place (job detail, also from the returns list; event detail; alert detail; help) |
 | `f`/`F` | Next/previous failed state, marked in the output (job detail; also from the returns list) |
 | `Esc` | Exit scroll mode |
 | `Home`/`End` | Jump to start/end of output (scroll mode) |
@@ -368,9 +404,9 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                       salt-radar (Rust TUI)                        │
-├─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬────────┤
-│Dashboard│ Minions │  Events │   Jobs  │  Alerts │   API   │ Pulse  │
-├─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴────────┤
+├──────────┬────────┬───────┬─────┬───────┬────┬──────────────┬──────┤
+│ Dashboard│ Minions│ Events│ Jobs│ Alerts│ API│ Master Config│ Pulse│
+├──────────┴────────┴───────┴─────┴───────┴────┴──────────────┴──────┤
 │ detail popups · Config Editor · themes · alert engine              │
 │ collectors: /proc · systemctl · /proc/net/tcp · PKI key dir        │
 └───────────────┬─────────────────────────────────┴──────────────────┘
@@ -381,6 +417,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 │              Python agent (runs on Salt's own Python)              │
 │ event bus subscriber · LocalClient / runners · fleet scan          │
 │ job cache reader · jobs.lookup_jid · salt-api /stats poller        │
+│ master config: the files as Salt loads them, the running master's  │
+│ options to compare them with, credentials redacted                 │
 └──────────────────────────────────┬─────────────────────────────────┘
                                    │
 ┌──────────────────────────────────▼─────────────────────────────────┐
@@ -437,11 +475,13 @@ src/
 │   ├── keys.rs          # Keyboard and mouse input for tabs, lists and every popup
 │   ├── messages.rs      # Agent results/events in, agent commands out, fleet scan
 │   ├── config_editor.rs # Config Editor: field model, path browser, saving, theme preview
+│   ├── line_edit.rs     # Cursor editing shared by every one-line text input
 │   └── clipboard.rs     # Clipboard (tmux/OSC 52, X11 via xclip) and save-to-file
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management
-├── alerts/              # Alert engine (14 rules: staleness, keys, services, memory, disk, jobs, auth, api)
+├── sniff.rs             # Filter and search terms: minion IDs, globs, keywords, /regex/
+├── alerts/              # Alert engine (17 rules: staleness, keys, services, memory, disk, jobs, auth, api)
 ├── collectors/          # OS-level data collection
 │   ├── keys.rs          # PKI key file parsing
 │   ├── processes.rs     # /proc scanning for salt processes
@@ -456,13 +496,15 @@ src/
     ├── jobs.rs          # Jobs tab
     ├── alerts_view.rs   # Alerts tab
     ├── api_view.rs      # API tab
+    ├── master_config.rs # Master Config tab
     ├── pulse.rs         # Pulse tab
     ├── table.rs         # Shared table layout: column widths, headers, sort markers
     ├── minion_events.rs # Per-minion event/return history popup
     ├── config_editor.rs # In-app config editor (F3)
+    ├── whats_new.rs     # Help's "What's new" page: the embedded CHANGELOG
     └── detail_popup.rs  # All other popup windows (minion, event, job, sniffer, etc.)
 agent/
-└── salt_radar_agent.py  # Python agent: Salt client, event subscriber, fleet scan
+└── salt_radar_agent.py  # Python agent: Salt client, event subscriber, fleet scan, master config
 themes/                  # Bundled color themes (ports of btop++'s), installed to /usr/share/salt-radar/themes
 salt-radar.theme.example # The Default theme with every key documented
 ```
@@ -476,6 +518,10 @@ salt-radar stands on the shoulders of other people's work:
 - **[psnet](https://github.com/psmux/psnet)** — salt-radar's original dark palette, its ratatui TUI style, and its `/proc` / `/proc/net/tcp` collection approach were modeled on psnet.
 - **[ratatui](https://github.com/ratatui/ratatui)** and **[crossterm](https://github.com/crossterm-rs/crossterm)**, which do the heavy lifting of drawing to the terminal, plus serde, serde_json, toml, chrono, base64 and libc.
 - **[Salt](https://github.com/saltstack/salt)** itself — the Python agent uses nothing beyond Python's standard library and Salt's own client APIs.
+
+🤖 No humans were harmed (or particularly involved) in the making of this app. The human's job was running Salt masters, filing issues, squinting at the screen and saying "this feels cluttered" or "the architecture is way longer than that on Power," and trying every release candidate on a real master before it shipped. Every line of Rust and Python, every fix, and every questionable design decision downstream of that was Claude's.
+
+⚠️ No human has reviewed this code line by line. It's been *tested* for real — a lab of 50 minions running Salt 3000 to 3006, a fleet faked up to 3,000 keys, salt-api, broken configs and minions that stop answering, all watched live rather than just claimed — but tested and audited are different things. salt-radar is read-only by design and keeps credentials out of the TUI, yet it still runs as root next to your Salt master. Treat it accordingly: fine for keeping an eye on your own master, worth a read of the agent before you let it near one that matters. 🤘
 
 ## License
 

@@ -3,6 +3,9 @@
 #
 # Bashtop theme with night-owl colors
 # by zkourouma
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Night Owl palette.
 
 theme[main_bg]="#011627"
 theme[meter_bg]="#1f2c37"
@@ -23,7 +26,7 @@ theme[version_fg]="#82aaff"
 theme[hint_fg]="#646465"
 theme[badge_bg]="#5a432e"
 theme[green]="#22da6e"
-theme[cyan]="#50c8ff"
+theme[cyan]="#7fdbca"
 theme[yellow]="#ffeb95"
 theme[orange]="#ff963c"
 theme[red]="#ef5350"

@@ -9,7 +9,9 @@ mod sniff;
 mod types;
 mod ui;
 
-use std::io;
+use std::cell::Cell;
+use std::io::{self, Write};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEventKind, KeyCode, KeyModifiers, MouseEventKind, MouseButton};
@@ -35,30 +37,86 @@ use app::App;
 // requesting click tracking (1000) and extended SGR coordinates (1006) cuts
 // that traffic to just what's needed.
 fn enable_mouse_capture() -> io::Result<()> {
-    use std::io::Write;
     io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h")?;
     io::stdout().flush()
 }
 
 fn disable_mouse_capture() -> io::Result<()> {
-    use std::io::Write;
     io::stdout().write_all(b"\x1b[?1006l\x1b[?1000l")?;
     io::stdout().flush()
 }
 
 const MAX_INPUT_EVENTS_PER_FRAME: usize = 64;
 
+/// stdout that counts the bytes written through it, for `OutputBudget`.
+struct CountingStdout {
+    written: Rc<Cell<u64>>,
+}
+
+impl Write for CountingStdout {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = io::stdout().write(buf)?;
+        self.written.set(self.written.get() + n as u64);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().flush()
+    }
+}
+
+/// Caps the bytes per second redraws send (`max_output_kbs`, 0 = no cap):
+/// a token bucket that refills at the cap, holds up to two seconds' worth,
+/// and goes negative after a large frame. A slow link (a session-recording
+/// SSH proxy) that falls behind a busy master's scrolling lists stalls the
+/// whole connection, the user's other terminal windows included.
+struct OutputBudget {
+    rate: f64,
+    tokens: f64,
+    at: Instant,
+}
+
+impl OutputBudget {
+    fn new(now: Instant) -> Self {
+        Self { rate: 0.0, tokens: 0.0, at: now }
+    }
+
+    fn refill(&mut self, kbs: u64, now: Instant) {
+        self.rate = kbs as f64 * 1024.0;
+        let secs = now.saturating_duration_since(self.at).as_secs_f64();
+        self.tokens = (self.tokens + self.rate * secs).min(self.rate * 2.0);
+        self.at = now;
+    }
+
+    fn ready(&self) -> bool {
+        self.rate == 0.0 || self.tokens >= 0.0
+    }
+
+    fn spend(&mut self, bytes: u64) {
+        if self.rate > 0.0 {
+            self.tokens -= bytes as f64;
+        }
+    }
+
+    /// How long until a held redraw may go out.
+    fn wait(&self) -> Duration {
+        if self.ready() { Duration::ZERO } else { Duration::from_secs_f64(-self.tokens / self.rate) }
+    }
+}
+
 fn main() -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
-    let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
+    let written = Rc::new(Cell::new(0u64));
+    let backend = ratatui::backend::CrosstermBackend::new(CountingStdout { written: written.clone() });
     let mut terminal = Terminal::new(backend)?;
 
-    // Enable mouse capture for click/scroll support
-    enable_mouse_capture()?;
-
     let mut app = App::new();
+
+    if app.config.mouse {
+        enable_mouse_capture()?;
+    }
 
     // Draw first frame immediately
     terminal.draw(|f| {
@@ -69,9 +127,15 @@ fn main() -> io::Result<()> {
     let mut last_tick = Instant::now();
     let mut last_tab = app.current_tab;
     let mut need_redraw = true;
+    // Input redraws at once; ticks and streams wait for the output budget.
+    let mut input_redraw = false;
+    let mut budget = OutputBudget::new(Instant::now());
 
     'main: loop {
-        if need_redraw {
+        budget.refill(app.config.max_output_kbs, Instant::now());
+        app.output_held = need_redraw && !input_redraw && !budget.ready();
+        if need_redraw && !app.output_held {
+            let before = written.get();
             if app.needs_terminal_clear {
                 terminal.clear()?;
                 app.needs_terminal_clear = false;
@@ -84,16 +148,21 @@ fn main() -> io::Result<()> {
                 app.last_frame_size = f.area();
                 ui::draw(f, &mut app);
             })?;
+            budget.spend(written.get() - before);
             need_redraw = false;
+            input_redraw = false;
         }
 
-        let tick_rate = Duration::from_millis(app.tick_interval_ms);
+        let tick_rate = Duration::from_millis(app.config.tick_ms);
         let remaining = tick_rate.checked_sub(last_tick.elapsed()).unwrap_or(Duration::ZERO);
-        let timeout = if app.needs_fast_poll() {
+        let mut timeout = if app.needs_fast_poll() {
             remaining.min(Duration::from_millis(100))
         } else {
             remaining
         };
+        if app.output_held {
+            timeout = timeout.min(budget.wait());
+        }
 
         // Handle every input event already queued before redrawing: under a
         // busy event bus each redraw and drain is expensive, so paying for
@@ -115,7 +184,9 @@ fn main() -> io::Result<()> {
                             } else {
                                 key.code
                             };
-                            if app.handle_key(code) {
+                            let ctrl_arrow = key.modifiers.contains(KeyModifiers::CONTROL)
+                                && matches!(key.code, KeyCode::Left | KeyCode::Right);
+                            if !(ctrl_arrow && app.move_split(key.code == KeyCode::Right)) && app.handle_key(code) {
                                 break 'main;
                             }
                             need_redraw = true;
@@ -124,7 +195,7 @@ fn main() -> io::Result<()> {
                     Event::Resize(_, _) => {
                         need_redraw = true;
                     }
-                    Event::Mouse(mouse) if app.mouse_enabled => {
+                    Event::Mouse(mouse) if app.config.mouse => {
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
                                 if app.handle_key(KeyCode::Up) { break 'main; }
@@ -150,6 +221,10 @@ fn main() -> io::Result<()> {
                                 // Click hit-testing reads the last drawn
                                 // layout, so redraw before the next one.
                                 break;
+                            }
+                            MouseEventKind::Down(MouseButton::Right) if app.quit_confirm => {
+                                app.quit_confirm = false;
+                                need_redraw = true;
                             }
                             MouseEventKind::Down(MouseButton::Right) if app.show_help => {
                                 app.show_help = false;
@@ -182,11 +257,12 @@ fn main() -> io::Result<()> {
                     break;
                 }
             }
+            input_redraw = need_redraw;
         }
 
         if app.needs_mouse_toggle {
             app.needs_mouse_toggle = false;
-            if app.mouse_enabled {
+            if app.config.mouse {
                 enable_mouse_capture()?;
             } else {
                 disable_mouse_capture()?;
@@ -210,4 +286,30 @@ fn main() -> io::Result<()> {
     disable_mouse_capture()?;
     io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_budget_holds_redraws_until_the_cap_refills() {
+        let t0 = Instant::now();
+        let mut b = OutputBudget::new(t0);
+        b.refill(0, t0);
+        b.spend(1_000_000);
+        assert!(b.ready(), "no cap never holds");
+
+        b.refill(4, t0);
+        assert!(b.ready());
+        b.spend(6 * 1024);
+        assert!(!b.ready(), "a frame over the budget holds the next one");
+        assert_eq!(b.wait(), Duration::from_millis(1500), "6 KB at 4 KB/s");
+        b.refill(4, t0 + Duration::from_millis(1500));
+        assert!(b.ready());
+
+        b.refill(4, t0 + Duration::from_secs(60));
+        b.spend(9 * 1024);
+        assert!(!b.ready(), "an idle minute saves up only two seconds' worth");
+    }
 }

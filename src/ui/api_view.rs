@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
@@ -33,13 +33,7 @@ pub fn draw_api(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &
         return;
     }
 
-    let layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(65),
-            Constraint::Percentage(35),
-        ])
-        .split(area);
+    let layout = super::split_panes(area, app);
 
     draw_request_log(f, layout[0], app, tab_focused, hits);
     draw_endpoint_breakdown(f, layout[1], app);
@@ -174,17 +168,13 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
 
     let mut lines: Vec<Line> = Vec::new();
 
-    if app.is_filtering {
-        let mut spans = super::input_spans(" filter: ", &app.filter_text, app.input_cursor, Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD));
-        spans.extend([
-            Span::styled(format!("  {} items", total), Style::default().fg(color::inactive_fg())),
-        ]);
-        lines.push(Line::from(spans));
-    } else if !app.filter_text_for(Tab::Api).is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(format!(" filter: {} ", app.filter_text_for(Tab::Api)), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} items", total), Style::default().fg(color::inactive_fg())),
-        ]));
+    let (filter, count) = if app.is_filtering {
+        (app.filter_text.as_str(), format!("{} items", total))
+    } else {
+        (app.filter_text_for(Tab::Api), format!("{} items", total))
+    };
+    if let Some(bar) = super::filter_bar(filter, app.is_filtering, app.input_cursor, count, true) {
+        lines.push(bar);
     }
 
     if app.api_requests_log.is_empty() {

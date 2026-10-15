@@ -1,5 +1,8 @@
 # salt-radar port of btop++'s ayu.theme
 # (https://github.com/aristocratos/btop, Apache-2.0)
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Ayu palette.
 
 theme[main_bg]="#0b0e14"
 theme[meter_bg]="#252931"
@@ -33,13 +36,13 @@ theme[mem_gradient_start]="#95e6cb"
 theme[mem_gradient_mid]="#95e6cb"
 theme[mem_gradient_high]="#70d2b2"
 theme[mem_gradient_end]="#4cbf99"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#aad94c"
 theme[pulse_aging]="#e6b673"
 theme[tab_active_bg]="#393121"
 theme[tab_active_fg]="#e6b450"
 theme[tab_inactive_fg]="#5b606a"
 theme[tab_separator]="#565b66"
 theme[highlight_1]="#399ee6"
-theme[highlight_2]="#ff2dc8"
+theme[highlight_2]="#d2a6ff"
 theme[highlight_3]="#4cbf99"
 theme[highlight_4]="#a37acc"

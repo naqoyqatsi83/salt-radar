@@ -4,6 +4,9 @@
 # Theme: Elementarish
 # (inspired by Elementary OS)
 # By: Dennis Mayr
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Solarized accents it is built on.
 
 theme[main_bg]="#333333"
 theme[meter_bg]="#444c4f"
@@ -23,12 +26,12 @@ theme[subtitle_fg]="#aab2ac"
 theme[version_fg]="#268ad0"
 theme[hint_fg]="#6c8087"
 theme[badge_bg]="#7a5636"
-theme[green]="#50c878"
+theme[green]="#859900"
 theme[cyan]="#268ad0"
 theme[yellow]="#b28602"
 theme[orange]="#ff963c"
 theme[red]="#d84f4c"
-theme[purple]="#b478ff"
+theme[purple]="#6c71c4"
 theme[gradient_start]="#859900"
 theme[gradient_mid]="#b28602"
 theme[gradient_high]="#c56323"
@@ -37,13 +40,13 @@ theme[mem_gradient_start]="#859900"
 theme[mem_gradient_mid]="#b28602"
 theme[mem_gradient_high]="#c56323"
 theme[mem_gradient_end]="#d84f4c"
-theme[pulse_fresh]="#78ff78"
+theme[pulse_fresh]="#859900"
 theme[pulse_aging]="#ff963c"
 theme[tab_active_bg]="#2e5570"
 theme[tab_active_fg]="#d84f4c"
 theme[tab_inactive_fg]="#6c8087"
 theme[tab_separator]="#657b83"
 theme[highlight_1]="#268ad0"
-theme[highlight_2]="#ff2dc8"
+theme[highlight_2]="#d33682"
 theme[highlight_3]="#2a9d95"
-theme[highlight_4]="#aa50ff"
+theme[highlight_4]="#6c71c4"

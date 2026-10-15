@@ -444,7 +444,7 @@ def cmd_get_system_info(opts, req):
     result(req["id"], "get_system_info", data=info)
 
 
-# Cached {token: str, eauth: str, username: str} per (scheme, port, eauth,
+# Cached {token: str, eauth: str, username: str} per (base URL, eauth,
 # username) -- re-login only happens on first use or after the cached token
 # is rejected, not on every poll.
 _api_token_cache = {}
@@ -455,6 +455,12 @@ _api_token_cache = {}
 # just failed (credentials rotated in pillar), not on every poll tick
 # alongside the (much cheaper) token cache above.
 _api_pillar_compiled_cache = None
+
+
+def _minion_data_bank(mid):
+    """The master's minion data cache keeps each minion's grains and pillar
+    under key "data" in bank "minions/<id>" (salt/utils/minions.py)."""
+    return "minions/{}".format(mid)
 
 
 def _pillar_get(compiled, path):
@@ -494,7 +500,7 @@ def _compile_stats_pillar(opts, force_refresh=False):
         salt = _import_salt()
         minion_id, _ = salt.config.get_id(opts)
         cache = salt.cache.factory(opts)
-        grains = cache.fetch("minions", minion_id) or {}
+        grains = (cache.fetch(_minion_data_bank(minion_id), "data") or {}).get("grains", {})
         pil = salt.pillar.get_pillar(opts, grains, minion_id, saltenv=opts.get("saltenv") or "base")
         compiled = pil.compile_pillar()
         _api_pillar_compiled_cache = compiled
@@ -539,7 +545,21 @@ def _resolve_api_stats_auth(opts, req, force_refresh=False):
     return None, None, "unknown stats_auth_mode {!r}".format(mode)
 
 
-def _login_api_token(scheme, port, eauth, username, password):
+def _api_base(rest_cherrypy):
+    """Where salt-api serves its app: its `host` (localhost when it listens
+    on every address), `port` and `root_prefix`, which /login and /stats
+    sit under."""
+    scheme = "http" if rest_cherrypy.get("disable_ssl", False) else "https"
+    host = str(rest_cherrypy.get("host") or "0.0.0.0")
+    if host in ("0.0.0.0", "::"):
+        host = "127.0.0.1"
+    elif ":" in host:
+        host = "[{}]".format(host)
+    prefix = str(rest_cherrypy.get("root_prefix") or "/").strip("/")
+    return "{}://{}:{}{}".format(scheme, host, rest_cherrypy.get("port", 8000), "/" + prefix if prefix else "")
+
+
+def _login_api_token(base, eauth, username, password):
     """POST /login and return a fresh token, or None on failure."""
     import urllib.request
     import urllib.error
@@ -547,12 +567,12 @@ def _login_api_token(scheme, port, eauth, username, password):
     import json as json_mod
 
     ctx = None
-    if scheme == "https":
+    if base.startswith("https"):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-    url = "{}://127.0.0.1:{}/login".format(scheme, port)
+    url = base + "/login"
     body = json_mod.dumps({"username": username, "password": password, "eauth": eauth}).encode("utf-8")
     http_req = urllib.request.Request(
         url, data=body,
@@ -567,18 +587,18 @@ def _login_api_token(scheme, port, eauth, username, password):
         return None
 
 
-def _get_api_token(scheme, port, eauth, username, password, force_relogin=False):
-    """Cached token for (scheme, port, eauth, username), logging in only
+def _get_api_token(base, eauth, username, password, force_relogin=False):
+    """Cached token for (base URL, eauth, username), logging in only
     when there's no cached token yet, the credentials changed, or the
     caller asks for a forced re-login (a previous request with the cached
     token came back 401 -- Salt tokens expire server-side on their own
     schedule that this agent has no visibility into).
     """
-    key = (scheme, port, eauth, username)
+    key = (base, eauth, username)
     cached = _api_token_cache.get(key)
     if cached and not force_relogin:
         return cached
-    token = _login_api_token(scheme, port, eauth, username, password)
+    token = _login_api_token(base, eauth, username, password)
     if token:
         _api_token_cache[key] = token
         return token
@@ -586,7 +606,7 @@ def _get_api_token(scheme, port, eauth, username, password, force_relogin=False)
     return None
 
 
-def _ensure_api_token(opts, req, scheme, port, eauth, force_relogin):
+def _ensure_api_token(opts, req, base, eauth, force_relogin):
     """Resolve credentials and get a usable token, one attempt with
     whatever's cached plus one retry with freshly-resolved credentials if
     that fails and the mode is "pillar" (a rejected login there could mean
@@ -598,12 +618,12 @@ def _ensure_api_token(opts, req, scheme, port, eauth, force_relogin):
     username, password, auth_err = _resolve_api_stats_auth(opts, req)
     if auth_err:
         return None, "auth: {}".format(auth_err)
-    token = _get_api_token(scheme, port, eauth, username, password, force_relogin=force_relogin)
+    token = _get_api_token(base, eauth, username, password, force_relogin=force_relogin)
     if not token and req.get("auth_mode") == "pillar":
         username, password, auth_err = _resolve_api_stats_auth(opts, req, force_refresh=True)
         if auth_err:
             return None, "auth: {}".format(auth_err)
-        token = _get_api_token(scheme, port, eauth, username, password, force_relogin=True)
+        token = _get_api_token(base, eauth, username, password, force_relogin=True)
     if not token:
         return None, "salt-api login failed (check stats_auth_eauth/credentials)"
     return token, None
@@ -637,7 +657,8 @@ def cmd_get_api_stats(opts, req):
 
     port = rest_cherrypy.get("port", 8000)
     scheme = "http" if rest_cherrypy.get("disable_ssl", False) else "https"
-    url = "{}://127.0.0.1:{}/stats".format(scheme, port)
+    base = _api_base(rest_cherrypy)
+    url = base + "/stats"
 
     import urllib.request
     import urllib.error
@@ -648,7 +669,7 @@ def cmd_get_api_stats(opts, req):
     eauth = req.get("auth_eauth") or "pam"
     auth_headers = {"Accept": "application/json"}
     if auth_mode != "none":
-        token, auth_err = _ensure_api_token(opts, req, scheme, port, eauth, force_relogin=False)
+        token, auth_err = _ensure_api_token(opts, req, base, eauth, force_relogin=False)
         if auth_err:
             result(req["id"], "get_api_stats", data={
                 "configured": True, "reachable": False, "port": port, "scheme": scheme,
@@ -675,7 +696,7 @@ def cmd_get_api_stats(opts, req):
         # or the master having restarted) with no way for this agent to
         # know ahead of time -- one re-login-and-retry before giving up.
         if exc.code == 401 and auth_mode != "none":
-            token, auth_err = _ensure_api_token(opts, req, scheme, port, eauth, force_relogin=True)
+            token, auth_err = _ensure_api_token(opts, req, base, eauth, force_relogin=True)
             if auth_err:
                 result(req["id"], "get_api_stats", data={
                     "configured": True, "reachable": False, "port": port, "scheme": scheme,
@@ -794,35 +815,14 @@ def cmd_version(opts, req):
 
 
 def _detect_api_port(opts):
-    """Try to find salt-api listen port from config files."""
-    import os, re
-    paths = ["/etc/salt/master", "/etc/salt/salt-api"]
-    if os.path.isdir("/etc/salt/master.d"):
-        try:
-            for fn in sorted(os.listdir("/etc/salt/master.d")):
-                if fn.endswith(".conf"):
-                    paths.append(os.path.join("/etc/salt/master.d", fn))
-        except OSError:
-            pass
+    """salt-api's listen port, from the merged master config; 0 when salt-api
+    isn't configured."""
+    rest = opts.get("rest_cherrypy") or opts.get("rest_tornado") or {}
+    try:
+        return int(rest.get("port", 8000)) if rest else 0
+    except (TypeError, ValueError):
+        return 0
 
-    for path in paths:
-        try:
-            with open(path) as f:
-                in_rest = False
-                for line in f:
-                    stripped = line.strip()
-                    if re.match(r"^\s*rest_\w+:", stripped):
-                        in_rest = True
-                    elif stripped and not stripped.startswith("#") and not stripped[0].isspace() and ":" in stripped:
-                        # A top-level key ended the rest section
-                        in_rest = False
-                    if in_rest:
-                        m = re.match(r"^\s*port:\s*(\d+)\s*$", stripped)
-                        if m:
-                            return int(m.group(1))
-        except (OSError, IOError):
-            continue
-    return 0
 
 def cmd_config_snapshot(opts, req):
     # Get actual hostname instead of just interface
@@ -837,6 +837,7 @@ def cmd_config_snapshot(opts, req):
             sys.version_info.major, sys.version_info.minor, sys.version_info.micro
         ),
         "worker_threads": opts.get("worker_threads"),
+        "minimum_auth_version": _running_option(opts, req, "minimum_auth_version", 0),
         "transport": opts.get("transport", "zeromq"),
         "sock_dir": opts.get("sock_dir", ""),
         "reactor_count": len(opts.get("reactor", []) if isinstance(opts.get("reactor"), list) else []),
@@ -860,6 +861,843 @@ def cmd_config_snapshot(opts, req):
         "hostname": hostname,
     }
     result(req["id"], "config_snapshot", data=data)
+
+
+# ── Master configuration browser ────────────────────────────────────────────
+
+# Last parts of a setting's name that mark its value as a credential
+# (`mysql.pass`, `gitfs_password`, `vault: {token: ...}`, `secret_key`).
+_SECRET_LAST_PARTS = {
+    "pass", "passwd", "password", "passphrase", "pw", "bindpw", "secret",
+    "token", "apikey", "key", "credential", "credentials", "creds", "priv",
+}
+_SECRET_ANYWHERE = ("password", "passwd", "secret")
+_REDACTED = "<redacted>"
+_UNREADABLE = "<unreadable: the file isn't valid YAML>"
+
+
+def _is_secret_name(name):
+    name = str(name).lower()
+    if any(s in name for s in _SECRET_ANYWHERE):
+        return True
+    return re.split(r"[._\-]", name)[-1] in _SECRET_LAST_PARTS
+
+
+def _is_secret_value(value):
+    """A value worth hiding: text or a number, but not a flag, an empty value
+    or a filesystem path (`ssl_key: /etc/pki/key.pem` names a file, it isn't
+    the key)."""
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        return bool(value.strip()) and not value.startswith(("/", "~"))
+    return False
+
+
+def _plain(value):
+    """Salt's defaults are frozen (immutabletypes), which neither compare equal
+    to the plain lists and dicts master_config() builds nor dump as YAML."""
+    from collections.abc import Mapping
+    if isinstance(value, Mapping):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)) or type(value).__name__ == "ImmutableList":
+        return [_plain(v) for v in value]
+    return value
+
+
+# Credentials in a URL: `scheme://user:password@`, or a lone user that is
+# really a token (`https://ghp_...@github.com`).
+_URL_CREDENTIALS = re.compile(r"\b([a-z][a-z0-9+.-]*://)([^\s/@:'\"]*)(?::([^\s/@'\"]*))?@", re.I)
+
+
+def _redact_urls(text):
+    """Text with the password (or token) of every URL in it blanked, the
+    scheme, user and host kept."""
+    def blank(m):
+        scheme, user, password = m.groups()
+        if password:
+            return "{}{}:{}@".format(scheme, user, _REDACTED)
+        if password is None and len(user) >= 16 and scheme.lower().startswith("http"):
+            return "{}{}@".format(scheme, _REDACTED)
+        return m.group(0)
+    return _URL_CREDENTIALS.sub(blank, text)
+
+
+def _redact(value):
+    """Copy of a config value with credential-looking entries replaced, at any
+    depth (ext_pillar lists, rest_cherrypy dicts, ...), and credentials in
+    URLs blanked, in keys too (gitfs per-remote options are keyed by URL)."""
+    if isinstance(value, dict):
+        return {
+            (_redact_urls(k) if isinstance(k, str) else k):
+                (_REDACTED if _is_secret_name(k) and _is_secret_value(v) else _redact(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact(v) for v in value]
+    if isinstance(value, str):
+        return _redact_urls(value)
+    return value
+
+
+_YAML_ENTRY = re.compile(r"^(\s*(?:-\s+)?)([\"']?)([^\s:\"'#][^:\"'#]*)\2(\s*:\s*)(.*)$")
+
+
+def _redact_text(text):
+    """A config file's text with credential values blanked line by line,
+    including the indented lines of a block scalar (`password: |`), and
+    credentials in URLs anywhere, comments included."""
+    out = []
+    block_indent = None
+    for line in text.splitlines():
+        if block_indent is not None:
+            indent = len(line) - len(line.lstrip())
+            if line.strip() and indent > block_indent:
+                out.append(" " * indent + _REDACTED)
+                continue
+            block_indent = None
+        m = _YAML_ENTRY.match(line)
+        if m and _is_secret_name(m.group(3)):
+            value = m.group(5).split(" #")[0].strip()
+            if value in ("|", ">", "|-", ">-", "|+", ">+"):
+                block_indent = len(m.group(1))
+                out.append(line)
+                continue
+            unquoted = value.strip("\"'")
+            if unquoted and unquoted.lower() not in ("true", "false", "yes", "no", "on", "off", "null", "~") \
+                    and not unquoted.startswith(("/", "~", "{", "[")):
+                out.append("{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED))
+                continue
+        out.append(_redact_urls(line))
+    return "\n".join(out)
+
+
+def _config_text(value, flow):
+    import salt.utils.yaml
+    try:
+        if flow:
+            text = salt.utils.yaml.safe_dump(value, default_flow_style=True, width=1 << 30)
+        else:
+            text = salt.utils.yaml.safe_dump(value, default_flow_style=False)
+        text = text.strip()
+        if text.endswith("\n..."):
+            text = text[:-4].strip()
+        elif text.endswith("..."):
+            text = text[:-3].strip()
+        return text
+    except Exception:
+        return repr(value)
+
+
+def _top_level_blocks(text):
+    """{key: (start, end)} line ranges (1-based, end exclusive) of a YAML
+    file's top-level entries; trailing blank and comment lines aren't part
+    of a block."""
+    lines = text.splitlines()
+    starts = []
+    for i, line in enumerate(lines):
+        if not line or line[0] in " \t#-" or line.startswith("..."):
+            continue
+        m = re.match(r"^([\"']?)([^:\"']+)\1\s*:", line)
+        if m:
+            starts.append((m.group(2).strip(), i))
+    blocks = {}
+    for n, (key, start) in enumerate(starts):
+        end = starts[n + 1][1] if n + 1 < len(starts) else len(lines)
+        while end > start + 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+            end -= 1
+        blocks[key] = (start + 1, end + 1)
+    return blocks
+
+
+def _config_files(path):
+    """Salt's load order (salt.config.master_config) as (path, data, error,
+    group): the main file, then `default_include` (master.d/*.conf, sorted),
+    then the main file's `include`; an included file's own `include` follows
+    it in its group. A file Salt rejects (e.g. a key twice) contributes
+    nothing to it, so its data here is a lenient read, for showing what was
+    ignored."""
+    import glob
+    import yaml
+    salt = _import_salt()
+    order = []
+
+    def read(fn):
+        try:
+            return salt.config._read_conf_file(fn) or {}, None
+        except Exception as exc:
+            try:
+                with open(fn) as f:
+                    text = f.read()
+            except OSError:
+                return {}, str(exc)
+            try:
+                data = yaml.safe_load(text) or {}
+            except Exception:
+                # Not YAML at all: still name the settings it tries to set.
+                data = {key: _UNREADABLE for key in _top_level_blocks(text)}
+            return (data if isinstance(data, dict) else {}), str(exc)
+
+    def add_includes(patterns, base, group):
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        for pattern in patterns or []:
+            pattern = os.path.expanduser(pattern)
+            if not os.path.isabs(pattern):
+                pattern = os.path.join(os.path.dirname(base), pattern)
+            for fn in sorted(glob.glob(pattern)):
+                if fn in [o[0] for o in order]:
+                    continue
+                data, err = read(fn)
+                order.append((fn, data, err, group))
+                if not err:
+                    add_includes(data.get("include"), fn, group)
+
+    main, err = read(path)
+    order.append((path, main, err, "main"))
+    if not err:
+        add_includes(main.get("default_include", salt.config.DEFAULT_MASTER_OPTS["default_include"]), path, "default_include")
+        add_includes(main.get("include"), path, "include")
+    return order
+
+
+def _combine(base, value):
+    """How Salt combines one included file's value into the ones before it
+    in the same group (salt.utils.dictupdate.update with merge_lists)."""
+    import copy
+    if isinstance(base, dict) and isinstance(value, dict):
+        merged = copy.deepcopy(base)
+        for k, v in value.items():
+            merged[k] = _combine(merged[k], v) if k in merged else copy.deepcopy(v)
+        return merged
+    if isinstance(base, list) and isinstance(value, list):
+        return base + value
+    return value
+
+
+def _source_relations(key, sources, order):
+    """Each file's part in a setting, in load order: `first`; `overrides`
+    (a later file's scalar wins); `merged` (dicts and lists from files of one
+    include group combine); `replaces` (a later group, e.g. master.d over the
+    main file, replaces the whole value: nested keys it doesn't set are
+    dropped, and listed); `ignored` (in a file Salt rejected)."""
+    out = []
+    group, group_value, prev_group_value = None, None, None
+    for src in sources:
+        fn, data, err, file_group = order[src["file"]]
+        value = _plain(data.get(key))
+        if err:
+            src["relation"] = "ignored"
+        elif group is None:
+            src["relation"] = "first"
+            group, group_value = file_group, value
+        elif file_group != group:
+            src["relation"] = "replaces"
+            src["replaced"] = len(out)
+            prev_group_value, group, group_value = group_value, file_group, value
+        elif isinstance(group_value, (dict, list)) and type(group_value) is type(value):
+            src["relation"] = "merged"
+            group_value = _combine(group_value, value)
+        else:
+            src["relation"] = "overrides"
+            group_value = value
+        shown = _redact({key: value})[key]
+        src["value"] = shown if shown in (_UNREADABLE, _REDACTED) else _config_text(shown, False)
+        out.append(src)
+    # What a replacing group dropped, once the group's own files are combined.
+    for src in out:
+        if src.get("relation") == "replaces" and isinstance(prev_group_value, dict) and isinstance(group_value, dict):
+            src["dropped"] = sorted(str(k) for k in prev_group_value if k not in group_value)
+        src.pop("replaced", None)
+    return out
+
+
+def _is_salt_master(argv):
+    """Whether a command line (split into words) runs salt-master itself:
+    `salt-master ...` or `python... salt-master ...`, not a `journalctl -u
+    salt-master`, `tail .../master` or an editor on /usr/bin/salt-master that
+    merely mentions it."""
+    names = [os.path.basename(a.decode("utf-8", "replace")) for a in argv[:2]]
+    if names and names[0].startswith("python"):
+        names = names[1:]
+    return bool(names) and names[0] == "salt-master"
+
+
+def _salt_master_started():
+    """Epoch seconds the oldest salt-master process started, 0 if none."""
+    try:
+        with open("/proc/stat") as f:
+            btime = next(int(l.split()[1]) for l in f if l.startswith("btime"))
+        hz = os.sysconf("SC_CLK_TCK")
+        starts = []
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                with open("/proc/{}/cmdline".format(pid), "rb") as f:
+                    cmd = f.read().replace(b"\0", b" ").split()
+                if not _is_salt_master(cmd):
+                    continue
+                with open("/proc/{}/stat".format(pid)) as f:
+                    fields = f.read().rsplit(")", 1)[1].split()
+                starts.append(btime + int(fields[19]) / hz)
+            except (OSError, IndexError, ValueError):
+                continue
+        return int(min(starts)) if starts else 0
+    except Exception:
+        return 0
+
+
+# What salt-api's netapi modules read from their section of the master config
+# (Salt 3006), taken from the code that reads them as well as the docs.
+_NETAPI_OPTIONS = {
+    "rest_cherrypy": {
+        "app", "app_path", "collect_stats", "debug", "disable_ssl", "enable_sessions",
+        "expire_responses", "favicon", "host", "log_access_file", "log_error_file",
+        "max_request_body_size", "port", "queue_size", "root_prefix", "socket_queue_size",
+        "ssl_chain", "ssl_crt", "ssl_key", "static", "static_path", "stats_disable_auth",
+        "thread_pool", "webhook_disable_auth", "webhook_url",
+    },
+    "rest_tornado": {
+        "address", "backlog", "cors_origin", "debug", "disable_ssl", "num_processes",
+        "port", "ssl_crt", "ssl_key", "webhook_disable_auth", "websockets",
+    },
+    "rest_wsgi": {"port"},
+}
+_NETAPI_NOTES = {
+    ("rest_cherrypy", "socket_queue_size"): "documented, but salt-api reads queue_size, so this has no effect",
+    ("rest_cherrypy", "expire_responses"): "has no effect with CherryPy 12 or later",
+}
+# Loader directories whose modules read their own options from the master
+# config, the tag Salt's loader looks them up by, and what to call a module
+# of each.
+_LOADER_KINDS = {
+    "auth": (None, "eauth backend"), "beacons": (None, "beacon"), "cache": ("cache", "cache backend"),
+    "engines": (None, "engine"), "fileserver": (None, "fileserver backend"),
+    "modules": ("module", "execution module"), "netapi": (None, "salt-api module"),
+    "pillar": (None, "ext_pillar"), "proxy": (None, "proxy module"), "queues": ("queue", "queue"),
+    "returners": ("returner", "returner"), "roster": (None, "roster"), "runners": ("runner", "runner"),
+    "sdb": (None, "sdb module"), "states": (None, "state module"), "tokens": (None, "token backend"),
+    "tops": ("top", "master_tops"), "wheel": (None, "wheel module"),
+}
+# Modules Salt 3007 shipped and 3008 doesn't: moved out to Salt extensions
+# (saltext-vault, saltext-consul, ...), under their file names and
+# __virtualname__s. A setting for one of them does nothing on a master
+# without the extension.
+_LEFT_SALT_IN_3008 = frozenset("""
+    acme adb aix_account apcups apkpkg appoptics appoptics_return apt aptly asam augeas
+    augeas_cfg avahi_announce aws_sqs bamboohr bigip bluetooth bluez_bluetooth
+    bonjour_announce boto3_elasticache boto3_elasticsearch boto3_route53 boto3_sns
+    boto_apigateway boto_asg boto_cfn boto_cloudfront boto_cloudtrail boto_cloudwatch
+    boto_cloudwatch_alarm boto_cloudwatch_event boto_cognitoidentity boto_datapipeline
+    boto_dynamodb boto_ec2 boto_efs boto_elasticache boto_elasticsearch_domain boto_elb
+    boto_elbv2 boto_iam boto_iam_role boto_iot boto_kinesis boto_kms boto_lambda boto_lc
+    boto_rds boto_route53 boto_s3 boto_s3_bucket boto_secgroup boto_sns boto_sqs boto_ssm
+    boto_vpc bower bsd_shadow btmp btrfs buildout cabal capirca capirca_acl carbon
+    carbon_return cassandra_cql_return ceph chassis chronos_job cimc ciscoconfparse
+    ciscoconfparse_mod cisconso clustershell cmd_yamlex composer confidant consul_pillar
+    container_resource couchbase couchbase_return couchdb couchdb_return cpan csf csv
+    csvpillar cyg daemontools datadog datadog_api ddns deb_apache deb_postgres dellchassis
+    digicert digicertapi django django_orm djangomod dnsmasq docker docker_container
+    docker_events docker_image docker_network docker_volume dockercompose dockermod drac
+    dracr drbd dvs ebuildpkg ec2_pillar eix elasticsearch elasticsearch_index
+    elasticsearch_index_template elasticsearch_return eselect esxcluster esxdatacenter esxi
+    esxvm etcd_db etcd_pillar etcd_return f5 fluent foreman freebsd_sysctl freebsd_update
+    freebsdjail freebsdkmod freebsdpkg freebsdports freebsdservice freezer fx2 gcp gcp_addon
+    gem genesis gentoo_service gentoolkit gentoolkitmod github glance_image glanceng
+    glassfish glusterfs glxinfo gnome gnomedesktop google_chat grafana grafana4
+    grafana4_dashboard grafana4_datasource grafana4_org grafana4_user grafana_dashboard
+    grafana_datasource grub grub_legacy guestfs hadoop haproxy haproxyconn heat helm hg
+    hg_pillar hgfs hiera http_json http_logstash http_yaml hue icinga2 ifttt ilo imgadm
+    influxdb influxdb08 influxdb08_database influxdb08_user influxdb08mod
+    influxdb_continuous_query influxdb_database influxdb_retention_policy influxdb_return
+    influxdb_user influxdbmod infoblox infoblox_a infoblox_cname infoblox_host_record
+    infoblox_range inspectlib inspector introspect ipmi ircbot jail jboss7 jboss7_cli
+    jenkins jenkinsmod jira jira_mod junos_rre_keys junos_syslog k8s kafka kafka_return
+    kapacitor kerberos keyring keyring_db keystone keystone_domain keystone_endpoint
+    keystone_group keystone_project keystone_role keystone_role_grant keystone_service
+    keystone_user keystoneng keystore kubeadm kubernetes kubernetesmod launchctl_service
+    launchd layman ldap3 ldapmod libcloud_compute libcloud_dns libcloud_loadbalancer
+    libcloud_storage librato librato_return libvirt libvirt_events logadm logentries
+    logstash logstash_engine lvs lvs_server lvs_service lxc lxd lxd_container lxd_image
+    lxd_profile makostack mandrill marathon marathon_app mattermost mattermost_returner
+    mdata memcache memcache_return memcached modjk modjk_worker mongo_future_return
+    mongo_return mongodb mongodb_database mongodb_user monit moosefs mssql mssql_database
+    mssql_login mssql_role mssql_user msteams munin mysql_database mysql_grants mysql_query
+    mysql_user nagios nagios_nrdp nagios_nrdp_return nagios_rpc namecheap_domains
+    namecheap_domains_dns namecheap_domains_ns namecheap_ssl namecheap_users napalm_beacon
+    napalm_syslog net_napalm_yang netbox netbsd_sysctl netbsdservice netmiko netmiko_mod
+    netmiko_px netscaler neutron neutron_network neutron_secgroup neutron_secgroup_rule
+    neutron_subnet neutronng nexus nfs_export nginx nictagadm nilrt_ip nix nova nspawn odbc
+    omapi openbsd_sysctl openbsdpkg openbsdrcctl_service openbsdservice openscap
+    openstack_config openstack_mng openvswitch openvswitch_bridge openvswitch_db
+    openvswitch_port opkg opsgenie pagerduty pagerduty_escalation_policy pagerduty_schedule
+    pagerduty_service pagerduty_user pagerduty_util panos parallels pbm pcs pdbedit pecl
+    peeringdb pepa pf pgjsonb_queue philips_hue pillar_ldap portage_config ports postfix
+    poudriere powerpath purefa purefb pushbullet pushover pushover_notify pushover_returner
+    pyrax_queues qemu_img qemu_nbd rallydev random_org rbenv rebootmgr redis_return
+    redis_sdb redis_sentinel redismod rest_sample restconf rethinkdb rethinkdb_pillar riak
+    runit rvm s3 s3fs s6 sensehat sensors sentry sentry_return serverdensity_device
+    servicenow slack_bolt slack_bolt_engine slack_returner slack_webhook
+    slack_webhook_return slackware_service smartos smartos_imgadm smartos_nictagadm
+    smartos_virt smartos_vmadm sms sms_return smtp smtp_return solr solrcloud spacewalk
+    splunk splunk_search sqlcipher sqlite sqlite3_return sqlite_queue sqs_events ssh_sample
+    stalekey statuspage suse_apache suse_ip svn svn_pillar svnfs swarm swift sysbench sysrc
+    system_profiler telegram telegram_bot_msg telegram_return telemetry telemetry_alert
+    terraform testinfra testinframod thin tism tomcat trafficserver transactional_update
+    travisci tuned twilio twilio_notify twilio_txt_msg uwsgi varnish varstack_pillar vault
+    vbox_guest vboxmanage vcenter venafi venafiapi victorops virt virtkey vistara vmadm
+    vmctl vmware vmware_pillar wordpress wtmp xapi_virt xbpspkg xmpp xmpp_return yubico
+    zabbix zabbix_action zabbix_host zabbix_hostgroup zabbix_mediatype zabbix_return
+    zabbix_template zabbix_user zabbix_usergroup zabbix_usermacro zabbix_valuemap zcbuildout
+    zenoss zfs znc zone zookeeper zpool
+""".split())
+_module_index = (None, {})
+
+
+def _module_dirs(opts, kind):
+    """The directories Salt's loader reads `kind` modules from: its own,
+    installed Salt extensions, synced custom modules and `*_dirs` settings."""
+    import salt
+    import salt.loader
+    try:
+        return list(salt.loader._module_dirs(opts, kind, _LOADER_KINDS[kind][0]))
+    except Exception:
+        return [os.path.join(os.path.dirname(salt.__file__), kind)]
+
+
+def _module_origin(path, opts):
+    """Who provides a module: Salt itself, a Salt extension package, or a
+    custom module synced to the master."""
+    import salt
+    if path.startswith(os.path.dirname(salt.__file__) + os.sep):
+        return "Salt"
+    ext = opts.get("extension_modules")
+    if ext and path.startswith(os.path.join(ext, "")):
+        return "custom"
+    parts = path.split(os.sep)
+    if "site-packages" in parts:
+        pkg = parts[parts.index("site-packages") + 1:]
+        if pkg and pkg[0] == "saltext" and len(pkg) > 1:
+            return "saltext-" + pkg[1]
+        if pkg:
+            return pkg[0]
+    return "custom"
+
+
+def _loader_modules(opts):
+    """{module name: [(loader dir, source file, origin)]} for every module the
+    master's loader would find, under its file name and its __virtualname__,
+    read from the sources without importing any of them."""
+    global _module_index
+    dirs = [(kind, d) for kind in _LOADER_KINDS for d in _module_dirs(opts, kind)]
+    if _module_index[0] == dirs:
+        return _module_index[1]
+    index = {}
+    for kind, d in dirs:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for fn in names:
+            path = os.path.join(d, fn)
+            if fn.endswith(".py"):
+                stem = fn[:-3]
+            elif os.path.isfile(os.path.join(path, "__init__.py")):
+                stem, path = fn, os.path.join(path, "__init__.py")
+            else:
+                continue
+            if stem.startswith("_"):
+                continue
+            found = {stem}
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    m = re.search(r"^__virtualname__\s*=\s*[\"'](\w+)[\"']", f.read(), re.M)
+                if m:
+                    found.add(m.group(1))
+            except OSError:
+                pass
+            origin = _module_origin(path, opts)
+            for name in found:
+                index.setdefault(name, []).append((kind, path, origin))
+    _module_index = (dirs, index)
+    return index
+
+
+def _module_defaults(path):
+    """A module's `__defopts__` (e.g. auth.ldap's), parsed, not imported."""
+    import ast
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError):
+        return {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__defopts__" for t in node.targets):
+            try:
+                return ast.literal_eval(node.value)
+            except ValueError:
+                return {}
+    return {}
+
+
+_source_texts = {}
+
+
+def _source_text(path):
+    if path not in _source_texts:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                _source_texts[path] = f.read()
+        except OSError:
+            _source_texts[path] = ""
+    return _source_texts[path]
+
+
+def _mentions(path, key):
+    """Whether a module's source names the option, in its code or its docs,
+    literally or built from its prefix: auth.ldap reads `f"auth.ldap.{key}"`
+    with `_config("binddn")`, a returner `<name>.<option>` for each option in
+    the `attrs` it passes to `get_returner_options`."""
+    text = _source_text(path)
+    if re.search(r"(?<![\w.]){}(?![\w])".format(re.escape(key)), text):
+        return True
+    head, _, tail = key.rpartition(".")
+    if not re.search(r"[\"']{}[\"']".format(re.escape(tail)), text):
+        return False
+    return "get_returner_options" in text or re.search(r"(?<![\w.]){}\.\{{".format(re.escape(head)), text) is not None
+
+
+def _named_options(paths, name):
+    """Every `name.*` option (also `auth.name.*` and `cache.name.*`) the
+    sources name, to suggest from."""
+    pattern = re.compile(r"(?<![\w.])((?:auth\.|cache\.)?{}\.[a-z_][a-z0-9_.]*[a-z0-9_])(?![\w(])".format(re.escape(name)))
+    return {m for path in paths for m in pattern.findall(_source_text(path))}
+
+
+def _setting_owner(key, opts):
+    """For a key that isn't one of salt-master's own: ((what reads it, its
+    default or None), None) when Salt still reads it -- salt-api's options, a
+    module's options (`auth.ldap.uri`, `mysql.host`, `vault:`) from Salt, an
+    installed Salt extension or a synced custom module, or a valid Salt option
+    without a master default -- else (None, the option of that module it's
+    probably meant to be, or None)."""
+    import difflib
+    salt = _import_salt()
+    api = getattr(salt.config, "DEFAULT_API_OPTS", {})
+    if key in api:
+        return ("salt-api option", api[key]), None
+    if key in _NETAPI_OPTIONS:
+        return ("salt-api config ({})".format(key), None), None
+    if key in salt.config.VALID_OPTS:
+        return ("a valid Salt option, but not salt-master's: minion, syndic or salt-ssh", None), None
+    index = _loader_modules(opts)
+    parts = key.split(".")
+    if len(parts) > 2 and parts[0] in ("auth", "cache"):
+        name = parts[1]
+        mods = [m for m in index.get(name, []) if m[0] == parts[0]]
+    else:
+        name = parts[0]
+        mods = index.get(name, [])
+    if not mods and len(parts) > 2:
+        # A returner's alternative configuration: `<ret_config>.<name>.<option>`.
+        alt = [m for m in index.get(parts[-2], []) if m[0] == "returners" and _mentions(m[1], ".".join(parts[-2:]))]
+        if alt:
+            return ("option of the {} returner for ret_config {} ({})".format(
+                parts[-2], ".".join(parts[:-2]), ", ".join(sorted({o for _, _, o in alt}))), None), None
+    if not mods:
+        return None, None
+    reading = mods if len(parts) == 1 else [m for m in mods if _mentions(m[1], key)]
+    if not reading:
+        close = difflib.get_close_matches(key, sorted(_named_options([m[1] for m in mods], name)), n=1, cutoff=0.75)
+        return None, close[0] if close else None
+    kinds = sorted({_LOADER_KINDS[kind][1] for kind, _, _ in reading})
+    origins = sorted({origin for _, _, origin in reading})
+    default = next((d[key] for _, path, _ in reading for d in [_module_defaults(path)] if key in d), None)
+    what = "config" if len(parts) == 1 else "option"
+    return ("{} of the {} {} ({})".format(what, name, ", ".join(kinds), ", ".join(origins)), default), None
+
+
+def _missing_extension(key):
+    """Why nothing reads a setting meant for a module that left Salt in 3008,
+    or None."""
+    parts = key.split(".")
+    name = parts[1] if len(parts) > 2 and parts[0] in ("auth", "cache") else parts[0]
+    if name in _LEFT_SALT_IN_3008:
+        return "{} modules left Salt in 3008 for Salt extensions: this does nothing until the one providing them is installed".format(name)
+    return None
+
+
+def _netapi_problems(key, value):
+    """Keys inside a salt-api section that salt-api doesn't read (with the
+    one each is probably meant to be), and notes on ones it reads oddly."""
+    import difflib
+    known = _NETAPI_OPTIONS.get(key)
+    if not known or not isinstance(value, dict):
+        return [], []
+    unknown, notes = [], []
+    for k in map(str, value):
+        if k not in known:
+            close = difflib.get_close_matches(k, sorted(known), n=1, cutoff=0.75)
+            unknown.append({"key": k, "suggest": close[0] if close else None})
+        elif (key, k) in _NETAPI_NOTES:
+            notes.append("{}: {}".format(k, _NETAPI_NOTES[(key, k)]))
+    return unknown, notes
+
+
+# The running master's own options, fetched once per master start (they
+# only change when it restarts) and per mode: {(started, digests): dict}.
+_running_opts = {}
+# Renders, inside the process it runs in, a SHA-256 digest of each option
+# (as JSON) instead of its value. The same template rendered here over the
+# files' options gives digests to compare with, without the master's values
+# ever going over the event bus or into the job cache.
+_DIGEST_TEMPLATE = (
+    "{% set out = {} %}{% for k in opts %}{% if not k.startswith('__') %}"
+    "{% do out.update({k: (opts[k]|tojson)|sha256}) %}{% endif %}{% endfor %}{{ out|tojson }}"
+)
+# The runner jobs salt-radar starts itself to fetch them, kept out of the
+# events it forwards and the job cache it lists: they're its own plumbing,
+# not anything an admin ran. While a fetch is in flight its job's events can
+# arrive before its JID is known, so they're also recognised by function.
+_OWN_RUNNER_FUNS = ("runner.test.get_opts", "runner.salt.cmd")
+_own_jids = set()
+_own_fetch = threading.Event()
+
+
+def _is_own_job_event(tag, data):
+    """Whether an event belongs to one of salt-radar's own runner jobs."""
+    if not tag.startswith("salt/run/"):
+        return False
+    jid = tag.split("/")[2] if tag.count("/") >= 2 else ""
+    if jid in _own_jids:
+        return True
+    if _own_fetch.is_set() and isinstance(data, dict) and data.get("fun") in _OWN_RUNNER_FUNS:
+        _own_jids.add(jid)
+        return True
+    return False
+
+
+def _running_master_opts(path, started, digests):
+    """(the running salt-master's options, None) or (None, why not). Asked of
+    the master itself -- a runner sent to it runs in a process forked from
+    its worker, so it returns what the master loaded when it started, not the
+    files as they are now (which is all `salt-run`, `salt-call --local` or
+    `config.values` would read). With `digests`, only a digest of each
+    option (see `_DIGEST_TEMPLATE`), through the `salt.cmd` runner."""
+    cached = _running_opts.get((started, digests))
+    if started and cached is not None:
+        return cached, None
+    if not started:
+        return None, "salt-master isn't running"
+    try:
+        salt = _import_salt()
+        import salt.utils.master
+        import salt.utils.user
+        client_opts = salt.config.client_config(path)
+        key = salt.utils.master.get_master_key(salt.utils.user.get_user(), client_opts)
+        events = salt.utils.event.get_master_event(client_opts, client_opts["sock_dir"], listen=True)
+        _own_fetch.set()
+        try:
+            low = {"fun": "test.get_opts"}
+            if digests:
+                low = {"fun": "salt.cmd", "arg": ["slsutil.renderer"],
+                       "kwarg": {"string": _DIGEST_TEMPLATE, "default_renderer": "jinja"}}
+            low.update(key=key, user=salt.utils.user.get_user())
+            pub = salt.runner.RunnerClient(client_opts).cmd_async(low)
+            jid = pub.get("jid") if isinstance(pub, dict) else None
+            if not jid:
+                return None, "the master refused the request: {}".format(pub)
+            _own_jids.add(jid)
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                evt = events.get_event(wait=1, tag="salt/run/{}/ret".format(jid), full=True)
+                if evt:
+                    running = evt["data"].get("return")
+                    if digests and isinstance(running, str):
+                        running = json.loads(running)
+                    if not isinstance(running, dict):
+                        return None, "unexpected answer from the master"
+                    _running_opts[(started, digests)] = running
+                    return running, None
+            return None, "no answer from the master within 10s"
+        finally:
+            _own_fetch.clear()
+            events.destroy()
+    except Exception as exc:
+        return None, str(exc)
+
+
+# What salt-master's command line sets at startup when no file does (its
+# logging, daemon, pidfile, user and config dir): not a setting removed
+# from the files when the running master has a value the files don't.
+_SET_AT_STARTUP = {
+    "config_dir", "daemon", "pidfile", "user", "log_file", "log_level", "log_level_logfile",
+    "log_fmt_console", "log_datefmt_console", "log_fmt_logfile", "log_datefmt_logfile",
+    "log_rotate_backup_count", "log_rotate_max_bytes",
+}
+
+
+def _running_option(opts, req, key, default):
+    """A small whole-number master option as the running master holds it,
+    from the same cached request the Master Config tab uses -- with only
+    digests asked for, the one of 0..10 whose digest matches -- else as the
+    files set it now."""
+    salt = _import_salt()
+    path = opts.get("conf_file") or "/etc/salt/master"
+    try:
+        in_files = salt.config.master_config(path).get(key, default)
+    except Exception:
+        in_files = opts.get(key, default)
+    digests = bool(req.get("digests"))
+    running, _ = _running_master_opts(path, _salt_master_started(), digests)
+    if running is None or key not in running:
+        return in_files
+    if not digests:
+        return running[key]
+    import salt.utils.templates
+    for n in range(11):
+        # The same filters as one entry of `_DIGEST_TEMPLATE`.
+        digest = salt.utils.templates.render_jinja_tmpl(
+            "{{ (value|tojson)|sha256 }}", {"opts": opts, "value": n, "saltenv": "base", "sls": ""}).strip()
+        if digest == running[key]:
+            return n
+    return in_files
+
+
+def _restart_state(key, actual, running, srcs, files, started):
+    """Why a setting may change when salt-master restarts, or None: the
+    running master holds `running`, the files now say `actual`. "changed": a
+    file setting it changed after the master started; "restored": it differs
+    although its files are older than the master (put back with their old
+    time, edited keeping it); "removed": no file sets it any more."""
+    if running == actual:
+        return None
+    if not any(s["relation"] != "ignored" for s in srcs):
+        return None if key in _SET_AT_STARTUP else "removed"
+    if any(files[s["file"]]["mtime"] > started for s in srcs):
+        return "changed"
+    return "restored"
+
+
+def cmd_master_config(opts, req):
+    """Every master setting: where it's set (file and line range, in Salt's
+    load order) and how each file's value combines, its effective value and
+    Salt's default, plus the files Salt rejected. Credentials are redacted
+    here, so they never reach the TUI."""
+    import difflib
+    salt = _import_salt()
+    path = opts.get("conf_file") or "/etc/salt/master"
+    defaults = salt.config.DEFAULT_MASTER_OPTS
+    effective = salt.config.master_config(path)
+    order = _config_files(path)
+
+    files = []
+    sources = {}
+    for idx, (fn, data, err, _group) in enumerate(order):
+        try:
+            with open(fn) as f:
+                text = f.read()
+            mtime = int(os.path.getmtime(fn))
+        except OSError as exc:
+            text, mtime, err = "", 0, err or str(exc)
+        # A YAML error names where the mapping starts first, then the line
+        # at fault; its message lines are interleaved with "in <file>" ones.
+        lines = re.findall(r"line (\d+)", err or "")
+        reason = [l.strip() for l in (err or "").splitlines()[1:] if l.strip() and not l.strip().startswith("in ")]
+        files.append({
+            "path": fn, "text": _redact_text(text), "mtime": mtime,
+            "error": (reason[-1] if reason else err), "error_line": int(lines[-1]) if lines else 0,
+        })
+        blocks = _top_level_blocks(text)
+        for key in data:
+            start, end = blocks.get(str(key), (0, 0))
+            sources.setdefault(str(key), []).append({"file": idx, "start": start, "end": end})
+
+    started = _salt_master_started()
+    digests = bool(req.get("digests"))
+    running_opts, running_error = _running_master_opts(path, started, digests)
+    file_digests = {}
+    if digests and running_opts is not None:
+        try:
+            import salt.utils.templates
+            file_digests = json.loads(salt.utils.templates.render_jinja_tmpl(
+                _DIGEST_TEMPLATE, {"opts": effective, "saltenv": "base", "sls": ""}))
+        except Exception as exc:
+            running_opts, running_error = None, "couldn't digest the files' options: {}".format(exc)
+    missing = object()
+
+    settings = []
+    for key in sorted(set(effective) | set(sources), key=str):
+        if str(key).startswith("__"):
+            continue
+        srcs = _source_relations(key, sources.get(str(key), []), order)
+        in_files = any(s["relation"] != "ignored" for s in srcs)
+        known = key in defaults
+        actual = _plain(effective.get(key))
+        default = _plain(defaults[key]) if known else None
+        value = _redact({key: actual})[key]
+        if srcs and not in_files:
+            kind = "ignored"
+        elif in_files and not known:
+            kind = "unknown"
+        elif in_files:
+            kind = "explicit"
+        elif known and actual == default:
+            kind = "default"
+        else:
+            kind = "derived"
+        entry = {
+            "key": str(key),
+            "kind": kind,
+            "sources": srcs,
+            "line": _config_text(value, True),
+            "full": _config_text(value, False),
+            "default": _config_text(_redact({key: default})[key], False) if known else None,
+            "redacted": value != actual,
+        }
+        # Only what the files load is compared: values the master works out
+        # at startup (grains, config_dir, its log settings) aren't in them.
+        if running_opts is not None and key in effective:
+            running = _plain(running_opts.get(key, missing))
+            here = file_digests.get(key) if digests else actual
+            state = _restart_state(str(key), here, running, srcs, files, started)
+            if state:
+                entry["restart"] = state
+                entry["running_absent"] = running is missing
+                if running is not missing and not digests:
+                    shown = _redact({key: running})[key]
+                    entry["running_line"] = _config_text(shown, True)
+                    entry["running_full"] = _config_text(shown, False)
+        if kind == "unknown":
+            owner, module_suggest = _setting_owner(str(key), effective)
+            missing = None if owner or module_suggest else _missing_extension(str(key))
+            if missing:
+                entry["notes"] = [missing]
+            elif module_suggest:
+                entry["suggest"] = module_suggest
+            elif owner:
+                kind = entry["kind"] = "module"
+                entry["about"], module_default = owner
+                if module_default is not None:
+                    entry["default"] = _config_text(_redact({key: _plain(module_default)})[key], False)
+                entry["unknown_nested"], entry["notes"] = _netapi_problems(str(key), actual)
+            else:
+                close = difflib.get_close_matches(str(key), [str(k) for k in defaults], n=1, cutoff=0.8)
+                if close:
+                    entry["suggest"] = close[0]
+        settings.append(entry)
+
+    result(req["id"], "master_config", data={
+        "conf_file": path,
+        "files": files,
+        "master_started": started,
+        "running_compared": running_opts is not None,
+        "running_error": running_error,
+        "settings": settings,
+    })
 
 
 # mid -> {"mtime": int, "grains": {"os": ..., "osrelease": ..., ...}} — see
@@ -947,23 +1785,24 @@ def cmd_minion_cache_list(opts, req):
         return
 
     try:
-        cache = salt.cache.factory(opts)
+        cache = _import_salt().cache.factory(opts)
     except Exception:
         cache = None
 
     for mid in key_ids:
-        entry = {"id": mid, "last_seen": 0, "cache_updated": 0}
+        entry = {"id": mid}
         if cache is not None:
             try:
-                mtime = cache.updated("minions", mid) or 0
-                entry["last_seen"] = mtime
-                entry["cache_updated"] = mtime
+                # Not a "last seen": Salt rewrites the entry only when it
+                # compiles the minion's pillar, so an idle, healthy minion
+                # keeps an old mtime.
+                mtime = cache.updated(_minion_data_bank(mid), "data") or 0
 
                 cached = _minion_grains_cache.get(mid)
                 if cached is not None and cached["mtime"] == mtime:
                     entry.update(cached["grains"])
                 else:
-                    grains = cache.fetch("minions", mid)
+                    grains = (cache.fetch(_minion_data_bank(mid), "data") or {}).get("grains")
                     grain_fields = {}
                     if grains:
                         grain_fields = {
@@ -1465,6 +2304,8 @@ def _event_loop(opts):
                 continue
             tag = evt.get("tag", "")
             evt_data = evt.get("data", {})
+            if _is_own_job_event(tag, evt_data):
+                continue
             ts = _parse_stamp(evt_data.get("_stamp"))
             event(tag, evt_data, ts)
     except Exception as exc:
@@ -1703,7 +2544,7 @@ def cmd_jobs_list(opts, req):
 
     jobs = []
     for jid, info in result_data.items():
-        if not isinstance(info, dict):
+        if not isinstance(info, dict) or jid in _own_jids:
             continue
         fun = info.get("Function", info.get("fun", ""))
         tgt = info.get("Target", info.get("tgt", ""))
@@ -1835,6 +2676,7 @@ def _term_matcher(term):
 HANDLERS = {
     "version": cmd_version,
     "config_snapshot": cmd_config_snapshot,
+    "master_config": cmd_master_config,
     "minion_cache_list": cmd_minion_cache_list,
     "zmq_ping": cmd_zmq_ping,
     "job_ping": cmd_job_ping,

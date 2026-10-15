@@ -4,8 +4,12 @@ use std::sync::OnceLock;
 
 use ratatui::style::Color;
 
-use crate::types::TableId;
+use crate::types::{SparklineStyle, TableId, Tab};
 use crate::ui::color::Theme;
+
+/// The range `tick_ms` is kept in, by `-`/`+` and when loaded.
+pub const TICK_MS_MIN: u64 = 500;
+pub const TICK_MS_MAX: u64 = 30_000;
 
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
 /// directory wins if present (lets you keep a per-directory config, and
@@ -247,13 +251,27 @@ fn parse_theme_color(value: &str) -> Option<Color> {
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub master_config: String,
+    /// Hardening: ask the running master for digests of its options instead
+    /// of their values, so they never go over the event bus or into the job
+    /// cache; the Master Config tab then can't show the running value.
+    pub running_config_digests: bool,
     pub python_bin: String,
     pub agent_path: String,
     pub dashboard_secs: u64,
     pub minions_secs: u64,
     pub config_secs: u64,
+    /// How often (ms) the screen redraws and timed work runs; `-`/`+`
+    /// change it by 500 within 500-30000.
+    pub tick_ms: u64,
+    /// Cap on what redraws send to the terminal, KB/s (0 = none): over it,
+    /// redraws that aren't answering a key wait, so a slow link (a
+    /// session-recording SSH proxy) doesn't fall behind a busy master.
+    pub max_output_kbs: u64,
     pub event_buffer_size: usize,
     pub sniffer_buffer_size: usize,
+    /// How the Events list shows times: "today" (only the time for events
+    /// from the column's today, the full date for older ones) or "full".
+    pub event_time_format: String,
     pub stale_minion_secs: u64,
     pub pending_key_secs: u64,
     pub job_straggler_secs: u64,
@@ -357,6 +375,8 @@ pub struct AppConfig {
     /// missing from the list is appended after the ones named, so a partial
     /// or malformed value degrades gracefully instead of losing a panel.
     pub graph_order: String,
+    /// How the Dashboard's sparklines are drawn: "dots" or "bars" (`m`).
+    pub graph_style: String,
     /// Which of the Dashboard's fixed (non-sparkline) panels are shown, all
     /// defaulting on so existing configs/behavior are unaffected. salt-api
     /// still only ever renders when the process is actually detected —
@@ -400,9 +420,54 @@ pub struct AppConfig {
     /// How strongly the screen behind a popup is faded toward the theme's
     /// background, 0-100% (0 = no dimming).
     pub popup_dim_pct: u64,
+    /// Whether `q` asks before quitting, so extra presses meant for a popup
+    /// that lag already closed don't quit.
+    pub confirm_quit: bool,
+    /// Mouse capture (clicks, wheel), toggled with F2.
+    pub mouse: bool,
+    /// Width of each split tab's left panel, in percent (`Ctrl+←`/`→`).
+    pub minions_split_pct: u64,
+    pub events_split_pct: u64,
+    pub jobs_split_pct: u64,
+    pub api_split_pct: u64,
+    pub pulse_split_pct: u64,
+    pub master_split_pct: u64,
 }
 
+pub const SPLIT_PCT_MIN: u64 = 20;
+pub const SPLIT_PCT_MAX: u64 = 80;
+
 impl AppConfig {
+    /// The left panel's width setting of a tab split in two side by side.
+    pub fn split_pct_mut(&mut self, tab: Tab) -> Option<&mut u64> {
+        match tab {
+            Tab::Minions => Some(&mut self.minions_split_pct),
+            Tab::Events => Some(&mut self.events_split_pct),
+            Tab::Jobs => Some(&mut self.jobs_split_pct),
+            Tab::Api => Some(&mut self.api_split_pct),
+            Tab::Pulse => Some(&mut self.pulse_split_pct),
+            Tab::Master => Some(&mut self.master_split_pct),
+            Tab::Dashboard | Tab::Alerts => None,
+        }
+    }
+
+    pub fn split_pct(&self, tab: Tab) -> u16 {
+        let pct = match tab {
+            Tab::Minions => self.minions_split_pct,
+            Tab::Events => self.events_split_pct,
+            Tab::Jobs => self.jobs_split_pct,
+            Tab::Api => self.api_split_pct,
+            Tab::Pulse => self.pulse_split_pct,
+            Tab::Master => self.master_split_pct,
+            Tab::Dashboard | Tab::Alerts => 100,
+        };
+        pct.min(100) as u16
+    }
+
+    pub fn sparkline_style(&self) -> SparklineStyle {
+        if self.graph_style == "bars" { SparklineStyle::Bars } else { SparklineStyle::Dots }
+    }
+
     /// The ZMQ graph's top-of-scale latency: `zmq_latency_ceiling_ms`, or
     /// when unset, a default sized to what the source measures — a local
     /// agent round trip is a few ms when healthy, a real test.ping over the
@@ -434,13 +499,17 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             master_config: "/etc/salt/master".into(),
+            running_config_digests: false,
             python_bin: "/opt/saltstack/salt/bin/python3".into(),
             agent_path: "/usr/share/salt-radar/salt_radar_agent.py".into(),
             dashboard_secs: 2,
             minions_secs: 5,
             config_secs: 60,
+            tick_ms: 2000,
+            max_output_kbs: 0,
             event_buffer_size: 10000,
             sniffer_buffer_size: 1000,
+            event_time_format: "today".into(),
             stale_minion_secs: 3600,
             pending_key_secs: 3600,
             job_straggler_secs: 120,
@@ -479,6 +548,7 @@ impl Default for AppConfig {
             show_cpu_graph: true,
             show_mem_graph: true,
             graph_order: "cpu,mem,zmq,events,activity".into(),
+            graph_style: "dots".into(),
             show_host_resources: true,
             show_services: true,
             show_key_status: true,
@@ -497,6 +567,14 @@ impl Default for AppConfig {
             color_theme: DEFAULT_THEME.into(),
             theme_background: true,
             popup_dim_pct: 70,
+            confirm_quit: true,
+            mouse: true,
+            minions_split_pct: 55,
+            events_split_pct: 50,
+            jobs_split_pct: 55,
+            api_split_pct: 65,
+            pulse_split_pct: 65,
+            master_split_pct: 55,
         }
     }
 }
@@ -518,6 +596,7 @@ struct TomlConfig {
 #[derive(serde::Deserialize)]
 struct SaltConfig {
     master_config: Option<String>,
+    running_config_digests: Option<bool>,
     python_bin: Option<String>,
     agent_path: Option<String>,
 }
@@ -527,12 +606,15 @@ struct RefreshConfig {
     dashboard_secs: Option<u64>,
     minions_secs: Option<u64>,
     config_secs: Option<u64>,
+    tick_ms: Option<u64>,
+    max_output_kbs: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
 struct EventsConfig {
     buffer_size: Option<usize>,
     sniffer_buffer_size: Option<usize>,
+    time_format: Option<String>,
     event_columns: Option<String>,
 }
 
@@ -599,6 +681,14 @@ struct UiConfig {
     color_theme: Option<String>,
     theme_background: Option<bool>,
     popup_dim_pct: Option<u64>,
+    confirm_quit: Option<bool>,
+    mouse: Option<bool>,
+    minions_split_pct: Option<u64>,
+    events_split_pct: Option<u64>,
+    jobs_split_pct: Option<u64>,
+    api_split_pct: Option<u64>,
+    pulse_split_pct: Option<u64>,
+    master_split_pct: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -611,6 +701,7 @@ struct DashboardConfig {
     show_cpu_graph: Option<bool>,
     show_mem_graph: Option<bool>,
     graph_order: Option<String>,
+    graph_style: Option<String>,
     show_host_resources: Option<bool>,
     show_services: Option<bool>,
     show_key_status: Option<bool>,
@@ -647,11 +738,15 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("salt", "agent_path", c.agent_path.to_toml()),
         ("salt", "python_bin", c.python_bin.to_toml()),
         ("salt", "master_config", c.master_config.to_toml()),
+        ("salt", "running_config_digests", c.running_config_digests.to_toml()),
         ("refresh", "dashboard_secs", c.dashboard_secs.to_toml()),
         ("refresh", "minions_secs", c.minions_secs.to_toml()),
         ("refresh", "config_secs", c.config_secs.to_toml()),
+        ("refresh", "tick_ms", c.tick_ms.to_toml()),
+        ("refresh", "max_output_kbs", c.max_output_kbs.to_toml()),
         ("events", "buffer_size", c.event_buffer_size.to_toml()),
         ("events", "sniffer_buffer_size", c.sniffer_buffer_size.to_toml()),
+        ("events", "time_format", c.event_time_format.to_toml()),
         ("events", "event_columns", c.event_columns.to_toml()),
         ("alerts", "stale_minion_secs", c.stale_minion_secs.to_toml()),
         ("alerts", "pending_key_secs", c.pending_key_secs.to_toml()),
@@ -693,6 +788,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("dashboard", "show_cpu_graph", c.show_cpu_graph.to_toml()),
         ("dashboard", "show_mem_graph", c.show_mem_graph.to_toml()),
         ("dashboard", "graph_order", c.graph_order.to_toml()),
+        ("dashboard", "graph_style", c.graph_style.to_toml()),
         ("dashboard", "show_host_resources", c.show_host_resources.to_toml()),
         ("dashboard", "show_services", c.show_services.to_toml()),
         ("dashboard", "show_key_status", c.show_key_status.to_toml()),
@@ -708,6 +804,14 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("ui", "color_theme", c.color_theme.to_toml()),
         ("ui", "theme_background", c.theme_background.to_toml()),
         ("ui", "popup_dim_pct", c.popup_dim_pct.to_toml()),
+        ("ui", "confirm_quit", c.confirm_quit.to_toml()),
+        ("ui", "mouse", c.mouse.to_toml()),
+        ("ui", "minions_split_pct", c.minions_split_pct.to_toml()),
+        ("ui", "events_split_pct", c.events_split_pct.to_toml()),
+        ("ui", "jobs_split_pct", c.jobs_split_pct.to_toml()),
+        ("ui", "api_split_pct", c.api_split_pct.to_toml()),
+        ("ui", "pulse_split_pct", c.pulse_split_pct.to_toml()),
+        ("ui", "master_split_pct", c.master_split_pct.to_toml()),
     ]
 }
 
@@ -768,6 +872,7 @@ pub fn load_config(path: &Path) -> AppConfig {
         if let Ok(toml_cfg) = toml::from_str::<TomlConfig>(&data) {
             if let Some(s) = toml_cfg.salt {
                 if let Some(v) = s.master_config { cfg.master_config = v; }
+                if let Some(v) = s.running_config_digests { cfg.running_config_digests = v; }
                 if let Some(v) = s.python_bin { cfg.python_bin = v; }
                 if let Some(v) = s.agent_path { cfg.agent_path = v; }
             }
@@ -775,10 +880,13 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = r.dashboard_secs { cfg.dashboard_secs = v; }
                 if let Some(v) = r.minions_secs { cfg.minions_secs = v; }
                 if let Some(v) = r.config_secs { cfg.config_secs = v; }
+                if let Some(v) = r.tick_ms { cfg.tick_ms = v.clamp(TICK_MS_MIN, TICK_MS_MAX); }
+                if let Some(v) = r.max_output_kbs { cfg.max_output_kbs = v; }
             }
             if let Some(e) = toml_cfg.events {
                 if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
                 if let Some(v) = e.sniffer_buffer_size { cfg.sniffer_buffer_size = v; }
+                if let Some(v) = e.time_format.filter(|v| crate::app::EVENT_TIME_FORMATS.contains(&v.as_str())) { cfg.event_time_format = v; }
                 if let Some(v) = e.event_columns { cfg.event_columns = v; }
             }
             if let Some(a) = toml_cfg.alerts {
@@ -826,6 +934,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = d.show_cpu_graph { cfg.show_cpu_graph = v; }
                 if let Some(v) = d.show_mem_graph { cfg.show_mem_graph = v; }
                 if let Some(v) = d.graph_order { cfg.graph_order = v; }
+                if let Some(v) = d.graph_style { cfg.graph_style = v; }
                 if let Some(v) = d.show_host_resources { cfg.show_host_resources = v; }
                 if let Some(v) = d.show_services { cfg.show_services = v; }
                 if let Some(v) = d.show_key_status { cfg.show_key_status = v; }
@@ -849,6 +958,15 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = u.color_theme { cfg.color_theme = v; }
                 if let Some(v) = u.theme_background { cfg.theme_background = v; }
                 if let Some(v) = u.popup_dim_pct { cfg.popup_dim_pct = v.min(100); }
+                if let Some(v) = u.confirm_quit { cfg.confirm_quit = v; }
+                if let Some(v) = u.mouse { cfg.mouse = v; }
+                let split = |v: u64| v.clamp(SPLIT_PCT_MIN, SPLIT_PCT_MAX);
+                if let Some(v) = u.minions_split_pct { cfg.minions_split_pct = split(v); }
+                if let Some(v) = u.events_split_pct { cfg.events_split_pct = split(v); }
+                if let Some(v) = u.jobs_split_pct { cfg.jobs_split_pct = split(v); }
+                if let Some(v) = u.api_split_pct { cfg.api_split_pct = split(v); }
+                if let Some(v) = u.pulse_split_pct { cfg.pulse_split_pct = split(v); }
+                if let Some(v) = u.master_split_pct { cfg.master_split_pct = split(v); }
             }
         }
     }
@@ -1087,23 +1205,43 @@ mod tests {
         let cfg = AppConfig {
             agent_path: "/opt/agent.py".into(),
             dashboard_secs: 7,
+            tick_ms: 3500,
+            max_output_kbs: 6,
             event_buffer_size: 1234,
+            event_time_format: "full".into(),
             disk_usage_pct: 91.5,
             api_hide_stats_polls: false,
+            running_config_digests: true,
             api_stats_auth_mode: "pillar".into(),
             zmq_latency_ceiling_ms: 250.0,
             graph_order: "zmq,cpu".into(),
+            graph_style: "bars".into(),
+            mouse: false,
             minions_follow_filter: false,
             save_dir: "~/exports".into(),
             jobs_cache_columns: "jid,fun".into(),
             color_theme: "nord".into(),
             theme_background: false,
             popup_dim_pct: 33,
+            confirm_quit: false,
+            events_split_pct: 70,
+            pulse_split_pct: 40,
             ..AppConfig::default()
         };
         write_config(&path, &cfg).unwrap();
         let loaded = load_config(&path);
         assert_eq!(config_entries(&loaded), config_entries(&cfg));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn panel_splits_stay_in_range() {
+        let dir = scratch("split-range");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, "[ui]\nevents_split_pct = 95\napi_split_pct = 3\njobs_split_pct = 40\n").unwrap();
+        let cfg = load_config(&path);
+        assert_eq!((cfg.events_split_pct, cfg.api_split_pct, cfg.jobs_split_pct), (SPLIT_PCT_MAX, SPLIT_PCT_MIN, 40));
+        assert_eq!((cfg.split_pct(Tab::Jobs), cfg.split_pct(Tab::Alerts)), (40, 100));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

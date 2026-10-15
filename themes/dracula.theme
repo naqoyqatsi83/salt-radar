@@ -1,5 +1,8 @@
 # salt-radar port of btop++'s dracula.theme
 # (https://github.com/aristocratos/btop, Apache-2.0)
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the Dracula palette.
 
 theme[main_bg]="#282a36"
 theme[meter_bg]="#323443"
@@ -21,7 +24,7 @@ theme[hint_fg]="#717380"
 theme[badge_bg]="#735235"
 theme[green]="#0dfa49"
 theme[cyan]="#26d7fd"
-theme[yellow]="#ffc850"
+theme[yellow]="#f1fa8c"
 theme[orange]="#ff9c33"
 theme[red]="#ff5555"
 theme[purple]="#9d5eb8"
@@ -41,5 +44,5 @@ theme[tab_inactive_fg]="#717380"
 theme[tab_separator]="#44475a"
 theme[highlight_1]="#6272a4"
 theme[highlight_2]="#ff33a8"
-theme[highlight_3]="#00e6aa"
+theme[highlight_3]="#8be9fd"
 theme[highlight_4]="#9d5eb8"

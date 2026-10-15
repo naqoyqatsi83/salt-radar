@@ -88,6 +88,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> bool {
+        // Only an explicit yes quits: another `q` (lag, mashed keys) cancels.
+        if self.quit_confirm {
+            self.quit_confirm = false;
+            return matches!(code, KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y'));
+        }
+
         // Help overlay handles its own dismiss
         if self.show_help {
             self.handle_help_key(code);
@@ -164,7 +170,11 @@ impl App {
             let popup_text_input = if sniffer_showing {
                 self.sniffer.as_ref().is_some_and(|s| s.highlight_input.is_some())
             } else {
-                matches!(&self.detail_popup, Some(DetailPopup::JobDetail { return_is_filtering: true, .. }))
+                match &self.detail_popup {
+                    Some(DetailPopup::JobDetail { return_is_filtering, .. }) => *return_is_filtering || self.job_searching,
+                    Some(DetailPopup::SaltEvent { searching, .. }) | Some(DetailPopup::Alert { searching, .. }) => *searching,
+                    _ => false,
+                }
             };
             if !popup_text_input {
                 match code {
@@ -176,11 +186,13 @@ impl App {
                     KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
                     KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
                     KeyCode::Char('6') => { self.current_tab = Tab::Api; return false; }
-                    KeyCode::Char('7') => { self.current_tab = Tab::Pulse; return false; }
+                    KeyCode::Char('7') => { self.current_tab = Tab::Master; return false; }
+                    KeyCode::Char('8') => { self.current_tab = Tab::Pulse; return false; }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
                     KeyCode::F(2) => {
-                        self.mouse_enabled = !self.mouse_enabled;
+                        self.config.mouse = !self.config.mouse;
                         self.needs_mouse_toggle = true;
+                        self.save_toggles();
                         return false;
                     }
                     KeyCode::Char('?') | KeyCode::F(1) => {
@@ -253,11 +265,16 @@ impl App {
                                 }
                                 KeyCode::Enter => {
                                     self.job_searching = false;
-                                    if let Some(i) = step_match(&self.job_search_matches, None, *content_scroll, true) {
+                                    // Matched here, not taken from the last frame: keys typed
+                                    // (or pasted) faster than a redraw would leave it stale.
+                                    let shown = crate::ui::detail_popup::job_preview_lines(lookup.as_ref(), *selected_return);
+                                    let m = search_lines(&crate::ui::detail_popup::plain_text(&shown), &self.job_search);
+                                    if let Some(i) = step_match(&m, None, *content_scroll, true) {
                                         self.job_search_focus = Some(i);
                                         self.job_focus_line = None;
-                                        *content_scroll = self.job_search_matches[i].saturating_sub(2).min(self.job_detail_scroll_max);
+                                        *content_scroll = m[i].saturating_sub(2).min(self.job_detail_scroll_max);
                                     }
+                                    self.job_search_matches = m;
                                 }
                                 _ => { line_edit::edit(&mut self.job_search, &mut self.input_cursor, code); }
                             }
@@ -545,7 +562,28 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::SaltEvent { ref evt, scroll: ref mut scroll_offset, ref mut pretty, ref mut pretty_fetch } => {
+                DetailPopup::SaltEvent { ref evt, scroll: ref mut scroll_offset, ref mut pretty, ref mut pretty_fetch, ref mut search, ref mut searching, ref mut search_focus } => {
+                    if *searching {
+                        match code {
+                            KeyCode::Esc => {
+                                *searching = false;
+                                search.clear();
+                            }
+                            KeyCode::Enter => {
+                                *searching = false;
+                                // Matched here, not taken from the last frame: keys typed
+                                // (or pasted) faster than a redraw would leave it stale.
+                                let m = search_lines(&event_body_as_shown(evt, *pretty, pretty_fetch), search);
+                                if let Some(i) = step_match(&m, None, *scroll_offset, true) {
+                                    *search_focus = Some(i);
+                                    *scroll_offset = m[i].saturating_sub(2).min(self.event_detail_scroll_max);
+                                }
+                                self.event_search_matches = m;
+                            }
+                            _ => { line_edit::edit(search, &mut self.input_cursor, code); }
+                        }
+                        return false;
+                    }
                     // self.event_detail_scroll_max is the true viewport-aware
                     // last-scroll-position, recomputed and written back every
                     // render (see draw_event_detail) — clamping against it here
@@ -582,6 +620,19 @@ impl App {
                         }
                         KeyCode::Home => { *scroll_offset = 0; }
                         KeyCode::End => { *scroll_offset = self.event_detail_scroll_max; }
+                        KeyCode::Char('/') => {
+                            *searching = true;
+                            search.clear();
+                            self.input_cursor = None;
+                            *search_focus = None;
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') => {
+                            let m = &self.event_search_matches;
+                            if let Some(i) = step_match(m, *search_focus, *scroll_offset, code == KeyCode::Char('n')) {
+                                *scroll_offset = m[i].saturating_sub(2).min(self.event_detail_scroll_max);
+                                *search_focus = Some(i);
+                            }
+                        }
                         KeyCode::Char('y') => {
                             let ts = chrono::DateTime::from_timestamp(evt.ts as i64, 0)
                                 .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
@@ -618,6 +669,7 @@ impl App {
                         KeyCode::Char('t') | KeyCode::Char('T') => {
                             *pretty = !*pretty;
                             *scroll_offset = 0;
+                            *search_focus = None;
                             // Fetch the real `salt-run jobs.lookup_jid` text once
                             // per event (same subprocess + flags Job Detail uses
                             // -- see `cmd_jid_lookup` in the agent) instead of
@@ -637,8 +689,47 @@ impl App {
                         _ => {}
                     }
                 }
-                DetailPopup::Alert(ref alert) => {
+                DetailPopup::Alert { ref alert, ref mut scroll, ref mut search, ref mut searching, ref mut search_focus } => {
+                    if *searching {
+                        match code {
+                            KeyCode::Esc => {
+                                *searching = false;
+                                search.clear();
+                            }
+                            KeyCode::Enter => {
+                                *searching = false;
+                                let m = search_lines(&alert.details.join("\n"), search);
+                                if let Some(i) = step_match(&m, None, *scroll, true) {
+                                    *search_focus = Some(i);
+                                    *scroll = m[i].saturating_sub(2).min(self.alert_detail_scroll_max);
+                                }
+                                self.alert_search_matches = m;
+                            }
+                            _ => { line_edit::edit(search, &mut self.input_cursor, code); }
+                        }
+                        return false;
+                    }
+                    let max = self.alert_detail_scroll_max;
                     match code {
+                        KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                        KeyCode::Down | KeyCode::Char('j') => *scroll = (*scroll + 1).min(max),
+                        KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                        KeyCode::PageDown => *scroll = (*scroll + 10).min(max),
+                        KeyCode::Home => *scroll = 0,
+                        KeyCode::End => *scroll = max,
+                        KeyCode::Char('/') => {
+                            *searching = true;
+                            search.clear();
+                            self.input_cursor = None;
+                            *search_focus = None;
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') => {
+                            let m = &self.alert_search_matches;
+                            if let Some(i) = step_match(m, *search_focus, *scroll, code == KeyCode::Char('n')) {
+                                *scroll = m[i].saturating_sub(2).min(max);
+                                *search_focus = Some(i);
+                            }
+                        }
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             if let Some((mid, sel)) = self.return_to_minion_events.take() {
                                 self.detail_popup = Some(DetailPopup::MinionEvents {
@@ -798,7 +889,7 @@ impl App {
                                         None
                                     }
                                     MinionActivityItem::Alert(alert) => {
-                                        self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                                        self.detail_popup = Some(DetailPopup::alert(alert.clone()));
                                         None
                                     }
                                 })
@@ -847,8 +938,30 @@ impl App {
                             _ => None,
                         };
                         if let Some(evt) = evt_enter {
-                            self.detail_popup = Some(DetailPopup::SaltEvent { evt, scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
+                            self.detail_popup = Some(DetailPopup::event(evt));
                         }
+                    }
+                }
+                DetailPopup::MasterSetting { index, ref mut scroll } => {
+                    let max = self.master_popup_scroll_max;
+                    let setting = self.master_config.as_ref().and_then(|mc| mc.settings.get(index));
+                    match code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            self.detail_popup = None;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                        KeyCode::Down | KeyCode::Char('j') => *scroll = (*scroll + 1).min(max),
+                        KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                        KeyCode::PageDown => *scroll = (*scroll + 10).min(max),
+                        KeyCode::Home => *scroll = 0,
+                        KeyCode::End => *scroll = max,
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            clipboard_text = setting.map(ConfigSetting::as_yaml);
+                        }
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            save_text = setting.map(|s| (s.as_yaml(), format!("master-{}", s.key), "txt"));
+                        }
+                        _ => {}
                     }
                 }
                 DetailPopup::ApiRequest(ref entry) => {
@@ -925,7 +1038,7 @@ impl App {
                             // `self.sniffer` isn't touched -- it keeps
                             // capturing underneath and reappears on its own
                             // once this SaltEvent popup closes.
-                            self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
+                            self.detail_popup = Some(DetailPopup::event(evt.clone()));
                             self.popup_tab = Some(self.current_tab);
                         }
                     }
@@ -1091,12 +1204,19 @@ impl App {
         }
 
         match code {
-            KeyCode::Char('q') | KeyCode::Char('Q') => return true,
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                if !self.config.confirm_quit {
+                    return true;
+                }
+                self.quit_confirm = true;
+            }
             KeyCode::Char('=') | KeyCode::Char('+') => {
-                self.tick_interval_ms = (self.tick_interval_ms + 500).min(30_000);
+                self.config.tick_ms = (self.config.tick_ms + 500).min(crate::config::TICK_MS_MAX);
+                self.save_toggles();
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
-                self.tick_interval_ms = self.tick_interval_ms.saturating_sub(500).max(500);
+                self.config.tick_ms = self.config.tick_ms.saturating_sub(500).max(crate::config::TICK_MS_MIN);
+                self.save_toggles();
             }
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 if self.admin_mode {
@@ -1135,6 +1255,7 @@ impl App {
                     self.clamp_selection();
                 } else if self.current_tab == Tab::Api {
                     self.config.api_hide_stats_polls = !self.config.api_hide_stats_polls;
+                    self.save_toggles();
                 } else if self.current_tab == Tab::Jobs && !self.cache_focus {
                     self.jobs_failed_only = !self.jobs_failed_only;
                     self.job_selected = 0;
@@ -1149,6 +1270,7 @@ impl App {
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 if self.current_tab == Tab::Minions {
                     self.config.minions_follow_filter = !self.config.minions_follow_filter;
+                    self.save_toggles();
                 }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -1174,6 +1296,8 @@ impl App {
                 } else if self.current_tab == Tab::Jobs && !self.cache_loading {
                     let ft = self.cache_server_filter.clone();
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
+                } else if self.current_tab == Tab::Master && !self.master_config_loading {
+                    self.request_master_config();
                 }
             }
             KeyCode::Char(']') | KeyCode::Char('}') => {
@@ -1229,10 +1353,11 @@ impl App {
                 self.open_help();
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
-                self.sparkline_style = match self.sparkline_style {
-                    SparklineStyle::Bars => SparklineStyle::Dots,
-                    SparklineStyle::Dots => SparklineStyle::Bars,
-                };
+                self.config.graph_style = match self.config.sparkline_style() {
+                    SparklineStyle::Bars => "dots",
+                    SparklineStyle::Dots => "bars",
+                }.to_string();
+                self.save_toggles();
             }
             KeyCode::Char('/') => {
                 if matches!(self.current_tab, Tab::Dashboard | Tab::Pulse) {
@@ -1286,7 +1411,8 @@ impl App {
             KeyCode::Char('4') => self.current_tab = Tab::Jobs,
             KeyCode::Char('5') => self.current_tab = Tab::Alerts,
             KeyCode::Char('6') => self.current_tab = Tab::Api,
-            KeyCode::Char('7') => self.current_tab = Tab::Pulse,
+            KeyCode::Char('7') => self.current_tab = Tab::Master,
+            KeyCode::Char('8') => self.current_tab = Tab::Pulse,
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
                     self.pulse_up();
@@ -1307,24 +1433,30 @@ impl App {
             KeyCode::End => self.move_to_last(),
             KeyCode::Enter => self.open_detail(),
             KeyCode::F(2) => {
-                self.mouse_enabled = !self.mouse_enabled;
+                self.config.mouse = !self.config.mouse;
                 self.needs_mouse_toggle = true;
+                self.save_toggles();
             }
             KeyCode::F(3) => self.open_config_editor(),
             KeyCode::F(4) if self.current_tab == Tab::Dashboard => {
                 self.config.show_cpu_graph = !self.config.show_cpu_graph;
+                self.save_toggles();
             }
             KeyCode::F(5) if self.current_tab == Tab::Dashboard => {
                 self.config.show_mem_graph = !self.config.show_mem_graph;
+                self.save_toggles();
             }
             KeyCode::F(6) if self.current_tab == Tab::Dashboard => {
                 self.config.show_zmq_graph = !self.config.show_zmq_graph;
+                self.save_toggles();
             }
             KeyCode::F(7) if self.current_tab == Tab::Dashboard => {
                 self.config.show_events_graph = !self.config.show_events_graph;
+                self.save_toggles();
             }
             KeyCode::F(8) if self.current_tab == Tab::Dashboard => {
                 self.config.show_activity_graph = !self.config.show_activity_graph;
+                self.save_toggles();
             }
             _ => {}
         }
@@ -1334,9 +1466,33 @@ impl App {
     /// Handle a mouse click at the given (col, row) position.
     /// Row 1 = tab bar: switch to clicked tab.
     /// Content area = list tabs: select item by proportional position.
+    /// `Ctrl+←`/`→`: moves the current tab's divider between its two panels
+    /// by 1%. False when there's no divider to move (no split on this tab,
+    /// or an overlay or popup in front), so the key acts as a plain arrow.
+    pub fn move_split(&mut self, right: bool) -> bool {
+        let popup_here = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
+        if self.quit_confirm || self.show_help || self.config_editor.is_some() || self.save_prompt.is_some() || popup_here {
+            return false;
+        }
+        let Some(pct) = self.config.split_pct_mut(self.current_tab) else { return false };
+        let moved = if right { *pct + 1 } else { pct.saturating_sub(1) };
+        *pct = moved.clamp(crate::config::SPLIT_PCT_MIN, crate::config::SPLIT_PCT_MAX);
+        self.save_toggles();
+        true
+    }
+
+    /// The column where the current tab's right panel starts.
+    fn split_col(&self, frame_size: Rect) -> usize {
+        crate::ui::split_panes(frame_size, self)[1].x as usize
+    }
+
     pub fn handle_mouse_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
         let h = frame_size.height as usize;
 
+        if self.quit_confirm {
+            self.quit_confirm = false;
+            return false;
+        }
         if self.config_editor.is_some() || self.save_prompt.is_some() {
             return false;
         }
@@ -1434,9 +1590,8 @@ impl App {
                 }
             }
             Tab::Events => {
-                // Events has 50/50 horizontal split: only left half is the event list
-                let split_col = (frame_size.width / 2) as usize;
-                if (col as usize) >= split_col {
+                // Only the left panel is the event list
+                if (col as usize) >= self.split_col(frame_size) {
                     return false;
                 }
                 let total = self.filtered_events_len();
@@ -1499,10 +1654,29 @@ impl App {
                     }
                 }
             }
+            Tab::Master => {
+                if (col as usize) >= self.split_col(frame_size) {
+                    return false;
+                }
+                let total = self.filtered_master_settings().len();
+                if total == 0 { return false; }
+
+                // Same shape as Events -- must match draw_master_list exactly.
+                let visible = inner_h.saturating_sub(2).max(1);
+                let selected = self.master_selected.min(total.saturating_sub(1));
+                let scroll = scroll_offset(selected, visible, total);
+
+                let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Master).is_empty();
+                let data_start = 4 + if filter_shown { 1 } else { 0 } + 1;
+                if r >= data_start {
+                    let visual_idx = r - data_start;
+                    if visual_idx < visible {
+                        self.master_selected = (scroll + visual_idx).min(total - 1);
+                    }
+                }
+            }
             Tab::Jobs => {
-                // 55/45 split: left = live jobs, right = cache
-                let col_split = frame_size.width as usize * 55 / 100;
-                let live_click = (col as usize) < col_split;
+                let live_click = (col as usize) < self.split_col(frame_size);
 
                 if self.cache_focus == live_click {
                     // Click is on the non-focused panel — just switch focus
@@ -1699,7 +1873,7 @@ impl App {
                             self.return_to_minion_events = Some((mid.clone(), item_idx));
                             match self.return_event_job(evt) {
                                 Some((jid, header)) => self.open_job_detail(jid, header, Some(mid)),
-                                None => self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle }),
+                                None => self.detail_popup = Some(DetailPopup::event(evt.clone())),
                             }
                         }
                         MinionActivityItem::CacheJob(job) => {
@@ -1708,7 +1882,7 @@ impl App {
                         }
                         MinionActivityItem::Alert(alert) => {
                             self.return_to_minion_events = Some((mid, item_idx));
-                            self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                            self.detail_popup = Some(DetailPopup::alert(alert.clone()));
                         }
                     }
                 }
@@ -1725,6 +1899,12 @@ impl App {
         self.pending_jid_lookup = Some((req_id, jid.clone()));
         self.pending_jid_lookup_at = Some(Instant::now());
         self.job_detail_select_minion = select_minion;
+        self.job_search.clear();
+        self.job_searching = false;
+        self.job_search_matches.clear();
+        self.job_search_focus = None;
+        self.job_fail_lines.clear();
+        self.job_focus_line = None;
         self.detail_popup = Some(DetailPopup::JobDetail {
             jid,
             lookup: None,
@@ -1790,6 +1970,7 @@ impl App {
             }
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
             Tab::Api => self.api_log_selected = self.api_log_selected.saturating_sub(1),
+            Tab::Master => self.master_selected = self.master_selected.saturating_sub(1),
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_sub(1).min(max);
@@ -1815,6 +1996,10 @@ impl App {
             }
             Tab::Alerts => self.alert_selected += 1,
             Tab::Api => self.api_log_selected += 1,
+            Tab::Master => {
+                let max = self.filtered_master_settings().len().saturating_sub(1);
+                self.master_selected = (self.master_selected + 1).min(max);
+            }
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_add(1).min(max);
@@ -1840,6 +2025,7 @@ impl App {
             }
             Tab::Alerts => self.alert_selected = 0,
             Tab::Api => self.api_log_selected = 0,
+            Tab::Master => self.master_selected = 0,
             Tab::Pulse => self.pulse_selected = 0,
             _ => {}
         }
@@ -1862,6 +2048,7 @@ impl App {
             }
             Tab::Alerts => self.alert_selected = self.filtered_alerts_len().saturating_sub(1),
             Tab::Api => self.api_log_selected = self.filtered_api_log_len().saturating_sub(1),
+            Tab::Master => self.master_selected = self.filtered_master_settings().len().saturating_sub(1),
             Tab::Pulse => self.pulse_selected = self.pulse_minions_count().saturating_sub(1),
             _ => {}
         }
@@ -1872,7 +2059,7 @@ impl App {
             Tab::Events => {
                 self.return_to_minion_events = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {
-                    self.detail_popup = Some(DetailPopup::SaltEvent { evt: evt.clone(), scroll: 0, pretty: false, pretty_fetch: crate::types::PrettyFetch::Idle });
+                    self.detail_popup = Some(DetailPopup::event(evt.clone()));
                     self.popup_tab = Some(self.current_tab);
                 }
             }
@@ -1896,13 +2083,19 @@ impl App {
             }
             Tab::Alerts => {
                 if let Some(alert) = self.get_filtered_alert(self.alert_selected) {
-                    self.detail_popup = Some(DetailPopup::Alert(alert.clone()));
+                    self.detail_popup = Some(DetailPopup::alert(alert.clone()));
                     self.popup_tab = Some(self.current_tab);
                 }
             }
             Tab::Api => {
                 if let Some(entry) = self.get_filtered_api_log(self.api_log_selected) {
                     self.detail_popup = Some(DetailPopup::ApiRequest(entry.clone()));
+                    self.popup_tab = Some(self.current_tab);
+                }
+            }
+            Tab::Master => {
+                if let Some(&index) = self.filtered_master_settings().get(self.master_selected) {
+                    self.detail_popup = Some(DetailPopup::MasterSetting { index, scroll: 0 });
                     self.popup_tab = Some(self.current_tab);
                 }
             }

@@ -3,6 +3,9 @@
 #
 # Bashtop Adwaita theme
 # by flipflop133
+#
+# The status, pulse and highlight colors salt-radar adds come from
+# the GNOME palette.
 
 theme[main_bg]="#f6f5f4"
 theme[meter_bg]="#c1bfc2"
@@ -45,4 +48,4 @@ theme[tab_separator]="#2e3436"
 theme[highlight_1]="#1c71d8"
 theme[highlight_2]="#f22bbe"
 theme[highlight_3]="#00a177"
-theme[highlight_4]="#aa50ff"
+theme[highlight_4]="#ab72f2"
