@@ -864,7 +864,7 @@ impl TableId {
     pub fn default_columns(self) -> &'static str {
         match self {
             Self::LiveJobs => "jid,fun,args,target,source,tgt,ok,fail,wait",
-            Self::JobCache => "jid,user,started,target,fun,args",
+            Self::JobCache => "jid,user,target,fun,args",
             Self::Minions => "id,key,os,salt",
             Self::Events => "local,utc,tag",
             Self::Alerts => "severity,rule,description",

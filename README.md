@@ -213,7 +213,7 @@ The master's configuration, as its files set it:
 ### Columns and sorting
 - The Minions, Events, Jobs (both tables), Alerts and API request log tables let you choose which columns are shown and in what order: `v` opens a picker for the focused table (`+`/`-` move a column, `Space` shows/hides it, `Enter` saves), also editable in the Config Editor — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their sections of `salt-radar.toml`
 - Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order). Sorting lasts for the session
-- Optional columns beyond the defaults: Live Jobs Started, Minions Proto/Arch/Seen/Fail%/Lag/Ping, Events Minion, Alerts Since/Count
+- Optional columns beyond the defaults: Live Jobs and Job Cache Started (the JID already holds the start time), Minions Proto/Arch/Seen/Fail%/Lag/Ping, Events Minion, Alerts Since/Count
 - When a panel is too narrow for every column, the text columns shrink together instead of cutting off the rightmost ones
 
 ### Config Editor

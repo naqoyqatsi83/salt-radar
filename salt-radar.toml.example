@@ -261,7 +261,7 @@
 #   live_columns:  jid, fun, args, target, source, tgt, ok, fail, wait, started
 #   cache_columns: jid, user, started, target, fun, args
 # live_columns = "jid,fun,args,target,source,tgt,ok,fail,wait"
-# cache_columns = "jid,user,started,target,fun,args"
+# cache_columns = "jid,user,target,fun,args"
 
 [ui]
 # Color theme: "Default" (built in), the name of a *.theme file in
