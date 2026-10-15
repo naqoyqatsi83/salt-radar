@@ -519,6 +519,10 @@ salt-radar stands on the shoulders of other people's work:
 - **[ratatui](https://github.com/ratatui/ratatui)** and **[crossterm](https://github.com/crossterm-rs/crossterm)**, which do the heavy lifting of drawing to the terminal, plus serde, serde_json, toml, chrono, base64 and libc.
 - **[Salt](https://github.com/saltstack/salt)** itself — the Python agent uses nothing beyond Python's standard library and Salt's own client APIs.
 
+🤖 No humans were harmed (or particularly involved) in the making of this app. The human's job was running Salt masters, filing issues, squinting at the screen and saying "this feels cluttered" or "the architecture is way longer than that on Power," and trying every release candidate on a real master before it shipped. Every line of Rust and Python, every fix, and every questionable design decision downstream of that was Claude's.
+
+⚠️ No human has reviewed this code line by line. It's been *tested* for real — a lab of 50 minions running Salt 3000 to 3006, a fleet faked up to 3,000 keys, salt-api, broken configs and minions that stop answering, all watched live rather than just claimed — but tested and audited are different things. salt-radar is read-only by design and keeps credentials out of the TUI, yet it still runs as root next to your Salt master. Treat it accordingly: fine for keeping an eye on your own master, worth a read of the agent before you let it near one that matters. 🤘
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
