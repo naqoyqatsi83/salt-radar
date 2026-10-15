@@ -7,117 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.0-rc7] - 2026-10-15
+## [0.9.0] - 2026-10-16
 
 ### Added
 
-- Search an alert's items in Alert Detail: `/` finds the minions, units or jobs it lists (a whole-query `/regex/` works too), matches highlighted and counted, `n`/`N` move between them, as in Event and Job Detail
-
-### Fixed
-
-- Alert Detail cut off a long item list (the 23 minions of a protocol alert, say) at the bottom of the popup and ran a long description past its edge: the items now scroll (`↑↓`, `PgUp`/`PgDn`, `Home`/`End`) below a header that stays put, and the description wraps under its label
-- Digits typed into a popup's search switching tabs: `1`–`8` (and `Tab`, `?`, `F2`, `F3`) in Job Detail's output search or Event Detail's search jumped to another tab instead of being typed, as only Job Detail's return filter counted as text input
-
-## [0.9.0-rc6] - 2026-10-15
-
-### Added
-
-- Harden the Master Config tab's restart check (`running_config_digests` under `[salt]`, off by default): the running master is asked only for a SHA-256 digest of each option, rendered in its own process, instead of the options themselves, so their values (credentials included) never go over the event bus or into the job cache; ↻ marks the same settings, without the running value
+- Browse the master's configuration in a new Master Config tab (`7`, #178): every setting on one line, the ones set in a file first, in Salt's load order (`/etc/salt/master`, `master.d/*.conf`, `include:`) with the file and line that sets each, then the values Salt worked out at startup, then the defaults, greyed out. The right panel shows the file a setting comes from with its block marked and Salt's default; `Enter` opens the full value, each file's own value and the default, `y`/`s` copy or save it, `/` filters, `r` reads the files again, and `Ctrl+←`/`Ctrl+→` move its divider
+- Master Config tab: show how duplicate settings combine, as Salt does it (#182): a `master.d` file replaces the main file's whole value, naming the nested keys that are dropped (`rest_cherrypy: {port: 9000}` loses `collect_stats`), dicts from `master.d` files merge and lists add up, other values are overridden
+- Master Config tab: flag the files Salt rejects (the same key twice is enough), listing their settings as ignored with Salt's reason and the line at fault, and fire a "Config file rejected" alert
+- Master Config tab: tell apart the keys salt-master doesn't own (#185): salt-api's (`rest_cherrypy`, `rest_tornado`, `rest_wsgi`, `api_logfile`, `rest_timeout`, with the options inside a salt-api section checked against what salt-api reads), a module's options found where the master's loader finds them (Salt itself, installed Salt extensions, synced custom modules; `auth.ldap.*` with the backend's defaults), valid minion, syndic or salt-ssh options, and settings for modules Salt 3008 moved out to extensions; what's left is "not core", a typo, with the setting it's probably meant to be (`worker_thread` → `worker_threads`)
+- Master Config tab: mark with ↻ what a restart would change (#190): each setting, as Salt loads it from the files, is compared with the value the running salt-master holds, asked of the master itself once per master start (the `test.get_opts` runner, kept out of salt-radar's own lists), and the running value is shown with the reason: changed after the master started, restored (the files are older than the master, yet the value differs) or removed from the files. A file only touched isn't marked; without an answer from the master, ↻ goes by file times and the title says so
+- Master Config tab: redact credentials in the agent, before they reach the TUI, in the list, the files, the popup and copies: values of secret-looking keys and the password or token of any URL (`https://deploy:<redacted>@github.com/...`), in values, keys and every file line (#186)
+- Harden the restart check (`running_config_digests` under `[salt]`, off by default): the running master is asked only for a SHA-256 digest of each option, rendered in its own process, so its values never go over the event bus or into the job cache; ↻ marks the same settings, without the running value
+- Warn about minions whose Salt version doesn't fit the master (#177, #181): the optional Minions `Proto` column shows each minion's auth protocol, v0 (no replay protection: 2014.x–3001.x, 3002.0–3002.7, 3003.0–3003.3, 3004.0) in red, v2 in yellow, v3. The "No replay protection" and "Legacy auth protocol" alerts go by the running master's `minimum_auth_version`: critical when it rejects those minions, a warning naming the missing protection when it's lowered to let them in, and a warning about the upgrade on a master that doesn't enforce it yet (3006.17, 3007.9 and 3008 reject v0 and v2 by default). "Minion newer than master" lists minions on a newer Salt major
+- Show how slowly each minion answers compared with its peers (#176): the optional Minions `Lag` column is the median, over the minion's last 50 jobs, of its return time divided by the job's median (1.0x typical, yellow from 1.5x, red from 3x; sortable worst first), and `Ping` the time to its latest `test.ping` return
+- Move the divider between a tab's two panels with `Ctrl+←`/`Ctrl+→` (#179), between 20% and 80%, on Minions, Events, Jobs, API, Master Config and Pulse; each tab's split is saved (`*_split_pct` in `[ui]`)
+- Search in Event Detail (#189) and Alert Detail: `/` searches the event (raw or pretty) or the alert's items, matches highlighted and counted (a whole-query `/regex/` works too), `n`/`N` move between them, as in Job Detail
+- Confirm before quitting (#173): `q` asks first, so extra `q` presses meant for a popup that lag already closed no longer quit the app; `confirm_quit = false` in `[ui]` turns it off, `Ctrl+C` still quits at once
+- Make the hotkey toggles settings (#174): the Dashboard graph style (`m`, `graph_style`), mouse capture (`F2`, `mouse`) and the refresh speed (`-`/`+`, `tick_ms`) start as last left, editable in the Config Editor too
+- Cap what salt-radar sends to the terminal with `max_output_kbs` under `[refresh]` (#172), for session-recording SSH proxies such as CyberArk that fall behind a busy master's few KB/s of redraws
 
 ### Changed
 
-- Judge old minions' auth protocol by the running master's `minimum_auth_version` (#183): the "No replay protection" and "Legacy auth protocol" alerts read it from the running master (from the files only when it can't be asked; before, from the files as they were when salt-radar started) and say which case it is: critical when it rejects those minions, a warning naming the missing protection when it's lowered to let them in, and a warning about the upgrade on a master that doesn't enforce it yet
-- Leave Started out of the Job Cache's default columns: the JID already holds the start time, and without it the table fits a half-width panel; `v` on the Jobs tab (or `cache_columns`) brings it back
-- Keep salt-radar's own runner job out of its lists: the `test.get_opts` job it sends once per master start to compare the master configuration (#190) no longer shows in Events, Live Jobs or the Job Cache; a `test.get_opts` you run yourself still does
-- Show only the time for today's events in the Events list: the Local and UTC columns read `17:25:08` for events from today (each column's own today) and keep the full date for older ones, giving the tag and minion columns 22 more characters; `time_format = "full"` under `[events]` (also in the Config Editor) keeps the date on every row. The preview, the detail popup, copies and saves always show the full date
+- Size table columns to what they show, so tables neither cut what matters nor sprawl (#188): every Minions column, Events' Tag and Minion, and Live Jobs' and the Job Cache's Target, Function, Args and Started are as wide as their longest value, with spare room widening the gaps up to 4 spaces. On a narrow panel the least needed text gives way first: OS, then Salt and Arch before the minion ID (AIX's `cpuarch` reads like `PowerPC_POWER10`); a job's Function and Args before its Target, except a list target over 40 characters; an event's Minion before its Tag
+- Show only the time for today's events in the Events list (`17:25:08`, each column's own today, the full date for older ones), giving the tag 22 more characters; `time_format = "full"` under `[events]` keeps the date on every row. The preview, the detail popup, copies and saves always show it
+- Leave Started out of the Job Cache's default columns: the JID holds the start time, and without it the table fits a half-width panel (`v` or `cache_columns` brings it back)
+- Wrap long lines in the Events Preview (#169), with wrapped rows hanging under their key, instead of cutting the tag and JSON body off at the panel's edge
+- Give the bundled themes their own palette for the colors salt-radar adds (#145): job outcomes, the filter highlight colors, the Pulse markers and the version in the title bar come from the color scheme each theme ports, in 30 themes, instead of one generic set
+- Pulse moves to `8`, after the new Master Config tab
 
 ### Fixed
 
-- Job Detail search not jumping to its first match when the query was typed or pasted faster than a redraw: `Enter` matched against the previous frame; it now matches the output as shown, as Event Detail's search does
-
-## [0.9.0-rc5] - 2026-10-15
-
-### Changed
-
-- Tell what a master restart would really change (#190): ↻ in the Master Config tab now compares each setting, as Salt loads it from the files, with the value the running salt-master holds (asked of the master itself, once per master start, through the `test.get_opts` runner), instead of going by file times. The panel and the popup show the running value and why it differs: changed after the master started, restored (its files are older than the master, yet the value differs), or removed from the files; a file only touched or rewritten with the same values is no longer marked. Without an answer from the master, ↻ goes by file times as before and the title says so
-
-### Fixed
-
-- The master's start time taken from any process mentioning salt-master (#190): a `journalctl -u salt-master -f` or `tail` started before the last restart made the master look older than it was, hiding changes made since; only salt-master's own processes count now
-
-## [0.9.0-rc4] - 2026-10-15
-
-### Added
-
-- Search in Event Detail (#189): `/` searches the event in the view shown, raw JSON or pretty, matches highlighted and counted (a whole-query `/regex/` works too), `n`/`N` move between them, as in Job Detail; a long `state.apply` return no longer has to be scrolled through by eye
-
-### Changed
-
-- Tell module settings from typos in the Master Config tab (#185): keys that aren't salt-master's own but that Salt reads are a new `module` kind, named with what reads them: salt-api (`rest_cherrypy`, `rest_tornado`, `rest_wsgi`, `api_logfile`, `rest_timeout`), any module Salt ships, found in Salt's own sources (`auth.ldap.*` with the backend's defaults, `cache.redis.*`, `mysql.*`, `vault`), or a valid minion, syndic or salt-ssh option. Modules are found where the master's loader finds them, installed Salt extensions and synced custom modules included, and a dotted option counts only when the module's source names it (`redis.host` on 3008, whose redis cache reads `cache.redis.host`, is caught with that suggestion); a setting for a module Salt 3008 moved out to an extension says it needs the extension. Options inside a salt-api section are checked too: one salt-api doesn't read is flagged and counted as not core, with the option it's probably meant to be (`colect_stats` → `collect_stats`), and the documented `socket_queue_size`, which salt-api never reads, says so. "Not core" is left for keys nothing in Salt reads
-- Size the Events columns to what they show: Tag and Minion as wide as their longest value over the events listed, the timestamps exactly their length, room to spare widening the gaps up to 4 spaces; on a narrow panel the Minion column gives way before the Tag
-- Give job targets room in Live Jobs and the Job Cache: Target, Function, Args and Started (and in Live Jobs the Source and count columns) are as wide as their longest value, room to spare widening the gaps up to 4 spaces; on a narrow panel the wider of Function and Args gives way first (Args down to 6), then Target, except a target over 40 characters (a list of minions), whose tail goes first; a `(test)` marker with no room left for the arguments beside it gives way to them instead of being cut off
-- Show Salt's default where it matters in the Master Config tab: the setting popup has a pinned Default row (the default, "differs, shown below" for a long one, or "same as Salt's default") and the right panel says the same, so the default is no longer only at the bottom of a long value; the popup also leaves an empty line at its bottom, and a line too wide for it ends in `…` instead of just stopping
-
-### Fixed
-
-- Minions columns sized for the wrong things (#188): OS took all the spare width while long minion IDs and Arch values were cut (AIX reports `cpuarch` as e.g. `PowerPC_POWER10`). every column is now as wide as its longest value (over every minion, so scrolling doesn't move them), with room to spare widening the gaps between columns up to 4 spaces; on a narrow panel OS gives way first, then Salt, then Arch, and the ID last
-- Events selection sliding to newer events while a filter is on (#187): once the buffer was full, every matching event that rotated out moved the selection one event newer, so the row stayed put while the events scrolled under it; it now stays on its event as the list moves up, as it already did without a filter, until that event rotates out itself
-- Event Detail's `End` stopping short: the scroll limit counted three lines too few above the body, so the last lines of a long event could never be scrolled into view
-- Credentials in URLs shown in the Master Config tab (#186): the password or token of a `scheme://user:password@host` URL (`gitfs_remotes`, git `ext_pillar`, `mongo.uri`, …) went through unredacted, in the list, the file view, the popup and copies, as only values of secret-looking keys were hidden. It's now blanked in every value, every key (gitfs per-remote options are keyed by URL) and every line of the files, comments included, keeping the scheme, user and host (`https://deploy:<redacted>@github.com/...`)
-- Minions `Proto` column (#183): right-aligned like the other short columns, and `—` for a minion that timed out, as OS, Salt and Arch already were
-- salt-api port never detected (#184): the Dashboard's ZMQ line now shows salt-api connection counts, the port read from the merged master config instead of hand-parsing the files; `/login` and `/stats` also follow salt-api's `host` and `root_prefix` instead of always using `127.0.0.1` at `/`
-
-## [0.9.0-rc3] - 2026-10-15
-
-### Added
-
-- Browse the master's configuration in a new Master Config tab (`7`, #178): every setting on one line, the ones set in a file first, in Salt's load order (`/etc/salt/master`, `master.d/*.conf`, `include:`) with the file and line that sets each, then the values Salt worked out at startup, then the defaults, greyed out. The right panel shows the file a setting comes from with its block marked, and the files it overrides; `Enter` opens the full value next to Salt's default, `y`/`s` copy or save it, `/` filters and `r` reads the files again. Keys Salt doesn't know are flagged "not core" (a module's own option or a typo Salt ignores; `worker_thread` names `worker_threads`), and a ↻ marks each setting set in a file that changed after salt-master started, as its value may change on restart (the title counts them, `/restart` lists them). Credential-looking values are redacted by the agent, in the list, the files and copies, so they never reach the TUI. Its divider moves with `Ctrl+←`/`Ctrl+→` too (`master_split_pct`)
-- Show how duplicate master settings combine, and the config files Salt rejected (#182): when several files set a setting, the Master Config tab now says what each does, as Salt does it: a `master.d` file replaces the main file's whole value, naming the nested keys that are dropped (`rest_cherrypy: {port: 9000}` loses `collect_stats`), dicts from `master.d` files merge and lists add up, other values are overridden. The setting popup shows each file's own value before the result. A file Salt can't parse (the same key twice is enough) is skipped whole with only a log line; the tab now flags it, lists its settings as ignored with Salt's reason (even when the file isn't valid YAML at all) and marks the line at fault, and a new "Config file rejected" alert fires, as the configuration is now also read at start and with the config refresh
-- Tell minions on auth protocol v0 from v2 (#181): minions from before Salt's March 2022 security releases (2014.x–3001.x, 3002.0–3002.7, 3003.0–3003.3, 3004.0) send no protocol version and get no replay protection, but `Proto` showed them as v2. `Proto` now reads v0 (red), v2 (yellow) or v3, and a "No replay protection" alert lists the v0 minions next to the "Legacy auth protocol" one for v2
-
-### Changed
-
-- Pulse moves to `8`, staying the last tab after the new Master Config tab (`7`)
-- The Salt major alert only lists minions on a newer major than the master, as "Minion newer than master" (#181): a newer master supports older minions, and the protocol alerts already cover the ones too old for it, so a fleet of 3000–3005 minions on a 3006 master no longer lands there too
-
-### Fixed
-
-- Tab bar clicks one column off: clicking a tab's last letter missed it, and the frame border left of Dashboard selected it; the clickable ranges now come from the labels as drawn
-
-## [0.9.0-rc2] - 2026-10-14
-
-### Added
-
-- Move the divider between a tab's two panels with `Ctrl+←`/`Ctrl+→` (#179), 1% a step (hold the keys to move further) between 20% and 80%, on Minions, Events, Jobs, API and Pulse, to give a long list or a wide preview more room. Each tab keeps its own split, saved the moment it moves as `minions_split_pct`, `events_split_pct`, `jobs_split_pct`, `api_split_pct` and `pulse_split_pct` in `[ui]` (also in the Config Editor); mouse clicks follow the divider
-- Show how slowly each minion answers compared with its peers (#176): the optional Minions `Lag` column (`lag`) is the median, over the minion's last 50 jobs, of its return time divided by the job's median, so a consistently slow minion stands out whatever the jobs were (1.0x typical, yellow from 1.5x, red from 3x; sortable worst first). A job is rated once every target returned or it passed `job_straggler_secs`, and later returns against that median; return times under 0.5 s count as 0.5 s so ping jitter doesn't read as lag, and jobs where both the minion and the median took under 0.5 s aren't rated, so mostly fast jobs don't flatten every minion to 1.0x. The optional `Ping` column (`ping`) is the time to the minion's latest `test.ping` return, and the activity popup's summary line adds the lag median and p95 and the last ping
-- Warn about minions whose Salt version doesn't fit the master (#177): the optional Minions `Proto` column (`proto`) shows each minion's auth protocol, worked out from its Salt version (v3 from 3006.12, 3007.4 and 3008; v2 before, in yellow). A new "Legacy auth protocol" alert lists minions still on v2, which masters from 3006.17, 3007.9 and 3008 reject by default (`minimum_auth_version: 3`), as a warning, or critical once this master enforces it; "Salt major mismatch" lists minions on another major than the master (3008 minions on a 3006 master). Both replace the "Legacy protocol" rule, which waited for event tags Salt doesn't send
-
-### Fixed
-
-- Minions OS, Salt and Arch empty until a fleet scan (#180): the agent never read the master's minion data cache, which holds every minion's grains (it asked for the wrong cache entry, and a missing import made it give up silently). The columns now fill in at start; the pillar compiled for salt-api stats credentials also gets the master's real grains. Last Seen and the Stale minion alert still go by returns seen live, as the cache is only rewritten when a minion's pillar is compiled, and the Guide no longer says otherwise
-
-## [0.9.0-rc1] - 2026-10-13
-
-### Added
-
-- Confirm before quitting (#173): `q` now asks "Quit salt-radar?" and only `y`/`Enter` quits, while any other key, `q` included, cancels. Extra `q` presses meant for a popup that lag already closed used to quit the app, since queued keys are handled in one batch before the next redraw. Turn it off with `confirm_quit = false` in `[ui]` or the Config Editor; `Ctrl+C` still quits at once
-- `graph_style` (`dots`/`bars`) in `[dashboard]`, `mouse` in `[ui]` and `tick_ms` in `[refresh]` (#174): the Dashboard graphs' style (`m`), mouse capture (`F2`) and the refresh speed (`-`/`+`, 500-30000 ms) are now settings, in the Config Editor too, instead of starting as dots, on and 2000 ms every time
-- `max_output_kbs` under `[refresh]` (#172): caps the bytes per second salt-radar sends to the terminal. On a busy master the scrolling lists and full Dashboard graphs send a few KB/s (measured: 5 KB/s on a full Dashboard, about 13 times the output with the graphs hidden), which a session-recording SSH proxy such as CyberArk can't keep up with, so the whole connection, tmux and other windows on it included, became sluggish after a few minutes. Over the cap, refreshes wait while key presses still redraw at once; the header shows the cap, yellow while a refresh is waiting. Off (0) by default
-
-### Changed
-
-- Bundled themes use their own palette for the colors salt-radar adds (#145): job outcomes, the four filter highlight colors, the Pulse markers, purple and the title-bar version used one generic set in most themes, so Nord, Tokyo Night, gruvbox and the rest showed the same green, yellow and pink. 30 themes now take them from the color scheme they port (Tokyo Night, gruvbox, Everforest, Kanagawa, One Dark, Solarized, Dracula, …) or from their btop original, which also fixes gruvbox's yellow being its green and Tokyo Night's orange being its yellow. A role stays on the default only where the theme has no color of that kind; every theme still passes the check that keeps status and highlight colors apart and readable
-- Events Preview wraps long lines (#169): the tag and the JSON body used to be cut off at the panel's right edge, so long targets, arguments and state comments couldn't be read without opening the event. Wrapped rows hang under their key, and the body's height and its jump to the first filter match count wrapped rows, so the match stays on screen
-
-### Fixed
-
-- Count a minion targeted twice as one target in Live Jobs (#175): a list target naming a minion twice (`-L web01,db01,web01`) used to show 3 targets, 2 returns and one minion waiting forever, as Salt keeps the duplicate in the job's minion list. Live Jobs now counts distinct minions (2 targets, 2 returns), like Job Detail. Other target types (glob, pcre, grain, compound) never produce duplicates
-- Dashboard toggles lost on restart (#174): the graph panels (`F4`–`F8`), Minions `f` and API `x` were saved only on a clean quit, so closing the terminal window or a dropped SSH session lost them. Every hotkey toggle, the new graph style, mouse and refresh speed settings included, is now saved the moment it changes, merged into the config file as it is
-- Regex filter terms that couldn't be used failing silently (#168): a `/…/` term with a flag other than `/i` (`/fit/g`), or one this regex engine can't compile (look-around, an unclosed group), was quietly matched as plain text and found nothing, which looked like regex filtering being broken. Every list filter's bar now flags such a term with ⚠ and the reason; the Job Cache, which the agent filters with Python's `re`, flags only the flags. The help and README also say that regex terms are case-sensitive unless written `/…/i`
-- Minions view not adding up to the Dashboard's key counts (#171): it listed only minions with an accepted key, so pending, rejected and denied keys never showed, and an ID with both an accepted and a denied key showed once, as `denied`, though it was accepted and working. The list now has a row per key, matching Minion Key Status: the denied duplicate is its own row next to the accepted one, other keys show their status with no minion data, and the filter matches key status (`denied`). The "minions" count on the Dashboard's Salt RSS gauge is now the accepted key count
-- Live Jobs and Job Detail disagreeing on a return's outcome (#166): Live Jobs went by the event's `success` flag alone, while Job Detail and the Minions Fail% column also counted an empty return as a failure, so `config.get` of a missing key was OK in Live Jobs and RC 1 in Job Detail. All views now share one rule: Salt's `success`/`retcode`, plus failures Salt misses in the return data (a failed state, an `ERROR:` string); an empty return is a success
-- Job Detail output search carried over into the next job (#170): the query, its matches and `n`/`N` stayed active after closing the popup, so another job opened mid-search and `n` jumped through the old matches; the `f`/`F` failed-state marker lingered the same way. Opening a job now starts with neither
-- Events filter showing events that don't match (#167): a term naming a known minion also showed every job whose target named *any* known minion, so on a fleet targeted by lists most jobs passed any minion term. It now shows only jobs whose target covers one of the minions the term names (`*`, a list member, a glob, an `L@`/`G@` word), and list targets sent as arrays count too. The Preview highlights the matches in the body and, when the first one is below the visible part, starts there so the reason an event matched is on screen
+- Minions OS, Salt and Arch staying empty until a fleet scan (#180): the agent never read the master's minion data cache; they now fill in at start
+- The salt-api port never being detected (#184): the Dashboard's ZMQ line now shows salt-api connection counts, and `/login` and `/stats` follow salt-api's `host` and `root_prefix` instead of always `127.0.0.1` at `/`
+- The Minions view not adding up to the Dashboard's key counts (#171): it now has a row per key, pending, rejected and denied keys included, and an ID with both an accepted and a denied key shows both
+- Live Jobs and Job Detail disagreeing on a return's outcome (#166): all views share one rule, Salt's `success`/`retcode` plus failures Salt misses in the return data
+- A minion targeted twice counting as two targets in Live Jobs (#175)
+- The Events filter showing jobs that don't match (#167): a term naming a known minion matches only jobs whose target covers that minion
+- The Events selection sliding to newer events while a filter is on (#187), once the buffer was full and old events rotated out
+- Regex filter terms that can't be used failing silently (#168): the filter bar flags them with ⚠ and the reason
+- Toggles lost when salt-radar didn't quit cleanly (#174): every hotkey toggle is saved the moment it changes
+- Job Detail's output search carrying over into the next job (#170), not jumping to its first match when the query was typed or pasted faster than a redraw, and digits typed into it (or into Event Detail's search) switching tabs
+- Alert Detail cutting a long item list off at the popup's bottom and running a long description past its edge: the items scroll below a header that stays put, and the description wraps
+- Event Detail's `End` stopping three lines short of a long event's end
+- Tab bar clicks landing one column off
 
 ## [0.8.2] - 2026-10-13
 
