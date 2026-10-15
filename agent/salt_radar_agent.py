@@ -1114,6 +1114,17 @@ def _source_relations(key, sources, order):
     return out
 
 
+def _is_salt_master(argv):
+    """Whether a command line (split into words) runs salt-master itself:
+    `salt-master ...` or `python... salt-master ...`, not a `journalctl -u
+    salt-master`, `tail .../master` or an editor on /usr/bin/salt-master that
+    merely mentions it."""
+    names = [os.path.basename(a.decode("utf-8", "replace")) for a in argv[:2]]
+    if names and names[0].startswith("python"):
+        names = names[1:]
+    return bool(names) and names[0] == "salt-master"
+
+
 def _salt_master_started():
     """Epoch seconds the oldest salt-master process started, 0 if none."""
     try:
@@ -1126,8 +1137,8 @@ def _salt_master_started():
                 continue
             try:
                 with open("/proc/{}/cmdline".format(pid), "rb") as f:
-                    cmd = f.read().replace(b"\0", b" ")
-                if b"salt-master" not in cmd:
+                    cmd = f.read().replace(b"\0", b" ").split()
+                if not _is_salt_master(cmd):
                     continue
                 with open("/proc/{}/stat".format(pid)) as f:
                     fields = f.read().rsplit(")", 1)[1].split()
@@ -1436,6 +1447,74 @@ def _netapi_problems(key, value):
     return unknown, notes
 
 
+# The running master's own options, fetched once per master start (they
+# only change when it restarts): {"started": epoch, "opts": dict}.
+_running_opts = {"started": None, "opts": None}
+
+
+def _running_master_opts(path, started):
+    """(the running salt-master's options, None) or (None, why not). Asked of
+    the master itself -- the `test.get_opts` runner sent to it runs in a
+    process forked from its worker, so it returns what the master loaded when
+    it started, not the files as they are now (which is all `salt-run`,
+    `salt-call --local` or `config.values` would read)."""
+    if started and _running_opts["started"] == started and _running_opts["opts"] is not None:
+        return _running_opts["opts"], None
+    if not started:
+        return None, "salt-master isn't running"
+    try:
+        salt = _import_salt()
+        import salt.utils.master
+        import salt.utils.user
+        client_opts = salt.config.client_config(path)
+        key = salt.utils.master.get_master_key(salt.utils.user.get_user(), client_opts)
+        events = salt.utils.event.get_master_event(client_opts, client_opts["sock_dir"], listen=True)
+        try:
+            pub = salt.runner.RunnerClient(client_opts).cmd_async({"fun": "test.get_opts", "key": key, "user": salt.utils.user.get_user()})
+            jid = pub.get("jid") if isinstance(pub, dict) else None
+            if not jid:
+                return None, "the master refused the request: {}".format(pub)
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                evt = events.get_event(wait=1, tag="salt/run/{}/ret".format(jid), full=True)
+                if evt:
+                    running = evt["data"].get("return")
+                    if not isinstance(running, dict):
+                        return None, "unexpected answer from the master"
+                    _running_opts.update(started=started, opts=running)
+                    return running, None
+            return None, "no answer from the master within 10s"
+        finally:
+            events.destroy()
+    except Exception as exc:
+        return None, str(exc)
+
+
+# What salt-master's command line sets at startup when no file does (its
+# logging, daemon, pidfile, user and config dir): not a setting removed
+# from the files when the running master has a value the files don't.
+_SET_AT_STARTUP = {
+    "config_dir", "daemon", "pidfile", "user", "log_file", "log_level", "log_level_logfile",
+    "log_fmt_console", "log_datefmt_console", "log_fmt_logfile", "log_datefmt_logfile",
+    "log_rotate_backup_count", "log_rotate_max_bytes",
+}
+
+
+def _restart_state(key, actual, running, srcs, files, started):
+    """Why a setting may change when salt-master restarts, or None: the
+    running master holds `running`, the files now say `actual`. "changed": a
+    file setting it changed after the master started; "restored": it differs
+    although its files are older than the master (put back with their old
+    time, edited keeping it); "removed": no file sets it any more."""
+    if running == actual:
+        return None
+    if not any(s["relation"] != "ignored" for s in srcs):
+        return None if key in _SET_AT_STARTUP else "removed"
+    if any(files[s["file"]]["mtime"] > started for s in srcs):
+        return "changed"
+    return "restored"
+
+
 def cmd_master_config(opts, req):
     """Every master setting: where it's set (file and line range, in Salt's
     load order) and how each file's value combines, its effective value and
@@ -1470,6 +1549,10 @@ def cmd_master_config(opts, req):
             start, end = blocks.get(str(key), (0, 0))
             sources.setdefault(str(key), []).append({"file": idx, "start": start, "end": end})
 
+    started = _salt_master_started()
+    running_opts, running_error = _running_master_opts(path, started)
+    missing = object()
+
     settings = []
     for key in sorted(set(effective) | set(sources), key=str):
         if str(key).startswith("__"):
@@ -1499,6 +1582,17 @@ def cmd_master_config(opts, req):
             "default": _config_text(_redact({key: default})[key], False) if known else None,
             "redacted": value != actual,
         }
+        # Only what the files load is compared: values the master works out
+        # at startup (grains, config_dir, its log settings) aren't in them.
+        if running_opts is not None and key in effective:
+            running = _plain(running_opts.get(key, missing))
+            state = _restart_state(str(key), actual, running, srcs, files, started)
+            if state:
+                entry["restart"] = state
+                if running is not missing:
+                    shown = _redact({key: running})[key]
+                    entry["running_line"] = _config_text(shown, True)
+                    entry["running_full"] = _config_text(shown, False)
         if kind == "unknown":
             owner, module_suggest = _setting_owner(str(key), effective)
             missing = None if owner or module_suggest else _missing_extension(str(key))
@@ -1521,7 +1615,9 @@ def cmd_master_config(opts, req):
     result(req["id"], "master_config", data={
         "conf_file": path,
         "files": files,
-        "master_started": _salt_master_started(),
+        "master_started": started,
+        "running_compared": running_opts is not None,
+        "running_error": running_error,
         "settings": settings,
     })
 

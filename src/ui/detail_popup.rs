@@ -1662,6 +1662,16 @@ fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfi
     if s.redacted {
         lines.push(row("Credentials", "shown as <redacted>".to_string(), color::inactive_fg()));
     }
+    if let Some(state) = s.restart {
+        lines.push(row("On restart", state.describe().to_string(), color::yellow()));
+        if s.running_full.is_none() {
+            lines.push(row("Running master", "not set (it started before this was added)".to_string(), color::yellow()));
+        } else if let Some(running) = s.running_line.as_ref().filter(|r| !r.contains('\n') && r.chars().count() <= 60) {
+            lines.push(row("Running master", running.clone(), color::yellow()));
+        } else {
+            lines.push(row("Running master", "differs, shown below".to_string(), color::yellow()));
+        }
+    }
     let default_differs = s.default.as_ref().filter(|d| **d != s.full);
     match (&s.default, default_differs) {
         (Some(_), None) if !s.sources.is_empty() => lines.push(row("Default", "same as Salt's default".to_string(), color::inactive_fg())),
@@ -1695,6 +1705,11 @@ fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfi
         body.push(heading("Value"));
     }
     body.extend(value(&s.full, color::hi_fg()));
+    if let Some(running) = s.running_full.as_ref().filter(|_| s.running_line.as_ref().is_none_or(|r| r.chars().count() > 60)) {
+        body.push(Line::from(""));
+        body.push(heading("Running master"));
+        body.extend(value(running, color::yellow()));
+    }
     if let Some(default) = default_differs.filter(|d| d.contains('\n')) {
         body.push(Line::from(""));
         body.push(heading("Salt's default"));

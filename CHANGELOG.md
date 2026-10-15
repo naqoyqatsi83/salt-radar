@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Tell what a master restart would really change (#190): ↻ in the Master Config tab now compares each setting, as Salt loads it from the files, with the value the running salt-master holds (asked of the master itself, once per master start, through the `test.get_opts` runner), instead of going by file times. The panel and the popup show the running value and why it differs: changed after the master started, restored (its files are older than the master, yet the value differs), or removed from the files; a file only touched or rewritten with the same values is no longer marked. Without an answer from the master, ↻ goes by file times as before and the title says so
+
+### Fixed
+
+- The master's start time taken from any process mentioning salt-master (#190): a `journalctl -u salt-master -f` or `tail` started before the last restart made the master look older than it was, hiding changes made since; only salt-master's own processes count now
+
 ## [0.9.0-rc4] - 2026-10-15
 
 ### Added

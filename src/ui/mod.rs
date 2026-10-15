@@ -1429,11 +1429,11 @@ fn guide_help_lines() -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  \u{21bb}", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("  set in a file changed after salt-master started: may change on restart", Style::default().fg(color::main_fg())),
+            Span::styled("  differs from what the running master holds: may change on restart (changed", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("  (the running master's values can't be read, only when its files changed)", Style::default().fg(color::main_fg())),
+            Span::styled("  after it started, restored with an old file time, or removed from the files)", Style::default().fg(color::main_fg())),
         ]),
         Line::from(vec![
             Span::styled("  <redacted>", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),

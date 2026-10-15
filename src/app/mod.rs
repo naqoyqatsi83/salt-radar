@@ -2890,11 +2890,16 @@ pub(crate) fn parse_master_config(data: &serde_json::Value) -> MasterConfig {
             (text(&k["key"]), k["suggest"].as_str().map(String::from))
         }).collect()).unwrap_or_default(),
         notes: s["notes"].as_array().map(|a| a.iter().filter_map(|n| n.as_str().map(String::from)).collect()).unwrap_or_default(),
+        restart: s["restart"].as_str().and_then(crate::types::RestartState::from_agent),
+        running_line: s["running_line"].as_str().map(String::from),
+        running_full: s["running_full"].as_str().map(String::from),
     }).collect()).unwrap_or_default();
     MasterConfig {
         conf_file: text(&data["conf_file"]),
         files,
         master_started: data["master_started"].as_u64().unwrap_or(0),
+        running_compared: data["running_compared"].as_bool().unwrap_or(false),
+        running_error: data["running_error"].as_str().map(String::from),
         settings,
     }
 }
@@ -3744,6 +3749,25 @@ mod tests {
         assert_eq!([at(0), at(1), at(13), at(14)], [None, Some(Tab::Dashboard), Some(Tab::Dashboard), None]);
         assert_eq!([at(68), at(74), at(78), at(94), at(98), at(106), at(107)],
             [Some(Tab::Api), Some(Tab::Api), Some(Tab::Master), Some(Tab::Master), Some(Tab::Pulse), Some(Tab::Pulse), None]);
+    }
+
+    #[test]
+    fn restart_follows_the_running_master_and_falls_back_to_file_times() {
+        let files = json!([{"path": "/etc/salt/master", "mtime": 200}]);
+        let settings = json!([
+            {"key": "timeout", "kind": "explicit", "sources": [{"file": 0}], "restart": "changed", "running_line": "5", "running_full": "5"},
+            {"key": "worker_threads", "kind": "explicit", "sources": [{"file": 0}]},
+            {"key": "keep_jobs", "kind": "default", "restart": "removed", "running_line": "48", "running_full": "48"},
+        ]);
+        let compared = parse_master_config(&json!({"files": files, "master_started": 100, "running_compared": true, "settings": settings}));
+        let [timeout, workers, removed] = &compared.settings[..] else { panic!() };
+        assert_eq!((timeout.restart, timeout.running_line.as_deref()), (Some(crate::types::RestartState::Changed), Some("5")));
+        // Its file is newer than the master, but the running value is the same: no ↻.
+        assert!(timeout.restart_pending(&compared) && !workers.restart_pending(&compared) && removed.restart_pending(&compared));
+        // Not compared: any setting in a file newer than the master.
+        let by_time = parse_master_config(&json!({"files": files, "master_started": 100, "running_compared": false, "running_error": "salt-master isn't running", "settings": settings}));
+        assert!(by_time.settings[1].restart_pending(&by_time) && !by_time.settings[2].restart_pending(&by_time));
+        assert_eq!(by_time.running_error.as_deref(), Some("salt-master isn't running"));
     }
 
     #[test]

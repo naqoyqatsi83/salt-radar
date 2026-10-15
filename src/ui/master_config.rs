@@ -91,10 +91,12 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
             let pending = mc.settings.iter().filter(|s| s.restart_pending(mc)).count();
             let rejected = mc.files.iter().filter(|file| file.error.is_some()).count();
             // Warnings first: on a narrow panel the counts are what gets cut.
+            // Without the running master's options, ↻ only goes by file times.
+            let by_time = if mc.running_compared { "" } else { " (file times only)" };
             format!(
                 " Master Config{}{} \u{b7} {} set, {} module, {} not core, {} derived, {} default ",
                 if rejected > 0 { format!(" \u{26a0} {} file(s) rejected", rejected) } else { String::new() },
-                if pending > 0 { format!(" \u{21bb} {} on restart", pending) } else { String::new() },
+                if pending > 0 { format!(" \u{21bb} {} on restart{}", pending, by_time) } else { String::new() },
                 count(SettingKind::Explicit), count(SettingKind::Module), not_core, count(SettingKind::Derived), count(SettingKind::Default),
             )
         }
@@ -242,8 +244,21 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
             lines.push(note(format!("\u{26a0} Salt rejected this file: {}", error), Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
         }
     }
-    if s.restart_pending(mc) {
-        lines.push(note("\u{21bb} Set in a file changed after salt-master started: may change on restart".to_string(), Style::default().fg(color::yellow())));
+    let restart = Style::default().fg(color::yellow());
+    match (s.restart, mc.running_compared) {
+        (Some(state), _) => {
+            lines.push(note(format!("\u{21bb} May change on restart: {}", state.describe()), restart));
+            if let Some(running) = &s.running_line {
+                lines.push(note(format!("  running master: {}", running), restart));
+            } else {
+                lines.push(note("  running master: not set (it started before this was added)".to_string(), restart));
+            }
+        }
+        (None, false) if s.restart_pending(mc) => lines.push(note(
+            format!("\u{21bb} Set in a file changed after salt-master started: may change on restart (running master not asked: {})", mc.running_error.as_deref().unwrap_or("unknown")),
+            restart,
+        )),
+        _ => {}
     }
     lines.push(Line::from(""));
 

@@ -459,7 +459,44 @@ pub struct MasterConfig {
     pub files: Vec<ConfigFile>,
     /// When the oldest salt-master process started (epoch secs, 0 unknown).
     pub master_started: u64,
+    /// Whether each setting was compared with the running master's own
+    /// options (`ConfigSetting::restart`); if not, why, and `restart_pending`
+    /// falls back to file times.
+    pub running_compared: bool,
+    pub running_error: Option<String>,
     pub settings: Vec<ConfigSetting>,
+}
+
+/// Why a setting may change when salt-master restarts: its value in the
+/// files differs from the one the running master holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestartState {
+    /// A file setting it changed after the master started.
+    Changed,
+    /// Its files are older than the master, yet the value differs: put back
+    /// with their old time, or edited keeping it.
+    Restored,
+    /// No file sets it any more; the master still has its old value.
+    Removed,
+}
+
+impl RestartState {
+    pub fn from_agent(state: &str) -> Option<Self> {
+        match state {
+            "changed" => Some(Self::Changed),
+            "restored" => Some(Self::Restored),
+            "removed" => Some(Self::Removed),
+            _ => None,
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Changed => "changed after salt-master started",
+            Self::Restored => "differs from the running master, though its files are older than it (restored, or edited keeping their time)",
+            Self::Removed => "no longer in the files, but the running master still has it",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -596,19 +633,28 @@ pub struct ConfigSetting {
     pub unknown_nested: Vec<(String, Option<String>)>,
     /// Remarks on options salt-api reads differently than documented.
     pub notes: Vec<String>,
+    /// How it differs from the running master, when compared.
+    pub restart: Option<RestartState>,
+    /// The running master's value, on one line and in full (YAML), when it
+    /// differs and the master has one.
+    pub running_line: Option<String>,
+    pub running_full: Option<String>,
 }
 
 impl ConfigSetting {
-    /// Set in a file written after salt-master started, so its value may
-    /// change when the master restarts. (What the running master holds in
-    /// memory can't be read, only when the files changed.)
     /// Keys Salt ignores: the setting itself when nothing reads it, plus
     /// any it holds that salt-api doesn't read.
     pub fn ignored_keys(&self) -> usize {
         usize::from(self.kind == SettingKind::Unknown) + self.unknown_nested.len()
     }
 
+    /// Its value may change when salt-master restarts: it differs from the
+    /// running master's, or, when that couldn't be asked, it's set in a file
+    /// written after the master started.
     pub fn restart_pending(&self, mc: &MasterConfig) -> bool {
+        if mc.running_compared {
+            return self.restart.is_some();
+        }
         self.sources.iter().any(|src| mc.files.get(src.file).is_some_and(|f| f.changed_since(mc.master_started)))
     }
 
