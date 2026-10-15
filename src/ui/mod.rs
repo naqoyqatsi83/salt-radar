@@ -1351,7 +1351,7 @@ fn guide_help_lines() -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("  masters from 3006.17, 3007.9 and 3008 reject v0 and v2 (minimum_auth_version: 3)", Style::default().fg(color::main_fg())),
+            Span::styled("  masters from 3006.17, 3007.9 and 3008 reject v0 and v2 by default (minimum_auth_version)", Style::default().fg(color::main_fg())),
         ]),
         Line::from(""),
         Line::from(Span::styled("  Master Config tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
@@ -1441,7 +1441,7 @@ fn guide_help_lines() -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("  ones too, blanked by the agent; the TUI never receives them", Style::default().fg(color::main_fg())),
+            Span::styled("  ones too, and the password or token in any URL, blanked by the agent", Style::default().fg(color::main_fg())),
         ]),
         Line::from(""),
         Line::from(Span::styled("  Events Preview", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),

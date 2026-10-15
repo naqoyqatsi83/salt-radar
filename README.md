@@ -208,13 +208,13 @@ The master's configuration, as its files set it:
 
 ### Admin Mode
 - Toggle with `a` (danger-zone confirmation dialog required)
-- **Fleet scan** (`s`): runs `grains.items` on all minions via Salt LocalClient, populates OS/Salt Version/Arch data; it finishes as soon as every minion has answered, and marks any still silent after 60s as timed out
+- **Fleet scan** (`s`): runs `grains.items` on all minions via Salt LocalClient to refresh OS/Salt Version/Arch, which otherwise come from the master's minion data cache at start (as fresh as each minion's last pillar refresh), and to find the minions that don't answer; it finishes as soon as every minion has answered, and marks any still silent after 60s as timed out
 
 ### Columns and sorting
 - The Minions, Events, Jobs (both tables), Alerts and API request log tables let you choose which columns are shown and in what order: `v` opens a picker for the focused table (`+`/`-` move a column, `Space` shows/hides it, `Enter` saves), also editable in the Config Editor — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their sections of `salt-radar.toml`
 - Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order). Sorting lasts for the session
 - Optional columns beyond the defaults: Live Jobs and Job Cache Started (the JID already holds the start time), Minions Proto/Arch/Seen/Fail%/Lag/Ping, Events Minion, Alerts Since/Count
-- When a panel is too narrow for every column, the text columns shrink together instead of cutting off the rightmost ones
+- Columns are as wide as their longest value, not a fixed width, so short columns don't spread a table out and long values aren't cut while there's room; spare room widens the gaps between columns up to 4 spaces. When a panel is too narrow, the least needed text gives way first: Minions' OS, then Salt and Arch before the minion ID; a job's Function and Args before its Target (except a list target over 40 characters); an event's Minion before its Tag
 
 ### Config Editor
 - `F3` opens an in-app editor for every setting in `salt-radar.toml`, grouped by section
@@ -306,7 +306,7 @@ On a busy master, every list scrolls on every refresh, and a scrolled panel is r
 
 salt-radar needs root (or the Salt user) to read the master's PKI and job cache, so it's often started with `sudo`. sudo resets `HOME` to root's, which would make every user share root's config — so when salt-radar runs as root with `SUDO_USER` set, it uses the invoking user's files instead: their `~/.config/salt-radar/salt-radar.toml` (a user without one yet starts from root's config, or the defaults, and their first save creates their own), their `~/.config/salt-radar/themes/`, their "updated to vX" marker, and their home for `~` (e.g. the default export directory). Whatever salt-radar creates in their home is owned by them. `./salt-radar.toml` in the current directory still wins, and `sudo -i` or a real root login behave as before. Config saves are atomic (a temp file renamed into place).
 
-Several users can run salt-radar on the same master at the same time: each instance starts its own agent and talks only to it, and nothing is locked or written into Salt's directories. What adds up is load — each agent takes about 60 MB and runs its own polling (`systemctl`, `/proc`, keys, salt-api `/stats`), plus Job Cache loads and Job Detail lookups when someone uses them. The only things that reach minions are admin-mode actions (fleet scan, minion ping, grains) and the opt-in `job_ping` latency source (a `test.ping` to every minion every few seconds), so with several users keep `zmq_latency_source` on its default. Each instance's Job Detail lookups are real runner jobs (`jobs.lookup_jid`), so users see each other's in Live Jobs and Events.
+Several users can run salt-radar on the same master at the same time: each instance starts its own agent and talks only to it, and nothing is locked or written into Salt's directories. What adds up is load — each agent takes about 60 MB and runs its own polling (`systemctl`, `/proc`, keys, salt-api `/stats`), plus Job Cache loads and Job Detail lookups when someone uses them. The only things that reach minions are admin-mode actions (fleet scan, minion ping, grains) and the opt-in `job_ping` latency source (a `test.ping` to every minion every few seconds), so with several users keep `zmq_latency_source` on its default. Each instance's Job Detail lookups are real runner jobs (`jobs.lookup_jid`), so users see each other's in Live Jobs and Events; each instance also sends one runner job per master start for the Master Config tab's restart check (see there), kept out of its own lists.
 
 ### Themes
 
@@ -404,9 +404,9 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                       salt-radar (Rust TUI)                        │
-├─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬────────┤
-│Dashboard│ Minions │  Events │   Jobs  │  Alerts │   API   │ Pulse  │
-├─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴────────┤
+├──────────┬────────┬───────┬─────┬───────┬────┬──────────────┬──────┤
+│ Dashboard│ Minions│ Events│ Jobs│ Alerts│ API│ Master Config│ Pulse│
+├──────────┴────────┴───────┴─────┴───────┴────┴──────────────┴──────┤
 │ detail popups · Config Editor · themes · alert engine              │
 │ collectors: /proc · systemctl · /proc/net/tcp · PKI key dir        │
 └───────────────┬─────────────────────────────────┴──────────────────┘
@@ -417,6 +417,8 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 │              Python agent (runs on Salt's own Python)              │
 │ event bus subscriber · LocalClient / runners · fleet scan          │
 │ job cache reader · jobs.lookup_jid · salt-api /stats poller        │
+│ master config: the files as Salt loads them, the running master's  │
+│ options to compare them with, credentials redacted                 │
 └──────────────────────────────────┬─────────────────────────────────┘
                                    │
 ┌──────────────────────────────────▼─────────────────────────────────┐
@@ -473,10 +475,12 @@ src/
 │   ├── keys.rs          # Keyboard and mouse input for tabs, lists and every popup
 │   ├── messages.rs      # Agent results/events in, agent commands out, fleet scan
 │   ├── config_editor.rs # Config Editor: field model, path browser, saving, theme preview
+│   ├── line_edit.rs     # Cursor editing shared by every one-line text input
 │   └── clipboard.rs     # Clipboard (tmux/OSC 52, X11 via xclip) and save-to-file
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management
+├── sniff.rs             # Filter and search terms: minion IDs, globs, keywords, /regex/
 ├── alerts/              # Alert engine (17 rules: staleness, keys, services, memory, disk, jobs, auth, api)
 ├── collectors/          # OS-level data collection
 │   ├── keys.rs          # PKI key file parsing
@@ -492,13 +496,15 @@ src/
     ├── jobs.rs          # Jobs tab
     ├── alerts_view.rs   # Alerts tab
     ├── api_view.rs      # API tab
+    ├── master_config.rs # Master Config tab
     ├── pulse.rs         # Pulse tab
     ├── table.rs         # Shared table layout: column widths, headers, sort markers
     ├── minion_events.rs # Per-minion event/return history popup
     ├── config_editor.rs # In-app config editor (F3)
+    ├── whats_new.rs     # Help's "What's new" page: the embedded CHANGELOG
     └── detail_popup.rs  # All other popup windows (minion, event, job, sniffer, etc.)
 agent/
-└── salt_radar_agent.py  # Python agent: Salt client, event subscriber, fleet scan
+└── salt_radar_agent.py  # Python agent: Salt client, event subscriber, fleet scan, master config
 themes/                  # Bundled color themes (ports of btop++'s), installed to /usr/share/salt-radar/themes
 salt-radar.theme.example # The Default theme with every key documented
 ```
