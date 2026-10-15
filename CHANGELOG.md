@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Minions columns sized for the wrong things (#188): OS took all the spare width while long minion IDs and Arch values were cut (AIX reports `cpuarch` as e.g. `PowerPC_POWER10`). every column is now as wide as its longest value (over every minion, so scrolling doesn't move them), with room to spare widening the gaps between columns up to 4 spaces; on a narrow panel OS gives way first, then Salt, then Arch, and the ID last
 - Events selection sliding to newer events while a filter is on (#187): once the buffer was full, every matching event that rotated out moved the selection one event newer, so the row stayed put while the events scrolled under it; it now stays on its event as the list moves up, as it already did without a filter, until that event rotates out itself
 - Event Detail's `End` stopping short: the scroll limit counted three lines too few above the body, so the last lines of a long event could never be scrolled into view
 - Credentials in URLs shown in the Master Config tab (#186): the password or token of a `scheme://user:password@host` URL (`gitfs_remotes`, git `ext_pillar`, `mongo.uri`, …) went through unredacted, in the list, the file view, the popup and copies, as only values of secret-looking keys were hidden. It's now blanked in every value, every key (gitfs per-remote options are keyed by URL) and every line of the files, comments included, keeping the scheme, user and host (`https://deploy:<redacted>@github.com/...`)

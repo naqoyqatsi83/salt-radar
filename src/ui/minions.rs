@@ -10,7 +10,7 @@ use crate::app::{App, MinionHealth, MinionRow};
 use crate::types::{Column, HeaderHit, KeyStatus, MinionInfo, Tab, TableId};
 
 use super::color;
-use super::table::{cell, column_widths, header_line};
+use super::table::{cell, fitted_widths, header_line};
 
 pub fn draw_minions(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) {
     let cols = super::split_panes(area, app);
@@ -56,11 +56,14 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
         }
     } else {
         let cols = app.columns(TableId::Minions);
-        let widths = column_widths(&cols, inner_w.saturating_sub(2));
-        lines.push(header_line(TableId::Minions, &cols, &widths, app.sort_of(TableId::Minions), area.x + 1, area.y + 1 + overhead as u16, hits));
-
         // Filtered and sorted once per frame, not once per visible row.
         let rows = app.minion_rows();
+        // Sized to every row, not just the visible ones, so scrolling doesn't shift the columns.
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        let longest = longest_values(app, &rows, &cols, now);
+        let widths = fitted_widths(&cols, inner_w.saturating_sub(2), &longest);
+        lines.push(header_line(TableId::Minions, &cols, &widths, app.sort_of(TableId::Minions), area.x + 1, area.y + 1 + overhead as u16, hits));
+
         let total = rows.len();
         if total == 0 {
             lines.push(Line::from(Span::styled("  (no minions match this filter)", Style::default().fg(color::inactive_fg()))));
@@ -72,7 +75,6 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
             has_more_below = more_below;
 
             let to_count = app.filtered_timed_out_count();
-            let now = chrono::Utc::now().timestamp().max(0) as u64;
 
             for (idx, row) in rows.iter().enumerate().skip(scroll).take(visible) {
                 let select = |line: Line<'static>| if idx == selected { color::selected_row(line) } else { line };
@@ -147,8 +149,27 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
     );
 }
 
+/// The widest text each column shows over all rows, measured on the cells
+/// themselves so dashes, `v2`, `1.4x` and `0.4s` count as displayed.
+fn longest_values(app: &App, rows: &[MinionRow], cols: &[Column], now: u64) -> Vec<Option<usize>> {
+    let shown = |row: &MinionRow, col: Column| -> Option<usize> {
+        let (text, _) = match row {
+            MinionRow::Minion(m) => minion_text(m, Some(KeyStatus::Accepted), col, now, app.minion_health(&m.id)),
+            MinionRow::Key(k) => minion_text(&MinionInfo { id: k.id.clone(), ..Default::default() }, Some(k.status), col, now, None),
+            MinionRow::TimedOutHeader => return None,
+        };
+        Some(text.chars().count())
+    };
+    cols.iter().map(|&col| Some(rows.iter().filter_map(|row| shown(row, col)).max().unwrap_or(1))).collect()
+}
+
 fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize, now: u64, health: Option<&MinionHealth>) -> Span<'static> {
-    let right = col.right_aligned();
+    let (text, style) = minion_text(minion, ks, col, now, health);
+    cell(&text, w, col.right_aligned(), style)
+}
+
+/// What a Minions cell shows, and how.
+fn minion_text(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, now: u64, health: Option<&MinionHealth>) -> (String, Style) {
     let dim = Style::default().fg(color::inactive_fg());
     // A timed-out minion's grains are stale/unknown, so its detail columns
     // read as a dash and everything is dimmed.
@@ -156,7 +177,7 @@ fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize
     match col {
         Column::MinionId => {
             let fg = if minion.timed_out { color::inactive_fg() } else { color::main_fg() };
-            cell(&minion.id, w, right, Style::default().fg(fg).add_modifier(Modifier::BOLD))
+            (minion.id.clone(), Style::default().fg(fg).add_modifier(Modifier::BOLD))
         }
         Column::KeyStatus => {
             let (label, ks_color) = match ks {
@@ -166,44 +187,44 @@ fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize
                 Some(KeyStatus::Denied) => ("denied", color::orange()),
                 None => ("\u{2014}", color::inactive_fg()),
             };
-            cell(label, w, right, Style::default().fg(if minion.timed_out { color::inactive_fg() } else { ks_color }))
+            (label.to_string(), Style::default().fg(if minion.timed_out { color::inactive_fg() } else { ks_color }))
         }
-        Column::Os => cell(&unknown(&minion.os_label()), w, right, Style::default().fg(if minion.timed_out { color::inactive_fg() } else { color::cyan() })),
-        Column::SaltVersion => cell(&unknown(&minion.salt_version), w, right, dim),
+        Column::Os => (unknown(&minion.os_label()), Style::default().fg(if minion.timed_out { color::inactive_fg() } else { color::cyan() })),
+        Column::SaltVersion => (unknown(&minion.salt_version), dim),
         Column::Proto => match crate::types::auth_protocol(&minion.salt_version).filter(|_| !minion.timed_out) {
-            None => cell("\u{2014}", w, right, dim),
+            None => ("\u{2014}".to_string(), dim),
             Some(p) => {
                 let fg = match p { 0 => color::red(), 2 => color::yellow(), _ => color::inactive_fg() };
-                cell(&format!("v{}", p), w, right, Style::default().fg(fg))
+                (format!("v{}", p), Style::default().fg(fg))
             }
         },
-        Column::Arch => cell(&unknown(&minion.cpuarch), w, right, dim),
+        Column::Arch => (unknown(&minion.cpuarch), dim),
         Column::LastSeen => {
             let seen = if minion.last_seen_epoch == 0 {
                 "\u{2014}".to_string()
             } else {
                 super::dashboard::format_duration(now.saturating_sub(minion.last_seen_epoch))
             };
-            cell(&seen, w, right, dim)
+            (seen, dim)
         }
         Column::FailPct => match health.and_then(MinionHealth::fail_ratio) {
-            None => cell("\u{2014}", w, right, dim),
+            None => ("\u{2014}".to_string(), dim),
             Some(r) => {
                 let fg = if r == 0.0 { color::inactive_fg() } else { color::outcome_failed() };
                 // Any failure reads as at least 1%, so it never rounds away to 0%.
                 let pct = if r == 0.0 { 0.0 } else { (r * 100.0).round().max(1.0) };
-                cell(&format!("{:.0}%", pct), w, right, Style::default().fg(fg))
+                (format!("{:.0}%", pct), Style::default().fg(fg))
             }
         },
         Column::Lag => match health.and_then(|h| h.lag_at(0.5)) {
-            None => cell("\u{2014}", w, right, dim),
-            Some(r) => cell(&super::format_lag(r), w, right, Style::default().fg(super::lag_color(r))),
+            None => ("\u{2014}".to_string(), dim),
+            Some(r) => (super::format_lag(r), Style::default().fg(super::lag_color(r))),
         },
         Column::Ping => match health.and_then(|h| h.last_ping_secs) {
-            None => cell("\u{2014}", w, right, dim),
-            Some(s) => cell(&super::format_secs_short(s), w, right, dim),
+            None => ("\u{2014}".to_string(), dim),
+            Some(s) => (super::format_secs_short(s), dim),
         },
-        _ => cell("", w, right, dim),
+        _ => (String::new(), dim),
     }
 }
 

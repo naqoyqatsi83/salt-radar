@@ -41,6 +41,53 @@ pub fn column_widths(cols: &[Column], avail: usize) -> Vec<usize> {
     widths
 }
 
+/// Cell widths for a table whose free-text columns are sized to what they
+/// hold: `longest[i]` is the longest value in column `i`, `None` for a
+/// fixed-width one. When everything fits, each column is as wide as its
+/// content (or header), and the room left widens the gaps between columns
+/// evenly, up to `MAX_EXTRA_GAP` each, the rest staying at the end of the
+/// row, so a short column doesn't spread the table out and a wide panel
+/// doesn't cram it. When it doesn't fit, free-text columns are trimmed down
+/// to their minimum in `trim_order`.
+pub fn fitted_widths(cols: &[Column], avail: usize, longest: &[Option<usize>]) -> Vec<usize> {
+    // +1 for a sort marker after the header, +1 for the gap after the cell.
+    let mut widths: Vec<usize> = cols.iter().zip(longest).map(|(c, longest)| match longest {
+        Some(n) => (*n).max(c.header().chars().count() + 1) + 1,
+        None => c.width(),
+    }).collect();
+    let mut used: usize = widths.iter().sum();
+    while used > avail {
+        let next = cols.iter().zip(&widths).enumerate()
+            .filter(|(_, (c, w))| c.min_width().is_some_and(|m| **w > m))
+            .min_by_key(|(_, (c, w))| (trim_order(**c, **w), std::cmp::Reverse(**w)))
+            .map(|(i, _)| i);
+        match next {
+            Some(i) => { widths[i] -= 1; used -= 1; }
+            None => break,
+        }
+    }
+    if let Some(extra) = avail.saturating_sub(used).checked_div(cols.len()) {
+        widths.iter_mut().for_each(|w| *w += extra.min(MAX_EXTRA_GAP));
+    }
+    widths
+}
+
+/// The most `fitted_widths` widens a gap between two columns by.
+const MAX_EXTRA_GAP: usize = 3;
+
+/// Which free-text columns `fitted_widths` trims first (lowest first):
+/// what's least needed to tell rows apart goes first (OS), the minion ID
+/// last.
+fn trim_order(col: Column, _w: usize) -> u8 {
+    match col {
+        Column::Os => 0,
+        Column::SaltVersion => 1,
+        Column::Arch => 2,
+        Column::MinionId => 4,
+        _ => 3,
+    }
+}
+
 pub fn fit(s: &str, w: usize) -> String {
     if s.chars().count() <= w {
         s.to_string()
@@ -140,6 +187,26 @@ mod tests {
                 None => assert_eq!(*width, col.width(), "fixed-width columns never shrink"),
             }
         }
+    }
+
+    #[test]
+    fn fitted_widths_follow_content_and_trim_the_id_last() {
+        let c = [Column::MinionId, Column::KeyStatus, Column::Os, Column::SaltVersion, Column::Arch];
+        // A 30-character FQDN, "Debian-12", "3006.16", AIX's "PowerPC_POWER10".
+        let longest = [Some(30), None, Some(9), Some(7), Some(15)];
+        // Room to spare: content widths, each gap 3 wider, the rest of the row left empty.
+        assert_eq!(fitted_widths(&c, 200, &longest), vec![34, 13, 13, 11, 19]);
+        // A little room: shared evenly.
+        assert_eq!(fitted_widths(&c, 85, &longest), vec![33, 12, 12, 10, 18]);
+        // Short values still fit their header and a sort marker.
+        assert_eq!(fitted_widths(&c, 32, &[Some(2), None, Some(1), Some(1), Some(1)]), vec![4, 10, 4, 6, 6]);
+        // Too narrow: OS, then Salt, then Arch give way, each down to its minimum.
+        assert_eq!(fitted_widths(&c, 73, &longest), vec![31, 10, 8, 8, 16]);
+        assert_eq!(fitted_widths(&c, 71, &longest), vec![31, 10, 8, 6, 16]);
+        assert_eq!(fitted_widths(&c, 66, &longest), vec![31, 10, 8, 6, 11]);
+        // Only then the ID.
+        let tight = fitted_widths(&c, 50, &longest);
+        assert_eq!(tight, vec![20, 10, 8, 6, 6]);
     }
 
     #[test]

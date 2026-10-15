@@ -989,8 +989,9 @@ impl Column {
     pub fn min_width(self) -> Option<usize> {
         match self {
             Self::Fun | Self::Args | Self::Tag | Self::Description => Some(12),
-            Self::Target | Self::Rule | Self::Os | Self::MinionId | Self::EventMinion | Self::Client | Self::Path => Some(10),
-            Self::User | Self::Status | Self::SaltVersion => Some(6),
+            Self::Target | Self::Rule | Self::MinionId | Self::EventMinion | Self::Client | Self::Path => Some(10),
+            Self::Os => Some(8),
+            Self::User | Self::Status | Self::SaltVersion | Self::Arch => Some(6),
             _ => None,
         }
     }
