@@ -1477,24 +1477,26 @@ impl App {
     ///
     /// Takes its fields individually (rather than `&mut self`) so callers
     /// already holding an unrelated borrow through `self` can still call it.
+    /// Returns whether the oldest event shown was dropped, so the selection
+    /// can stay on its event as the list moves up.
     fn sync_filtered_events_cache(
         cache: &mut VecDeque<SaltEvent>,
         pat: &str,
         matcher: &EventMatcher,
         new_evt: &SaltEvent,
         evicted: Option<&SaltEvent>,
-    ) {
+    ) -> bool {
         if pat.is_empty() {
-            return;
+            return false;
         }
-        if let Some(evicted_evt) = evicted {
-            if matcher.matches(evicted_evt) {
-                cache.pop_front();
-            }
+        let dropped = evicted.is_some_and(|e| matcher.matches(e));
+        if dropped {
+            cache.pop_front();
         }
         if matcher.matches(new_evt) {
             cache.push_back(new_evt.clone());
         }
+        dropped
     }
 
     /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
@@ -3884,6 +3886,29 @@ mod tests {
             assert!(web01.matches(&evt("salt/job/6/new", json!({"fun": "test.ping", "tgt": tgt.clone()}))), "{tgt}");
         }
         assert!(!web01.matches(&evt("salt/job/7/new", json!({"fun": "test.ping", "tgt": "web1*"}))));
+    }
+
+    #[test]
+    fn filtered_selection_stays_on_its_event_as_the_buffer_rotates() {
+        // A full buffer of 6 with a filter showing every other event; the
+        // user selected one and isn't following the tail.
+        let evt = |n: usize| SaltEvent { tag: format!("salt/test/{}/{}", if n.is_multiple_of(2) { "keep" } else { "skip" }, n), data: json!({}), ts: n as f64 };
+        let matcher = EventMatcher::new("keep", &HashSet::new());
+        let mut events: VecDeque<SaltEvent> = (0..6).map(evt).collect();
+        let mut cache: VecDeque<SaltEvent> = events.iter().filter(|e| matcher.matches(e)).cloned().collect();
+        let mut selected = 1;
+        assert_eq!(cache[selected].tag, "salt/test/keep/2");
+        for n in 6..10 {
+            let evicted = events.pop_front();
+            let dropped = App::sync_filtered_events_cache(&mut cache, "keep", &matcher, &evt(n), evicted.as_ref());
+            events.push_back(evt(n));
+            App::advance_tail_selection(&mut selected, false, dropped, cache.len());
+            if n < 8 {
+                assert_eq!(cache[selected].tag, "salt/test/keep/2", "after event {n}");
+            }
+        }
+        // Its own event rotated out: the oldest one left is selected.
+        assert_eq!(cache[selected].tag, "salt/test/keep/4");
     }
 
     #[test]

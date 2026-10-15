@@ -580,7 +580,7 @@ impl App {
                     // per event (or even once per tick) here is what made the
                     // TUI stall/black out while an Events filter was active
                     // (#98).
-                    Self::sync_filtered_events_cache(
+                    let dropped_shown = Self::sync_filtered_events_cache(
                         &mut self.filtered_events_cache,
                         &self.applied_filter,
                         &self.events_matcher,
@@ -592,8 +592,8 @@ impl App {
                     self.last_event_time = Some(Instant::now());
                     if self.applied_filter.is_empty() {
                         Self::advance_tail_selection(&mut self.event_selected, self.events_following, events_evicted, self.events.len());
-                    } else if self.events_following {
-                        self.event_selected = self.filtered_events_cache.len().saturating_sub(1);
+                    } else {
+                        Self::advance_tail_selection(&mut self.event_selected, self.events_following, dropped_shown, self.filtered_events_cache.len());
                     }
 
                     // Track live jobs from events

@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Events selection sliding to newer events while a filter is on (#187): once the buffer was full, every matching event that rotated out moved the selection one event newer, so the row stayed put while the events scrolled under it; it now stays on its event as the list moves up, as it already did without a filter, until that event rotates out itself
 - Event Detail's `End` stopping short: the scroll limit counted three lines too few above the body, so the last lines of a long event could never be scrolled into view
 - Credentials in URLs shown in the Master Config tab (#186): the password or token of a `scheme://user:password@host` URL (`gitfs_remotes`, git `ext_pillar`, `mongo.uri`, …) went through unredacted, in the list, the file view, the popup and copies, as only values of secret-looking keys were hidden. It's now blanked in every value, every key (gitfs per-remote options are keyed by URL) and every line of the files, comments included, keeping the scheme, user and host (`https://deploy:<redacted>@github.com/...`)
 - Minions `Proto` column (#183): right-aligned like the other short columns, and `—` for a minion that timed out, as OS, Salt and Arch already were
