@@ -656,7 +656,7 @@ shipped end state.
 - Clipboard freeze: subprocess timeout with kill -9 prevents TUI hang
 - ZMQ ping no longer blocks agent loop (Rust measures round-trip)
 - TMUX socket detection works as root (parses TMUX env or scans /tmp/tmux-*/default)
-- X11 user detection for su -c xclip (fallback users: detected, vagrant, peto)
+- X11 user detection for su -c xclip
 - Screen corruption after clipboard: needs_terminal_clear flag for clean re-render
 - Job detail fun/tgt/start now populated from event data (not empty)
 - Jobs view column widths: JID 28, Function 30, Target 36
