@@ -907,16 +907,38 @@ def _plain(value):
     return value
 
 
+# Credentials in a URL: `scheme://user:password@`, or a lone user that is
+# really a token (`https://ghp_...@github.com`).
+_URL_CREDENTIALS = re.compile(r"\b([a-z][a-z0-9+.-]*://)([^\s/@:'\"]*)(?::([^\s/@'\"]*))?@", re.I)
+
+
+def _redact_urls(text):
+    """Text with the password (or token) of every URL in it blanked, the
+    scheme, user and host kept."""
+    def blank(m):
+        scheme, user, password = m.groups()
+        if password:
+            return "{}{}:{}@".format(scheme, user, _REDACTED)
+        if password is None and len(user) >= 16 and scheme.lower().startswith("http"):
+            return "{}{}@".format(scheme, _REDACTED)
+        return m.group(0)
+    return _URL_CREDENTIALS.sub(blank, text)
+
+
 def _redact(value):
     """Copy of a config value with credential-looking entries replaced, at any
-    depth (ext_pillar lists, rest_cherrypy dicts, ...)."""
+    depth (ext_pillar lists, rest_cherrypy dicts, ...), and credentials in
+    URLs blanked, in keys too (gitfs per-remote options are keyed by URL)."""
     if isinstance(value, dict):
         return {
-            k: (_REDACTED if _is_secret_name(k) and _is_secret_value(v) else _redact(v))
+            (_redact_urls(k) if isinstance(k, str) else k):
+                (_REDACTED if _is_secret_name(k) and _is_secret_value(v) else _redact(v))
             for k, v in value.items()
         }
     if isinstance(value, (list, tuple)):
         return [_redact(v) for v in value]
+    if isinstance(value, str):
+        return _redact_urls(value)
     return value
 
 
@@ -925,7 +947,8 @@ _YAML_ENTRY = re.compile(r"^(\s*(?:-\s+)?)([\"']?)([^\s:\"'#][^:\"'#]*)\2(\s*:\s
 
 def _redact_text(text):
     """A config file's text with credential values blanked line by line,
-    including the indented lines of a block scalar (`password: |`)."""
+    including the indented lines of a block scalar (`password: |`), and
+    credentials in URLs anywhere, comments included."""
     out = []
     block_indent = None
     for line in text.splitlines():
@@ -947,7 +970,7 @@ def _redact_text(text):
                     and not unquoted.startswith(("/", "~", "{", "[")):
                 out.append("{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED))
                 continue
-        out.append(line)
+        out.append(_redact_urls(line))
     return "\n".join(out)
 
 

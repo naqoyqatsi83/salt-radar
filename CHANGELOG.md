@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Credentials in URLs shown in the Master Config tab (#186): the password or token of a `scheme://user:password@host` URL (`gitfs_remotes`, git `ext_pillar`, `mongo.uri`, …) went through unredacted, in the list, the file view, the popup and copies, as only values of secret-looking keys were hidden. It's now blanked in every value, every key (gitfs per-remote options are keyed by URL) and every line of the files, comments included, keeping the scheme, user and host (`https://deploy:<redacted>@github.com/...`)
 - Minions `Proto` column (#183): right-aligned like the other short columns, and `—` for a minion that timed out, as OS, Salt and Arch already were
 - salt-api port never detected (#184): the Dashboard's ZMQ line now shows salt-api connection counts, the port read from the merged master config instead of hand-parsing the files; `/login` and `/stats` also follow salt-api's `host` and `root_prefix` instead of always using `127.0.0.1` at `/`
 
