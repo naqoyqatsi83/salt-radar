@@ -170,7 +170,11 @@ impl App {
             let popup_text_input = if sniffer_showing {
                 self.sniffer.as_ref().is_some_and(|s| s.highlight_input.is_some())
             } else {
-                matches!(&self.detail_popup, Some(DetailPopup::JobDetail { return_is_filtering: true, .. }))
+                match &self.detail_popup {
+                    Some(DetailPopup::JobDetail { return_is_filtering, .. }) => *return_is_filtering || self.job_searching,
+                    Some(DetailPopup::SaltEvent { searching, .. }) | Some(DetailPopup::Alert { searching, .. }) => *searching,
+                    _ => false,
+                }
             };
             if !popup_text_input {
                 match code {

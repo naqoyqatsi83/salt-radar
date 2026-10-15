@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Alert Detail cut off a long item list (the 23 minions of a protocol alert, say) at the bottom of the popup and ran a long description past its edge: the items now scroll (`↑↓`, `PgUp`/`PgDn`, `Home`/`End`) below a header that stays put, and the description wraps under its label
+- Digits typed into a popup's search switching tabs: `1`–`8` (and `Tab`, `?`, `F2`, `F3`) in Job Detail's output search or Event Detail's search jumped to another tab instead of being typed, as only Job Detail's return filter counted as text input
 
 ## [0.9.0-rc6] - 2026-10-15
 
