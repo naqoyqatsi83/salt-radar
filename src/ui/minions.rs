@@ -170,7 +170,7 @@ fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize
         }
         Column::Os => cell(&unknown(&minion.os_label()), w, right, Style::default().fg(if minion.timed_out { color::inactive_fg() } else { color::cyan() })),
         Column::SaltVersion => cell(&unknown(&minion.salt_version), w, right, dim),
-        Column::Proto => match crate::types::auth_protocol(&minion.salt_version) {
+        Column::Proto => match crate::types::auth_protocol(&minion.salt_version).filter(|_| !minion.timed_out) {
             None => cell("\u{2014}", w, right, dim),
             Some(p) => {
                 let fg = match p { 0 => color::red(), 2 => color::yellow(), _ => color::inactive_fg() };

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Minions `Proto` column (#183): right-aligned like the other short columns, and `—` for a minion that timed out, as OS, Salt and Arch already were
+
 ## [0.9.0-rc3] - 2026-10-15
 
 ### Added

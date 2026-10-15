@@ -977,7 +977,7 @@ impl Column {
     }
 
     pub fn right_aligned(self) -> bool {
-        matches!(self, Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count | Self::Time | Self::FailPct | Self::Lag | Self::Ping)
+        matches!(self, Self::Targeted | Self::Ok | Self::Fail | Self::Wait | Self::Count | Self::Time | Self::FailPct | Self::Lag | Self::Ping | Self::Proto)
     }
 
     /// Parses a comma-separated column list from the config, keeping only
