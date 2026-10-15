@@ -444,7 +444,7 @@ def cmd_get_system_info(opts, req):
     result(req["id"], "get_system_info", data=info)
 
 
-# Cached {token: str, eauth: str, username: str} per (scheme, port, eauth,
+# Cached {token: str, eauth: str, username: str} per (base URL, eauth,
 # username) -- re-login only happens on first use or after the cached token
 # is rejected, not on every poll.
 _api_token_cache = {}
@@ -545,7 +545,21 @@ def _resolve_api_stats_auth(opts, req, force_refresh=False):
     return None, None, "unknown stats_auth_mode {!r}".format(mode)
 
 
-def _login_api_token(scheme, port, eauth, username, password):
+def _api_base(rest_cherrypy):
+    """Where salt-api serves its app: its `host` (localhost when it listens
+    on every address), `port` and `root_prefix`, which /login and /stats
+    sit under."""
+    scheme = "http" if rest_cherrypy.get("disable_ssl", False) else "https"
+    host = str(rest_cherrypy.get("host") or "0.0.0.0")
+    if host in ("0.0.0.0", "::"):
+        host = "127.0.0.1"
+    elif ":" in host:
+        host = "[{}]".format(host)
+    prefix = str(rest_cherrypy.get("root_prefix") or "/").strip("/")
+    return "{}://{}:{}{}".format(scheme, host, rest_cherrypy.get("port", 8000), "/" + prefix if prefix else "")
+
+
+def _login_api_token(base, eauth, username, password):
     """POST /login and return a fresh token, or None on failure."""
     import urllib.request
     import urllib.error
@@ -553,12 +567,12 @@ def _login_api_token(scheme, port, eauth, username, password):
     import json as json_mod
 
     ctx = None
-    if scheme == "https":
+    if base.startswith("https"):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-    url = "{}://127.0.0.1:{}/login".format(scheme, port)
+    url = base + "/login"
     body = json_mod.dumps({"username": username, "password": password, "eauth": eauth}).encode("utf-8")
     http_req = urllib.request.Request(
         url, data=body,
@@ -573,18 +587,18 @@ def _login_api_token(scheme, port, eauth, username, password):
         return None
 
 
-def _get_api_token(scheme, port, eauth, username, password, force_relogin=False):
-    """Cached token for (scheme, port, eauth, username), logging in only
+def _get_api_token(base, eauth, username, password, force_relogin=False):
+    """Cached token for (base URL, eauth, username), logging in only
     when there's no cached token yet, the credentials changed, or the
     caller asks for a forced re-login (a previous request with the cached
     token came back 401 -- Salt tokens expire server-side on their own
     schedule that this agent has no visibility into).
     """
-    key = (scheme, port, eauth, username)
+    key = (base, eauth, username)
     cached = _api_token_cache.get(key)
     if cached and not force_relogin:
         return cached
-    token = _login_api_token(scheme, port, eauth, username, password)
+    token = _login_api_token(base, eauth, username, password)
     if token:
         _api_token_cache[key] = token
         return token
@@ -592,7 +606,7 @@ def _get_api_token(scheme, port, eauth, username, password, force_relogin=False)
     return None
 
 
-def _ensure_api_token(opts, req, scheme, port, eauth, force_relogin):
+def _ensure_api_token(opts, req, base, eauth, force_relogin):
     """Resolve credentials and get a usable token, one attempt with
     whatever's cached plus one retry with freshly-resolved credentials if
     that fails and the mode is "pillar" (a rejected login there could mean
@@ -604,12 +618,12 @@ def _ensure_api_token(opts, req, scheme, port, eauth, force_relogin):
     username, password, auth_err = _resolve_api_stats_auth(opts, req)
     if auth_err:
         return None, "auth: {}".format(auth_err)
-    token = _get_api_token(scheme, port, eauth, username, password, force_relogin=force_relogin)
+    token = _get_api_token(base, eauth, username, password, force_relogin=force_relogin)
     if not token and req.get("auth_mode") == "pillar":
         username, password, auth_err = _resolve_api_stats_auth(opts, req, force_refresh=True)
         if auth_err:
             return None, "auth: {}".format(auth_err)
-        token = _get_api_token(scheme, port, eauth, username, password, force_relogin=True)
+        token = _get_api_token(base, eauth, username, password, force_relogin=True)
     if not token:
         return None, "salt-api login failed (check stats_auth_eauth/credentials)"
     return token, None
@@ -643,7 +657,8 @@ def cmd_get_api_stats(opts, req):
 
     port = rest_cherrypy.get("port", 8000)
     scheme = "http" if rest_cherrypy.get("disable_ssl", False) else "https"
-    url = "{}://127.0.0.1:{}/stats".format(scheme, port)
+    base = _api_base(rest_cherrypy)
+    url = base + "/stats"
 
     import urllib.request
     import urllib.error
@@ -654,7 +669,7 @@ def cmd_get_api_stats(opts, req):
     eauth = req.get("auth_eauth") or "pam"
     auth_headers = {"Accept": "application/json"}
     if auth_mode != "none":
-        token, auth_err = _ensure_api_token(opts, req, scheme, port, eauth, force_relogin=False)
+        token, auth_err = _ensure_api_token(opts, req, base, eauth, force_relogin=False)
         if auth_err:
             result(req["id"], "get_api_stats", data={
                 "configured": True, "reachable": False, "port": port, "scheme": scheme,
@@ -681,7 +696,7 @@ def cmd_get_api_stats(opts, req):
         # or the master having restarted) with no way for this agent to
         # know ahead of time -- one re-login-and-retry before giving up.
         if exc.code == 401 and auth_mode != "none":
-            token, auth_err = _ensure_api_token(opts, req, scheme, port, eauth, force_relogin=True)
+            token, auth_err = _ensure_api_token(opts, req, base, eauth, force_relogin=True)
             if auth_err:
                 result(req["id"], "get_api_stats", data={
                     "configured": True, "reachable": False, "port": port, "scheme": scheme,
@@ -800,35 +815,14 @@ def cmd_version(opts, req):
 
 
 def _detect_api_port(opts):
-    """Try to find salt-api listen port from config files."""
-    import os, re
-    paths = ["/etc/salt/master", "/etc/salt/salt-api"]
-    if os.path.isdir("/etc/salt/master.d"):
-        try:
-            for fn in sorted(os.listdir("/etc/salt/master.d")):
-                if fn.endswith(".conf"):
-                    paths.append(os.path.join("/etc/salt/master.d", fn))
-        except OSError:
-            pass
+    """salt-api's listen port, from the merged master config; 0 when salt-api
+    isn't configured."""
+    rest = opts.get("rest_cherrypy") or opts.get("rest_tornado") or {}
+    try:
+        return int(rest.get("port", 8000)) if rest else 0
+    except (TypeError, ValueError):
+        return 0
 
-    for path in paths:
-        try:
-            with open(path) as f:
-                in_rest = False
-                for line in f:
-                    stripped = line.strip()
-                    if re.match(r"^\s*rest_\w+:", stripped):
-                        in_rest = True
-                    elif stripped and not stripped.startswith("#") and not stripped[0].isspace() and ":" in stripped:
-                        # A top-level key ended the rest section
-                        in_rest = False
-                    if in_rest:
-                        m = re.match(r"^\s*port:\s*(\d+)\s*$", stripped)
-                        if m:
-                            return int(m.group(1))
-        except (OSError, IOError):
-            continue
-    return 0
 
 def cmd_config_snapshot(opts, req):
     # Get actual hostname instead of just interface

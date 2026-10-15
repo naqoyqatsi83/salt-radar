@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Minions `Proto` column (#183): right-aligned like the other short columns, and `—` for a minion that timed out, as OS, Salt and Arch already were
+- salt-api port never detected (#184): the Dashboard's ZMQ line now shows salt-api connection counts, the port read from the merged master config instead of hand-parsing the files; `/login` and `/stats` also follow salt-api's `host` and `root_prefix` instead of always using `127.0.0.1` at `/`
 
 ## [0.9.0-rc3] - 2026-10-15
 
