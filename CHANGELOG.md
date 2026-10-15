@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0-rc4] - 2026-10-15
+
 ### Added
 
 - Search in Event Detail (#189): `/` searches the event in the view shown, raw JSON or pretty, matches highlighted and counted (a whole-query `/regex/` works too), `n`/`N` move between them, as in Job Detail; a long `state.apply` return no longer has to be scrolled through by eye
