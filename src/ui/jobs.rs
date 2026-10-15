@@ -8,7 +8,7 @@ use crate::app::App;
 use crate::types::{CacheJobEntry, Column, HeaderHit, JobEntry, Tab, TableId};
 
 use super::color;
-use super::table::{cell, cell_with_suffix, column_widths, header_line};
+use super::table::{cell, cell_with_suffix, fitted_widths, header_line};
 
 pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) {
     let layout = super::split_panes(area, app);
@@ -18,8 +18,50 @@ pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: 
 }
 
 fn args_cell(args: &str, test_run: bool, w: usize) -> Vec<Span<'static>> {
-    let marker = if !test_run { "" } else if args.is_empty() { "(test)" } else { " (test)" };
-    cell_with_suffix(args, marker, w, Style::default().fg(color::main_fg()), Style::default().fg(color::inactive_fg()))
+    cell_with_suffix(args, test_marker(args, test_run), w, Style::default().fg(color::main_fg()), Style::default().fg(color::inactive_fg()))
+}
+
+fn test_marker(args: &str, test_run: bool) -> &'static str {
+    if !test_run { "" } else if args.is_empty() { "(test)" } else { " (test)" }
+}
+
+/// The longest value of each column sized to its content, over every job
+/// listed (`len` gives one job's, `None` for a fixed-width column).
+fn longest_values<J>(cols: &[Column], jobs: &[J], len: impl Fn(&J, Column) -> Option<usize>) -> Vec<Option<usize>> {
+    cols.iter().map(|&col| jobs.first().and_then(|j| len(j, col)).map(|_| jobs.iter().filter_map(|j| len(j, col)).max().unwrap_or(0))).collect()
+}
+
+fn args_len(args: &str, test_run: bool) -> usize {
+    args.chars().count() + test_marker(args, test_run).len()
+}
+
+fn live_len(job: &&JobEntry, col: Column) -> Option<usize> {
+    let digits = |n: usize| n.to_string().len();
+    // Runner and wheel jobs show `?` for their counts.
+    let count = |n: usize| if job.target_count == 0 { 1 } else { digits(n) };
+    Some(match col {
+        Column::Target => job.tgt.chars().count(),
+        Column::Fun => job.fun.chars().count(),
+        Column::Args => args_len(&job.args, job.test_run),
+        Column::Source => if job.local { 5 } else { 6 },
+        Column::Targeted => count(job.target_count),
+        Column::Ok => count(job.succeeded),
+        Column::Fail => count(job.failed),
+        Column::Wait => count(job.target_count.saturating_sub(job.returned)),
+        Column::Started => format_started(job.created_epoch).chars().count(),
+        _ => return None,
+    })
+}
+
+fn cache_len(job: &CacheJobEntry, col: Column) -> Option<usize> {
+    Some(match col {
+        Column::Target => job.tgt.chars().count(),
+        Column::Fun => job.fun.chars().count(),
+        Column::Args => args_len(&job.args, job.test_run),
+        Column::User => job.user.chars().count(),
+        Column::Started => format_started(job.start_epoch).chars().count(),
+        _ => return None,
+    })
 }
 
 fn format_started(epoch: f64) -> String {
@@ -135,7 +177,7 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
         )));
     } else {
         let cols = app.columns(TableId::LiveJobs);
-        let widths = column_widths(&cols, (inner.width as usize).saturating_sub(2));
+        let widths = fitted_widths(&cols, (inner.width as usize).saturating_sub(2), &longest_values(&cols, &filtered, live_len));
         lines.push(header_line(TableId::LiveJobs, &cols, &widths, app.sort_of(TableId::LiveJobs), inner.x, inner.y + lines.len() as u16, hits));
 
         if total == 0 {
@@ -255,7 +297,8 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
         )));
     } else {
         let cols = app.columns(TableId::JobCache);
-        let widths = column_widths(&cols, (inner.width as usize).saturating_sub(2));
+        let cached: Vec<&CacheJobEntry> = app.jobs_cache.iter().collect();
+        let widths = fitted_widths(&cols, (inner.width as usize).saturating_sub(2), &longest_values(&cols, &cached, |j, col| cache_len(j, col)));
         lines.push(header_line(TableId::JobCache, &cols, &widths, app.sort_of(TableId::JobCache), inner.x, inner.y + lines.len() as u16, hits));
 
         if total == 0 {

@@ -75,15 +75,18 @@ pub fn fitted_widths(cols: &[Column], avail: usize, longest: &[Option<usize>]) -
 /// The most `fitted_widths` widens a gap between two columns by.
 const MAX_EXTRA_GAP: usize = 3;
 
-/// Which free-text columns `fitted_widths` trims first (lowest first):
-/// what's least needed to tell rows apart goes first (OS), the minion ID
-/// last.
-fn trim_order(col: Column, _w: usize) -> u8 {
+/// Which free-text columns `fitted_widths` trims first (lowest first), at
+/// width `w`: what's least needed to tell rows apart goes first (OS, a job's
+/// function and arguments, the wider of them first), the minion ID and a
+/// job's target last -- except a target longer than 40 characters (a list of
+/// minions), whose tail goes first.
+fn trim_order(col: Column, w: usize) -> u8 {
     match col {
-        Column::Os => 0,
-        Column::SaltVersion => 1,
+        Column::Os | Column::Fun | Column::Args => 0,
+        Column::Target if w > 41 => 0,
+        Column::SaltVersion | Column::User => 1,
         Column::Arch => 2,
-        Column::MinionId => 4,
+        Column::MinionId | Column::Target => 4,
         _ => 3,
     }
 }
@@ -114,6 +117,10 @@ pub fn cell(s: &str, w: usize, right: bool, style: Style) -> Span<'static> {
 /// text is truncated first to make room for it.
 pub fn cell_with_suffix(text: &str, suffix: &str, w: usize, style: Style, suffix_style: Style) -> Vec<Span<'static>> {
     let inner = w.saturating_sub(1);
+    // Too narrow to show both: the text alone beats a cut-off marker.
+    if !text.is_empty() && inner < suffix.chars().count() + 3 {
+        return vec![cell(text, w, false, style)];
+    }
     let suffix: String = suffix.chars().take(inner).collect();
     let suffix_len = suffix.chars().count();
     let text = fit(text, inner - suffix_len);
@@ -207,6 +214,31 @@ mod tests {
         // Only then the ID.
         let tight = fitted_widths(&c, 50, &longest);
         assert_eq!(tight, vec![20, 10, 8, 6, 6]);
+    }
+
+    #[test]
+    fn job_targets_give_way_after_args_and_function_but_long_lists_first() {
+        let c = [Column::Jid, Column::Target, Column::Fun, Column::Args];
+        let longest = [None, Some(30), Some(11), Some(40)];
+        assert_eq!(fitted_widths(&c, 105, &longest), vec![21, 31, 12, 41]);
+        // The wider of Args and the function first (Args further down), then the target.
+        assert_eq!(fitted_widths(&c, 80, &longest), vec![21, 31, 12, 16]);
+        assert_eq!(fitted_widths(&c, 70, &longest), vec![21, 31, 12, 6]);
+        assert_eq!(fitted_widths(&c, 64, &longest), vec![21, 25, 12, 6]);
+        // A long function and long arguments share the squeeze.
+        assert_eq!(fitted_widths(&c, 80, &[None, Some(10), Some(29), Some(29)]), vec![21, 11, 24, 24]);
+        // A 300-character list target: its tail goes before the arguments.
+        assert_eq!(fitted_widths(&c, 120, &[None, Some(300), Some(11), Some(40)]), vec![21, 46, 12, 41]);
+    }
+
+    #[test]
+    fn a_suffix_too_wide_for_its_cell_is_dropped() {
+        let text = |spans: Vec<Span>| spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let (s, d) = (Style::default(), Style::default());
+        assert_eq!(text(cell_with_suffix("radar.db", " (test)", 16, s, d)), "radar.db (test) ");
+        assert_eq!(text(cell_with_suffix("radar.common", " (test)", 13, s, d)), "rad.. (test) ");
+        assert_eq!(text(cell_with_suffix("radar.common", " (test)", 6, s, d)), "rad.. ");
+        assert_eq!(text(cell_with_suffix("", "(test)", 7, s, d)), "(test) ");
     }
 
     #[test]

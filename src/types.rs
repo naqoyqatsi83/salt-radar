@@ -988,7 +988,8 @@ impl Column {
     /// (JIDs, timestamps, counts) that would be unreadable truncated.
     pub fn min_width(self) -> Option<usize> {
         match self {
-            Self::Fun | Self::Args | Self::Tag | Self::Description => Some(12),
+            Self::Fun | Self::Tag | Self::Description => Some(12),
+            Self::Args => Some(6),
             Self::Target | Self::Rule | Self::MinionId | Self::EventMinion | Self::Client | Self::Path => Some(10),
             Self::Os => Some(8),
             Self::User | Self::Status | Self::SaltVersion | Self::Arch => Some(6),
