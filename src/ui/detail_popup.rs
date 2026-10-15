@@ -184,6 +184,25 @@ fn header_lines(title: &str, area_width: u16) -> Vec<Line<'static>> {
     ]
 }
 
+/// A line cut to `width` columns, its last one a `…` when anything was cut.
+fn clip_marked(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width || width == 0 {
+        return line;
+    }
+    let mut room = width - 1;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        if room == 0 {
+            break;
+        }
+        let text: String = span.content.chars().take(room).collect();
+        room -= text.chars().count();
+        spans.push(Span::styled(text, span.style));
+    }
+    spans.push(Span::styled("\u{2026}", Style::default().fg(color::border_focus())));
+    Line::from(spans)
+}
+
 fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> {
     Line::from(vec![
         Span::styled(
@@ -1607,6 +1626,13 @@ fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfi
     if s.redacted {
         lines.push(row("Credentials", "shown as <redacted>".to_string(), color::inactive_fg()));
     }
+    let default_differs = s.default.as_ref().filter(|d| **d != s.full);
+    match (&s.default, default_differs) {
+        (Some(_), None) if !s.sources.is_empty() => lines.push(row("Default", "same as Salt's default".to_string(), color::inactive_fg())),
+        (_, Some(d)) if !d.contains('\n') => lines.push(row("Salt's default", d.clone(), color::yellow())),
+        (_, Some(_)) => lines.push(row("Salt's default", "differs, shown below".to_string(), color::yellow())),
+        _ => {}
+    }
     lines.push(Line::from(""));
     let pinned = lines.len();
 
@@ -1633,11 +1659,17 @@ fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfi
         body.push(heading("Value"));
     }
     body.extend(value(&s.full, color::hi_fg()));
-    if let Some(default) = s.default.as_ref().filter(|d| **d != s.full) {
+    if let Some(default) = default_differs.filter(|d| d.contains('\n')) {
         body.push(Line::from(""));
         body.push(heading("Salt's default"));
         body.extend(value(default, color::inactive_fg()));
     }
+    body.push(Line::from(""));
+    // Lines wider than the popup end in a marker instead of just stopping.
+    let width = (area.width as usize).saturating_sub(2);
+    let header = header_lines("", area.width).len();
+    let lines: Vec<Line<'static>> = lines.into_iter().enumerate().map(|(i, l)| if i < header { l } else { clip_marked(l, width) }).collect();
+    let body: Vec<Line<'static>> = body.into_iter().map(|l| clip_marked(l, width)).collect();
 
     // As tall as its content, up to the area it was given.
     let chrome = 2 + pinned + usize::from(status.is_some());
@@ -1647,6 +1679,7 @@ fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfi
     let max_scroll = body.len().saturating_sub(viewport_h);
     let scroll = scroll.min(max_scroll);
     let more = (scroll > 0, scroll + viewport_h < body.len());
+    let mut lines = lines;
     lines.extend(body.into_iter().skip(scroll));
     let hints: [(&str, String); 5] = [
         ("Esc/q", "close".to_string()),
@@ -1981,6 +2014,14 @@ fn format_ts(ts: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cut_lines_end_in_a_marker() {
+        let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let line = Line::from(vec![Span::raw("  key "), Span::raw("long value")]);
+        assert_eq!(text(clip_marked(line.clone(), 16)), "  key long value");
+        assert_eq!(text(clip_marked(line, 10)), "  key lon\u{2026}");
+    }
 
     #[test]
     fn long_names_are_cut_in_the_middle() {

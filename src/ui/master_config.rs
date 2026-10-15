@@ -229,6 +229,14 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
     if s.redacted {
         lines.push(note("Credentials in it are shown as <redacted>".to_string(), dim));
     }
+    if !s.sources.is_empty() {
+        match s.default.as_ref() {
+            Some(d) if *d == s.full => lines.push(note("Same as Salt's default".to_string(), dim)),
+            Some(d) if !d.contains('\n') => lines.push(note(format!("Salt's default: {}", d), Style::default().fg(color::yellow()))),
+            Some(_) => lines.push(note("Differs from Salt's default (Enter shows it)".to_string(), Style::default().fg(color::yellow()))),
+            None => {}
+        }
+    }
     if let Some((file, _, _)) = winner {
         if let Some(error) = &file.error {
             lines.push(note(format!("\u{26a0} Salt rejected this file: {}", error), Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
