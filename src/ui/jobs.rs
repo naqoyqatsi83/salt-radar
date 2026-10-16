@@ -153,7 +153,7 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
         ("PgUp/PgDn", "page"),
         ("Home/End", "top/bottom"),
     ], ("\u{2192}", "cache"));
-    let block = super::list_block_hinted(if app.jobs_failed_only { format!(" Live Jobs (failed only: {}/{}) ", total, app.jobs.len()) } else { format!(" Live Jobs ({}) ", app.jobs.len()) }, border_style, color::main_bg(), has_more_above, has_more_below, &hints);
+    let block = super::list_block_hinted(if app.jobs_failed_only { format!(" Live Jobs (failed only: {}/{}) ", total, app.jobs.len()) } else { format!(" Live Jobs ({}) ", app.jobs.len()) }, border_style, color::main_bg(), has_more_above, has_more_below, &hints, area.width);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -240,7 +240,7 @@ fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
         (", .", "page"),
         ("r", "refresh"),
     ], ("\u{2190}", "live"));
-    let block = super::list_block_hinted(format!(" Job Cache ({}) ", total_hint), border_style, color::main_bg(), has_more_above, has_more_below, &hints);
+    let block = super::list_block_hinted(format!(" Job Cache ({}) ", total_hint), border_style, color::main_bg(), has_more_above, has_more_below, &hints, area.width);
 
     let inner = block.inner(area);
     f.render_widget(block, area);

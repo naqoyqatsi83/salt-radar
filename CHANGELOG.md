@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-16
+
+### Fixed
+
+- Move to ratatui 0.30 and crossterm 0.29, which drops the `lru` 0.12 that ratatui 0.29 bundled: its `IterMut` is unsound (GHSA-rhfx-m35p-ff5j), though salt-radar never called it (#191). A border title on the right, such as "more below" or the Config Editor's "saved to", now gives way to the key hints on a border too narrow for both, instead of covering them or showing a cut-off piece of itself
+- List the Minions columns `proto`, `lag` and `ping` in `salt-radar.toml.example`'s `minion_columns` comment, which left them out
+
 ## [0.9.0] - 2026-10-16
 
 ### Added
@@ -24,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Search in Event Detail (#189) and Alert Detail: `/` searches the event (raw or pretty) or the alert's items, matches highlighted and counted (a whole-query `/regex/` works too), `n`/`N` move between them, as in Job Detail
 - Confirm before quitting (#173): `q` asks first, so extra `q` presses meant for a popup that lag already closed no longer quit the app; `confirm_quit = false` in `[ui]` turns it off, `Ctrl+C` still quits at once
 - Make the hotkey toggles settings (#174): the Dashboard graph style (`m`, `graph_style`), mouse capture (`F2`, `mouse`) and the refresh speed (`-`/`+`, `tick_ms`) start as last left, editable in the Config Editor too
-- Cap what salt-radar sends to the terminal with `max_output_kbs` under `[refresh]` (#172), for session-recording SSH proxies such as CyberArk that fall behind a busy master's few KB/s of redraws
+- Cap what salt-radar sends to the terminal with `max_output_kbs` under `[refresh]`, for session-recording SSH proxies that fall behind a busy master's few KB/s of redraws
 
 ### Changed
 
@@ -656,7 +663,7 @@ shipped end state.
 - Clipboard freeze: subprocess timeout with kill -9 prevents TUI hang
 - ZMQ ping no longer blocks agent loop (Rust measures round-trip)
 - TMUX socket detection works as root (parses TMUX env or scans /tmp/tmux-*/default)
-- X11 user detection for su -c xclip (fallback users: detected, vagrant, peto)
+- X11 user detection for su -c xclip
 - Screen corruption after clipboard: needs_terminal_clear flag for clean re-render
 - Job detail fun/tgt/start now populated from event data (not empty)
 - Jobs view column widths: JID 28, Function 30, Target 36

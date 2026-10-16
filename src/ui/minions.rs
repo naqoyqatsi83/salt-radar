@@ -140,6 +140,7 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
         has_more_above,
         has_more_below,
         &hints,
+        area.width,
     );
     let inner = block.inner(area);
     f.render_widget(block, area);

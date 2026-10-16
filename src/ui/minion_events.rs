@@ -163,12 +163,16 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
     } else {
         format!("filter {}: {} items", app.minion_events_filter, total)
     };
-    let block = Block::default()
+    let hint_line = super::border_hints(&hints, color::border_focus());
+    let info = super::border_info(format!("{} \u{b7} dim = older than 5m", count), color::border_focus());
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::border_focus()))
-        .style(Style::default().bg(color::popup_bg()))
-        .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned())
-        .title_bottom(super::border_info(format!("{} \u{b7} dim = older than 5m", count), color::border_focus()).right_aligned());
+        .style(Style::default().bg(color::popup_bg()));
+    if super::fits_beside(hint_line.width(), &info, area.width) {
+        block = block.title_bottom(info.right_aligned());
+    }
+    let block = block.title_bottom(hint_line.left_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 

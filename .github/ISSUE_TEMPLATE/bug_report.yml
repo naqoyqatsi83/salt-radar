@@ -1,0 +1,31 @@
+name: Bug report
+description: Something in salt-radar doesn't work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you saw, and what you expected instead. Remove minion names, hostnames and other details you don't want public.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: salt-radar version
+      description: The What's new page of the help (`?`) shows the running one.
+      placeholder: 0.9.1
+    validations:
+      required: true
+  - type: input
+    id: salt
+    attributes:
+      label: Salt version and master OS
+      placeholder: 3007.8 on Rocky Linux 9
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshot or popup text
+      description: For anything visual, a screenshot, or a popup's text copied with `y`.

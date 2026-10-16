@@ -384,6 +384,18 @@ pub fn scroll_window(selected: usize, visible: usize, total: usize) -> (usize, b
     (scroll, scroll > 0, scroll + visible < total)
 }
 
+/// Whether a right-aligned border title fits beside the left-aligned ones on
+/// a border `area_width` wide. ratatui draws right-aligned titles last, so on
+/// a border too narrow for both the right one would cover the key hints on
+/// the left; callers leave it out instead.
+pub fn fits_beside(left_width: usize, right: &Line, area_width: u16) -> bool {
+    left_width + right.width() <= usize::from(area_width).saturating_sub(2)
+}
+
+pub fn more_below(border_color: Color) -> Line<'static> {
+    Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(border_color))).right_aligned()
+}
+
 /// Like `titled_block`, but for scrollable list panels: appends a "more
 /// above" hint to the top title and adds a "more below" hint on the
 /// bottom border when the list is windowed in that direction.
@@ -399,9 +411,7 @@ pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_
         .style(Style::default().bg(bg))
         .title_top(Line::from(top_spans));
     if has_more_below {
-        block = block.title_bottom(
-            Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(border_color))).right_aligned(),
-        );
+        block = block.title_bottom(more_below(border_color));
     }
     block
 }
@@ -501,11 +511,14 @@ pub fn titled_block_hinted(title: impl Into<String>, border_style: Style, bg: Co
 }
 
 /// Like `list_block`, with btop-style hints embedded in the bottom border
-/// (left-aligned, alongside the right-aligned "more below" indicator).
-pub fn list_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool, hints: &[(&str, String)]) -> Block<'static> {
+/// (left-aligned, alongside the right-aligned "more below" indicator, which
+/// gives way when the panel is `width` columns too narrow for both).
+pub fn list_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool, hints: &[(&str, String)], width: u16) -> Block<'static> {
     let border_color = border_style.fg.unwrap_or(color::border());
+    let hint_line = border_hints(hints, border_color);
+    let has_more_below = has_more_below && fits_beside(hint_line.width(), &more_below(border_color), width);
     let block = list_block(title, border_style, bg, has_more_above, has_more_below);
-    if hints.is_empty() { block } else { block.title_bottom(border_hints(hints, border_color).left_aligned()) }
+    if hints.is_empty() { block } else { block.title_bottom(hint_line.left_aligned()) }
 }
 
 pub mod key {
@@ -703,22 +716,27 @@ fn draw_title_frame(f: &mut Frame, area: Rect, app: &App) {
         ("q", "quit".to_string()),
     ], color::border());
 
-    let block = Block::default()
+    let upgraded = app.upgraded_from.as_ref().map(|_| Line::from(vec![
+        Span::styled("\u{2524}", Style::default().fg(color::border())),
+        Span::styled(format!(" updated to v{version} \u{00B7} F1: what's new "), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+        Span::styled("\u{251C}", Style::default().fg(color::border())),
+    ]));
+    let top_left_width = left_title.width() + center_title.width();
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::border()))
         .style(Style::default().bg(color::main_bg()))
         .title_top(left_title.left_aligned())
-        .title_top(center_title.centered())
-        .title_top(right_title.right_aligned())
-        .title_bottom(global_hints.right_aligned());
-    let block = match &app.upgraded_from {
-        Some(_) => block.title_bottom(Line::from(vec![
-            Span::styled("\u{2524}", Style::default().fg(color::border())),
-            Span::styled(format!(" updated to v{version} \u{00B7} F1: what's new "), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
-            Span::styled("\u{251C}", Style::default().fg(color::border())),
-        ]).left_aligned()),
-        None => block,
-    };
+        .title_top(center_title.centered());
+    if fits_beside(top_left_width, &right_title, area.width) {
+        block = block.title_top(right_title.right_aligned());
+    }
+    if fits_beside(upgraded.as_ref().map_or(0, Line::width), &global_hints, area.width) {
+        block = block.title_bottom(global_hints.right_aligned());
+    }
+    if let Some(line) = upgraded {
+        block = block.title_bottom(line.left_aligned());
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1061,6 +1079,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     }
     spans.push(Span::styled("\u{251C}", border));
     let pages = Line::from(spans);
+    let pages_width = pages.width();
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::border_focus()))
@@ -1095,7 +1114,9 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         h.push(("Esc", if app.help_search.is_empty() { "close" } else { "clear search" }.to_string()));
         h
     };
-    block = block.title_bottom(border_hints(&hints, color::border_focus()).left_aligned());
+    let hint_line = border_hints(&hints, color::border_focus());
+    let hint_width = hint_line.width();
+    block = block.title_bottom(hint_line.left_aligned());
     if !app.help_search.is_empty() && !app.help_searching {
         let status = match (focus, matches.len()) {
             (_, 0) => "no matches".to_string(),
@@ -1103,16 +1124,19 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
             (None, 1) => "1 match".to_string(),
             (None, n) => format!("{n} matches"),
         };
-        block = block.title_top(Line::from(Span::styled(
+        let status = Line::from(Span::styled(
             format!(" search {}: {} ", app.help_search, status),
             Style::default().fg(if matches.is_empty() { color::red() } else { color::yellow() }),
-        )).right_aligned());
+        ));
+        if fits_beside(pages_width, &status, area.width) {
+            block = block.title_top(status.right_aligned());
+        }
     }
     let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
     app.help_scroll = app.help_scroll.min(max_scroll);
     let scroll = app.help_scroll;
-    if scroll < max_scroll {
-        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::border_focus()))).right_aligned());
+    if scroll < max_scroll && fits_beside(hint_width, &more_below(color::border_focus()), area.width) {
+        block = block.title_bottom(more_below(color::border_focus()));
     }
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::popup_bg())).scroll((scroll, 0)), inner);
@@ -1468,6 +1492,22 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    fn bottom_border(block: Block<'static>, width: u16) -> String {
+        let area = Rect::new(0, 0, width, 3);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(block, area, &mut buf);
+        (0..width).map(|x| buf[(x, 2)].symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn more_below_gives_way_to_the_hints_on_a_narrow_panel() {
+        let hints = [("/", "filter".to_string()), ("Enter", "detail".to_string())];
+        let wide = bottom_border(list_block_hinted(" Jobs ", Style::default(), Color::Reset, false, true, &hints, 60), 60);
+        assert!(wide.contains("Enter:detail") && wide.contains("more below"), "{wide}");
+        let narrow = bottom_border(list_block_hinted(" Jobs ", Style::default(), Color::Reset, false, true, &hints, 34), 34);
+        assert!(narrow.contains("Enter:detail") && !narrow.contains("more"), "{narrow}");
+    }
 
     #[test]
     fn wrap_spans_hangs_under_the_key_and_keeps_styles() {

@@ -98,7 +98,7 @@ fn draw_unavailable(f: &mut Frame, area: Rect, app: &App) {
         )));
     }
 
-    let block = super::list_block_hinted(" API ", Style::default().fg(color::border()), color::main_bg(), false, false, &[]);
+    let block = super::list_block_hinted(" API ", Style::default().fg(color::border()), color::main_bg(), false, false, &[], area.width);
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_widget(
@@ -161,7 +161,7 @@ fn draw_request_log(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hit
     };
     let block = super::list_block_hinted(
         title,
-        border_style, color::main_bg(), has_more_above, has_more_below, &hints,
+        border_style, color::main_bg(), has_more_above, has_more_below, &hints, area.width,
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -219,7 +219,7 @@ fn draw_endpoint_breakdown(f: &mut Frame, area: Rect, app: &App) {
         app.api_requests_per_sec_recent,
         app.api_error_pct().map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "--".into()),
     );
-    let block = super::list_block_hinted(title, Style::default().fg(color::border()), color::main_bg(), false, false, &[]);
+    let block = super::list_block_hinted(title, Style::default().fg(color::border()), color::main_bg(), false, false, &[], area.width);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
