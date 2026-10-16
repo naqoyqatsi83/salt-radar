@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1-rc1] - 2026-10-16
+
 ### Fixed
 
 - Move to ratatui 0.30 and crossterm 0.29, which drops the `lru` 0.12 that ratatui 0.29 bundled: its `IterMut` is unsound (GHSA-rhfx-m35p-ff5j), though salt-radar never called it (#191). A border title on the right, such as "more below" or the Config Editor's "saved to", now gives way to the key hints on a border too narrow for both, instead of covering them or showing a cut-off piece of itself
