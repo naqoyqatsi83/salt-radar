@@ -53,9 +53,13 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         ]
     };
     let title = if state.dirty() { " Config Editor \u{25CF} unsaved changes " } else { " Config Editor " };
-    let block = super::titled_block(title, Style::default().fg(color::border_focus()), color::main_bg())
-        .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned())
-        .title_bottom(super::border_info(format!("saved to: {}", config_path), color::border_focus()).right_aligned());
+    let hint_line = super::border_hints(&hints, color::border_focus());
+    let saved_to = super::border_info(format!("saved to: {}", config_path), color::border_focus());
+    let mut block = super::titled_block(title, Style::default().fg(color::border_focus()), color::main_bg());
+    if super::fits_beside(hint_line.width(), &saved_to, area.width) {
+        block = block.title_bottom(saved_to.right_aligned());
+    }
+    let block = block.title_bottom(hint_line.left_aligned());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -263,10 +267,15 @@ fn draw_path_browser(f: &mut Frame, b: &PathBrowser, label: &str) {
         ("/", "type path".to_string()),
         ("Esc", "cancel".to_string()),
     ];
-    let mut block = super::titled_block(format!(" {}: select a {} ", label, what), Style::default().fg(color::border_focus()), color::popup_bg())
+    let title = format!(" {}: select a {} ", label, what);
+    let title_width = title.chars().count() + 2;
+    let mut block = super::titled_block(title, Style::default().fg(color::border_focus()), color::popup_bg())
         .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned());
     if b.typing(std::time::Instant::now()) {
-        block = block.title_top(super::border_info(format!("jump: {}", b.typed), color::border_focus()).right_aligned());
+        let jump = super::border_info(format!("jump: {}", b.typed), color::border_focus());
+        if super::fits_beside(title_width, &jump, area.width) {
+            block = block.title_top(jump.right_aligned());
+        }
     }
     let inner = block.inner(area);
     f.render_widget(block, area);

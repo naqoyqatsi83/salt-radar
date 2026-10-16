@@ -102,7 +102,7 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
         }
         None => " Master Config ".to_string(),
     };
-    let block = super::list_block_hinted(title, border_style, color::main_bg(), has_more_above, has_more_below, &hints);
+    let block = super::list_block_hinted(title, border_style, color::main_bg(), has_more_above, has_more_below, &hints, area.width);
     let inner = block.inner(area);
     f.render_widget(block, area);
 

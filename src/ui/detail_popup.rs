@@ -290,11 +290,12 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
     if more.0 {
         block = block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::border_focus()))).right_aligned());
     }
-    if !hints.is_empty() {
-        block = block.title_bottom(super::border_hints(hints, color::border_focus()).left_aligned());
+    let hint_line = super::border_hints(hints, color::border_focus());
+    if more.1 && super::fits_beside(hint_line.width(), &super::more_below(color::border_focus()), area.width) {
+        block = block.title_bottom(super::more_below(color::border_focus()));
     }
-    if more.1 {
-        block = block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(color::border_focus()))).right_aligned());
+    if !hints.is_empty() {
+        block = block.title_bottom(hint_line.left_aligned());
     }
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1282,9 +1283,6 @@ fn draw_job_detail(
     if more_above {
         right_block = right_block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(right_border_color))).right_aligned());
     }
-    if more_below {
-        right_block = right_block.title_bottom(Line::from(Span::styled(" \u{25BC} more below ", Style::default().fg(right_border_color))).right_aligned());
-    }
     let position = |at: Option<usize>, n: usize, what: &str, whats: &str| match at {
         Some(i) => format!("{} {} of {}", what, i + 1, n),
         None if n == 1 => format!("1 {}", what),
@@ -1300,8 +1298,12 @@ fn draw_job_detail(
     if !fail_lines.is_empty() {
         status_spans.push(Span::styled(format!(" {} ", position(focus_line.and_then(|f| fail_lines.iter().position(|&l| l == f)), fail_lines.len(), "failed state", "failed states")), Style::default().fg(color::red())));
     }
-    if !status_spans.is_empty() {
-        right_block = right_block.title_bottom(Line::from(status_spans).left_aligned());
+    let search_status = Line::from(status_spans);
+    if more_below && super::fits_beside(search_status.width(), &super::more_below(right_border_color), horiz[1].width) {
+        right_block = right_block.title_bottom(super::more_below(right_border_color));
+    }
+    if search_status.width() > 0 {
+        right_block = right_block.title_bottom(search_status.left_aligned());
     }
     let right_inner = right_block.inner(horiz[1]);
     f.render_widget(&right_block, horiz[1]);
