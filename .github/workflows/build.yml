@@ -54,7 +54,7 @@ jobs:
             printf ' communicate with Salt APIs via NDJSON over stdin/stdout.\n'
             printf 'Homepage: https://github.com/naqoyqatsi83/salt-radar\n'
           } > "$PKG_ROOT/DEBIAN/control"
-          dpkg-deb --build "$PKG_ROOT" "${{ runner.temp }}/deb/salt-radar_${DPKG_VERSION}_amd64.deb"
+          dpkg-deb --root-owner-group --build "$PKG_ROOT" "${{ runner.temp }}/deb/salt-radar_${DPKG_VERSION}_amd64.deb"
 
       - name: Upload binary
         uses: actions/upload-artifact@v5

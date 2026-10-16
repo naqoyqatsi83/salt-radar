@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Install the `.deb` and the `.tar.gz` (extracted as root) with files owned by root (#192): they were owned by the release build's user, uid 1001, so a local account with that uid could replace the binary or the agent that salt-radar runs as root. On a master with an older `.deb`, installing this one sets the owners right; otherwise run `sudo chown -R root:root /usr/bin/salt-radar /usr/share/salt-radar`. The `.rpm` was not affected
+
 ## [0.9.1] - 2026-10-16
 
 ### Fixed
