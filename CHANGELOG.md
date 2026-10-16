@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1-rc2] - 2026-10-16
+
 ### Fixed
 
 - List the Minions columns `proto`, `lag` and `ping` in `salt-radar.toml.example`'s `minion_columns` comment, which left them out
