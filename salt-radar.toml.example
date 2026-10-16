@@ -236,8 +236,11 @@
 # follow_filter = true
 
 # Which Minions list columns are shown, and in what order. Keys: id, key,
-# os, salt, arch, seen, fail_pct (share of the minion's last 50 returns
-# that failed). Also editable with 'v' on the Minions tab.
+# os, salt, proto (auth protocol from the Salt version), arch, seen,
+# fail_pct (share of the minion's last 50 returns that failed), lag (how
+# slowly it answers compared with the other minions on the same jobs),
+# ping (time to its latest test.ping return). Also editable with 'v' on
+# the Minions tab.
 # minion_columns = "id,key,os,salt"
 
 [export]
