@@ -100,55 +100,98 @@ def _run_salt_cmd(args, timeout=30, env=None):
     return None
 
 
-def _key_mtime(opts, subdir, mid):
+_KEY_DIRS = (
+    ("minions", "Accepted"),
+    ("minions_pre", "Pending"),
+    ("minions_rejected", "Rejected"),
+    ("minions_denied", "Denied"),
+)
+_KEY_DIR_RESCAN_SECS = 60
+_KEY_FALLBACK_REFRESH_SECS = 30
+_key_roster_lock = threading.Lock()
+_key_dir_cache = {}
+_key_fallback_cache = {"roster": None, "fetched_at": 0.0}
+
+
+def _scan_key_dir(path):
+    """[(minion id, key mtime)] for one PKI directory, re-listed only when
+    the directory's own mtime moves (a key added, accepted or deleted) or
+    the last listing is a minute old. A test master can carry thousands of
+    keys for long-dead minions; listing and stat'ing every one of them on
+    every poll is what this avoids."""
     try:
-        path = os.path.join(opts.get("pki_dir", "/etc/salt/pki"), "master", subdir, mid)
-        return int(os.path.getmtime(path))
-    except OSError:
-        return 0
+        stamp = os.stat(path).st_mtime_ns
+    except FileNotFoundError:
+        return []
+    now = time.time()
+    cached = _key_dir_cache.get(path)
+    if cached and cached["stamp"] == stamp and now - cached["scanned_at"] < _KEY_DIR_RESCAN_SECS:
+        return cached["keys"]
+    keys = []
+    with os.scandir(path) as entries:
+        for entry in entries:
+            if entry.name.startswith(".") or not entry.is_file():
+                continue
+            try:
+                keys.append((entry.name, int(entry.stat().st_mtime)))
+            except OSError:
+                pass
+    keys.sort()
+    _key_dir_cache[path] = {"stamp": stamp, "scanned_at": now, "keys": keys}
+    return keys
+
+
+def _salt_key_roster(opts):
+    """The roster via salt.key.Key, then `salt-key -L`, for a master whose
+    PKI directories aren't readable here. Refreshed at most every
+    `_KEY_FALLBACK_REFRESH_SECS` -- `salt-key` is a full Salt start-up."""
+    now = time.time()
+    cache = _key_fallback_cache
+    if cache["roster"] is not None and now - cache["fetched_at"] < _KEY_FALLBACK_REFRESH_SECS:
+        return cache["roster"]
+
+    listing = {}
+    try:
+        listing = _import_salt().key.Key(opts).list_keys()
+    except Exception:
+        pass
+    if not any(listing.get(subdir) for subdir, _ in _KEY_DIRS):
+        output = _run_salt_cmd(["salt-key", "-L", "--out=json"], timeout=15)
+        try:
+            listing = json.loads(output) if output else {}
+        except ValueError:
+            listing = {}
+
+    roster = {status: [(mid, 0) for mid in listing.get(subdir, [])] for subdir, status in _KEY_DIRS}
+    if any(roster.values()) or cache["roster"] is None:
+        cache["roster"] = roster
+        cache["fetched_at"] = now
+    return cache["roster"]
+
+
+def _key_roster(opts):
+    """{status: [(minion id, key mtime)]} for every key the master holds,
+    shared by every command that needs the key list."""
+    pki_dir = opts.get("pki_dir", "/etc/salt/pki/master")
+    with _key_roster_lock:
+        if os.path.isdir(os.path.join(pki_dir, "minions")):
+            try:
+                return {status: _scan_key_dir(os.path.join(pki_dir, subdir)) for subdir, status in _KEY_DIRS}
+            except OSError:
+                pass
+        return _salt_key_roster(opts)
+
+
+def _accepted_ids(opts):
+    return [mid for mid, _ in _key_roster(opts)["Accepted"]]
 
 
 def cmd_list_keys(opts, req):
-    """Fetch minion key data — salt.key.Key first, then salt-key -L fallback."""
-    keys = []
-    try:
-        salt = _import_salt()
-        sk = salt.key.Key(opts)
-        key_dict = sk.list_keys()
-        status_map = {
-            "minions": "Accepted",
-            "minions_pre": "Pending",
-            "minions_rejected": "Rejected",
-            "minions_denied": "Denied",
-        }
-        for subdir, status in status_map.items():
-            for mid in key_dict.get(subdir, []):
-                keys.append({
-                    "id": mid,
-                    "status": status,
-                    "mtime_epoch": _key_mtime(opts, subdir, mid),
-                })
-    except Exception:
-        pass
-
-    # Fallback to salt-key CLI if Python API failed
-    if not keys:
-        import subprocess as sp, json as json_mod
-        try:
-            output = _run_salt_cmd(["salt-key", "-L", "--out=json"], timeout=15)
-            if output:
-                key_data = json_mod.loads(output)
-                for mid in key_data.get("minions", []):
-                    keys.append({"id": mid, "status": "Accepted", "mtime_epoch": _key_mtime(opts, "minions", mid)})
-                for mid in key_data.get("minions_pre", []):
-                    keys.append({"id": mid, "status": "Pending", "mtime_epoch": _key_mtime(opts, "minions_pre", mid)})
-                for mid in key_data.get("minions_rejected", []):
-                    keys.append({"id": mid, "status": "Rejected", "mtime_epoch": _key_mtime(opts, "minions_rejected", mid)})
-                for mid in key_data.get("minions_denied", []):
-                    keys.append({"id": mid, "status": "Denied", "mtime_epoch": _key_mtime(opts, "minions_denied", mid)})
-        except Exception:
-            pass
-
+    keys = [
+        {"id": mid, "status": status, "mtime_epoch": mtime}
+        for status, entries in _key_roster(opts).items()
+        for mid, mtime in entries
+    ]
     result(req["id"], "list_keys", data={"keys": keys})
 
 
@@ -1704,59 +1747,10 @@ def cmd_master_config(opts, req):
 # cmd_minion_cache_list for why this exists.
 _minion_grains_cache = {}
 
-# Cached accepted-minion-key list -- see cmd_minion_cache_list for why this
-# is resolved on its own timer instead of every poll.
-_key_list_cache = {"key_ids": [], "fetched_at": 0.0}
-_KEY_LIST_REFRESH_SECS = 30
-
-
-def _resolve_key_ids(opts):
-    """Return the accepted-minion-key list, refreshed at most once every
-    `_KEY_LIST_REFRESH_SECS` rather than on every `minion_cache_list` poll
-    (every `dashboard_secs`, 2s by default).
-
-    Tries `salt.key.Key` in-process first (like `cmd_list_keys`), falling
-    back to a `salt-key -L` subprocess if that raises or comes back empty —
-    `salt.key.Key(opts).list_keys()` is not reliable in every environment
-    (this exact fallback already existed in `cmd_list_keys` for the same
-    reason). But on a master where the in-process call never works, that
-    fallback subprocess forks (a full Python + Salt interpreter startup)
-    on *every* poll instead of the one-off it's meant to be — on a fleet
-    with thousands of minions this alone reintroduces the CPU cost this
-    whole cache exists to avoid. The resolved list is cached for
-    `_KEY_LIST_REFRESH_SECS` regardless of which path produced it, since
-    the accepted-key roster itself changes far less often than any single
-    minion's grains do.
-    """
-    salt = _import_salt()
-    now = time.time()
-    if _key_list_cache["key_ids"] and (now - _key_list_cache["fetched_at"]) < _KEY_LIST_REFRESH_SECS:
-        return _key_list_cache["key_ids"]
-
-    key_ids = []
-    try:
-        key_ids = salt.key.Key(opts).list_keys().get("minions", [])
-    except Exception:
-        pass
-
-    if not key_ids:
-        import json as json_mod
-        output = _run_salt_cmd(["salt-key", "-L", "--out=json"], timeout=15)
-        if output:
-            try:
-                key_ids = json_mod.loads(output).get("minions", [])
-            except Exception:
-                key_ids = []
-
-    if key_ids:
-        _key_list_cache["key_ids"] = key_ids
-        _key_list_cache["fetched_at"] = now
-        return key_ids
-
-    # Both paths came up empty this round -- keep serving the last known
-    # good list (if any) rather than treating a transient hiccup in both
-    # paths at once as "the fleet is now empty".
-    return _key_list_cache["key_ids"]
+# A minion whose cache entry hasn't moved in this long is most likely dead
+# (or idle); its entry is only re-stat'd every `_STALE_RECHECK_SECS`.
+_STALE_CACHE_SECS = 3600
+_STALE_RECHECK_SECS = 60
 
 
 def cmd_minion_cache_list(opts, req):
@@ -1769,11 +1763,12 @@ def cmd_minion_cache_list(opts, req):
     2s by default) means thousands of unpickles every couple of seconds,
     forever, for minions whose grains can never change again. `cache.updated()`
     is a cheap stat-only call, so grains are only re-fetched when a minion's
-    cache mtime has actually moved since the last poll — dead minions get
-    stat'd, not unpickled, on every subsequent tick.
+    cache mtime has actually moved since the last poll. Thousands of stats
+    every poll still add up, so an entry that hasn't moved for
+    `_STALE_CACHE_SECS` is only re-stat'd every `_STALE_RECHECK_SECS`.
     """
     minions = []
-    key_ids = _resolve_key_ids(opts)
+    key_ids = _accepted_ids(opts)
 
     if not key_ids:
         # Never resolved a single accepted key, ever -- report failure
@@ -1781,7 +1776,7 @@ def cmd_minion_cache_list(opts, req):
         # treats a successful minion_cache_list as authoritative and
         # replaces its whole roster with it) keeps showing the last
         # known-good roster instead of wiping every minion from view.
-        result(req["id"], "minion_cache_list", ok=False, data={"error": "no minion keys found via salt.key.Key or salt-key -L"})
+        result(req["id"], "minion_cache_list", ok=False, data={"error": "no accepted minion keys found"})
         return
 
     try:
@@ -1789,6 +1784,7 @@ def cmd_minion_cache_list(opts, req):
     except Exception:
         cache = None
 
+    now = time.time()
     for mid in key_ids:
         entry = {"id": mid}
         if cache is not None:
@@ -1796,9 +1792,15 @@ def cmd_minion_cache_list(opts, req):
                 # Not a "last seen": Salt rewrites the entry only when it
                 # compiles the minion's pillar, so an idle, healthy minion
                 # keeps an old mtime.
-                mtime = cache.updated(_minion_data_bank(mid), "data") or 0
-
                 cached = _minion_grains_cache.get(mid)
+                if (cached is not None and now - cached["mtime"] > _STALE_CACHE_SECS
+                        and now - cached["checked_at"] < _STALE_RECHECK_SECS):
+                    mtime = cached["mtime"]
+                else:
+                    mtime = cache.updated(_minion_data_bank(mid), "data") or 0
+                    if cached is not None:
+                        cached["checked_at"] = now
+
                 if cached is not None and cached["mtime"] == mtime:
                     entry.update(cached["grains"])
                 else:
@@ -1813,7 +1815,7 @@ def cmd_minion_cache_list(opts, req):
                             "cpuarch": grains.get("cpuarch", ""),
                         }
                     entry.update(grain_fields)
-                    _minion_grains_cache[mid] = {"mtime": mtime, "grains": grain_fields}
+                    _minion_grains_cache[mid] = {"mtime": mtime, "checked_at": now, "grains": grain_fields}
             except Exception:
                 pass
         minions.append(entry)
@@ -1856,18 +1858,11 @@ def cmd_job_ping(opts, req):
 
 
 def cmd_alive_check(opts, req):
-    """Check which minions are connected — uses salt-key + cache presence (passive, no pings)."""
+    """Check which minions are connected — uses the key roster + cache presence (passive, no pings)."""
     up = []
     down = []
     try:
-        import subprocess as sp, json as json_mod, os
-        # Get all minion IDs
-        output = _run_salt_cmd(["salt-key", "-L", "--out=json"], timeout=15)
-        if not output:
-            result(req["id"], "alive_check", data={"up": [], "down": []})
-            return
-        key_data = json_mod.loads(output)
-        all_minions = key_data.get("minions", [])
+        all_minions = _accepted_ids(opts)
         # A minion is "up" if it has a cache entry (means it has checked in).
         # Layout is a directory per minion holding data.p, not a flat
         # "<mid>.p" file — e.g. /var/cache/salt/master/minions/<mid>/data.p.
@@ -2336,15 +2331,7 @@ def cmd_fleet_scan(opts, req):
     local = salt.client.LocalClient(opts["conf_file"])
 
     # Get all accepted minion keys so we know which minions to expect
-    expected_minions = []
-    try:
-        import json as json_mod
-        output = _run_salt_cmd(["salt-key", "-L", "--out=json"], timeout=15)
-        if output:
-            keys = json_mod.loads(output)
-            expected_minions = keys.get("minions", [])
-    except Exception:
-        pass
+    expected_minions = _accepted_ids(opts)
 
     # Fire async command — returns JID immediately without blocking
     try:

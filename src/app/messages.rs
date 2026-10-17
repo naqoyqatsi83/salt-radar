@@ -23,6 +23,7 @@ impl App {
                 AgentMessage::Result { id, cmd, ok, data, received } => {
                     self.agent.connected = true;
                     self.agent.last_error = None;
+                    self.polls_in_flight.remove(cmd.as_str());
                     let is_jid_lookup = cmd == "jid_lookup";
                     let jid_data = if is_jid_lookup { Some(parse_jid_lookup(&data)) } else { None };
                     match cmd.as_str() {
@@ -273,7 +274,7 @@ impl App {
                                 let up: Vec<String> = data["up"].as_array()
                                     .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                                     .unwrap_or_default();
-                                // Mark up minions connected, clear others
+                                let up: HashSet<String> = up.into_iter().collect();
                                 for minion in &mut self.minion_info {
                                     minion.connected = up.contains(&minion.id);
                                 }
@@ -696,6 +697,20 @@ impl App {
         }
         let _ = self.agent_cmd_tx.send(serde_json::to_string(&req).unwrap() + "\n");
         id
+    }
+
+    /// Send a timed poll unless the previous one is still running — on a
+    /// master where a poll takes longer than its interval (thousands of
+    /// keys, a loaded box) re-sending every tick piles up agent threads
+    /// until the CPU is saturated. A result lost to an agent restart frees
+    /// the slot after `POLL_GIVE_UP`.
+    pub(crate) fn send_poll(&mut self, cmd: &'static str, extra: Option<serde_json::Value>) {
+        const POLL_GIVE_UP: Duration = Duration::from_secs(60);
+        if self.polls_in_flight.get(cmd).is_some_and(|sent| sent.elapsed() < POLL_GIVE_UP) {
+            return;
+        }
+        self.polls_in_flight.insert(cmd, Instant::now());
+        self.send_agent_cmd(cmd, extra);
     }
 
     pub(crate) fn send_cache_jobs_list(&mut self, filter: Option<&str>, reset_offset: bool) {
