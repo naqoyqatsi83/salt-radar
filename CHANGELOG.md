@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-17
+
+### Fixed
+
+- Keep salt-radar from saturating a small master that carries thousands of keys for dead minions (8,000 on a 2-CPU test master took it to 100% CPU within a day): a timed poll is no longer sent again while the previous one is still running, so a slow agent can't pile up threads; the agent reads the key list straight from the PKI directories, re-reading them only when they change, instead of starting `salt-key` every 5 seconds; a minion whose cache entry hasn't changed for an hour has it checked once a minute instead of every poll; and marking minions connected no longer compares every minion with every other one
+- Fire the "pending key" alert and show new pending keys: the agent looked for key files under `<pki_dir>/master/`, one `master` too many, so every key's age came back unknown
+
 ## [0.9.2] - 2026-10-16
 
 ### Fixed

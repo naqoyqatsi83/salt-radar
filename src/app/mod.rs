@@ -211,6 +211,9 @@ pub struct App {
     /// is visible instead of silently growing memory.
     pub agent_backlog_dropped: Arc<std::sync::atomic::AtomicU64>,
     agent_req_id: u64,
+    /// Timed polls still waiting on their result, by command, so a slow
+    /// agent never gets a second copy of one queued behind the first.
+    polls_in_flight: HashMap<&'static str, Instant>,
     config_tick: u64,
     /// Pending jid_lookup (request_id, jid) waiting for async result
     /// Pending jid_lookup (request_id, jid) for auto-updating the popup
@@ -934,6 +937,7 @@ impl App {
             agent_rx,
             agent_backlog_dropped,
             agent_req_id: 0,
+            polls_in_flight: HashMap::new(),
             config_tick: config_secs,
             pending_jid_lookup: None,
             pending_jid_lookup_at: None,
@@ -2507,11 +2511,11 @@ impl App {
         if self.config_snapshot.is_some() {
             let interval = self.config.dashboard_secs.max(1);
             if self.tick_count.is_multiple_of(interval) {
-                self.send_agent_cmd("minion_cache_list", None);
-                self.send_agent_cmd("list_keys", None);
-                self.send_agent_cmd("list_processes", None);
-                self.send_agent_cmd("list_services", None);
-                self.send_agent_cmd("get_system_info", None);
+                self.send_poll("minion_cache_list", None);
+                self.send_poll("list_keys", None);
+                self.send_poll("list_processes", None);
+                self.send_poll("list_services", None);
+                self.send_poll("get_system_info", None);
                 if self.processes.iter().any(|p| p.role == SaltProcessRole::Api) {
                     let auth = if self.config.api_stats_auth_mode == "none" {
                         None
@@ -2525,11 +2529,11 @@ impl App {
                             "auth_password_pillar_path": self.config.api_stats_auth_password_pillar_path,
                         }))
                     };
-                    self.send_agent_cmd("get_api_stats", auth);
+                    self.send_poll("get_api_stats", auth);
                 }
             }
             // Connections are cheap — /proc/net/tcp reads — refresh every tick
-            self.send_agent_cmd("get_zmq_connections", None);
+            self.send_poll("get_zmq_connections", None);
         }
 
         // Calculate events/sec
@@ -2610,7 +2614,7 @@ impl App {
 
         // Alive detection every 5 ticks
         if self.tick_count.is_multiple_of(5) {
-            self.send_agent_cmd("alive_check", None);
+            self.send_poll("alive_check", None);
         }
 
         // ZMQ panel latency: dispatch/measure per the configured source.
