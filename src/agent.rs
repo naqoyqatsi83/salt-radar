@@ -36,7 +36,6 @@ pub fn agent_main(
         {
             let mut q = tx.lock().unwrap();
             q.push_back(AgentMessage::Error {
-                id: None,
                 message: "Agent process exited, restarting...".to_string(),
             });
         }
@@ -66,7 +65,6 @@ fn run_agent_once(
         Err(e) => {
             let mut q = tx.lock().unwrap();
             q.push_back(AgentMessage::Error {
-                id: None,
                 message: format!("Failed to spawn agent: {}", e),
             });
             return true;
@@ -109,7 +107,6 @@ fn run_agent_once(
                     received,
                 },
                 Some("error") => AgentMessage::Error {
-                    id: parsed.get("id").and_then(|v| v.as_u64()),
                     message: parsed["message"].as_str().unwrap_or("unknown error").to_string(),
                 },
                 Some("progress") => AgentMessage::Progress {

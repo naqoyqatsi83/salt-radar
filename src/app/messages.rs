@@ -163,10 +163,8 @@ impl App {
                                     error: data["error"].as_str().unwrap_or("").to_string(),
                                     current_requests: data["current_requests"].as_u64().unwrap_or(0),
                                     total_requests: data["total_requests"].as_u64().unwrap_or(0),
-                                    requests_per_sec: data["requests_per_sec"].as_f64().unwrap_or(0.0),
                                     bytes_read_per_sec: data["bytes_read_per_sec"].as_f64().unwrap_or(0.0),
                                     bytes_written_per_sec: data["bytes_written_per_sec"].as_f64().unwrap_or(0.0),
-                                    uptime_secs: data["uptime_secs"].as_f64().unwrap_or(0.0),
                                     requests: serde_json::from_value(data["requests"].clone()).unwrap_or_default(),
                                 };
 
@@ -331,7 +329,6 @@ impl App {
                                 self.fleet_scan_completed = false;
                                 self.fleet_data = Some(FleetScan {
                                     minions: Vec::new(),
-                                    scanned_at: Instant::now(),
                                 });
                             } else {
                                 self.fleet_scanning = false;
@@ -554,7 +551,6 @@ impl App {
                                                 } else {
                                                     self.fleet_data = Some(FleetScan {
                                                         minions: vec![fm],
-                                                        scanned_at: Instant::now(),
                                                     });
                                                 }
                                             }

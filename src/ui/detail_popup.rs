@@ -1579,7 +1579,6 @@ fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
 /// them.
 fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, scroll: usize, scroll_max: &mut usize, search_matches: &mut Vec<usize>, search: PopupSearch, clipboard: (Option<std::time::Instant>, Option<std::time::Instant>, Option<&str>)) {
     let sev_color = match alert.severity {
-        crate::types::AlertSeverity::Info => color::cyan(),
         crate::types::AlertSeverity::Warn => color::yellow(),
         crate::types::AlertSeverity::Crit => color::red(),
     };

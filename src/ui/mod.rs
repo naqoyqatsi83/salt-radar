@@ -41,6 +41,7 @@ pub mod color {
 
             impl Theme {
                 pub const DEFAULT: Theme = Theme { $($key: Color::Rgb($r, $g, $b),)* };
+                #[cfg(test)]
                 pub const KEYS: &'static [&'static str] = &[$(stringify!($key),)*];
 
                 pub fn slot(&mut self, key: &str) -> Option<&mut Color> {
@@ -936,33 +937,6 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     let paragraph = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(color::bar_bg()));
     f.render_widget(paragraph, area);
-}
-
-// ─── Reusable table helper ─────────────────────────────────────────────────
-
-pub fn render_table_header(f: &mut Frame, area: Rect, columns: &[(&str, u16)], bg: Color) {
-    let mut spans = Vec::new();
-    for (i, (label, width)) in columns.iter().enumerate() {
-        let w = *width as usize;
-        if i > 0 {
-            spans.push(Span::raw(" "));
-        }
-        let padded = if label.len() > w {
-            format!("{:.width$}", label, width = w)
-        } else {
-            format!("{:width$}", label, width = w)
-        };
-        spans.push(Span::styled(
-            padded,
-            Style::default()
-                .fg(color::header_fg())
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-    f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
-        area,
-    );
 }
 
 // ─── Help overlay ──────────────────────────────────────────────────────────

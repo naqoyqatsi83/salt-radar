@@ -160,21 +160,6 @@ pub enum SaltProcessRole {
     Unknown,
 }
 
-impl SaltProcessRole {
-    pub fn label(&self) -> &str {
-        match self {
-            Self::Master => "salt-master",
-            Self::Worker => "worker",
-            Self::Api => "salt-api",
-            Self::Syndic => "salt-syndic",
-            Self::Minion => "salt-minion",
-            Self::EventPublisher => "EventPublisher",
-            Self::ReqServer => "ReqServer",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
 // ─── Service health ────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -183,7 +168,6 @@ pub struct ServiceHealth {
     pub active: bool,
     pub state: String,
     pub uptime_seconds: u64,
-    pub active_enter_timestamp: String,
     pub memory_kb: u64,
 }
 
@@ -206,8 +190,6 @@ pub struct ServiceTrendSnapshot {
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct ZmqConn {
     pub local_port: u16,
-    pub remote_addr: String,
-    pub remote_port: u16,
     pub state: String,
 }
 
@@ -253,10 +235,8 @@ pub struct ApiStats {
     pub error: String,
     pub current_requests: u64,
     pub total_requests: u64,
-    pub requests_per_sec: f64,
     pub bytes_read_per_sec: f64,
     pub bytes_written_per_sec: f64,
-    pub uptime_secs: f64,
     /// One entry per CherryPy worker thread: that thread's current (or most
     /// recently completed) request. Not a request log — a live snapshot of
     /// in-flight/recent activity, capped at however many worker threads
@@ -313,23 +293,10 @@ pub struct ConfigSnapshot {
     /// The lowest auth protocol the master accepts; 0 when it predates the
     /// setting (before 3006.17 / 3007.9) and accepts any.
     pub minimum_auth_version: u64,
-    pub python_version: String,
     pub worker_threads: Option<i64>,
-    pub transport: String,
-    pub sock_dir: String,
-    pub reactor_count: usize,
-    pub fileserver_backends: Vec<String>,
-    pub gitfs_remote_count: usize,
-    pub ext_pillar_names: Vec<String>,
-    pub master_job_cache: String,
-    pub pillar_cache: bool,
-    pub presence_events: bool,
-    pub interface: String,
     pub publish_port: u16,
     pub ret_port: u16,
     pub api_port: u16,
-    pub pki_dir: String,
-    pub cachedir: String,
     pub cpu_count: u32,
     pub hostname: String,
 }
@@ -1112,10 +1079,8 @@ pub struct JobDetailHits {
 
 #[derive(Clone, Debug, Default)]
 pub struct JidLookup {
-    pub found: bool,
     pub fun: String,
     pub tgt: String,
-    pub start_time: String,
     pub returns: Vec<JidReturn>,
     /// Targeted minions that haven't returned. Job Detail lists them after
     /// the returns, so entry `i` past `returns.len()` is one of these.
@@ -1134,10 +1099,8 @@ pub struct JidLookup {
 impl JidLookup {
     pub fn failed(error: String) -> Self {
         Self {
-            found: false,
             fun: String::new(),
             tgt: String::new(),
-            start_time: String::new(),
             returns: Vec::new(),
             missing: Vec::new(),
             subprocess_secs: 0.0,
@@ -1184,7 +1147,6 @@ pub struct AlertEntry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlertSeverity {
-    Info,
     Warn,
     Crit,
 }
@@ -1192,7 +1154,6 @@ pub enum AlertSeverity {
 impl AlertSeverity {
     pub fn label(&self) -> &str {
         match self {
-            Self::Info => "info",
             Self::Warn => "warn",
             Self::Crit => "crit",
         }
@@ -1214,7 +1175,6 @@ pub struct FleetMinion {
 #[derive(Clone, Debug)]
 pub struct FleetScan {
     pub minions: Vec<FleetMinion>,
-    pub scanned_at: std::time::Instant,
 }
 
 // ─── Agent state ───────────────────────────────────────────────────────────

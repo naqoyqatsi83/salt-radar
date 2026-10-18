@@ -256,8 +256,6 @@ pub struct App {
     pub output_held: bool,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
-    /// Set to true when config editor saves — main loop will restart
-    pub needs_restart: bool,
     /// Dashboard ZMQ panel's latency figure, in milliseconds. Populated by
     /// whichever mechanism `config.zmq_latency_source` selects — see the
     /// three `*_ping`/`*_pending` fields below for the source-specific state.
@@ -338,8 +336,6 @@ pub struct App {
     /// Most recent auth events/sec sample
     pub current_auth_rate: f64,
 
-    /// PID-based temp paths to avoid conflicts between users/instances
-    pid: u32,
     /// NDJSON command lines for the agent thread to forward to the agent.
     agent_cmd_tx: std::sync::mpsc::Sender<String>,
     copy_path: String,
@@ -496,7 +492,7 @@ pub enum AgentMessage {
     /// the main loop to drain it.
     Result { id: u64, cmd: String, ok: bool, data: serde_json::Value, received: Instant },
     Event { tag: String, data: serde_json::Value, ts: f64, received: Instant },
-    Error { id: Option<u64>, message: String },
+    Error { message: String },
     /// Incremental progress for a long-running command (currently just
     /// `jobs_list`'s live job-cache walk) — arrives zero or more times
     /// before the final `Result`.
@@ -722,7 +718,7 @@ pub struct JobHeader {
 /// A single item in the unified per-minion activity view.
 #[derive(Clone, Debug)]
 pub enum MinionActivityItem {
-    Event(usize, SaltEvent),
+    Event(SaltEvent),
     CacheJob(CacheJobEntry),
     Alert(AlertEntry),
 }
@@ -730,17 +726,9 @@ pub enum MinionActivityItem {
 impl MinionActivityItem {
     pub fn ts(&self) -> f64 {
         match self {
-            MinionActivityItem::Event(_, evt) => evt.ts,
+            MinionActivityItem::Event(evt) => evt.ts,
             MinionActivityItem::CacheJob(job) => job.start_epoch,
             MinionActivityItem::Alert(_) => 0.0,
-        }
-    }
-
-    pub fn label(&self) -> &str {
-        match self {
-            MinionActivityItem::Event(_, evt) => &evt.tag,
-            MinionActivityItem::CacheJob(job) => &job.fun,
-            MinionActivityItem::Alert(alert) => &alert.description,
         }
     }
 }
@@ -966,7 +954,6 @@ impl App {
             save_prompt: None,
             output_held: false,
             needs_terminal_clear: false,
-            needs_restart: false,
             zmq_latency_ms: 0.0,
             zmq_latency_seen: false,
             zmq_latency_history: [0.0; 2000],
@@ -1021,7 +1008,6 @@ impl App {
             prev_cpu_idle_jiffies: 0,
             prev_cpu_time: None,
 
-            pid,
             agent_cmd_tx,
             copy_path,
             clip_log_path,
@@ -1531,18 +1517,17 @@ impl App {
     /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
     /// newest first. Matches on data["id"], tag patterns /ret/<id>, salt/minion/<id>/start,
     /// and salt/beacon/<id>. Returns owned SaltEvents to avoid borrow conflicts.
-    pub fn events_for_minion(&self, minion_id: &str) -> Vec<(usize, SaltEvent)> {
+    pub fn events_for_minion(&self, minion_id: &str) -> Vec<SaltEvent> {
         self.events
             .iter()
             .rev()
-            .enumerate()
-            .filter(|(_idx, evt)| {
+            .filter(|evt| {
                 evt.data["id"].as_str() == Some(minion_id)
                     || evt.tag.ends_with(&format!("/ret/{}", minion_id))
                     || evt.tag == format!("salt/minion/{}/start", minion_id)
                     || evt.tag.starts_with(&format!("salt/beacon/{}", minion_id))
             })
-            .map(|(idx, evt)| (idx, evt.clone()))
+            .cloned()
             .collect()
     }
 
@@ -1553,11 +1538,11 @@ impl App {
         let mut items: Vec<MinionActivityItem> = Vec::new();
         let mut returned_jids: HashSet<String> = HashSet::new();
 
-        for (idx, evt) in self.events_for_minion(minion_id) {
+        for evt in self.events_for_minion(minion_id) {
             if let Some(jid) = return_event_jid(&evt) {
                 returned_jids.insert(jid.to_string());
             }
-            items.push(MinionActivityItem::Event(idx, evt));
+            items.push(MinionActivityItem::Event(evt));
         }
 
         // A job whose return is already listed would only repeat it, minus the result.
@@ -1946,9 +1931,8 @@ impl App {
             .collect();
         if let Some((col, desc)) = self.sort_of(TableId::Alerts) {
             let rank = |s: AlertSeverity| match s {
-                AlertSeverity::Info => 0,
-                AlertSeverity::Warn => 1,
-                AlertSeverity::Crit => 2,
+                AlertSeverity::Warn => 0,
+                AlertSeverity::Crit => 1,
             };
             alerts.sort_by(|a, b| {
                 let ord = match col {
@@ -2884,7 +2868,6 @@ impl App {
 fn parse_version(data: &serde_json::Value) -> ConfigSnapshot {
     ConfigSnapshot {
         salt_version: data["salt_version"].as_str().unwrap_or("?").to_string(),
-        python_version: data["python_version"].as_str().unwrap_or("?").to_string(),
         ..Default::default()
     }
 }
@@ -2938,29 +2921,10 @@ fn parse_config_snapshot(data: &serde_json::Value) -> ConfigSnapshot {
     ConfigSnapshot {
         salt_version: data["salt_version"].as_str().unwrap_or("?").to_string(),
         minimum_auth_version: data["minimum_auth_version"].as_u64().unwrap_or(0),
-        python_version: data["python_version"].as_str().unwrap_or("?").to_string(),
         worker_threads: data["worker_threads"].as_i64(),
-        transport: data["transport"].as_str().unwrap_or("zeromq").to_string(),
-        sock_dir: data["sock_dir"].as_str().unwrap_or("").to_string(),
-        reactor_count: data["reactor_count"].as_u64().unwrap_or(0) as usize,
-        fileserver_backends: data["fileserver_backends"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default(),
-        gitfs_remote_count: data["gitfs_remote_count"].as_u64().unwrap_or(0) as usize,
-        ext_pillar_names: data["ext_pillar_names"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default(),
-        master_job_cache: data["master_job_cache"].as_str().unwrap_or("local").to_string(),
-        pillar_cache: data["pillar_cache"].as_bool().unwrap_or(false),
-        presence_events: data["presence_events"].as_bool().unwrap_or(false),
-        interface: data["interface"].as_str().unwrap_or("0.0.0.0").to_string(),
         publish_port: data["publish_port"].as_u64().unwrap_or(4505) as u16,
         ret_port: data["ret_port"].as_u64().unwrap_or(4506) as u16,
         api_port: data["api_port"].as_u64().unwrap_or(0) as u16,
-        pki_dir: data["pki_dir"].as_str().unwrap_or("/etc/salt/pki/master").to_string(),
-        cachedir: data["cachedir"].as_str().unwrap_or("/var/cache/salt/master").to_string(),
         cpu_count: data["cpu_count"].as_u64().unwrap_or(0) as u32,
         hostname: data["hostname"].as_str().unwrap_or("?").to_string(),
     }
@@ -3037,62 +3001,6 @@ fn linreg_slope_per_sec(points: &[(f64, f64)]) -> f64 {
     let denom = n * sum_xx - sum_x * sum_x;
     if denom.abs() < f64::EPSILON { return 0.0; }
     (n * sum_xy - sum_x * sum_y) / denom
-}
-
-fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Option<JidLookup> {
-    let prefix = format!("salt/job/{}/ret/", jid);
-    let mut returns: Vec<JidReturn> = Vec::new();
-    let mut fun = String::new();
-    let mut tgt = String::new();
-
-    for evt in events {
-        if evt.tag == format!("salt/job/{}/new", jid) {
-            fun = evt.data["fun"].as_str().unwrap_or("").to_string();
-            tgt = evt.data["tgt"].as_str().unwrap_or("").to_string();
-        }
-        if !evt.tag.starts_with(&prefix) { continue; }
-        let minion_id = match evt.data["id"].as_str() {
-            Some(m) if !m.is_empty() => m.to_string(),
-            _ => continue,
-        };
-        let full_return = evt.data["return"].clone();
-        let summary = match &full_return {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
-                // Use a short summary: first 80 chars of formatted representation
-                let formatted = App::format_return_as_console(&minion_id, &full_return);
-                let first_line = formatted.lines().next().unwrap_or(&formatted);
-                let truncated = if first_line.len() > 80 {
-                    format!("{}...", &first_line[..80])
-                } else {
-                    first_line.to_string()
-                };
-                truncated
-            }
-            other => other.to_string(),
-        };
-        let (success, retcode) = return_outcome(&evt.data, &full_return);
-        returns.push(JidReturn {
-            minion_id,
-            success,
-            retcode,
-            summary,
-            full_return,
-            formatted_text: String::new(), // computed on-demand in y handler
-        });
-    }
-    if returns.is_empty() { return None; }
-    Some(JidLookup {
-        found: true,
-        fun,
-        tgt,
-        start_time: String::new(),
-        returns,
-        missing: Vec::new(),
-        subprocess_secs: 0.0,
-        postprocess_secs: 0.0,
-        error: String::new(),
-    })
 }
 
 /// What `y`/`Y` copy for an event's body — matches whatever `draw_event_detail`
@@ -3504,10 +3412,8 @@ pub(crate) fn return_outcome(salt: &serde_json::Value, full_return: &serde_json:
 
 fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     let mut result = JidLookup {
-        found: data["found"].as_bool().unwrap_or(false),
         fun: data["fun"].as_str().unwrap_or("").to_string(),
         tgt: data["tgt"].as_str().unwrap_or("").to_string(),
-        start_time: data["start_time"].as_str().unwrap_or("").to_string(),
         returns: Vec::new(),
         missing: data["missing"].as_array()
             .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
@@ -3738,30 +3644,12 @@ fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
     scroll.min(total.saturating_sub(visible))
 }
 
-fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
-    let mut result = Vec::new();
-    if let Some(arr) = data["minions"].as_array() {
-        for entry in arr {
-            result.push(FleetMinion {
-                id: entry["id"].as_str().unwrap_or("?").to_string(),
-                osfinger: entry["osfinger"].as_str().unwrap_or("").to_string(),
-                osrelease: entry["osrelease"].as_str().unwrap_or("").to_string(),
-                saltversion: entry["saltversion"].as_str().unwrap_or("").to_string(),
-                cpuarch: entry["cpuarch"].as_str().unwrap_or("").to_string(),
-                timed_out: entry["timed_out"].as_bool().unwrap_or(false),
-            });
-        }
-    }
-    result.sort_by(|a, b| a.id.cmp(&b.id));
-    result
-}
-
 /// Whether a minion activity item matches any of the filter's terms (OR'd,
 /// same as every other filter in the app; see `App::filter_terms`).
 fn matches_activity_item(item: &MinionActivityItem, terms: &[&str]) -> bool {
     let m = App::matches_filter;
     terms.iter().any(|&term| match item {
-        MinionActivityItem::Event(_, evt) => m(&evt.tag, term) || m(&evt.data.to_string(), term),
+        MinionActivityItem::Event(evt) => m(&evt.tag, term) || m(&evt.data.to_string(), term),
         MinionActivityItem::CacheJob(job) => m(&job.jid, term) || m(&job.fun, term) || m(&job.args, term),
         MinionActivityItem::Alert(alert) => m(&alert.description, term) || m(&alert.key, term),
     })
@@ -4080,7 +3968,9 @@ mod tests {
             };
             let (mut jobs, mut index) = (Vec::new(), HashMap::new());
             track_job_from_event(&mut jobs, &mut index, &evt);
-            let detail = build_jid_lookup_from_events("1", &VecDeque::from([evt])).unwrap();
+            let detail = parse_jid_lookup(&json!({"returns": [{
+                "minion_id": "web01", "success": true, "retcode": 0, "full_return": evt.data["return"],
+            }]}));
             assert_eq!((jobs[0].failed == 0, detail.returns[0].success), (ok, ok), "{what}");
         }
     }

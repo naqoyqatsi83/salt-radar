@@ -263,7 +263,7 @@ def cmd_list_services(opts, req):
         # Get all salt-* service properties from systemd in one call
         cp = sp.run(
             ["systemctl", "show", "salt-*.service",
-             "--property=Id,ActiveState,SubState,MainPID,ActiveEnterTimestamp,MemoryCurrent"],
+             "--property=Id,ActiveState,SubState,MainPID,MemoryCurrent"],
             capture_output=True, text=True, timeout=10
         )
 
@@ -334,7 +334,6 @@ def cmd_list_services(opts, req):
                     "active": active,
                     "state": state,
                     "uptime_seconds": uptime_seconds,
-                    "active_enter_timestamp": props.get("ActiveEnterTimestamp", ""),
                     "memory_kb": memory_kb,
                 })
     except Exception:
@@ -392,7 +391,6 @@ def cmd_list_services(opts, req):
                         "active": active,
                         "state": state,
                         "uptime_seconds": uptime_seconds,
-                        "active_enter_timestamp": "",
                         "memory_kb": rss_kb,
                     })
                 elif "MWorker" in raw or "ReqServer" in raw:
@@ -401,7 +399,6 @@ def cmd_list_services(opts, req):
                         "active": active,
                         "state": state,
                         "uptime_seconds": uptime_seconds,
-                        "active_enter_timestamp": "",
                         "memory_kb": rss_kb,
                     })
             except (IOError, OSError, ValueError, IndexError):
@@ -794,10 +791,8 @@ def cmd_get_api_stats(opts, req):
         "scheme": scheme,
         "current_requests": app_stats.get("Current Requests", 0),
         "total_requests": app_stats.get("Total Requests", 0),
-        "requests_per_sec": app_stats.get("Requests/Second", 0.0),
         "bytes_read_per_sec": app_stats.get("Bytes Read/Second", 0.0),
         "bytes_written_per_sec": app_stats.get("Bytes Written/Second", 0.0),
-        "uptime_secs": app_stats.get("Uptime", 0.0),
         "requests": requests,
     })
 
@@ -816,17 +811,6 @@ def cmd_get_zmq_connections(opts, req):
                 if len(local_raw) != 2: continue
 
                 local_port = int(local_raw[1], 16)
-                remote_raw = parts[2].split(':')
-                if len(remote_raw) != 2: continue
-
-                remote_ip_hex = remote_raw[0]
-                remote_port = int(remote_raw[1], 16)
-
-                # Convert hex IP to dotted quad
-                import socket, struct
-                ip_bytes = struct.pack("<L", int(remote_ip_hex, 16))
-                remote_addr = socket.inet_ntoa(ip_bytes)
-
                 state = parts[3]
                 # Map hex state to string
                 state_map = {"01": "ESTABLISHED", "02": "SYN_SENT", "03": "SYN_RECV", "04": "FIN_WAIT1"}
@@ -834,8 +818,6 @@ def cmd_get_zmq_connections(opts, req):
 
                 connections.append({
                     "local_port": local_port,
-                    "remote_addr": remote_addr,
-                    "remote_port": remote_port,
                     "state": state_str,
                 })
     except Exception:
@@ -850,11 +832,7 @@ def cmd_get_zmq_connections(opts, req):
 def cmd_version(opts, req):
     salt = _import_salt()
     ver = getattr(salt.version, "__version__", "?")
-    pyver = "{}.{}.{}".format(sys.version_info.major, sys.version_info.minor, sys.version_info.micro)
-    result(req["id"], "version", data={
-        "salt_version": ver,
-        "python_version": pyver,
-    })
+    result(req["id"], "version", data={"salt_version": ver})
 
 
 def _detect_api_port(opts):
@@ -876,30 +854,11 @@ def cmd_config_snapshot(opts, req):
 
     data = {
         "salt_version": str(getattr(_import_salt().version, "__version__", "?")),
-        "python_version": "{}.{}.{}".format(
-            sys.version_info.major, sys.version_info.minor, sys.version_info.micro
-        ),
         "worker_threads": opts.get("worker_threads"),
         "minimum_auth_version": _running_option(opts, req, "minimum_auth_version", 0),
-        "transport": opts.get("transport", "zeromq"),
-        "sock_dir": opts.get("sock_dir", ""),
-        "reactor_count": len(opts.get("reactor", []) if isinstance(opts.get("reactor"), list) else []),
-        "fileserver_backends": list(opts.get("fileserver_backend", [])),
-        "gitfs_remote_count": len(opts.get("gitfs_remotes", [])),
-        "ext_pillar_names": (
-            list(opts.get("ext_pillar", {}).keys())
-            if isinstance(opts.get("ext_pillar"), dict)
-            else []
-        ),
-        "master_job_cache": opts.get("master_job_cache", "local"),
-        "pillar_cache": bool(opts.get("pillar_cache", False)),
-        "presence_events": bool(opts.get("presence_events", False)),
-        "interface": opts.get("interface", "0.0.0.0"),
         "publish_port": opts.get("publish_port", 4505),
         "ret_port": opts.get("ret_port", 4506),
         "api_port": _detect_api_port(opts),
-        "pki_dir": opts.get("pki_dir", "/etc/salt/pki/master"),
-        "cachedir": opts.get("cachedir", "/var/cache/salt/master"),
         "cpu_count": opts.get("cpu_count", os.cpu_count() or 0),
         "hostname": hostname,
     }
@@ -2044,7 +2003,7 @@ def cmd_jid_lookup(opts, req):
     """
     jid = req.get("jid", "")
     if not jid:
-        result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "jid required"})
+        result(req["id"], "jid_lookup", ok=False, data={"error": "jid required"})
         return
 
     import json as json_mod
@@ -2091,7 +2050,6 @@ def cmd_jid_lookup(opts, req):
     json_output = outputs.get("json")
     if not json_output:
         result(req["id"], "jid_lookup", ok=False, data={
-            "found": False,
             "error": errors.get("json", "salt-run returned no output"),
             "subprocess_secs": round(t1 - t0, 2),
         })
@@ -2100,7 +2058,7 @@ def cmd_jid_lookup(opts, req):
     try:
         lookup_data = json_mod.loads(json_output)
     except Exception:
-        result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "failed to parse salt-run output"})
+        result(req["id"], "jid_lookup", ok=False, data={"error": "failed to parse salt-run output"})
         return
 
     # A state.apply/highstate/orchestrate job's lookup_jid return isn't
@@ -2249,10 +2207,8 @@ def cmd_jid_lookup(opts, req):
 
     returned = {r["minion_id"] for r in returns}
     data = {
-        "found": True,
         "fun": "",
         "tgt": "",
-        "start_time": "",
         "returns": returns,
         # Targeted minions with no return (yet): still running, down, or
         # never received the job.

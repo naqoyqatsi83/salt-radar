@@ -48,7 +48,6 @@ fn alert_color(severity: AlertSeverity) -> Color {
     match severity {
         AlertSeverity::Crit => color::red(),
         AlertSeverity::Warn => color::orange(),
-        AlertSeverity::Info => color::cyan(),
     }
 }
 
@@ -261,7 +260,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         let mut spans = vec![cell(&time, time_w, color::main_fg())];
 
         let job = match item {
-            MinionActivityItem::Event(_, evt) => return_event_jid(evt).map(|jid| {
+            MinionActivityItem::Event(evt) => return_event_jid(evt).map(|jid| {
                 let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
                 let (args, test_run) = format_job_args(&fun, &evt.data["fun_args"]);
                 ("return", color::green(), fun, args, test_run, Some(return_event_result(&evt.data)), jid.to_string())
@@ -290,7 +289,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
                 spans.push(Span::styled(format!("  {:<fun_w$}", alert.severity.label()), Style::default().fg(acolor)));
                 spans.push(cell(&alert.description, wide_w, color::main_fg()));
             }
-            (None, MinionActivityItem::Event(_, evt)) => {
+            (None, MinionActivityItem::Event(evt)) => {
                 let (etype, ecolor, extra) = classify_tag(&evt.tag, &evt.data);
                 spans.push(Span::styled(format!("  {:<type_w$}", etype), Style::default().fg(dim(ecolor)).add_modifier(Modifier::BOLD)));
                 spans.push(cell(extra.as_deref().unwrap_or(""), fun_w, color::main_fg()));

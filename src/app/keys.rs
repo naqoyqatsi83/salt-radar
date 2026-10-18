@@ -877,7 +877,7 @@ impl App {
                                 self.return_to_minion_events = Some((minion_id.clone(), *selected));
                                 let mid = minion_id.clone();
                                 items.get(*selected).and_then(|item| match item {
-                                    MinionActivityItem::Event(_, evt) => match self.return_event_job(evt) {
+                                    MinionActivityItem::Event(evt) => match self.return_event_job(evt) {
                                         Some((jid, header)) => {
                                             self.open_job_detail(jid, header, Some(mid));
                                             None
@@ -897,7 +897,7 @@ impl App {
                             KeyCode::Char('y') | KeyCode::Char('Y') => {
                                 if let Some(item) = items.get(*selected) {
                                     match item {
-                                        MinionActivityItem::Event(_, evt) => {
+                                        MinionActivityItem::Event(evt) => {
                                             clipboard_text = Some(serde_json::to_string_pretty(&evt.data)
                                                 .unwrap_or_else(|_| evt.tag.clone()));
                                         }
@@ -916,7 +916,7 @@ impl App {
                             KeyCode::Char('s') | KeyCode::Char('S') => {
                                 if let Some(item) = items.get(*selected) {
                                     match item {
-                                        MinionActivityItem::Event(_, evt) => {
+                                        MinionActivityItem::Event(evt) => {
                                             let text = serde_json::to_string_pretty(&evt.data)
                                                 .unwrap_or_else(|_| evt.tag.clone());
                                             save_text = Some((text, format!("event-{}", evt.tag), "txt"));
@@ -1893,7 +1893,7 @@ impl App {
             if self.register_click(col, row) {
                 if let Some(item) = items.get(item_idx) {
                     match item {
-                        MinionActivityItem::Event(_, evt) => {
+                        MinionActivityItem::Event(evt) => {
                             self.return_to_minion_events = Some((mid.clone(), item_idx));
                             match self.return_event_job(evt) {
                                 Some((jid, header)) => self.open_job_detail(jid, header, Some(mid)),

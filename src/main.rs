@@ -1,10 +1,7 @@
-#![allow(dead_code)]
-
 mod agent;
 mod alerts;
 mod app;
 mod config;
-mod collectors;
 mod sniff;
 mod types;
 mod ui;
