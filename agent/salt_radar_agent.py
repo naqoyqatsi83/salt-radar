@@ -1021,9 +1021,9 @@ def _config_text(value, flow):
     import salt.utils.yaml
     try:
         if flow:
-            text = salt.utils.yaml.safe_dump(value, default_flow_style=True, width=1 << 30)
+            text = salt.utils.yaml.safe_dump(value, default_flow_style=True, width=1 << 30, sort_keys=False)
         else:
-            text = salt.utils.yaml.safe_dump(value, default_flow_style=False)
+            text = salt.utils.yaml.safe_dump(value, default_flow_style=False, width=1 << 30, sort_keys=False)
         text = text.strip()
         if text.endswith("\n..."):
             text = text[:-4].strip()

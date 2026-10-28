@@ -652,6 +652,11 @@ impl ConfigSetting {
 
     /// What the running master holds, for a setting that differs: its
     /// value, or why it isn't shown.
+    /// The running master's value is known and differs from the files'.
+    pub fn has_running_diff(&self) -> bool {
+        self.restart.is_some() && self.running_full.as_ref().is_some_and(|r| *r != self.full)
+    }
+
     pub fn running_shown(&self) -> String {
         match &self.running_line {
             Some(value) => value.clone(),

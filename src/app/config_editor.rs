@@ -357,6 +357,7 @@ impl App {
                 ConfigField { label: "api_split_pct", label_value: cfg.api_split_pct.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "pulse_split_pct", label_value: cfg.pulse_split_pct.to_string(), kind: ConfigFieldKind::U64 },
                 ConfigField { label: "master_split_pct", label_value: cfg.master_split_pct.to_string(), kind: ConfigFieldKind::U64 },
+                ConfigField { label: "master_wrap", label_value: on_off(cfg.master_wrap), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[Save]", label_value: String::new(), kind: ConfigFieldKind::SaveButton },
             ],
             selected: 1, // first editable field (skip section header)
@@ -479,6 +480,7 @@ impl App {
             api_split_pct: split("api_split_pct")?,
             pulse_split_pct: split("pulse_split_pct")?,
             master_split_pct: split("master_split_pct")?,
+            master_wrap: parse_bool("master_wrap"),
         };
 
         crate::config::write_config(&self.config_path, &new_config)

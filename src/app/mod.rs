@@ -317,6 +317,8 @@ pub struct App {
     pub master_selected: usize,
     /// Last scroll position of the setting popup, set when it's drawn.
     pub master_popup_scroll_max: usize,
+    /// Where each change starts in the setting popup's difference, for `n`/`N`.
+    pub master_popup_changes: Vec<usize>,
 
     /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
     /// used to compute cpu_percent from the delta between polls.
@@ -756,7 +758,9 @@ pub enum DetailPopup {
     ApiRequest(ApiLogEntry),
     /// A Master Config tab setting's full value; the index is into
     /// `master_config.settings`.
-    MasterSetting { index: usize, scroll: usize },
+    /// `full` shows the values whole instead of the difference from the
+    /// running master, `unfold` the unchanged lines the difference folds.
+    MasterSetting { index: usize, scroll: usize, full: bool, unfold: bool },
 }
 
 impl DetailPopup {
@@ -980,6 +984,7 @@ impl App {
             master_config_error: None,
             master_selected: 0,
             master_popup_scroll_max: 0,
+            master_popup_changes: Vec::new(),
             job_outcome_window: VecDeque::new(),
             prev_proc_cpu: HashMap::new(),
             clk_tck: 100.0,
@@ -2418,7 +2423,7 @@ impl App {
             )*};
         }
         keep_toggled!(show_cpu_graph, show_mem_graph, show_zmq_graph, show_events_graph, show_activity_graph,
-            graph_style, mouse, tick_ms, minions_follow_filter, api_hide_stats_polls,
+            graph_style, mouse, tick_ms, minions_follow_filter, api_hide_stats_polls, master_wrap,
             minions_split_pct, events_split_pct, jobs_split_pct, api_split_pct, pulse_split_pct, master_split_pct);
         if !changed {
             return;

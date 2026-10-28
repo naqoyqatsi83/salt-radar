@@ -106,7 +106,7 @@ fn inline(text: &str, base: Style) -> Vec<(String, Style)> {
 
 /// Word-wraps styled runs to `width`, the first line after `first` and the
 /// rest after `indent` (as wide as `first`), so bullets hang.
-fn wrap(runs: Vec<(String, Style)>, width: usize, first: Span<'static>, indent: &str) -> Vec<Line<'static>> {
+pub(super) fn wrap(runs: Vec<(String, Style)>, width: usize, first: Span<'static>, indent: &str) -> Vec<Line<'static>> {
     // Words, each a group of runs with no space between them (`code`, etc.).
     let mut words: Vec<Vec<(String, Style)>> = Vec::new();
     let mut space_before = true;
