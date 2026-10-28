@@ -295,3 +295,8 @@
 # api_split_pct = 65
 # pulse_split_pct = 65
 # master_split_pct = 55
+
+# Wrap long lines of the file shown in the Master Config tab's right panel,
+# the line numbers marking where each one starts. Also switched with w on
+# the tab itself.
+# master_wrap = true

@@ -59,12 +59,12 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Clear, area);
             draw_api_request_detail(f, area, entry, app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
         }
-        DetailPopup::MasterSetting { index, scroll } => {
+        DetailPopup::MasterSetting { index, scroll, full, unfold } => {
             let area = centered_rect(75, 70, f.area());
             if let Some(mc) = &app.master_config {
                 if let Some(setting) = mc.settings.get(*index) {
                     let status = clipboard_status(app.clipboard_at, app.save_at, app.clipboard_msg.as_ref().map(|(m, _)| m.as_str()));
-                    app.master_popup_scroll_max = draw_master_setting(f, area, mc, setting, *scroll, status);
+                    (app.master_popup_scroll_max, app.master_popup_changes) = draw_master_setting(f, area, mc, setting, (*scroll, *full, *unfold), status);
                 }
             }
         }
@@ -185,25 +185,6 @@ fn header_lines(title: &str, area_width: u16) -> Vec<Line<'static>> {
         )),
         Line::from(""),
     ]
-}
-
-/// A line cut to `width` columns, its last one a `…` when anything was cut.
-fn clip_marked(line: Line<'static>, width: usize) -> Line<'static> {
-    if line.width() <= width || width == 0 {
-        return line;
-    }
-    let mut room = width - 1;
-    let mut spans = Vec::new();
-    for span in line.spans {
-        if room == 0 {
-            break;
-        }
-        let text: String = span.content.chars().take(room).collect();
-        room -= text.chars().count();
-        spans.push(Span::styled(text, span.style));
-    }
-    spans.push(Span::styled("\u{2026}", Style::default().fg(color::border_focus())));
-    Line::from(spans)
 }
 
 fn row(label: &'static str, value: String, value_color: Color) -> Line<'static> {
@@ -1723,93 +1704,147 @@ fn draw_api_request_detail(f: &mut Frame, area: Rect, entry: &crate::types::ApiL
 }
 
 /// A Master Config tab setting in full: where it's set, its value and Salt's
-/// default. Returns the last scroll position.
-fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfig, s: &crate::types::ConfigSetting, scroll: usize, status: Option<Line<'static>>) -> usize {
+/// default. When the running master holds another value, the body is the
+/// difference from it unless `full`; `unfold` shows the unchanged lines it
+/// folds. Returns the last scroll position and the rows where changes start.
+fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfig, s: &crate::types::ConfigSetting, view: (usize, bool, bool), status: Option<Line<'static>>) -> (usize, Vec<usize>) {
+    use super::master_config::{diff_counts, diff_lines, DiffLine};
+    let (scroll, full, unfold) = view;
+    let width = (area.width as usize).saturating_sub(2);
+    let diff = s.running_full.as_ref().filter(|_| s.has_running_diff()).map(|r| diff_lines(r, &s.full));
+    let showing_diff = diff.is_some() && !full;
     let mut lines = header_lines(&format!(" {} ", s.key), area.width);
-    lines.push(row("Kind", s.kind.label().to_string(), color::main_fg()));
+    let mut row = |label: &'static str, value: String, fg: Color| {
+        let label = Span::styled(format!("  {:<20}", label), Style::default().fg(color::label_fg()));
+        lines.extend(super::whats_new::wrap(vec![(value, Style::default().fg(fg).add_modifier(Modifier::BOLD))], width, label, &" ".repeat(22)));
+    };
+    row("Kind", s.kind.label().to_string(), color::main_fg());
     if let [only] = s.sources.as_slice() {
         let path = mc.files.get(only.file).map_or("?", |f| f.path.as_str());
         let at = if only.start > 0 { format!(" {}", super::master_config::line_span(only.start, only.end)) } else { String::new() };
-        lines.push(row("Set in", format!("{}{}", path, at), color::cyan()));
+        row("Set in", format!("{}{}", path, at), color::cyan());
     }
     for file in s.sources.iter().filter_map(|src| mc.files.get(src.file)).filter(|f| f.error.is_some()) {
-        lines.push(row("Rejected file", format!("{}: {}", file.path, file.error.as_deref().unwrap_or("")), color::red()));
+        row("Rejected file", format!("{}: {}", file.path, file.error.as_deref().unwrap_or("")), color::red());
     }
     if let Some(core) = &s.suggest {
-        lines.push(row("Did you mean", core.clone(), color::red()));
+        row("Did you mean", core.clone(), color::red());
     }
     if let Some(about) = &s.about {
-        lines.push(row("Read by", about.clone(), color::cyan()));
+        row("Read by", about.clone(), color::cyan());
     }
     for (key, suggest) in &s.unknown_nested {
         let hint = suggest.as_ref().map_or(String::new(), |k| format!(" (did you mean {}?)", k));
-        lines.push(row("Ignored option", format!("{}{}", key, hint), color::red()));
+        row("Ignored option", format!("{}{}", key, hint), color::red());
     }
     for remark in &s.notes {
-        lines.push(row("Note", remark.clone(), color::yellow()));
+        row("Note", remark.clone(), color::yellow());
     }
     if s.redacted {
-        lines.push(row("Credentials", "shown as <redacted>".to_string(), color::inactive_fg()));
+        row("Credentials", "shown as <redacted>".to_string(), color::inactive_fg());
     }
+    let short_running = s.running_line.as_ref().filter(|r| !r.contains('\n') && r.chars().count() <= 60);
     if let Some(state) = s.restart {
-        lines.push(row("On restart", state.describe().to_string(), color::yellow()));
-        if s.running_full.is_none() {
-            lines.push(row("Running master", s.running_shown(), color::yellow()));
-        } else if let Some(running) = s.running_line.as_ref().filter(|r| !r.contains('\n') && r.chars().count() <= 60) {
-            lines.push(row("Running master", running.clone(), color::yellow()));
-        } else {
-            lines.push(row("Running master", "differs, shown below".to_string(), color::yellow()));
-        }
+        row("On restart", state.describe().to_string(), color::yellow());
+        let running = match (&s.running_full, short_running, &diff) {
+            (None, _, _) => s.running_shown(),
+            (_, Some(r), _) => r.clone(),
+            (_, None, Some(d)) => {
+                let (r, f) = diff_counts(d);
+                format!("differs (\u{2212}{} +{} lines), {}", r, f, if showing_diff { "shown below" } else { "d shows the difference" })
+            }
+            (_, None, None) => "differs, shown below".to_string(),
+        };
+        row("Running master", running, color::yellow());
     }
     let default_differs = s.default.as_ref().filter(|d| **d != s.full);
     match (&s.default, default_differs) {
-        (Some(_), None) if !s.sources.is_empty() => lines.push(row("Default", "same as Salt's default".to_string(), color::inactive_fg())),
-        (_, Some(d)) if !d.contains('\n') => lines.push(row("Salt's default", d.clone(), color::yellow())),
-        (_, Some(_)) => lines.push(row("Salt's default", "differs, shown below".to_string(), color::yellow())),
+        (Some(_), None) if !s.sources.is_empty() => row("Default", "same as Salt's default".to_string(), color::inactive_fg()),
+        (_, Some(d)) if !d.contains('\n') => row("Salt's default", d.clone(), color::yellow()),
+        (_, Some(_)) => row("Salt's default", "differs, shown below".to_string(), color::yellow()),
         _ => {}
     }
     lines.push(Line::from(""));
     let pinned = lines.len();
 
-    let value = |text: &str, fg| text.lines().map(|l| Line::from(Span::styled(format!("    {}", l), Style::default().fg(fg)))).collect::<Vec<_>>();
+    // Long lines wrap, hanging under their own indent.
+    let mut body: Vec<Line<'static>> = Vec::new();
+    let push = |body: &mut Vec<Line<'static>>, line: Line<'static>| body.extend(super::wrap_spans(line.spans, width));
     let heading = |text: &str| Line::from(Span::styled(format!("  {}", text), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)));
-    let mut body = Vec::new();
-    if s.sources.len() > 1 {
-        // Each file's own value, then what Salt made of them.
-        for src in &s.sources {
-            let place = super::master_config::source_place(mc, src.file, src.start);
-            let fg = if src.relation == crate::types::SourceRelation::Ignored { color::red() } else { color::label_fg() };
-            body.push(Line::from(vec![
-                Span::styled(format!("  {}", place), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("  {}", src.relation.describe()), Style::default().fg(fg)),
+    let mut changes = Vec::new();
+    let mut folds = false;
+    match diff.as_deref() {
+        Some(diff) if showing_diff => {
+            push(&mut body, Line::from(vec![
+                Span::styled("  Difference", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+                Span::styled("   \u{2212} running master", Style::default().fg(color::red())),
+                Span::styled("   + after a restart", Style::default().fg(color::green())),
             ]));
-            if !src.dropped.is_empty() {
-                body.push(Line::from(Span::styled(format!("    drops {}", src.dropped.join(", ")), Style::default().fg(color::yellow()))));
+            // Unchanged runs keep three lines of context next to a change.
+            const CONTEXT: usize = 3;
+            let mut k = 0;
+            while k < diff.len() {
+                if !matches!(diff[k], DiffLine::Same(_)) {
+                    if k == 0 || matches!(diff[k - 1], DiffLine::Same(_)) {
+                        changes.push(body.len());
+                    }
+                    body.extend(super::master_config::diff_rows(&diff[k], width));
+                    k += 1;
+                    continue;
+                }
+                let run = diff[k..].iter().take_while(|l| matches!(l, DiffLine::Same(_))).count();
+                let head = if k == 0 { 0 } else { CONTEXT };
+                let tail = if k + run == diff.len() { 0 } else { CONTEXT };
+                folds |= run > head + tail + 1;
+                if unfold || run <= head + tail + 1 {
+                    diff[k..k + run].iter().for_each(|l| body.extend(super::master_config::diff_rows(l, width)));
+                } else {
+                    diff[k..k + head].iter().for_each(|l| body.extend(super::master_config::diff_rows(l, width)));
+                    push(&mut body, Line::from(Span::styled(format!("    \u{22ef} {} unchanged lines (z shows them)", run - head - tail), Style::default().fg(color::border_focus()))));
+                    diff[k + run - tail..k + run].iter().for_each(|l| body.extend(super::master_config::diff_rows(l, width)));
+                }
+                k += run;
             }
-            body.extend(value(&src.value, color::main_fg()));
-            body.push(Line::from(""));
         }
-        body.push(heading("Result"));
-    } else {
-        body.push(heading("Value"));
-    }
-    body.extend(value(&s.full, color::hi_fg()));
-    if let Some(running) = s.running_full.as_ref().filter(|_| s.running_line.as_ref().is_none_or(|r| r.chars().count() > 60)) {
-        body.push(Line::from(""));
-        body.push(heading("Running master"));
-        body.extend(value(running, color::yellow()));
-    }
-    if let Some(default) = default_differs.filter(|d| d.contains('\n')) {
-        body.push(Line::from(""));
-        body.push(heading("Salt's default"));
-        body.extend(value(default, color::inactive_fg()));
+        _ => {
+            let value = |body: &mut Vec<Line<'static>>, text: &str, fg| {
+                for l in text.lines() {
+                    body.extend(super::wrap_spans(vec![Span::styled(format!("    {}", l), Style::default().fg(fg))], width));
+                }
+            };
+            if s.sources.len() > 1 {
+                // Each file's own value, then what Salt made of them.
+                for src in &s.sources {
+                    let place = super::master_config::source_place(mc, src.file, src.start);
+                    let fg = if src.relation == crate::types::SourceRelation::Ignored { color::red() } else { color::label_fg() };
+                    push(&mut body, Line::from(vec![
+                        Span::styled(format!("  {}", place), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("  {}", src.relation.describe()), Style::default().fg(fg)),
+                    ]));
+                    if !src.dropped.is_empty() {
+                        push(&mut body, Line::from(Span::styled(format!("    drops {}", src.dropped.join(", ")), Style::default().fg(color::yellow()))));
+                    }
+                    value(&mut body, &src.value, color::main_fg());
+                    body.push(Line::from(""));
+                }
+                body.push(heading("Result"));
+            } else {
+                body.push(heading("Value"));
+            }
+            value(&mut body, &s.full, color::hi_fg());
+            if let Some(running) = s.running_full.as_ref().filter(|_| short_running.is_none()) {
+                body.push(Line::from(""));
+                body.push(heading("Running master"));
+                value(&mut body, running, color::yellow());
+            }
+            if let Some(default) = default_differs.filter(|d| d.contains('\n')) {
+                body.push(Line::from(""));
+                body.push(heading("Salt's default"));
+                value(&mut body, default, color::inactive_fg());
+            }
+        }
     }
     body.push(Line::from(""));
-    // Lines wider than the popup end in a marker instead of just stopping.
-    let width = (area.width as usize).saturating_sub(2);
-    let header = header_lines("", area.width).len();
-    let lines: Vec<Line<'static>> = lines.into_iter().enumerate().map(|(i, l)| if i < header { l } else { clip_marked(l, width) }).collect();
-    let body: Vec<Line<'static>> = body.into_iter().map(|l| clip_marked(l, width)).collect();
 
     // As tall as its content, up to the area it was given.
     let chrome = 2 + pinned + usize::from(status.is_some());
@@ -1819,17 +1854,26 @@ fn draw_master_setting(f: &mut Frame, area: Rect, mc: &crate::types::MasterConfi
     let max_scroll = body.len().saturating_sub(viewport_h);
     let scroll = scroll.min(max_scroll);
     let more = (scroll > 0, scroll + viewport_h < body.len());
-    let mut lines = lines;
     lines.extend(body.into_iter().skip(scroll));
-    let hints: [(&str, String); 5] = [
+    let mut hints: Vec<(&str, String)> = vec![
         ("Esc/q", "close".to_string()),
         ("\u{2191}\u{2193}", "scroll".to_string()),
         ("PgUp/PgDn", "page".to_string()),
-        ("y", "copy".to_string()),
-        ("s", "save".to_string()),
     ];
+    if diff.is_some() {
+        hints.push(("d", if showing_diff { "full values" } else { "difference" }.to_string()));
+    }
+    if showing_diff {
+        if changes.len() > 1 {
+            hints.push(("n/N", "next/prev change".to_string()));
+        }
+        if folds {
+            hints.push(("z", if unfold { "fold unchanged" } else { "unfold" }.to_string()));
+        }
+    }
+    hints.extend([("y", "copy".to_string()), ("s", "save".to_string())]);
     render_popup(f, area, &lines, &hints, status, more, 0, 0);
-    max_scroll
+    (max_scroll, changes)
 }
 
 fn draw_admin_confirm(f: &mut Frame, area: Rect) {
@@ -2161,14 +2205,6 @@ mod tests {
         assert_eq!(wrap_words("a 123456789012345 b", 10), ["a", "1234567890", "12345 b"]);
         assert_eq!(wrap_words("", 10), [""]);
         assert_eq!(wrap_words("short", 40), ["short"]);
-    }
-
-    #[test]
-    fn cut_lines_end_in_a_marker() {
-        let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
-        let line = Line::from(vec![Span::raw("  key "), Span::raw("long value")]);
-        assert_eq!(text(clip_marked(line.clone(), 16)), "  key long value");
-        assert_eq!(text(clip_marked(line, 10)), "  key lon\u{2026}");
     }
 
     #[test]

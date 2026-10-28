@@ -432,6 +432,9 @@ pub struct AppConfig {
     pub api_split_pct: u64,
     pub pulse_split_pct: u64,
     pub master_split_pct: u64,
+    /// Wrap long lines of the file in the Master Config tab's right panel
+    /// (`w`), instead of cutting them at its edge.
+    pub master_wrap: bool,
 }
 
 pub const SPLIT_PCT_MIN: u64 = 20;
@@ -575,6 +578,7 @@ impl Default for AppConfig {
             api_split_pct: 65,
             pulse_split_pct: 65,
             master_split_pct: 55,
+            master_wrap: true,
         }
     }
 }
@@ -689,6 +693,7 @@ struct UiConfig {
     api_split_pct: Option<u64>,
     pulse_split_pct: Option<u64>,
     master_split_pct: Option<u64>,
+    master_wrap: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -812,6 +817,7 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
         ("ui", "api_split_pct", c.api_split_pct.to_toml()),
         ("ui", "pulse_split_pct", c.pulse_split_pct.to_toml()),
         ("ui", "master_split_pct", c.master_split_pct.to_toml()),
+        ("ui", "master_wrap", c.master_wrap.to_toml()),
     ]
 }
 
@@ -967,6 +973,7 @@ pub fn load_config(path: &Path) -> AppConfig {
                 if let Some(v) = u.api_split_pct { cfg.api_split_pct = split(v); }
                 if let Some(v) = u.pulse_split_pct { cfg.pulse_split_pct = split(v); }
                 if let Some(v) = u.master_split_pct { cfg.master_split_pct = split(v); }
+                if let Some(v) = u.master_wrap { cfg.master_wrap = v; }
             }
         }
     }
@@ -1211,6 +1218,7 @@ mod tests {
             event_time_format: "full".into(),
             disk_usage_pct: 91.5,
             api_hide_stats_polls: false,
+            master_wrap: false,
             running_config_digests: true,
             api_stats_auth_mode: "pillar".into(),
             zmq_latency_ceiling_ms: 250.0,

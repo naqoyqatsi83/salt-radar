@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-28
+
+### Added
+
+- Show a ↻ setting's difference from the running master in the Master Config popup: the lines only the running master has marked `−`, the ones a restart would load `+`, the part of a changed line that differs highlighted, and unchanged runs folded around each change (`z` unfolds them, `n`/`N` jump between changes, `d` switches to the full values). The right panel lists the changed lines themselves, in the same colors, in up to half its height
+
+### Fixed
+
+- Wrap long lines in the Master Config panel and popup instead of cutting them off at the edge: the restart note, the running master's value and long values (the agent no longer folds long strings at 80 columns either). The file in the right panel wraps too, under its line numbers; `w` (or `master_wrap = false` under `[ui]`) cuts its lines at the edge again
+- Show a setting's value in the order its file gives it, not sorted by key (`nodegroups` listed `db`, `monitoring`, `web` for a file that set `web` first)
+
 ## [0.9.3] - 2026-10-17
 
 ### Fixed

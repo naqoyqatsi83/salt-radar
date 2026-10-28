@@ -1015,8 +1015,10 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Jobs (Cache)", key: "`r`", action: "Refresh job cache" },
         Shortcut { tab: "Jobs (Cache)", key: "`←`/`→`", action: "Switch focus between Live Jobs and Cache panels" },
         Shortcut { tab: "Pulse", key: "`↑`/`↓`/`←`/`→`", action: "Navigate the minion grid" },
-        Shortcut { tab: "Master Config", key: "`Enter`", action: "The setting's full value, where it's set and Salt's default" },
+        Shortcut { tab: "Master Config", key: "`Enter`", action: "The setting's full value, where it's set and Salt's default; for a ↻ setting, its difference from the running master" },
+        Shortcut { tab: "Master Config (popup)", key: "`d` / `n`/`N` / `z`", action: "Full values or the difference / next or previous change / show the unchanged lines" },
         Shortcut { tab: "Master Config", key: "`r`", action: "Read the configuration files again" },
+        Shortcut { tab: "Master Config", key: "`w`", action: "Wrap the long lines of the file in the right panel, or cut them at its edge (`master_wrap`)" },
         Shortcut { tab: "API", key: "`x`", action: "Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`)" },
     ]),
     ("Config Editor", &[

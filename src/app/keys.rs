@@ -942,9 +942,10 @@ impl App {
                         }
                     }
                 }
-                DetailPopup::MasterSetting { index, ref mut scroll } => {
+                DetailPopup::MasterSetting { index, ref mut scroll, ref mut full, ref mut unfold } => {
                     let max = self.master_popup_scroll_max;
                     let setting = self.master_config.as_ref().and_then(|mc| mc.settings.get(index));
+                    let changes = &self.master_popup_changes;
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                             self.detail_popup = None;
@@ -955,6 +956,22 @@ impl App {
                         KeyCode::PageDown => *scroll = (*scroll + 10).min(max),
                         KeyCode::Home => *scroll = 0,
                         KeyCode::End => *scroll = max,
+                        KeyCode::Char('d') | KeyCode::Char('D') if setting.is_some_and(ConfigSetting::has_running_diff) => {
+                            *full = !*full;
+                            *scroll = 0;
+                        }
+                        KeyCode::Char('z') | KeyCode::Char('Z') if !*full => *unfold = !*unfold,
+                        // A change lands two lines below the top, so what leads into it shows.
+                        KeyCode::Char('n') if !*full => {
+                            if let Some(&row) = changes.iter().find(|&&row| row.saturating_sub(2) > *scroll) {
+                                *scroll = row.saturating_sub(2).min(max);
+                            }
+                        }
+                        KeyCode::Char('N') if !*full => {
+                            if let Some(&row) = changes.iter().rev().find(|&&row| row.saturating_sub(2) < *scroll) {
+                                *scroll = row.saturating_sub(2);
+                            }
+                        }
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             clipboard_text = setting.map(ConfigSetting::as_yaml);
                         }
@@ -1248,6 +1265,10 @@ impl App {
                         self.open_save_prompt(content, &hint, ext);
                     }
                 }
+            }
+            KeyCode::Char('w') | KeyCode::Char('W') if self.current_tab == Tab::Master => {
+                self.config.master_wrap = !self.config.master_wrap;
+                self.save_toggles();
             }
             KeyCode::Char('x') | KeyCode::Char('X') => {
                 if self.current_tab == Tab::Minions && self.fleet_data.is_some() {
@@ -2095,7 +2116,7 @@ impl App {
             }
             Tab::Master => {
                 if let Some(&index) = self.filtered_master_settings().get(self.master_selected) {
-                    self.detail_popup = Some(DetailPopup::MasterSetting { index, scroll: 0 });
+                    self.detail_popup = Some(DetailPopup::MasterSetting { index, scroll: 0, full: false, unfold: false });
                     self.popup_tab = Some(self.current_tab);
                 }
             }
