@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0-rc1] - 2026-10-28
+
 ### Added
 
 - Show a ↻ setting's difference from the running master in the Master Config popup: the lines only the running master has marked `−`, the ones a restart would load `+`, the part of a changed line that differs highlighted, and unchanged runs folded around each change (`z` unfolds them, `n`/`N` jump between changes, `d` switches to the full values). The right panel lists the changed lines themselves, in the same colors, in up to half its height
