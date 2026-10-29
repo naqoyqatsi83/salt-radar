@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-30
+
 ### Fixed
 
 - Show that `r` in the Master Config tab is reloading, and that it finished: "reloading…" and then "✓ reloaded" in the panel's title, or "⚠ reload failed" with the agent's error, which was dropped when an earlier read was on screen. `r` also reads the files again while a periodic read is under way, as that one may predate an edit
