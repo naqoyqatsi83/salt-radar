@@ -121,7 +121,7 @@ fn changed_part(old: &str, new: &str) -> Option<((usize, usize), (usize, usize))
 
 /// A line of a setting's difference from the running master: marked `−` or
 /// `+`, the part that differs from its paired line in reverse video,
-/// wrapped under its own indent.
+/// wrapped under its own indent (not at all at `width` 0).
 pub fn diff_rows(line: &DiffLine, width: usize) -> Vec<Line<'static>> {
     let (mark, text, part, fg) = match *line {
         DiffLine::Same(t) => ("    ", t, None, color::inactive_fg()),
@@ -426,7 +426,7 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
             lines.push(note(format!("\u{21bb} May change on restart: {}", state.describe()), restart));
             match s.running_full.as_ref().filter(|_| s.has_running_diff()) {
                 // Up to half the panel, the rest stays the file's.
-                Some(running) => lines.extend(changed_rows(&diff_lines(running, &s.full), inner.width as usize, (inner.height as usize / 2).max(4))),
+                Some(running) => lines.extend(changed_rows(&diff_lines(running, &s.full), if wrap { inner.width as usize } else { 0 }, (inner.height as usize / 2).max(4))),
                 None => lines.push(note(format!("  running master: {}", s.running_shown()), restart)),
             }
         }

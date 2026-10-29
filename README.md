@@ -190,7 +190,7 @@ Shown only once salt-api's `/stats` is reachable (see Dashboard above for the `c
 The master's configuration, as its files set it:
 
 - Every setting, collapsed to one line: the ones set in a file first, in Salt's load order (`/etc/salt/master`, then `master.d/*.conf` sorted, then `include:`), with the file and line that sets each; then values Salt worked out at startup (derived); then the defaults, greyed out. `/` filters by name, value, file or kind (`set`, `module`, `not core`, `derived`, `default`), and module settings by what reads them (`salt-api`, `eauth`)
-- The right panel shows the file the selected setting comes from, its block marked (long lines wrap under their line number; `w` or `master_wrap` under `[ui]` cuts them at the edge instead), and, when several files set it, what each one does, following Salt's own rules:
+- The right panel shows the file the selected setting comes from, its block marked (long lines wrap under their line number; `w` or `master_wrap` under `[ui]` cuts them at the edge instead, as it does a ↻ setting's changed lines above the file), and, when several files set it, what each one does, following Salt's own rules:
   - a `master.d` file **replaces** the main file's whole value: a nested key it doesn't set is dropped, and the panel names it (`rest_cherrypy: {port: 9000}` in `master.d` drops every other `rest_cherrypy` option from `/etc/salt/master`); `include:` files replace `master.d` ones the same way
   - between `master.d` files, dicts are **merged** and lists concatenated (two `ext_pillar` entries give both), while other values are **overridden** by the later file
 - `Enter` opens the full value next to Salt's default, and when several files set it, each file's own value before the result; `y` copies it as YAML, `s` saves it. For a ↻ setting it opens on the difference from the running master instead (see below); `d` switches to the full values
@@ -359,7 +359,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Master Config | `Enter` | The setting's full value, where it's set and Salt's default; for a ↻ setting, its difference from the running master |
 | Master Config (popup) | `d` / `n`/`N` / `z` | Full values or the difference / next or previous change / show the unchanged lines |
 | Master Config | `r` | Read the configuration files again |
-| Master Config | `w` | Wrap the long lines of the file in the right panel, or cut them at its edge (`master_wrap`) |
+| Master Config | `w` | Wrap the long lines of the file and of a ↻ setting's changed lines in the right panel, or cut them at its edge (`master_wrap`) |
 | API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |
 
 ### Config Editor
