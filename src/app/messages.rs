@@ -35,6 +35,10 @@ impl App {
                         }
                         "master_config" => {
                             self.master_config_loading = false;
+                            if self.master_reload_id == Some(id) {
+                                self.master_reload_id = None;
+                                self.master_reloaded_at = ok.then(Instant::now);
+                            }
                             if ok {
                                 self.master_config = Some(parse_master_config(&data));
                                 self.master_config_error = None;
@@ -673,10 +677,9 @@ impl App {
         self.send_agent_cmd("jid_lookup", Some(serde_json::json!({"jid": jid, "timeout": timeout})))
     }
 
-    pub(crate) fn request_master_config(&mut self) {
+    pub(crate) fn request_master_config(&mut self) -> u64 {
         self.master_config_loading = true;
-        self.master_config_error = None;
-        self.send_agent_cmd("master_config", Some(serde_json::json!({"digests": self.config.running_config_digests})));
+        self.send_agent_cmd("master_config", Some(serde_json::json!({"digests": self.config.running_config_digests})))
     }
 
     /// Send a command to the agent, returns the request id.

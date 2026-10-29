@@ -314,6 +314,10 @@ pub struct App {
     pub master_config: Option<MasterConfig>,
     pub master_config_loading: bool,
     pub master_config_error: Option<String>,
+    /// The request `r` sent, until its answer arrives.
+    pub master_reload_id: Option<u64>,
+    /// When the answer to `r` arrived, to confirm the reload for a moment.
+    pub master_reloaded_at: Option<Instant>,
     pub master_selected: usize,
     /// Last scroll position of the setting popup, set when it's drawn.
     pub master_popup_scroll_max: usize,
@@ -982,6 +986,8 @@ impl App {
             master_config: None,
             master_config_loading: false,
             master_config_error: None,
+            master_reload_id: None,
+            master_reloaded_at: None,
             master_selected: 0,
             master_popup_scroll_max: 0,
             master_popup_changes: Vec::new(),

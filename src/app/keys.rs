@@ -1317,8 +1317,11 @@ impl App {
                 } else if self.current_tab == Tab::Jobs && !self.cache_loading {
                     let ft = self.cache_server_filter.clone();
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
-                } else if self.current_tab == Tab::Master && !self.master_config_loading {
-                    self.request_master_config();
+                } else if self.current_tab == Tab::Master && self.master_reload_id.is_none() {
+                    // Sent even while a periodic read is in flight: that one
+                    // may have read the files before an edit made just now.
+                    self.master_reload_id = Some(self.request_master_config());
+                    self.master_reloaded_at = None;
                 }
             }
             KeyCode::Char(']') | KeyCode::Char('}') => {
