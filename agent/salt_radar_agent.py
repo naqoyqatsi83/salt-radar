@@ -1610,6 +1610,37 @@ def _running_option(opts, req, key, default):
     return in_files
 
 
+def _as_started(opts):
+    """The options as salt-master holds them once started: with a reactor
+    set, it adds the reactor engine to `engines` itself (salt/master.py),
+    which no file says."""
+    if not opts.get("reactor"):
+        return opts
+    engines = opts.get("engines")
+    if isinstance(engines, list):
+        if any("reactor" in item for item in engines):
+            return opts
+        engines = engines + [{"reactor": {}}]
+    elif isinstance(engines, dict):
+        if "reactor" in engines:
+            return opts
+        engines = dict(engines, reactor={})
+    else:
+        return opts
+    return dict(opts, engines=engines)
+
+
+def _without_reactor_engine(engines):
+    """`engines` less the reactor engine salt-master adds itself, for a
+    difference that shows only what the files changed: a restart adds it
+    again."""
+    if isinstance(engines, list):
+        return [item for item in engines if item != {"reactor": {}}]
+    if isinstance(engines, dict) and engines.get("reactor") == {}:
+        return {k: v for k, v in engines.items() if k != "reactor"}
+    return engines
+
+
 def _restart_state(key, actual, running, srcs, files, started):
     """Why a setting may change when salt-master restarts, or None: the
     running master holds `running`, the files now say `actual`. "changed": a
@@ -1662,12 +1693,13 @@ def cmd_master_config(opts, req):
     started = _salt_master_started()
     digests = bool(req.get("digests"))
     running_opts, running_error = _running_master_opts(path, started, digests)
+    as_started = _as_started(effective)
     file_digests = {}
     if digests and running_opts is not None:
         try:
             import salt.utils.templates
             file_digests = json.loads(salt.utils.templates.render_jinja_tmpl(
-                _DIGEST_TEMPLATE, {"opts": effective, "saltenv": "base", "sls": ""}))
+                _DIGEST_TEMPLATE, {"opts": as_started, "saltenv": "base", "sls": ""}))
         except Exception as exc:
             running_opts, running_error = None, "couldn't digest the files' options: {}".format(exc)
     missing = object()
@@ -1705,12 +1737,14 @@ def cmd_master_config(opts, req):
         # at startup (grains, config_dir, its log settings) aren't in them.
         if running_opts is not None and key in effective:
             running = _plain(running_opts.get(key, missing))
-            here = file_digests.get(key) if digests else actual
+            here = file_digests.get(key) if digests else _plain(as_started.get(key))
             state = _restart_state(str(key), here, running, srcs, files, started)
             if state:
                 entry["restart"] = state
                 entry["running_absent"] = running is missing
                 if running is not missing and not digests:
+                    if as_started.get(key) is not effective.get(key):
+                        running = _without_reactor_engine(running)
                     shown = _redact({key: running})[key]
                     entry["running_line"] = _config_text(shown, True)
                     entry["running_full"] = _config_text(shown, False)
