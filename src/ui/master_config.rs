@@ -121,7 +121,7 @@ fn changed_part(old: &str, new: &str) -> Option<((usize, usize), (usize, usize))
 
 /// A line of a setting's difference from the running master: marked `−` or
 /// `+`, the part that differs from its paired line in reverse video,
-/// wrapped under its own indent.
+/// wrapped under its own indent (not at all at `width` 0).
 pub fn diff_rows(line: &DiffLine, width: usize) -> Vec<Line<'static>> {
     let (mark, text, part, fg) = match *line {
         DiffLine::Same(t) => ("    ", t, None, color::inactive_fg()),
@@ -230,6 +230,20 @@ pub fn source_place(mc: &MasterConfig, file: usize, start: usize) -> String {
     if start > 0 { format!("{}:{}", shown, start) } else { shown.to_string() }
 }
 
+/// What became of `r`, ahead of the counts so a narrow panel keeps it: the
+/// list looks the same before and after a reload that changed nothing.
+fn reload_status(app: &App) -> String {
+    if app.master_reload_id.is_some() {
+        " \u{b7} reloading\u{2026}".to_string()
+    } else if let (Some(e), Some(_)) = (&app.master_config_error, &app.master_config) {
+        format!(" \u{26a0} reload failed: {}", e)
+    } else if app.master_reloaded_at.is_some_and(|t| t.elapsed().as_secs() < 3) {
+        " \u{2713} reloaded".to_string()
+    } else {
+        String::new()
+    }
+}
+
 fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &[usize]) {
     let border_style = Style::default().fg(if focused { color::border_focus() } else { color::border() });
     let total = rows.len();
@@ -253,13 +267,14 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
             // Without the running master's options, ↻ only goes by file times.
             let by_time = if mc.running_compared { "" } else { " (file times only)" };
             format!(
-                " Master Config{}{} \u{b7} {} set, {} module, {} not core, {} derived, {} default ",
+                " Master Config{}{}{} \u{b7} {} set, {} module, {} not core, {} derived, {} default ",
+                reload_status(app),
                 if rejected > 0 { format!(" \u{26a0} {} file(s) rejected", rejected) } else { String::new() },
                 if pending > 0 { format!(" \u{21bb} {} on restart{}", pending, by_time) } else { String::new() },
                 count(SettingKind::Explicit), count(SettingKind::Module), not_core, count(SettingKind::Derived), count(SettingKind::Default),
             )
         }
-        None => " Master Config ".to_string(),
+        None => format!(" Master Config{} ", reload_status(app)),
     };
     let block = super::list_block_hinted(title, border_style, color::main_bg(), has_more_above, has_more_below, &hints, area.width);
     let inner = block.inner(area);
@@ -411,7 +426,7 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
             lines.push(note(format!("\u{21bb} May change on restart: {}", state.describe()), restart));
             match s.running_full.as_ref().filter(|_| s.has_running_diff()) {
                 // Up to half the panel, the rest stays the file's.
-                Some(running) => lines.extend(changed_rows(&diff_lines(running, &s.full), inner.width as usize, (inner.height as usize / 2).max(4))),
+                Some(running) => lines.extend(changed_rows(&diff_lines(running, &s.full), if wrap { inner.width as usize } else { 0 }, (inner.height as usize / 2).max(4))),
                 None => lines.push(note(format!("  running master: {}", s.running_shown()), restart)),
             }
         }

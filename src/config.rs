@@ -432,8 +432,8 @@ pub struct AppConfig {
     pub api_split_pct: u64,
     pub pulse_split_pct: u64,
     pub master_split_pct: u64,
-    /// Wrap long lines of the file in the Master Config tab's right panel
-    /// (`w`), instead of cutting them at its edge.
+    /// Wrap long lines of the file and a ↻ setting's changed lines in the
+    /// Master Config tab's right panel (`w`), instead of cutting them at its edge.
     pub master_wrap: bool,
 }
 

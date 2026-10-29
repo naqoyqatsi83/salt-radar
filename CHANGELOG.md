@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-30
+
+### Fixed
+
+- Show that `r` in the Master Config tab is reloading, and that it finished: "reloading…" and then "✓ reloaded" in the panel's title, or "⚠ reload failed" with the agent's error, which was dropped when an earlier read was on screen. `r` also reads the files again while a periodic read is under way, as that one may predate an edit
+- Stop marking `engines` ↻ in the Master Config tab when a `reactor` is set: salt-master adds the reactor engine to its `engines` itself when it starts, so its value never matched the files and the difference showed a `- reactor: {}` line no file has
+- Cut a ↻ setting's changed lines in the Master Config tab's right panel at its edge too when `w` (or `master_wrap = false`) cuts the file's, instead of always wrapping them
+
 ## [0.10.0] - 2026-10-28
 
 ### Added
