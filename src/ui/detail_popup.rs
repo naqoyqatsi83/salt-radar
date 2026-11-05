@@ -1563,7 +1563,7 @@ fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
         return vec![h("Esc", "cancel filter"), h("Enter", "confirm")];
     }
     if st.picker_open {
-        return vec![h("\u{2191}\u{2193}", "move"), h("Space", "tick"), h("1-3", "tick OK/FAILED/NOT RETURNED"), h("x/Enter/Esc", "close")];
+        return vec![h("\u{2191}\u{2193}", "move"), h("PgUp/PgDn", "first/last"), h("Space", "tick"), h("1-3", "tick OK/FAILED/NOT RETURNED"), h("x/Enter/Esc", "close")];
     }
     let mut hints = if st.right_focus {
         if st.scroll_mode {

@@ -764,6 +764,8 @@ pub fn picker_key(code: KeyCode, cursor: &mut usize, n: usize) -> PickerKey {
     match code {
         KeyCode::Up | KeyCode::Char('k') => { *cursor = cursor.saturating_sub(1); PickerKey::Stay }
         KeyCode::Down | KeyCode::Char('j') => { *cursor = (*cursor + 1).min(n.saturating_sub(1)); PickerKey::Stay }
+        KeyCode::PageUp | KeyCode::Home => { *cursor = 0; PickerKey::Stay }
+        KeyCode::PageDown | KeyCode::End => { *cursor = n.saturating_sub(1); PickerKey::Stay }
         KeyCode::Char(' ') => PickerKey::Toggle(*cursor),
         KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < n => PickerKey::Toggle(c as usize - '1' as usize),
         KeyCode::Enter | KeyCode::Esc | KeyCode::Char('x') | KeyCode::Char('q') => PickerKey::Close,
@@ -4170,6 +4172,10 @@ mod tests {
         assert!(matches!(picker_key(KeyCode::Char('4'), &mut cursor, 3), PickerKey::Stay), "no fourth row");
         assert!(matches!(picker_key(KeyCode::Down, &mut cursor, 3), PickerKey::Stay));
         assert!(matches!(picker_key(KeyCode::Char(' '), &mut cursor, 3), PickerKey::Toggle(1)));
+        assert!(matches!(picker_key(KeyCode::PageDown, &mut cursor, 3), PickerKey::Stay));
+        assert_eq!(cursor, 2, "PgDn goes to the last row");
+        picker_key(KeyCode::PageUp, &mut cursor, 3);
+        assert_eq!(cursor, 0, "PgUp to the first");
         assert!(matches!(picker_key(KeyCode::Char('x'), &mut cursor, 3), PickerKey::Close));
         let mut states = MinionFilter::default();
         states.toggle(MinionState::Responsive);
