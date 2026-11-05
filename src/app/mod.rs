@@ -440,7 +440,11 @@ pub struct App {
     /// Minions Fail% column. Kept apart from the event buffer so busy fleets
     /// don't evict a quiet minion's history.
     pub minion_returns: HashMap<String, MinionHealth>,
-    pub jobs_failed_only: bool,
+    /// The states Live Jobs shows, ticked in its `x` picker, and the
+    /// picker's cursor and last frame while it's open.
+    pub job_states: JobFilter,
+    pub job_picker: Option<usize>,
+    pub job_picker_hits: PickerHits,
     /// Filter state for MinionEvents popup
     pub minion_events_filter: String,
     pub minion_events_is_filtering: bool,
@@ -732,6 +736,22 @@ fn minion_state(row: &MinionRow, responded: &HashSet<&str>) -> Option<MinionStat
     })
 }
 
+/// A Live Jobs job's `JobState`, with `straggler` the seconds after which
+/// a job still waiting for returns counts as stuck.
+pub fn job_state(job: &JobEntry, straggler: u64) -> JobState {
+    if job.failed > 0 {
+        JobState::Failed
+    } else if job.target_count == 0 {
+        JobState::Uncounted
+    } else if job.returned >= job.target_count {
+        JobState::Ok
+    } else if job.age_seconds > straggler {
+        JobState::Stuck
+    } else {
+        JobState::Running
+    }
+}
+
 /// What a key does while a status picker is open.
 pub enum PickerKey {
     Toggle(usize),
@@ -967,7 +987,9 @@ impl App {
             job_detail_select_minion: None,
             job_detail_refresh_at: None,
             minion_returns: HashMap::new(),
-            jobs_failed_only: false,
+            job_states: JobFilter::default(),
+            job_picker: None,
+            job_picker_hits: PickerHits::default(),
             minion_events_filter: String::new(),
             minion_events_is_filtering: false,
             minion_states: MinionFilter::default(),
@@ -1870,7 +1892,7 @@ impl App {
 
     pub fn filtered_jobs_len(&self) -> usize {
         let pat = self.filter_text_for(Tab::Jobs);
-        if pat.is_empty() && !self.jobs_failed_only {
+        if pat.is_empty() && self.job_states.is_all() {
             return self.jobs.len();
         }
         self.jobs.iter().filter(self.job_shown()).count()
@@ -1878,7 +1900,16 @@ impl App {
 
     fn job_shown(&self) -> impl Fn(&&JobEntry) -> bool + '_ {
         let matches = Self::job_matcher(self.filter_text_for(Tab::Jobs), self.accepted_ids());
-        move |job| (!self.jobs_failed_only || job.failed > 0) && matches(job)
+        let straggler = self.config.job_straggler_secs;
+        move |job| self.job_states.shows(job_state(job, straggler)) && matches(job)
+    }
+
+    /// How many Live Jobs are in each `JobState`, filters aside: the counts
+    /// its `x` picker shows.
+    pub fn job_state_counts(&self) -> Vec<usize> {
+        JobState::ALL.iter()
+            .map(|&s| self.jobs.iter().filter(|j| job_state(j, self.config.job_straggler_secs) == s).count())
+            .collect()
     }
 
     /// Live Jobs in display order: filtered, then sorted. Unsorted, they
@@ -4116,6 +4147,20 @@ mod tests {
         assert_eq!(state(MinionRow::Key(&keys[2])), Some(MinionState::Rejected));
         assert_eq!(state(MinionRow::Key(&keys[3])), Some(MinionState::Denied), "a denied key next to an accepted one");
         assert_eq!(state(MinionRow::TimedOutHeader), None);
+    }
+
+    #[test]
+    fn a_live_job_is_failed_first_then_uncounted_done_stuck_or_running() {
+        let job = |target_count, returned, failed, age_seconds| JobEntry {
+            jid: String::new(), fun: String::new(), tgt: String::new(), target_count, returned,
+            succeeded: returned - failed, failed, age_seconds, created_epoch: 0.0,
+            local: false, finalized: false, args: String::new(), test_run: false, lag: JobLag::Settled(None),
+        };
+        assert_eq!(job_state(&job(3, 3, 0, 5), 60), JobState::Ok);
+        assert_eq!(job_state(&job(3, 1, 1, 5), 60), JobState::Failed, "a failure shows while others still run");
+        assert_eq!(job_state(&job(3, 1, 0, 5), 60), JobState::Running);
+        assert_eq!(job_state(&job(3, 1, 0, 61), 60), JobState::Stuck);
+        assert_eq!(job_state(&job(0, 1, 0, 5), 60), JobState::Uncounted, "a runner job");
     }
 
     #[test]

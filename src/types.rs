@@ -1151,6 +1151,34 @@ pub struct StatusFilter<T> {
 
 pub type OutcomeFilter = StatusFilter<Outcome>;
 pub type MinionFilter = StatusFilter<MinionState>;
+pub type JobFilter = StatusFilter<JobState>;
+
+/// Where a Live Jobs job stands, its first match in this order: a minion
+/// failed; no target count (runner and wheel jobs, unresolved targets);
+/// every target returned; still waiting after `job_straggler_secs`; still
+/// waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobState {
+    Ok,
+    Failed,
+    Running,
+    Stuck,
+    Uncounted,
+}
+
+impl Status for JobState {
+    const ALL: &'static [JobState] = &[JobState::Ok, JobState::Failed, JobState::Running, JobState::Stuck, JobState::Uncounted];
+
+    fn label(self) -> &'static str {
+        match self {
+            JobState::Ok => "OK",
+            JobState::Failed => "FAILED",
+            JobState::Running => "RUNNING",
+            JobState::Stuck => "STUCK",
+            JobState::Uncounted => "UNCOUNTED",
+        }
+    }
+}
 
 impl<T: Status> Default for StatusFilter<T> {
     fn default() -> Self {

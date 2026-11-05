@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace Live Jobs' `x` (failed only) with a picker like Job Detail's and the Minions tab's: tick OK, FAILED (a minion failed, even while others still run), RUNNING, STUCK (still waiting after `job_straggler_secs`, as the Dashboard counts them) and UNCOUNTED (no target count, like runner and wheel jobs), each with its count; the list's top border names what is shown
+
 ## [0.11.0-rc1] - 2026-11-05
 
 ### Added

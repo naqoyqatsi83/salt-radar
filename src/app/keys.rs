@@ -1183,6 +1183,18 @@ impl App {
             return false;
         }
 
+        if let Some(cursor) = self.job_picker.as_mut().filter(|_| self.current_tab == Tab::Jobs) {
+            match crate::app::picker_key(code, cursor, JobState::ALL.len()) {
+                crate::app::PickerKey::Toggle(i) => {
+                    self.job_states.toggle(JobState::ALL[i]);
+                    self.clamp_selection();
+                }
+                crate::app::PickerKey::Close => self.job_picker = None,
+                crate::app::PickerKey::Stay => {}
+            }
+            return false;
+        }
+
         // Filter input mode (live jobs / other tabs)
         if self.is_filtering {
             match code {
@@ -1319,8 +1331,7 @@ impl App {
                     self.config.api_hide_stats_polls = !self.config.api_hide_stats_polls;
                     self.save_toggles();
                 } else if self.current_tab == Tab::Jobs && !self.cache_focus {
-                    self.jobs_failed_only = !self.jobs_failed_only;
-                    self.job_selected = 0;
+                    self.job_picker = Some(0);
                 }
             }
             KeyCode::Char('z') | KeyCode::Char('Z') => {
@@ -1620,6 +1631,19 @@ impl App {
         // content area starts at row 3, status bar is the last row (h-1).
         let r = row as usize;
         if r < 3 || r >= h.saturating_sub(1) {
+            return false;
+        }
+
+        if self.current_tab == Tab::Jobs && self.job_picker.is_some() {
+            match crate::app::picker_click(&self.job_picker_hits, col, row) {
+                crate::app::PickerClick::Toggle(i) => {
+                    self.job_picker = Some(i);
+                    self.job_states.toggle(JobState::ALL[i]);
+                    self.clamp_selection();
+                }
+                crate::app::PickerClick::Outside => self.job_picker = None,
+                crate::app::PickerClick::Inside => {}
+            }
             return false;
         }
 

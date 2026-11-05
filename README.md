@@ -350,7 +350,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Minions | `f` | Toggle whether the Fleet Overview breakdown follows the active list filter |
 | Minions, Jobs, Alerts, API | `o` / `O` | Sort by the next column / reverse the sort (also: click a column header) |
 | Minions, Events, Jobs, Alerts, API | `v` | Choose which columns the focused table shows, and their order |
-| Jobs (Live) | `x` | Show only failed jobs / all jobs |
+| Jobs (Live) | `x` | Pick the states the list shows: OK, FAILED, RUNNING, STUCK (still waiting after `job_straggler_secs`), UNCOUNTED (no target count: runner and wheel jobs); ticked ones are named in its top border |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
 | Jobs (Cache) | `[`/`]` | Decrease/increase page limit by 500 |
 | Jobs (Cache) | `,`/`.` | Previous/next page |
