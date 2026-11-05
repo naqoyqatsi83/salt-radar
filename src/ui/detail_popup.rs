@@ -1030,15 +1030,11 @@ fn draw_job_detail(
         }
     }
     // A long target (a list of minions, a compound match) is shortened so the
-    // return counts after it stay on screen.
+    // return counts after it stay on screen; the args get rows of their own.
     let mut job_spans = vec![
         Span::styled("  Fun: ".to_string(), Style::default().fg(color::label_fg())),
         Span::styled(job.fun.clone(), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
     ];
-    if !job.args.is_empty() {
-        job_spans.push(Span::styled("  Args: ".to_string(), Style::default().fg(color::label_fg())));
-        job_spans.push(Span::styled(job.args.clone(), Style::default().fg(color::main_fg())));
-    }
     if job.test_run {
         job_spans.push(Span::raw("  "));
         job_spans.push(Span::styled(" TEST RUN ".to_string(), Style::default().fg(color::popup_bg()).bg(color::outcome_pending()).add_modifier(Modifier::BOLD)));
@@ -1053,6 +1049,13 @@ fn draw_job_detail(
         Span::styled(epoch_str, Style::default().fg(color::inactive_fg())),
         Span::styled(returns_str, Style::default().fg(color::label_fg())),
     ]).chain(outcome_spans).collect::<Vec<_>>()));
+    let args_w = (outer_inner.width as usize).saturating_sub(ARGS_LABEL.len());
+    for (i, row) in args_rows(&job.args, args_w, ARGS_ROWS).into_iter().enumerate() {
+        header_lines.push(Line::from(vec![
+            Span::styled(if i == 0 { ARGS_LABEL.to_string() } else { " ".repeat(ARGS_LABEL.len()) }, Style::default().fg(color::label_fg())),
+            Span::styled(row, Style::default().fg(color::main_fg())),
+        ]));
+    }
     let header_h = (header_lines.len() + 1) as u16; // +1 for spacing after header
 
     // ── Layout: header / body / status (only when there's something transient to show) ──
@@ -1350,6 +1353,40 @@ fn draw_job_detail(
             vert[2],
         );
     }
+}
+
+const ARGS_LABEL: &str = "  Args: ";
+/// Rows Job Detail's header gives a job's arguments at most.
+const ARGS_ROWS: usize = 4;
+
+/// A job's arguments in rows of up to `width` characters, broken at a
+/// space where one fits (a word longer than a row is cut), at most `max`
+/// rows, the last ending in `…` when that leaves some out; line breaks in a
+/// command read as spaces.
+fn args_rows(args: &str, width: usize, max: usize) -> Vec<String> {
+    let width = width.max(10);
+    let mut rest: &[char] = &args.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<Vec<_>>();
+    let mut rows: Vec<String> = Vec::new();
+    while !rest.is_empty() {
+        if rest.len() <= width {
+            rows.push(rest.iter().collect());
+            break;
+        }
+        let (row, next) = match rest[..=width].iter().rposition(|&c| c == ' ').filter(|&at| at > 0) {
+            Some(at) => (&rest[..at], &rest[at + 1..]),
+            None => (&rest[..width], &rest[width..]),
+        };
+        rows.push(row.iter().collect());
+        rest = next;
+    }
+    if rows.len() > max {
+        rows.truncate(max);
+        if let Some(last) = rows.last_mut() {
+            last.pop();
+            last.push('\u{2026}');
+        }
+    }
+    rows
 }
 
 /// Fits `s` into `w` characters by cutting out its middle: long hostnames
@@ -2227,6 +2264,18 @@ fn format_ts(ts: f64) -> String {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn long_args_wrap_into_rows_and_end_in_an_ellipsis_when_cut() {
+        assert_eq!(args_rows("", 20, 4), Vec::<String>::new());
+        assert_eq!(args_rows("uptime", 20, 4), ["uptime"]);
+        assert_eq!(args_rows("abcdefghijklmnopqrstuvwxy", 10, 4), ["abcdefghij", "klmnopqrst", "uvwxy"]);
+        let cut = args_rows(&"x".repeat(50), 10, 2);
+        assert_eq!(cut.len(), 2);
+        assert!(cut[1].ends_with('\u{2026}') && cut[1].chars().count() == 10);
+        assert_eq!(args_rows("a\nb", 10, 4), ["a b"], "a multi-line command stays on its rows");
+        assert_eq!(args_rows("echo missing; done; df -h /", 12, 4), ["echo", "missing;", "done; df -h", "/"], "broken at spaces");
+    }
     #[test]
     fn descriptions_wrap_at_spaces_and_cut_long_words() {
         assert_eq!(wrap_words("one two three four", 10), ["one two", "three four"]);
