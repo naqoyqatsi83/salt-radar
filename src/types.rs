@@ -1073,9 +1073,23 @@ pub struct JobDetailHits {
     pub list: ratatui::layout::Rect,
     pub rows: Vec<(u16, usize)>,
     pub preview: ratatui::layout::Rect,
-    /// The outcome picker's rows (screen y, outcome) and its box, while open.
-    pub picker: Vec<(u16, Outcome)>,
-    pub picker_box: ratatui::layout::Rect,
+    /// The outcome picker's box and rows, while open.
+    pub picker: PickerHits,
+}
+
+/// Where a status picker's last frame put its box and each row (screen y,
+/// index into the status's `ALL`), for mouse clicks.
+#[derive(Clone, Debug, Default)]
+pub struct PickerHits {
+    pub area: ratatui::layout::Rect,
+    pub rows: Vec<(u16, usize)>,
+}
+
+/// What a status picker's row stands for: Job Detail's outcomes, the Minions
+/// list's states.
+pub trait Status: Copy + PartialEq + 'static {
+    const ALL: &'static [Self];
+    fn label(self) -> &'static str;
 }
 
 /// How one minion did in a job, as Job Detail's returns list shows it.
@@ -1086,10 +1100,10 @@ pub enum Outcome {
     Missing,
 }
 
-impl Outcome {
-    pub const ALL: [Outcome; 3] = [Outcome::Ok, Outcome::Failed, Outcome::Missing];
+impl Status for Outcome {
+    const ALL: &'static [Outcome] = &[Outcome::Ok, Outcome::Failed, Outcome::Missing];
 
-    pub fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Outcome::Ok => "OK",
             Outcome::Failed => "FAILED",
@@ -1098,31 +1112,71 @@ impl Outcome {
     }
 }
 
-/// The outcomes Job Detail lists, ticked in its `o` picker.
+/// Where a Minions list row stands: whether an accepted minion answered the
+/// last fleet scan, or the key's status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OutcomeFilter([bool; 3]);
+pub enum MinionState {
+    Responsive,
+    TimedOut,
+    NotScanned,
+    Pending,
+    Rejected,
+    Denied,
+}
 
-impl Default for OutcomeFilter {
-    fn default() -> Self {
-        Self([true; 3])
+impl Status for MinionState {
+    const ALL: &'static [MinionState] = &[
+        MinionState::Responsive, MinionState::TimedOut, MinionState::NotScanned,
+        MinionState::Pending, MinionState::Rejected, MinionState::Denied,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            MinionState::Responsive => "RESPONSIVE",
+            MinionState::TimedOut => "TIMED OUT",
+            MinionState::NotScanned => "NOT SCANNED",
+            MinionState::Pending => "PENDING",
+            MinionState::Rejected => "REJECTED",
+            MinionState::Denied => "DENIED",
+        }
     }
 }
 
-impl OutcomeFilter {
-    pub fn shows(self, o: Outcome) -> bool {
-        self.0[o as usize]
+/// The statuses a list shows, ticked in its `x` picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatusFilter<T> {
+    ticked: u16,
+    of: std::marker::PhantomData<T>,
+}
+
+pub type OutcomeFilter = StatusFilter<Outcome>;
+pub type MinionFilter = StatusFilter<MinionState>;
+
+impl<T: Status> Default for StatusFilter<T> {
+    fn default() -> Self {
+        Self { ticked: (1 << T::ALL.len()) - 1, of: std::marker::PhantomData }
+    }
+}
+
+impl<T: Status> StatusFilter<T> {
+    fn bit(o: T) -> u16 {
+        1 << T::ALL.iter().position(|&x| x == o).unwrap_or(0)
     }
 
-    pub fn toggle(&mut self, o: Outcome) {
-        self.0[o as usize] ^= true;
+    pub fn shows(self, o: T) -> bool {
+        self.ticked & Self::bit(o) != 0
+    }
+
+    pub fn toggle(&mut self, o: T) {
+        self.ticked ^= Self::bit(o);
     }
 
     pub fn is_all(self) -> bool {
-        self.0.iter().all(|&b| b)
+        self == Self::default()
     }
 
-    pub fn shown(self) -> impl Iterator<Item = Outcome> {
-        Outcome::ALL.into_iter().filter(move |&o| self.shows(o))
+    pub fn shown(self) -> impl Iterator<Item = T> {
+        T::ALL.iter().copied().filter(move |&o| self.shows(o))
     }
 }
 

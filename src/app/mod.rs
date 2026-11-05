@@ -445,8 +445,12 @@ pub struct App {
     pub minion_events_filter: String,
     pub minion_events_is_filtering: bool,
 
-    /// Hide timed-out (non-responsive) minions from list
-    pub hide_timed_out: bool,
+    /// The states the Minions list shows, ticked in its `x` picker.
+    pub minion_states: MinionFilter,
+    /// The Minions `x` picker's cursor while it's open, and where its last
+    /// frame put it.
+    pub minion_picker: Option<usize>,
+    pub minion_picker_hits: PickerHits,
     /// Collapse the timed-out minion section header
     pub timed_out_collapsed: bool,
 
@@ -675,6 +679,60 @@ fn minion_list_rows<'a>(keys: &'a [KeyInfo], minions: &'a [MinionInfo], index: &
     }).collect()
 }
 
+/// A Minions list row's `MinionState`, given the minions that answered the
+/// last fleet scan; `None` for the "Timed out" header.
+fn minion_state(row: &MinionRow, responded: &HashSet<&str>) -> Option<MinionState> {
+    Some(match row {
+        MinionRow::Minion(m) if m.timed_out => MinionState::TimedOut,
+        MinionRow::Minion(m) if responded.contains(m.id.as_str()) => MinionState::Responsive,
+        MinionRow::Minion(_) => MinionState::NotScanned,
+        MinionRow::Key(k) => match k.status {
+            KeyStatus::Accepted => MinionState::NotScanned,
+            KeyStatus::Pending => MinionState::Pending,
+            KeyStatus::Rejected => MinionState::Rejected,
+            KeyStatus::Denied => MinionState::Denied,
+        },
+        MinionRow::TimedOutHeader => return None,
+    })
+}
+
+/// What a key does while a status picker is open.
+pub enum PickerKey {
+    Toggle(usize),
+    Close,
+    Stay,
+}
+
+/// A key pressed in an open status picker of `n` rows, its cursor at `cursor`.
+pub fn picker_key(code: KeyCode, cursor: &mut usize, n: usize) -> PickerKey {
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => { *cursor = cursor.saturating_sub(1); PickerKey::Stay }
+        KeyCode::Down | KeyCode::Char('j') => { *cursor = (*cursor + 1).min(n.saturating_sub(1)); PickerKey::Stay }
+        KeyCode::Char(' ') => PickerKey::Toggle(*cursor),
+        KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < n => PickerKey::Toggle(c as usize - '1' as usize),
+        KeyCode::Enter | KeyCode::Esc | KeyCode::Char('x') | KeyCode::Char('q') => PickerKey::Close,
+        _ => PickerKey::Stay,
+    }
+}
+
+/// What a click does while a status picker is open: tick a row, nothing (on
+/// its border), or close it (outside).
+pub enum PickerClick {
+    Toggle(usize),
+    Inside,
+    Outside,
+}
+
+pub fn picker_click(hits: &PickerHits, col: u16, row: u16) -> PickerClick {
+    if !hits.area.contains(ratatui::layout::Position { x: col, y: row }) {
+        return PickerClick::Outside;
+    }
+    match hits.rows.iter().find(|&&(y, _)| y == row) {
+        Some(&(_, i)) => PickerClick::Toggle(i),
+        None => PickerClick::Inside,
+    }
+}
+
 /// The JID of a `salt/job/<jid>/ret/<minion>` event.
 pub fn return_event_jid(evt: &SaltEvent) -> Option<&str> {
     let mut parts = evt.tag.split('/');
@@ -876,7 +934,9 @@ impl App {
             jobs_failed_only: false,
             minion_events_filter: String::new(),
             minion_events_is_filtering: false,
-            hide_timed_out: false,
+            minion_states: MinionFilter::default(),
+            minion_picker: None,
+            minion_picker_hits: PickerHits::default(),
             timed_out_collapsed: false,
             needs_mouse_toggle: false,
             last_click_at: None,
@@ -2053,9 +2113,40 @@ impl App {
     /// Without readable keys, the accepted minions the master knows.
     fn minion_entries(&self) -> (Vec<MinionRow<'_>>, Vec<MinionRow<'_>>) {
         let matches = Self::minion_row_matcher(self.filter_text_for(Tab::Minions));
+        let responded = self.scan_responded();
+        let states = self.minion_states;
         minion_list_rows(&self.keys, &self.minion_info, &self.minion_index).into_iter()
-            .filter(|r| matches(r))
+            .filter(|r| matches(r) && minion_state(r, &responded).is_some_and(|s| states.shows(s)))
             .partition(|r| !r.timed_out())
+    }
+
+    /// The minions that answered the last fleet scan.
+    fn scan_responded(&self) -> HashSet<&str> {
+        self.fleet_data.as_ref().map_or_else(HashSet::new, |fd| {
+            fd.minions.iter().filter(|m| !m.timed_out).map(|m| m.id.as_str()).collect()
+        })
+    }
+
+    /// How many of the Minions list's rows are in each `MinionState`, filters
+    /// aside: the counts its `x` picker shows.
+    pub fn minion_state_counts(&self) -> Vec<usize> {
+        let responded = self.scan_responded();
+        let mut counts = vec![0; MinionState::ALL.len()];
+        for r in minion_list_rows(&self.keys, &self.minion_info, &self.minion_index) {
+            if let Some(i) = minion_state(&r, &responded).and_then(|s| MinionState::ALL.iter().position(|&x| x == s)) {
+                counts[i] += 1;
+            }
+        }
+        counts
+    }
+
+    /// The IDs the Minions list shows, collapsed timed-out ones included, one
+    /// per line: what `i`/`I` copy and save.
+    pub fn shown_minion_ids(&self) -> String {
+        self.minion_rows_with(false).iter()
+            .filter(|r| !matches!(r, MinionRow::TimedOutHeader))
+            .map(|r| format!("{}\n", r.id()))
+            .collect()
     }
 
     /// The Minions filter: ID, key status and, for minions, OS and version.
@@ -2071,7 +2162,7 @@ impl App {
     /// Rows the Minions list shows, the "Timed out" header included.
     pub fn filtered_minions_len(&self) -> usize {
         let (live, timed_out) = self.minion_entries();
-        if self.hide_timed_out || timed_out.is_empty() {
+        if timed_out.is_empty() {
             live.len()
         } else {
             live.len() + 1 + if self.timed_out_collapsed { 0 } else { timed_out.len() }
@@ -2091,6 +2182,10 @@ impl App {
     /// mixes timed-out minions in with responsive ones. An ID with two keys
     /// (accepted and denied) gets two rows, next to each other by default.
     pub fn minion_rows(&self) -> Vec<MinionRow<'_>> {
+        self.minion_rows_with(self.timed_out_collapsed)
+    }
+
+    fn minion_rows_with(&self, collapsed: bool) -> Vec<MinionRow<'_>> {
         let (mut live, mut timed_out) = self.minion_entries();
         let rank = |r: &MinionRow| match r.key_status() {
             Some(KeyStatus::Accepted) => 0,
@@ -2132,9 +2227,9 @@ impl App {
         };
         live.sort_by(cmp);
         timed_out.sort_by(cmp);
-        if !self.hide_timed_out && !timed_out.is_empty() {
+        if !timed_out.is_empty() {
             live.push(MinionRow::TimedOutHeader);
-            if !self.timed_out_collapsed {
+            if !collapsed {
                 live.extend(timed_out);
             }
         }
@@ -3285,9 +3380,9 @@ pub fn shown_minion_list(lookup: &JidLookup, shown: &[usize]) -> String {
 /// its name says it may not be the whole job: `view-` and the ticked
 /// outcomes (`view-failed-not-returned`), `view-filtered` for a `/` filter
 /// alone, or `all` when nothing is left out.
-pub fn view_file_tag(filter: &str, outcomes: OutcomeFilter) -> String {
-    if !outcomes.is_all() {
-        let ticked: Vec<String> = outcomes.shown().map(|o| o.label().to_lowercase().replace(' ', "-")).collect();
+pub fn view_file_tag<T: Status>(filter: &str, ticks: StatusFilter<T>) -> String {
+    if !ticks.is_all() {
+        let ticked: Vec<String> = ticks.shown().map(|o| o.label().to_lowercase().replace(' ', "-")).collect();
         format!("view-{}", if ticked.is_empty() { "none".to_string() } else { ticked.join("-") })
     } else if !filter.is_empty() {
         "view-filtered".to_string()
@@ -3946,6 +4041,37 @@ mod tests {
         let mut sel = Some(0);
         snap_to_matching_return(&l, &mut sel, "web02", OutcomeFilter::default());
         assert_eq!(sel, Some(2), "the filter can land on a missing minion");
+    }
+
+    #[test]
+    fn each_minions_row_has_one_state_from_its_key_and_the_last_scan() {
+        let key = |id: &str, status| KeyInfo { id: id.to_string(), status, mtime_epoch: 0 };
+        let minion = |id: &str, timed_out| MinionInfo { id: id.to_string(), timed_out, ..Default::default() };
+        let (up, down, unseen) = (minion("web01", false), minion("web02", true), minion("web03", false));
+        let keys = [key("db01", KeyStatus::Accepted), key("new01", KeyStatus::Pending), key("old01", KeyStatus::Rejected), key("web01", KeyStatus::Denied)];
+        let responded: HashSet<&str> = ["web01"].into();
+        let state = |r: MinionRow| minion_state(&r, &responded);
+        assert_eq!(state(MinionRow::Minion(&up)), Some(MinionState::Responsive));
+        assert_eq!(state(MinionRow::Minion(&down)), Some(MinionState::TimedOut));
+        assert_eq!(state(MinionRow::Minion(&unseen)), Some(MinionState::NotScanned), "not in the last scan");
+        assert_eq!(state(MinionRow::Key(&keys[0])), Some(MinionState::NotScanned), "accepted, never seen");
+        assert_eq!(state(MinionRow::Key(&keys[1])), Some(MinionState::Pending));
+        assert_eq!(state(MinionRow::Key(&keys[2])), Some(MinionState::Rejected));
+        assert_eq!(state(MinionRow::Key(&keys[3])), Some(MinionState::Denied), "a denied key next to an accepted one");
+        assert_eq!(state(MinionRow::TimedOutHeader), None);
+    }
+
+    #[test]
+    fn picker_keys_tick_rows_by_number_and_close_on_x() {
+        let mut cursor = 0;
+        assert!(matches!(picker_key(KeyCode::Char('3'), &mut cursor, 3), PickerKey::Toggle(2)));
+        assert!(matches!(picker_key(KeyCode::Char('4'), &mut cursor, 3), PickerKey::Stay), "no fourth row");
+        assert!(matches!(picker_key(KeyCode::Down, &mut cursor, 3), PickerKey::Stay));
+        assert!(matches!(picker_key(KeyCode::Char(' '), &mut cursor, 3), PickerKey::Toggle(1)));
+        assert!(matches!(picker_key(KeyCode::Char('x'), &mut cursor, 3), PickerKey::Close));
+        let mut states = MinionFilter::default();
+        states.toggle(MinionState::Responsive);
+        assert_eq!(view_file_tag("", states), "view-timed-out-not-scanned-pending-rejected-denied");
     }
 
     fn mixed_lookup() -> JidLookup {

@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Show only some outcomes in Job Detail's returns list: `o` opens a picker on the list's bottom edge to tick OK, FAILED and NOT RETURNED (`Space` or `1`–`3`, or a click), each with its count. While something is unticked, the list's top border names what is shown, each outcome in its own color, next to the `/` filter's count
-- Save what Job Detail's list shows with `v` (text) or `V` (JSON), the `o` outcomes and `/` filter applied: the file is named `job-<jid>-view-…` after them (`job-<jid>-view-failed-not-returned.txt`), so it says it may not hold the whole job. `a`/`A` still save every return
+- Show only some outcomes in Job Detail's returns list: `x` opens a picker on the list's bottom edge to tick OK, FAILED and NOT RETURNED (`Space` or `1`–`3`, or a click), each with its count. While something is unticked, the list's top border names what is shown, each outcome in its own color, next to the `/` filter's count
+- Save what Job Detail's list shows with `v` (text) or `V` (JSON), the `x` outcomes and `/` filter applied: the file is named `job-<jid>-view-…` after them (`job-<jid>-view-failed-not-returned.txt`), so it says it may not hold the whole job. `a`/`A` still save every return
 - Copy (`i`) or save (`I`) the IDs of the minions Job Detail lists, one per line, to work through the failed or unreachable ones elsewhere
+- Copy (`i`) or save (`I`) the IDs of the minions the Minions list shows, one per line, its filter and states applied
 
 ### Changed
 
+- Replace the Minions tab's `x` (hide timed-out minions) with a picker like Job Detail's: tick RESPONSIVE and TIMED OUT (whether a minion answered the last fleet scan), NOT SCANNED, PENDING, REJECTED and DENIED, each with its count; the list's top border names what is shown, and Fleet Overview follows it with `f`. `z` still collapses the timed-out ones
 - Show the movement keys (`↑↓`, `PgUp/PgDn`, `Home/End`, `←→`, the Jobs tab's panel switch and Job Cache's `,`/`.` pages) at the top right of every popup's and tab panel's frame instead of at the bottom, as many as fit beside the title, and pair Job Detail's others (`y/Y`, `s/S`, `a/A`, `i/I`), so the bottom edge no longer runs off the screen; `?` lists every key
 - List the minions that didn't return at the end of the file `a` saves in Job Detail
 

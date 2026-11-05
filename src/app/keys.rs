@@ -248,26 +248,19 @@ impl App {
                         return false;
                     }
                     if let Some(cursor) = outcome_picker {
-                        let toggle = match code {
-                            KeyCode::Up | KeyCode::Char('k') => { *cursor = cursor.saturating_sub(1); None }
-                            KeyCode::Down | KeyCode::Char('j') => { *cursor = (*cursor + 1).min(Outcome::ALL.len() - 1); None }
-                            KeyCode::Char(' ') | KeyCode::Char('x') => Some(*cursor),
-                            KeyCode::Char(c @ '1'..='3') => Some(c as usize - '1' as usize),
-                            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('q') => {
-                                *outcome_picker = None;
-                                None
+                        match crate::app::picker_key(code, cursor, Outcome::ALL.len()) {
+                            crate::app::PickerKey::Toggle(i) => {
+                                outcomes.toggle(Outcome::ALL[i]);
+                                if let Some(ref l) = lookup {
+                                    crate::app::snap_to_matching_return(l, selected_return, return_filter, *outcomes);
+                                }
                             }
-                            _ => None,
-                        };
-                        if let Some(i) = toggle {
-                            outcomes.toggle(Outcome::ALL[i]);
-                            if let Some(ref l) = lookup {
-                                crate::app::snap_to_matching_return(l, selected_return, return_filter, *outcomes);
-                            }
+                            crate::app::PickerKey::Close => *outcome_picker = None,
+                            crate::app::PickerKey::Stay => {}
                         }
                         return false;
                     }
-                    if code == KeyCode::Char('o') && lookup.is_some() && !self.job_searching {
+                    if code == KeyCode::Char('x') && lookup.is_some() && !self.job_searching {
                         *outcome_picker = Some(0);
                         return false;
                     }
@@ -1178,6 +1171,18 @@ impl App {
             return false;
         }
 
+        if let Some(cursor) = self.minion_picker.as_mut().filter(|_| self.current_tab == Tab::Minions) {
+            match crate::app::picker_key(code, cursor, MinionState::ALL.len()) {
+                crate::app::PickerKey::Toggle(i) => {
+                    self.minion_states.toggle(MinionState::ALL[i]);
+                    self.clamp_selection();
+                }
+                crate::app::PickerKey::Close => self.minion_picker = None,
+                crate::app::PickerKey::Stay => {}
+            }
+            return false;
+        }
+
         // Filter input mode (live jobs / other tabs)
         if self.is_filtering {
             match code {
@@ -1308,9 +1313,8 @@ impl App {
                 self.save_toggles();
             }
             KeyCode::Char('x') | KeyCode::Char('X') => {
-                if self.current_tab == Tab::Minions && self.fleet_data.is_some() {
-                    self.hide_timed_out = !self.hide_timed_out;
-                    self.clamp_selection();
+                if self.current_tab == Tab::Minions {
+                    self.minion_picker = Some(0);
                 } else if self.current_tab == Tab::Api {
                     self.config.api_hide_stats_polls = !self.config.api_hide_stats_polls;
                     self.save_toggles();
@@ -1320,9 +1324,19 @@ impl App {
                 }
             }
             KeyCode::Char('z') | KeyCode::Char('Z') => {
-                if self.current_tab == Tab::Minions && !self.hide_timed_out {
+                if self.current_tab == Tab::Minions {
                     self.timed_out_collapsed = !self.timed_out_collapsed;
                     self.clamp_selection();
+                }
+            }
+            KeyCode::Char('i') | KeyCode::Char('I') if self.current_tab == Tab::Minions => {
+                let ids = self.shown_minion_ids();
+                if !ids.is_empty() && code == KeyCode::Char('i') {
+                    self.copy_to_clipboard(&ids);
+                    self.clipboard_at = Some(Instant::now());
+                } else if !ids.is_empty() {
+                    let hint = format!("minions-{}", crate::app::view_file_tag(self.filter_text_for(Tab::Minions), self.minion_states));
+                    self.open_save_prompt(ids, &hint, "txt");
                 }
             }
             KeyCode::Char('f') | KeyCode::Char('F') => {
@@ -1609,6 +1623,19 @@ impl App {
             return false;
         }
 
+        if self.current_tab == Tab::Minions && self.minion_picker.is_some() {
+            match crate::app::picker_click(&self.minion_picker_hits, col, row) {
+                crate::app::PickerClick::Toggle(i) => {
+                    self.minion_picker = Some(i);
+                    self.minion_states.toggle(MinionState::ALL[i]);
+                    self.clamp_selection();
+                }
+                crate::app::PickerClick::Outside => self.minion_picker = None,
+                crate::app::PickerClick::Inside => {}
+            }
+            return false;
+        }
+
         if let Some(hit) = self.header_hits.iter().find(|h| h.y == row && col >= h.x0 && col < h.x1).copied() {
             match hit.table {
                 TableId::LiveJobs => self.cache_focus = false,
@@ -1632,7 +1659,7 @@ impl App {
                 // Must match draw_minion_list's own conditions exactly (src/ui/minions.rs)
                 // -- unlike Events/Alerts/Jobs, Minions' own `visible` count is reduced
                 // by this same overhead, not just its data_start.
-                let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Minions).is_empty() || self.hide_timed_out;
+                let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Minions).is_empty();
                 let overhead = if filter_shown { 1 } else { 0 }
                     + if self.admin_mode { 1 } else { 0 };
                 let visible = inner_h.saturating_sub(overhead).saturating_sub(2).max(1);
@@ -1840,8 +1867,7 @@ impl App {
         let hits = &self.job_detail_hits;
         let clicked = hits.rows.iter().find(|&&(y, _)| y == row).map(|&(_, i)| i).filter(|_| inside(hits.list));
         let on_preview = inside(hits.preview);
-        let picked = hits.picker.iter().find(|&&(y, _)| y == row).map(|&(_, o)| o).filter(|_| inside(hits.picker_box));
-        let in_picker = inside(hits.picker_box);
+        let picked = crate::app::picker_click(&hits.picker, col, row);
         let is_double = clicked.is_some() && self.register_click(col, row);
         if self.job_searching {
             return false;
@@ -1856,15 +1882,15 @@ impl App {
         }
         if let Some(cursor) = outcome_picker {
             match picked {
-                Some(o) => {
-                    *cursor = Outcome::ALL.iter().position(|&x| x == o).unwrap_or(0);
-                    outcomes.toggle(o);
+                crate::app::PickerClick::Toggle(i) => {
+                    *cursor = i;
+                    outcomes.toggle(Outcome::ALL[i]);
                     if let Some(l) = lookup {
                         crate::app::snap_to_matching_return(l, selected_return, return_filter, *outcomes);
                     }
                 }
-                None if !in_picker => *outcome_picker = None,
-                None => {}
+                crate::app::PickerClick::Outside => *outcome_picker = None,
+                crate::app::PickerClick::Inside => {}
             }
             return false;
         }
@@ -2190,7 +2216,7 @@ impl App {
                     };
                     self.detail_popup = Some(DetailPopup::Minion(mid, state, None, 0));
                     self.popup_tab = Some(self.current_tab);
-                } else if !self.hide_timed_out {
+                } else {
                     // Header row selected — toggle collapse
                     self.timed_out_collapsed = !self.timed_out_collapsed;
                 }

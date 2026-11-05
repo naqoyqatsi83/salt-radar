@@ -7,19 +7,41 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::{App, MinionHealth, MinionRow};
-use crate::types::{Column, HeaderHit, KeyStatus, MinionInfo, Tab, TableId};
+use crate::types::{Column, HeaderHit, KeyStatus, MinionInfo, MinionState, PickerHits, Status, Tab, TableId};
 
 use super::color;
 use super::table::{cell, fitted_widths, header_line};
 
-pub fn draw_minions(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) {
+/// Draws the tab; returns where the `x` picker went, if open.
+pub fn draw_minions(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) -> PickerHits {
     let cols = super::split_panes(area, app);
 
-    draw_minion_list(f, cols[0], app, focused, hits);
+    let picker = draw_minion_list(f, cols[0], app, focused, hits);
     draw_fleet_overview(f, cols[1], app);
+    picker
 }
 
-fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) {
+fn state_color(s: MinionState) -> ratatui::style::Color {
+    match s {
+        MinionState::Responsive => color::green(),
+        MinionState::TimedOut => color::purple(),
+        MinionState::NotScanned => color::inactive_fg(),
+        MinionState::Pending => color::yellow(),
+        MinionState::Rejected => color::red(),
+        MinionState::Denied => color::orange(),
+    }
+}
+
+fn state_picker_rows(app: &App) -> Vec<super::PickerRow> {
+    MinionState::ALL.iter().zip(app.minion_state_counts()).map(|(&s, count)| super::PickerRow {
+        label: s.label(),
+        color: state_color(s),
+        count,
+        ticked: app.minion_states.shows(s),
+    }).collect()
+}
+
+fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &mut Vec<HeaderHit>) -> PickerHits {
     let mut lines: Vec<Line> = Vec::new();
     let total = app.filtered_minions_len();
     let entries = app.minion_entry_count();
@@ -29,8 +51,6 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
     let filter = if app.is_filtering { &app.filter_text } else { app.filter_text_for(Tab::Minions) };
     if let Some(bar) = super::filter_bar(filter, app.is_filtering, app.input_cursor, format!("{} items", entries), true) {
         lines.push(bar);
-    } else if app.hide_timed_out {
-        lines.push(Line::from(Span::styled("  [Hiding non-responsive minions]", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD))));
     }
 
     // ── Admin status line ─────────────────────────────────────────────────
@@ -123,18 +143,19 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
         ("Home/End", "top/bottom".to_string()),
         ("r", "events".to_string()),
     ];
-    if app.fleet_data.is_some() {
-        hints.push(("x", if app.hide_timed_out { "show timed-out".to_string() } else { "hide timed-out".to_string() }));
-        if !app.hide_timed_out {
-            hints.push(("z", "collapse timed-out".to_string()));
-        }
+    hints.push(("x", "states".to_string()));
+    if app.filtered_timed_out_count() > 0 {
+        hints.push(("z", "collapse timed-out".to_string()));
     }
+    hints.push(("i/I", "minion list".to_string()));
     if app.admin_mode {
         hints.push(("s", "scan fleet".to_string()));
     }
     hints.extend(super::table::hints(TableId::Minions));
-    let block = super::list_block_hinted(
+    let picker_rows = state_picker_rows(app);
+    let block = super::list_block_hinted_ticked(
         format!(" Minions ({}) ", entries),
+        super::ticked_spans(&picker_rows),
         Style::default().fg(if focused { color::border_focus() } else { color::border() }),
         color::main_bg(),
         has_more_above,
@@ -148,6 +169,10 @@ fn draw_minion_list(f: &mut Frame, area: Rect, app: &App, focused: bool, hits: &
         Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
+    match app.minion_picker {
+        Some(cursor) => super::draw_status_picker(f, area, &picker_rows, cursor),
+        None => PickerHits::default(),
+    }
 }
 
 /// The widest text each column shows over all rows, measured on the cells
@@ -290,13 +315,17 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(""));
 
         let pat = if follow { app.filter_text_for(Tab::Minions) } else { "" };
+        let states = if follow { app.minion_states } else { Default::default() };
         let matches = crate::app::App::fleet_minion_matcher(pat);
-        let filtered_minions: Vec<&crate::types::FleetMinion> = fs.minions.iter().filter(|m| matches(m)).collect();
+        let filtered_minions: Vec<&crate::types::FleetMinion> = fs.minions.iter()
+            .filter(|m| matches(m) && states.shows(if m.timed_out { MinionState::TimedOut } else { MinionState::Responsive }))
+            .collect();
+        let filtered = !pat.is_empty() || !states.is_all();
 
-        if !pat.is_empty() {
+        if filtered {
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  Filtered: {} of {} minions match ", filtered_minions.len(), fs.minions.len()),
+                    format!("  Filtered: {} of {} minions{}", filtered_minions.len(), fs.minions.len(), if pat.is_empty() { "" } else { " match " }),
                     Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(pat.to_string(), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
@@ -304,7 +333,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(""));
         }
 
-        if filtered_minions.is_empty() && !pat.is_empty() {
+        if filtered_minions.is_empty() && filtered {
             lines.push(Line::from(Span::styled("  No minions match this filter.", Style::default().fg(color::inactive_fg()))));
         } else if !filtered_minions.is_empty() {
             let total_minions = filtered_minions.len();

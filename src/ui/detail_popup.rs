@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, DetailPopup, PingState};
-use crate::types::{KeyStatus, Outcome, OutcomeFilter, SnifferState};
+use crate::types::{KeyStatus, Outcome, OutcomeFilter, SnifferState, Status};
 
 use super::color;
 
@@ -1096,18 +1096,8 @@ fn draw_job_detail(
         returns_title,
         Style::default().fg(color::title()).add_modifier(Modifier::BOLD),
     )], left_border_color);
-    // What the `o` picker left ticked, each in its own color.
-    if !outcomes.is_all() {
-        let mut ticked: Vec<Span<'static>> = Vec::new();
-        for o in outcomes.shown() {
-            if !ticked.is_empty() {
-                ticked.push(Span::styled(" \u{b7} ", Style::default().fg(color::label_fg())));
-            }
-            ticked.push(Span::styled(o.label(), Style::default().fg(outcome_color(o)).add_modifier(Modifier::BOLD)));
-        }
-        if ticked.is_empty() {
-            ticked.push(Span::styled("nothing ticked", Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
-        }
+    let picker_rows = lookup.as_ref().map_or_else(Vec::new, |l| outcome_picker_rows(l, outcomes));
+    if let Some(ticked) = super::ticked_spans(&picker_rows) {
         title.push(Span::styled("\u{2500}", Style::default().fg(left_border_color)));
         title.extend(super::bracket_title(ticked, left_border_color));
     }
@@ -1217,8 +1207,8 @@ fn draw_job_detail(
             .split(left_inner)[1];
         f.render_widget(filter_bar, filter_area);
     }
-    if let (Some(cursor), Some(l)) = (outcome_picker, lookup.as_ref()) {
-        draw_outcome_picker(f, horiz[0], l, outcomes, cursor, hits);
+    if let Some(cursor) = outcome_picker.filter(|_| !picker_rows.is_empty()) {
+        hits.picker = super::draw_status_picker(f, horiz[0], &picker_rows, cursor);
     }
 
     // ── Build RIGHT panel: return content preview ──
@@ -1387,44 +1377,15 @@ fn outcome_color(o: Outcome) -> Color {
     }
 }
 
-/// Job Detail's `o` picker: a box rising from the returns panel's bottom
-/// edge with a checkbox per outcome and how many minions have it.
-fn draw_outcome_picker(f: &mut Frame, panel: Rect, l: &crate::types::JidLookup, outcomes: OutcomeFilter, cursor: usize, hits: &mut crate::types::JobDetailHits) {
-    let counts = Outcome::ALL.map(|o| (0..l.entry_count()).filter(|&i| l.entry_outcome(i) == o).count());
-    let label_w = Outcome::ALL.iter().map(|o| o.label().len()).max().unwrap_or(0);
-    let count_w = counts.iter().map(|n| n.to_string().len()).max().unwrap_or(1);
-    let inner_w = 3 + 4 + label_w + 2 + count_w + 1;
-    let w = ((inner_w + 2) as u16).min(panel.width.saturating_sub(2));
-    let h = (Outcome::ALL.len() as u16 + 2).min(panel.height);
-    let area = Rect { x: panel.x + 1, y: panel.bottom().saturating_sub(h), width: w, height: h };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color::border_focus()))
-        .title(Line::from(super::bracket_title(vec![Span::styled("Show", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))], color::border_focus())))
-        .style(Style::default().bg(color::popup_bg()));
-    let inner = block.inner(area);
-    f.render_widget(Clear, area);
-    f.render_widget(block, area);
-    let lines: Vec<Line<'static>> = Outcome::ALL.iter().zip(counts).enumerate().map(|(i, (&o, n))| {
-        let at = i == cursor;
-        let mark = if outcomes.shows(o) { "[x]" } else { "[ ]" };
-        let line = Line::from(vec![
-            Span::styled(format!(" {} ", if at { "\u{25b6}" } else { " " }), Style::default().fg(color::cyan())),
-            Span::styled(format!("{} ", mark), Style::default().fg(color::main_fg()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{:<label_w$}", o.label()), Style::default().fg(outcome_color(o)).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {:>count_w$} ", n), Style::default().fg(if n == 0 { color::inactive_fg() } else { color::main_fg() })),
-        ]);
-        if at { color::selected_row(line) } else { line }
-    }).collect();
-    if cursor < inner.height as usize {
-        f.buffer_mut().set_style(Rect { y: inner.y + cursor as u16, height: 1, ..inner }, color::select_bg());
-    }
-    f.render_widget(Paragraph::new(lines), inner);
-    hits.picker_box = area;
-    hits.picker = Outcome::ALL.iter().enumerate()
-        .filter(|&(i, _)| i < inner.height as usize)
-        .map(|(i, &o)| (inner.y + i as u16, o))
-        .collect();
+/// Job Detail's `x` picker rows: every outcome and how many of the job's
+/// minions have it.
+fn outcome_picker_rows(l: &crate::types::JidLookup, outcomes: OutcomeFilter) -> Vec<super::PickerRow> {
+    Outcome::ALL.iter().map(|&o| super::PickerRow {
+        label: o.label(),
+        color: outcome_color(o),
+        count: (0..l.entry_count()).filter(|&i| l.entry_outcome(i) == o).count(),
+        ticked: outcomes.shows(o),
+    }).collect()
 }
 
 /// Column layout of Job Detail's returns list. State runs get right-aligned
@@ -1602,7 +1563,7 @@ fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
         return vec![h("Esc", "cancel filter"), h("Enter", "confirm")];
     }
     if st.picker_open {
-        return vec![h("\u{2191}\u{2193}", "move"), h("Space", "tick"), h("1-3", "tick OK/FAILED/NOT RETURNED"), h("Enter/Esc", "close")];
+        return vec![h("\u{2191}\u{2193}", "move"), h("Space", "tick"), h("1-3", "tick OK/FAILED/NOT RETURNED"), h("x/Enter/Esc", "close")];
     }
     let mut hints = if st.right_focus {
         if st.scroll_mode {
@@ -1620,7 +1581,7 @@ fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
     } else {
         hints.extend([
             h("\u{2191}\u{2193}", "navigate"), h("PgUp/PgDn", "page"), h("Home/End", "top/bottom"),
-            h("Enter", "view"), h("/", "filter"), h("o", "outcomes"),
+            h("Enter", "view"), h("/", "filter"), h("x", "outcomes"),
         ]);
     }
     if st.search_ready {

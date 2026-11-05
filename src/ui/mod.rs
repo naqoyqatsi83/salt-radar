@@ -400,9 +400,15 @@ pub fn more_below(border_color: Color) -> Line<'static> {
 /// Like `titled_block`, but for scrollable list panels: appends a "more
 /// above" hint to the top title and adds a "more below" hint on the
 /// bottom border when the list is windowed in that direction.
-pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool) -> Block<'static> {
+/// What a status picker left ticked (`ticked_spans`) goes in its own
+/// bracket after the title.
+fn list_block(title: impl Into<String>, ticked: Option<Vec<Span<'static>>>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool) -> Block<'static> {
     let border_color = border_style.fg.unwrap_or(color::border());
     let mut top_spans = bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::title()))], border_color);
+    if let Some(ticked) = ticked {
+        top_spans.push(Span::styled("\u{2500}", Style::default().fg(border_color)));
+        top_spans.extend(bracket_title(ticked, border_color));
+    }
     if has_more_above {
         top_spans.push(Span::styled(" \u{25B2} more above ", Style::default().fg(border_color)));
     }
@@ -447,6 +453,70 @@ const NAV_KEYS: &[&str] = &[
 /// rest (for the bottom edge), each in its original order.
 pub fn split_nav_hints<'a>(hints: &[(&'a str, String)]) -> (Hints<'a>, Hints<'a>) {
     hints.iter().cloned().partition(|(k, _)| NAV_KEYS.contains(k))
+}
+
+/// One row of a status picker.
+pub struct PickerRow {
+    pub label: &'static str,
+    pub color: Color,
+    pub count: usize,
+    pub ticked: bool,
+}
+
+/// A status picker (`x`): a box rising from `panel`'s bottom edge with a
+/// checkbox per status and how many rows have it.
+pub fn draw_status_picker(f: &mut Frame, panel: Rect, rows: &[PickerRow], cursor: usize) -> crate::types::PickerHits {
+    let label_w = rows.iter().map(|r| r.label.len()).max().unwrap_or(0);
+    let count_w = rows.iter().map(|r| r.count.to_string().len()).max().unwrap_or(1);
+    let inner_w = 3 + 4 + label_w + 2 + count_w + 1;
+    let w = ((inner_w + 2) as u16).min(panel.width.saturating_sub(2));
+    let h = (rows.len() as u16 + 2).min(panel.height);
+    let area = Rect { x: panel.x + 1, y: panel.bottom().saturating_sub(h), width: w, height: h };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::border_focus()))
+        .title(Line::from(bracket_title(vec![Span::styled("Show", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))], color::border_focus())))
+        .style(Style::default().bg(color::popup_bg()));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let lines: Vec<Line<'static>> = rows.iter().enumerate().map(|(i, r)| {
+        let at = i == cursor;
+        let line = Line::from(vec![
+            Span::styled(format!(" {} ", if at { "\u{25b6}" } else { " " }), Style::default().fg(color::cyan())),
+            Span::styled(if r.ticked { "[x] " } else { "[ ] " }, Style::default().fg(color::main_fg()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<label_w$}", r.label), Style::default().fg(r.color).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {:>count_w$} ", r.count), Style::default().fg(if r.count == 0 { color::inactive_fg() } else { color::main_fg() })),
+        ]);
+        if at { color::selected_row(line) } else { line }
+    }).collect();
+    if cursor < inner.height as usize {
+        f.buffer_mut().set_style(Rect { y: inner.y + cursor as u16, height: 1, ..inner }, color::select_bg());
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+    crate::types::PickerHits {
+        area,
+        rows: (0..rows.len().min(inner.height as usize)).map(|i| (inner.y + i as u16, i)).collect(),
+    }
+}
+
+/// What a picker left ticked, each in its own color, for the list's top
+/// border; `None` while everything is ticked.
+pub fn ticked_spans(rows: &[PickerRow]) -> Option<Vec<Span<'static>>> {
+    if rows.iter().all(|r| r.ticked) {
+        return None;
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for r in rows.iter().filter(|r| r.ticked) {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" \u{b7} ", Style::default().fg(color::label_fg())));
+        }
+        spans.push(Span::styled(r.label, Style::default().fg(r.color).add_modifier(Modifier::BOLD)));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled("nothing ticked", Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
+    }
+    Some(spans)
 }
 
 /// Plain `┤ text ├` border segment for read-only info (no key to
@@ -542,13 +612,19 @@ fn with_nav_hints(block: Block<'static>, nav: &[(&str, String)], border_color: C
 /// (left-aligned, alongside the right-aligned "more below" indicator, which
 /// gives way when the panel is `width` columns too narrow for both).
 pub fn list_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool, hints: &[(&str, String)], width: u16) -> Block<'static> {
+    list_block_hinted_ticked(title, None, border_style, bg, has_more_above, has_more_below, hints, width)
+}
+
+/// `list_block_hinted` with what a status picker left ticked after the title.
+pub fn list_block_hinted_ticked(title: impl Into<String>, ticked: Option<Vec<Span<'static>>>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool, hints: &[(&str, String)], width: u16) -> Block<'static> {
     let border_color = border_style.fg.unwrap_or(color::border());
+    let ticked_w = ticked.as_ref().map_or(0, |t| 1 + 4 + t.iter().map(|s| s.content.chars().count()).sum::<usize>());
     let (nav, hints) = split_nav_hints(hints);
     let hint_line = border_hints(&hints, border_color);
     let has_more_below = has_more_below && fits_beside(hint_line.width(), &more_below(border_color), width);
     let title = title.into();
-    let title_w = title.trim().chars().count() + 4 + if has_more_above { " \u{25B2} more above ".chars().count() } else { 0 };
-    let block = list_block(title, border_style, bg, has_more_above, has_more_below);
+    let title_w = title.trim().chars().count() + 4 + ticked_w + if has_more_above { " \u{25B2} more above ".chars().count() } else { 0 };
+    let block = list_block(title, ticked, border_style, bg, has_more_above, has_more_below);
     let block = with_nav_hints(block, &nav, border_color, title_w, width);
     if hints.is_empty() { block } else { block.title_bottom(hint_line.left_aligned()) }
 }
@@ -608,7 +684,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let mut hits = Vec::new();
     match app.current_tab {
         Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[1], app),
-        Tab::Minions => minions::draw_minions(f, main_layout[1], app, tab_focused, &mut hits),
+        Tab::Minions => app.minion_picker_hits = minions::draw_minions(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Events => events::draw_events(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused, &mut hits),
@@ -1008,8 +1084,9 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Events", key: "`s` / `S`", action: "Save the filtered event list to a file (text / NDJSON)" },
         Shortcut { tab: "Minions", key: "`r`", action: "Minion event/return history popup" },
         Shortcut { tab: "Minions", key: "`s`", action: "Fleet scan (admin mode only)" },
-        Shortcut { tab: "Minions", key: "`x`", action: "Hide/show non-responsive minions" },
-        Shortcut { tab: "Minions", key: "`z`", action: "Collapse/expand timed-out minions into one row (when not hidden)" },
+        Shortcut { tab: "Minions", key: "`x`", action: "Pick the states the list shows: RESPONSIVE / TIMED OUT (answered the last fleet scan or not), NOT SCANNED, PENDING, REJECTED, DENIED; ticked ones are named in its top border" },
+        Shortcut { tab: "Minions", key: "`z`", action: "Collapse/expand timed-out minions into one row" },
+        Shortcut { tab: "Minions", key: "`i` / `I`", action: "Copy / save the IDs of the minions the list shows, one per line" },
         Shortcut { tab: "Minions", key: "`f`", action: "Toggle whether the Fleet Overview breakdown follows the active list filter" },
         Shortcut { tab: "Minions, Jobs, Alerts, API", key: "`o` / `O`", action: "Sort by the next column / reverse the sort (also: click a column header)" },
         Shortcut { tab: "Minions, Events, Jobs, Alerts, API", key: "`v`", action: "Choose which columns the focused table shows, and their order" },
@@ -1047,7 +1124,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`A`", action: "Save every return as one JSON object (job detail)" },
         Shortcut { tab: "", key: "`v`", action: "Save the returns the list shows (the `o` outcomes and `/` filter applied) to one file named `job-<jid>-view-…`, then the shown minions that didn't return (job detail)" },
         Shortcut { tab: "", key: "`V`", action: "Save the returns the list shows as one JSON object (job detail)" },
-        Shortcut { tab: "", key: "`o`", action: "Pick the outcomes the returns list shows: OK, FAILED, NOT RETURNED; ticked ones are named in the list's top border (job detail)" },
+        Shortcut { tab: "", key: "`x`", action: "Pick the outcomes the returns list shows: OK, FAILED, NOT RETURNED; ticked ones are named in the list's top border (job detail)" },
         Shortcut { tab: "", key: "`i`", action: "Copy the listed minions' IDs, one per line (job detail)" },
         Shortcut { tab: "", key: "`I`", action: "Save the listed minions' IDs to a file, one per line (job detail)" },
         Shortcut { tab: "", key: "`j`/`k`", action: "Next/previous return (job detail)" },

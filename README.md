@@ -344,8 +344,9 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Events | `s` / `S` | Save the filtered event list to a file (text / NDJSON) |
 | Minions | `r` | Minion event/return history popup |
 | Minions | `s` | Fleet scan (admin mode only) |
-| Minions | `x` | Hide/show non-responsive minions |
-| Minions | `z` | Collapse/expand timed-out minions into one row (when not hidden) |
+| Minions | `x` | Pick the states the list shows: RESPONSIVE / TIMED OUT (answered the last fleet scan or not), NOT SCANNED, PENDING, REJECTED, DENIED; ticked ones are named in its top border |
+| Minions | `z` | Collapse/expand timed-out minions into one row |
+| Minions | `i` / `I` | Copy / save the IDs of the minions the list shows, one per line |
 | Minions | `f` | Toggle whether the Fleet Overview breakdown follows the active list filter |
 | Minions, Jobs, Alerts, API | `o` / `O` | Sort by the next column / reverse the sort (also: click a column header) |
 | Minions, Events, Jobs, Alerts, API | `v` | Choose which columns the focused table shows, and their order |
@@ -389,7 +390,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `A` | Save every return as one JSON object (job detail) |
 | `v` | Save the returns the list shows (the `o` outcomes and `/` filter applied) to one file named `job-<jid>-view-…`, then the shown minions that didn't return (job detail) |
 | `V` | Save the returns the list shows as one JSON object (job detail) |
-| `o` | Pick the outcomes the returns list shows: OK, FAILED, NOT RETURNED; ticked ones are named in the list's top border (job detail) |
+| `x` | Pick the outcomes the returns list shows: OK, FAILED, NOT RETURNED; ticked ones are named in the list's top border (job detail) |
 | `i` | Copy the listed minions' IDs, one per line (job detail) |
 | `I` | Save the listed minions' IDs to a file, one per line (job detail) |
 | `j`/`k` | Next/previous return (job detail) |
