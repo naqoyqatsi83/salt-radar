@@ -3788,6 +3788,9 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             // show a target count smaller than what's actually come back.
             job.target_count = job.target_count.max(job.returned);
             let minion = evt.tag.rsplit('/').next().unwrap_or("");
+            // A salt-call has one return: a second minion's means a published
+            // job whose `/new` wasn't seen (it started before salt-radar did).
+            if job.local && minion != job.tgt { job.local = false; }
             if job.local || minion.is_empty() { return None; }
             let secs = (evt.ts - job.created_epoch).max(0.0);
             let late_median = match &mut job.lag {
@@ -3823,6 +3826,38 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
         }
     }
     None
+}
+
+/// Fills in a Live Jobs job first seen by a return from the agent's
+/// `job_load` reply: a published job gets its function, target, targeted
+/// minions and start from the job cache, and its counts from the returns
+/// cached so far when those are more than the ones seen live (some came in
+/// before salt-radar started). A salt-call run stays as it is.
+fn apply_job_load(job: &mut JobEntry, data: &serde_json::Value) {
+    if !data["found"].as_bool().unwrap_or(false) || data["salt_call"].as_bool().unwrap_or(true) {
+        return;
+    }
+    job.fun = data["fun"].as_str().unwrap_or("?").to_string();
+    job.tgt = match &data["tgt"] {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(ids) => ids.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","),
+        _ => "?".to_string(),
+    };
+    (job.args, job.test_run) = format_job_args(&job.fun, &data["arg"]);
+    let minions = data["minions"].as_array()
+        .map(|a| a.iter().filter_map(|m| m.as_str()).collect::<HashSet<_>>().len())
+        .unwrap_or(0);
+    let outcomes = data["outcomes"].as_object();
+    let cached = outcomes.map_or(0, |o| o.len());
+    if cached >= job.returned {
+        let ok = outcomes.map_or(0, |o| o.values().filter(|v| v.as_bool().unwrap_or(false)).count());
+        (job.returned, job.succeeded, job.failed) = (cached, ok, cached - ok);
+    }
+    job.target_count = minions.max(job.returned);
+    job.local = false;
+    if let Some(start) = data["start_epoch"].as_f64().filter(|s| *s > 0.0) {
+        job.created_epoch = start;
+    }
 }
 
 /// Settles a job's lag once it's complete or older than `straggler_secs`,
@@ -4368,6 +4403,37 @@ mod tests {
         assert_eq!(jobs[0].lag, JobLag::Settled(None));
         let local = SaltEvent { tag: "salt/job/3/ret/a".into(), ts: 5.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
         assert_eq!(track_job_from_event(&mut jobs, &mut index, &local), None, "no publish seen, no timing");
+    }
+
+    #[test]
+    fn a_return_without_a_publish_is_local_until_a_second_minion_returns() {
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        let ret = |mid: &str| SaltEvent { tag: format!("salt/job/7/ret/{mid}"), ts: 5.0, data: json!({"id": mid, "fun": "test.sleep", "return": true}) };
+        track_job_from_event(&mut jobs, &mut index, &ret("a"));
+        assert!(jobs[0].local && jobs[0].tgt == "a", "looks like a salt-call so far");
+        track_job_from_event(&mut jobs, &mut index, &ret("b"));
+        assert!(!jobs[0].local, "a salt-call doesn't get two returns");
+        assert_eq!((jobs[0].returned, jobs[0].target_count), (2, 2));
+    }
+
+    #[test]
+    fn job_load_fills_in_a_job_published_before_salt_radar_started() {
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        let ret = SaltEvent { tag: "salt/job/20261105214019000000/ret/a".into(), ts: 5.0, data: json!({"id": "a", "fun": "test.sleep", "return": true}) };
+        track_job_from_event(&mut jobs, &mut index, &ret);
+        let mut salt_call = jobs[0].clone();
+        apply_job_load(&mut jobs[0], &json!({
+            "found": true, "salt_call": false, "fun": "test.sleep", "arg": [131], "tgt": ["a", "b", "c"],
+            "minions": ["a", "b", "c"], "outcomes": {"a": true, "b": false}, "start_epoch": 1793914819.0,
+        }));
+        let job = &jobs[0];
+        assert!(!job.local);
+        assert_eq!((job.tgt.as_str(), job.args.as_str()), ("a,b,c", "131"));
+        assert_eq!((job.target_count, job.returned, job.succeeded, job.failed), (3, 2, 1, 1), "b returned before salt-radar started");
+        assert_eq!(job.created_epoch, 1793914819.0);
+        assert_eq!(job_state(job, 120), JobState::Failed);
+        apply_job_load(&mut salt_call, &json!({"found": true, "salt_call": true, "fun": "test.version", "tgt": "a", "minions": ["a"]}));
+        assert!(salt_call.local, "a salt-call stays local");
     }
 
     #[test]

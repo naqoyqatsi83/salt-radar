@@ -47,6 +47,11 @@ impl App {
                                 self.master_config_error = Some(data["error"].as_str().unwrap_or("unknown error").to_string());
                             }
                         }
+                        "job_load" if ok => {
+                            if let Some(&i) = data["jid"].as_str().and_then(|jid| self.jobs_index.get(jid)) {
+                                apply_job_load(&mut self.jobs[i], &data);
+                            }
+                        }
                         "minion_cache_list" if ok => {
                             let mut minions = parse_minion_list(&data);
                             for minion in &mut minions {
@@ -597,11 +602,18 @@ impl App {
                     }
 
                     // Track live jobs from events
+                    let mut unknown_jid = None;
                     if let Some(evt) = self.events.back() {
+                        let known = self.jobs.len();
                         if let Some(timing) = track_job_from_event(&mut self.jobs, &mut self.jobs_index, evt) {
                             let fun = evt.data["fun"].as_str().unwrap_or("").to_string();
                             self.record_return_timing(timing, &fun);
                         }
+                        // A return for a job whose publish wasn't seen: ask the job cache what it is.
+                        unknown_jid = self.jobs.get(known).filter(|j| j.local).map(|j| j.jid.clone());
+                    }
+                    if let Some(jid) = unknown_jid {
+                        self.send_agent_cmd("job_load", Some(serde_json::json!({"jid": jid})));
                     }
 
                     // Sniffer: inject matching events into sniffer buffer

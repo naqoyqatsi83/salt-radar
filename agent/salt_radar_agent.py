@@ -1941,12 +1941,49 @@ def _cached_job_targets(opts, jid):
         return []
 
 
-def _cached_job_outcomes(opts, jid):
-    """Each minion's stored `(retcode, success)` for a job, read from the
-    local_cache job directory. `jobs.lookup_jid` returns only the return
-    data, so a command that printed its error and exited non-zero (e.g.
-    `/bin/sh: uptime: not found`, rc 127) would otherwise read as a success.
-    Empty for other job-cache backends or when the files can't be read."""
+def _derive_retcode_and_success(return_val):
+    """`(retcode, success)` read from a return's data, the same rule as
+    salt-radar's `derive_success_retcode`: a failed state, a `False`, a
+    nonzero `retcode` or an `ERROR:` string is a failure."""
+    if isinstance(return_val, dict):
+        result_val = return_val.get("result")
+        if result_val is not None:
+            if result_val is False:
+                return (1, False)
+            if isinstance(result_val, bool):
+                return (0, True)
+        elif return_val and all(
+            isinstance(v, dict) and ("result" in v or "__run_num__" in v)
+            for v in return_val.values()
+        ):
+            # state.apply-style return: a dict keyed by state ID, each
+            # value its own per-state result dict -- there's no
+            # top-level "result"/"retcode" to find above, so without
+            # this the whole job silently defaulted to "success" (rc=0)
+            # even when every state inside had result=False.
+            any_failed = any(v.get("result") is False for v in return_val.values())
+            return (1, False) if any_failed else (0, True)
+        rc = return_val.get("retcode", 0)
+        if not isinstance(rc, int):
+            try:
+                rc = int(rc)
+            except (ValueError, TypeError):
+                rc = 0
+        return (rc, rc == 0)
+    if return_val is None:
+        return (1, False)
+    if isinstance(return_val, bool):
+        return (0, return_val)
+    # Salt returns error strings starting with "ERROR:" for cmd.run etc.
+    if isinstance(return_val, str) and return_val.startswith(("ERROR:", "error:")):
+        return (1, False)
+    return (0, True)
+
+
+def _cached_returns(opts, jid):
+    """Each minion's stored return for a job (`retcode`, `success`,
+    `return`), read from the local_cache job directory. Empty for other
+    job-cache backends or when the files can't be read."""
     returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
     if returner != "local_cache":
         return {}
@@ -1957,19 +1994,66 @@ def _cached_job_outcomes(opts, jid):
 
         local_cache_mod.__opts__ = opts
         jid_dir = jid_mod.jid_dir(jid, local_cache_mod._job_dir(), opts["hash_type"])
-        outcomes = {}
+        stored = {}
         for mid in os.listdir(jid_dir):
             path = os.path.join(jid_dir, mid, local_cache_mod.RETURN_P)
             if not os.path.isfile(path):
                 continue
             with open(path, "rb") as fh:
-                stored = salt.payload.load(fh)
-            if isinstance(stored, dict):
-                outcomes[mid] = (stored.get("retcode"), stored.get("success"))
-        return outcomes
+                value = salt.payload.load(fh)
+            if isinstance(value, dict):
+                stored[mid] = value
+        return stored
     except Exception:
         traceback.print_exc(file=sys.stderr)
         return {}
+
+
+def _cached_job_outcomes(opts, jid):
+    """Each minion's stored `(retcode, success)` for a job. `jobs.lookup_jid`
+    returns only the return data, so a command that printed its error and
+    exited non-zero (e.g. `/bin/sh: uptime: not found`, rc 127) would
+    otherwise read as a success."""
+    return {mid: (r.get("retcode"), r.get("success")) for mid, r in _cached_returns(opts, jid).items()}
+
+
+def _stored_return_ok(stored):
+    """Whether a cached return succeeded, by the rule Live Jobs applies to a
+    return event: Salt's `success` and `retcode`, plus what the return data
+    shows (a failed state, an `ERROR:` string)."""
+    rc, ok = _derive_retcode_and_success(stored.get("return"))
+    return stored.get("success") is not False and (stored.get("retcode") or 0) == 0 and ok and rc == 0
+
+
+def cmd_job_load(opts, req):
+    """A job salt-radar saw a return for but never its publish (it started
+    before salt-radar did, or its `/new` event was dropped): what the master
+    stored for it in the local_cache job cache. A `salt-call` run has no
+    publish; the master stores its return as the load (`jid: "req"`), so
+    that load has the return's `id` and `return`, which a published job's
+    never has: `salt_call` tells the two apart. `outcomes` is every return
+    cached so far, minion -> success."""
+    jid = str(req.get("jid", ""))
+    returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
+    data = {"jid": jid, "found": False}
+    if jid and returner == "local_cache":
+        import salt.returners.local_cache as local_cache_mod
+
+        local_cache_mod.__opts__ = opts
+        load = local_cache_mod.get_load(jid) or {}
+        if load.get("fun"):
+            outcomes = {mid: _stored_return_ok(r) for mid, r in _cached_returns(opts, jid).items()}
+            data.update({
+                "found": True,
+                "salt_call": "return" in load and "id" in load,
+                "fun": load.get("fun"),
+                "arg": load.get("arg", load.get("fun_args", [])),
+                "tgt": load.get("tgt", ""),
+                "minions": [str(m) for m in load.get("Minions", [])],
+                "outcomes": outcomes,
+                "start_epoch": _jid_to_epoch(jid),
+            })
+    result(req["id"], "job_load", ok=True, data=data)
 
 
 def cmd_jid_lookup(opts, req):
@@ -2067,38 +2151,6 @@ def cmd_jid_lookup(opts, req):
     # See salt.runner.Runner.run()'s own identical check.
     if isinstance(lookup_data, dict) and set(lookup_data.keys()) == {"outputter", "data"}:
         lookup_data = lookup_data["data"]
-
-    def _derive_retcode_and_success(return_val):
-        if isinstance(return_val, dict):
-            result_val = return_val.get("result")
-            if result_val is not None:
-                if result_val is False:
-                    return (1, False)
-                if isinstance(result_val, bool):
-                    return (0, True)
-            elif return_val and all(
-                isinstance(v, dict) and ("result" in v or "__run_num__" in v)
-                for v in return_val.values()
-            ):
-                # state.apply-style return: a dict keyed by state ID, each
-                # value its own per-state result dict -- there's no
-                # top-level "result"/"retcode" to find above, so without
-                # this the whole job silently defaulted to "success" (rc=0)
-                # even when every state inside had result=False.
-                any_failed = any(v.get("result") is False for v in return_val.values())
-                return (1, False) if any_failed else (0, True)
-            rc = return_val.get("retcode", 0)
-            if not isinstance(rc, int):
-                try:
-                    rc = int(rc)
-                except (ValueError, TypeError):
-                    rc = 0
-            return (rc, rc == 0)
-        if return_val is None:
-            return (1, False)
-        if isinstance(return_val, bool):
-            return (0, return_val)
-        return (0, True)
 
     import re
     _ansi_re = re.compile("\x1b\\[[0-9;]*m")
@@ -2658,6 +2710,7 @@ HANDLERS = {
     "zmq_ping": cmd_zmq_ping,
     "job_ping": cmd_job_ping,
     "jid_lookup": cmd_jid_lookup,
+    "job_load": cmd_job_load,
     "subscribe_events": cmd_subscribe_events,
     "unsubscribe_events": cmd_unsubscribe_events,
     "fleet_scan": cmd_fleet_scan,
