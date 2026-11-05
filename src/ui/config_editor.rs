@@ -157,13 +157,20 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     ),
                 ]));
                 if editing {
-                    let (items, shown) = crate::app::column_editor_items(&field.label_value, all);
+                    let fallback;
+                    let items: &[&str] = if state.column_order.len() == all.len() {
+                        &state.column_order
+                    } else {
+                        fallback = crate::app::column_editor_items(&field.label_value, all).0;
+                        &fallback
+                    };
                     for (i, item) in items.iter().enumerate() {
                         let item_sel = i == state.choice_idx;
                         let item_style = if item_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
                         let marker = if item_sel { "\u{25B8} " } else { "  " };
-                        let check = if i < shown { "[x]" } else { "[ ]" };
-                        let fg = if item_sel { color::yellow() } else if i < shown { color::main_fg() } else { color::inactive_fg() };
+                        let shown = crate::app::column_shown(&field.label_value, item);
+                        let check = if shown { "[x]" } else { "[ ]" };
+                        let fg = if item_sel { color::yellow() } else if shown { color::main_fg() } else { color::inactive_fg() };
                         if item_sel { sel_line = lines.len(); }
                         lines.push(Line::from(Span::styled(
                             format!("      {}{} {}", marker, check, item),

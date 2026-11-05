@@ -527,6 +527,42 @@ pub fn column_editor_items(value: &str, all: &[&'static str]) -> (Vec<&'static s
     (items, shown)
 }
 
+/// Whether the Columns field's `value` shows `key`.
+pub fn column_shown(value: &str, key: &str) -> bool {
+    value.split(',').any(|k| k.trim() == key)
+}
+
+/// A key pressed on the Columns editor's list. `order` is every column as
+/// listed, shown or not, and stays put when one is ticked: only `+`/`-` move
+/// a row. `value` (the shown columns, in list order) follows; at least one
+/// stays shown. Returns the new cursor.
+pub fn column_editor_key(code: KeyCode, order: &mut [&'static str], value: &mut String, cursor: usize) -> usize {
+    let n = order.len();
+    let i = cursor.min(n.saturating_sub(1));
+    let mut shown: Vec<&str> = order.iter().copied().filter(|k| column_shown(value, k)).collect();
+    let i = match code {
+        KeyCode::Up | KeyCode::Char('k') => i.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => (i + 1).min(n.saturating_sub(1)),
+        KeyCode::PageUp => i.saturating_sub(config_editor::PICKER_PAGE),
+        KeyCode::PageDown => (i + config_editor::PICKER_PAGE).min(n.saturating_sub(1)),
+        KeyCode::Home => 0,
+        KeyCode::End => n.saturating_sub(1),
+        KeyCode::Char('+') | KeyCode::Char('=') if i > 0 => { order.swap(i, i - 1); i - 1 }
+        KeyCode::Char('-') | KeyCode::Char('_') if i + 1 < n => { order.swap(i, i + 1); i + 1 }
+        KeyCode::Char(' ') if n > 0 => {
+            match shown.iter().position(|k| *k == order[i]) {
+                Some(at) if shown.len() > 1 => { shown.remove(at); }
+                Some(_) => {}
+                None => shown.push(order[i]),
+            }
+            i
+        }
+        _ => i,
+    };
+    *value = order.iter().copied().filter(|k| shown.contains(k)).collect::<Vec<_>>().join(",");
+    i
+}
+
 pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
 /// `[events] time_format`: only the time for today's events, or always the full date.
 pub const EVENT_TIME_FORMATS: &[&str] = &["today", "full"];
@@ -4041,6 +4077,27 @@ mod tests {
         let mut sel = Some(0);
         snap_to_matching_return(&l, &mut sel, "web02", OutcomeFilter::default());
         assert_eq!(sel, Some(2), "the filter can land on a missing minion");
+    }
+
+    #[test]
+    fn ticking_a_column_leaves_it_where_it_is() {
+        let all = ["id", "os", "salt", "arch", "seen"];
+        let (mut order, _) = column_editor_items("id,salt", &all);
+        assert_eq!(order, ["id", "salt", "os", "arch", "seen"]);
+        let mut value = "id,salt".to_string();
+        let at = column_editor_key(KeyCode::Char(' '), &mut order, &mut value, 4);
+        assert_eq!((at, value.as_str()), (4, "id,salt,seen"));
+        let at = column_editor_key(KeyCode::Char(' '), &mut order, &mut value, 3);
+        assert_eq!((at, value.as_str()), (3, "id,salt,arch,seen"), "shown in list order, not in the order ticked");
+        assert_eq!(order, ["id", "salt", "os", "arch", "seen"]);
+        let at = column_editor_key(KeyCode::Char('+'), &mut order, &mut value, 2);
+        assert_eq!((at, value.as_str()), (1, "id,salt,arch,seen"), "a hidden column moves too");
+        assert_eq!(order, ["id", "os", "salt", "arch", "seen"]);
+        column_editor_key(KeyCode::Char(' '), &mut order, &mut value, 1);
+        assert_eq!(value, "id,os,salt,arch,seen");
+        let mut one = "id".to_string();
+        column_editor_key(KeyCode::Char(' '), &mut order, &mut one, 0);
+        assert_eq!(one, "id", "the last shown column stays");
     }
 
     #[test]

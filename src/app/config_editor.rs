@@ -181,6 +181,9 @@ pub struct ConfigEditorState {
     pub themes: Vec<String>,
     /// Open file browser for the selected `Path` field.
     pub browser: Option<PathBrowser>,
+    /// While a Columns field is edited: every column in the order its list
+    /// shows them, ticked or not.
+    pub column_order: Vec<&'static str>,
 }
 
 impl ConfigEditorState {
@@ -200,7 +203,7 @@ impl ConfigEditorState {
 
 /// Rows PageUp/PageDown move in the Config Editor's pickers, the same step
 /// as in its settings list.
-const PICKER_PAGE: usize = 5;
+pub(crate) const PICKER_PAGE: usize = 5;
 
 impl App {
     /// Installs the theme to draw with: the configured one, or while the
@@ -249,6 +252,9 @@ impl App {
             if let Some(idx) = s.fields.iter().position(|f| f.label == table.config_key()) {
                 s.selected = idx;
                 s.input = s.fields[idx].label_value.clone();
+                if let ConfigFieldKind::Columns(all) = s.fields[idx].kind {
+                    s.column_order = crate::app::column_editor_items(&s.input, all).0;
+                }
                 s.choice_idx = 0;
                 s.editing = true;
                 self.input_cursor = None;
@@ -370,6 +376,7 @@ impl App {
             confirm_discard: false,
             themes: crate::config::theme_names(),
             browser: None,
+            column_order: Vec::new(),
         });
         if let Some(ref mut s) = self.config_editor {
             s.original = s.fields.iter().map(|f| f.label_value.clone()).collect();
@@ -597,46 +604,17 @@ impl App {
                 }
                 if let Some(ConfigFieldKind::Columns(all)) = s.fields.get(s.selected).map(|f| f.kind) {
                     let mut finish: Option<bool> = None;
+                    if s.column_order.len() != all.len() {
+                        s.column_order = column_editor_items(&s.fields[s.selected].label_value, all).0;
+                    }
                     if let Some(field) = s.fields.get_mut(s.selected) {
-                        let (mut items, shown) = column_editor_items(&field.label_value, all);
-                        let i = s.choice_idx.min(items.len().saturating_sub(1));
                         match code {
-                            KeyCode::Up | KeyCode::Char('k') => s.choice_idx = i.saturating_sub(1),
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                if i + 1 < items.len() { s.choice_idx = i + 1; }
-                            }
-                            KeyCode::PageUp => s.choice_idx = i.saturating_sub(PICKER_PAGE),
-                            KeyCode::PageDown => s.choice_idx = (i + PICKER_PAGE).min(items.len().saturating_sub(1)),
-                            KeyCode::Home => s.choice_idx = 0,
-                            KeyCode::End => s.choice_idx = items.len().saturating_sub(1),
-                            KeyCode::Char('+') | KeyCode::Char('=') if i > 0 && i < shown => {
-                                items.swap(i, i - 1);
-                                field.label_value = items[..shown].join(",");
-                                s.choice_idx = i - 1;
-                            }
-                            KeyCode::Char('-') | KeyCode::Char('_') if i + 1 < shown => {
-                                items.swap(i, i + 1);
-                                field.label_value = items[..shown].join(",");
-                                s.choice_idx = i + 1;
-                            }
-                            KeyCode::Char(' ') => {
-                                let key = items[i];
-                                let mut visible = items[..shown].to_vec();
-                                if i < shown {
-                                    if shown > 1 { visible.remove(i); }
-                                } else {
-                                    visible.push(key);
-                                }
-                                field.label_value = visible.join(",");
-                                let (items, _) = column_editor_items(&field.label_value, all);
-                                s.choice_idx = items.iter().position(|k| *k == key).unwrap_or(0);
-                            }
                             KeyCode::Enter => finish = Some(true),
                             KeyCode::Esc => {
                                 field.label_value = s.input.clone();
                                 finish = Some(false);
                             }
-                            _ => {}
+                            _ => s.choice_idx = crate::app::column_editor_key(code, &mut s.column_order, &mut field.label_value, s.choice_idx),
                         }
                     }
                     let quick = s.quick;
@@ -844,6 +822,9 @@ impl App {
                                     // s.input snapshots the pre-edit order so Esc can restore it —
                                     // +/- mutate field.label_value live so the list re-renders in
                                     // its new order immediately, not just on confirm.
+                                    if let ConfigFieldKind::Columns(all) = kind {
+                                        s.column_order = crate::app::column_editor_items(&val, all).0;
+                                    }
                                     s.input = val;
                                     s.choice_idx = 0;
                                 } else {

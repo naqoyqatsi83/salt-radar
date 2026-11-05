@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace the Minions tab's `x` (hide timed-out minions) with a picker like Job Detail's: tick RESPONSIVE and TIMED OUT (whether a minion answered the last fleet scan), NOT SCANNED, PENDING, REJECTED and DENIED, each with its count; the list's top border names what is shown, and Fleet Overview follows it with `f`. `z` still collapses the timed-out ones
 - Show the movement keys (`↑↓`, `PgUp/PgDn`, `Home/End`, `←→`, the Jobs tab's panel switch and Job Cache's `,`/`.` pages) at the top right of every popup's and tab panel's frame instead of at the bottom, as many as fit beside the title, and pair Job Detail's others (`y/Y`, `s/S`, `a/A`, `i/I`), so the bottom edge no longer runs off the screen; `?` lists every key
 - List the minions that didn't return at the end of the file `a` saves in Job Detail
+- Keep a column in its place in the column picker (`v`) when you tick or untick it, instead of moving it to the end of the ticked ones: the table shows the ticked columns in the list's order, and `+`/`-` move any column, shown or not
 
 ## [0.10.1] - 2026-10-30
 
