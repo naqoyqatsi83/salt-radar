@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0-rc3] - 2026-11-05
+
 ### Fixed
 
 - Show a job published before salt-radar started as the master job it is in Live Jobs, instead of a `local` (salt-call) job of the minion that returned first, which then counted every other minion's return: its function, target, targeted minions and the returns that came in earlier are read from the job cache, and a second minion's return alone already rules out a salt-call
