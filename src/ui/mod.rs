@@ -439,7 +439,7 @@ pub type Hints<'a> = Vec<(&'a str, String)>;
 /// Keys that only move around, which popups show on their top edge so the
 /// bottom one keeps the actions.
 const NAV_KEYS: &[&str] = &[
-    "\u{2191}\u{2193}", "\u{2190}\u{2192}", "\u{2190}", "PgUp/PgDn", "Home/End",
+    "\u{2191}\u{2193}", "\u{2190}\u{2192}", "\u{2190}", "\u{2192}", "PgUp/PgDn", "Home/End", ", .",
     "\u{2191}\u{2193}/PgUp/PgDn", "Tab/\u{2190}\u{2192}",
 ];
 
@@ -519,11 +519,23 @@ pub fn value_hint(dec_key: &str, value: impl Into<String>, inc_key: &str, border
     ]
 }
 
-/// Like `titled_block`, with btop-style hints embedded in the bottom border.
-pub fn titled_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, hints: &[(&str, String)]) -> Block<'static> {
+/// Like `titled_block`, with btop-style hints embedded in the border: the
+/// movement keys at the top right (when they fit beside the title in a
+/// panel `width` columns wide), the rest at the bottom.
+pub fn titled_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, hints: &[(&str, String)], width: u16) -> Block<'static> {
     let border_color = border_style.fg.unwrap_or(color::border());
-    let block = titled_block(title, border_style, bg);
-    if hints.is_empty() { block } else { block.title_bottom(border_hints(hints, border_color).left_aligned()) }
+    let title = title.into();
+    let title_w = title.trim().chars().count() + 4;
+    let (nav, hints) = split_nav_hints(hints);
+    let block = with_nav_hints(titled_block(title, border_style, bg), &nav, border_color, title_w, width);
+    if hints.is_empty() { block } else { block.title_bottom(border_hints(&hints, border_color).left_aligned()) }
+}
+
+/// Adds as many of `nav` (movement keys) to the top right of `block` as fit
+/// beside the `used` columns its top-left title takes.
+fn with_nav_hints(block: Block<'static>, nav: &[(&str, String)], border_color: Color, used: usize, width: u16) -> Block<'static> {
+    let fit = (0..=nav.len()).rev().find(|&n| fits_beside(used, &border_hints(&nav[..n], border_color), width)).unwrap_or(0);
+    if fit == 0 { block } else { block.title_top(border_hints(&nav[..fit], border_color).right_aligned()) }
 }
 
 /// Like `list_block`, with btop-style hints embedded in the bottom border
@@ -531,9 +543,13 @@ pub fn titled_block_hinted(title: impl Into<String>, border_style: Style, bg: Co
 /// gives way when the panel is `width` columns too narrow for both).
 pub fn list_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool, hints: &[(&str, String)], width: u16) -> Block<'static> {
     let border_color = border_style.fg.unwrap_or(color::border());
-    let hint_line = border_hints(hints, border_color);
+    let (nav, hints) = split_nav_hints(hints);
+    let hint_line = border_hints(&hints, border_color);
     let has_more_below = has_more_below && fits_beside(hint_line.width(), &more_below(border_color), width);
+    let title = title.into();
+    let title_w = title.trim().chars().count() + 4 + if has_more_above { " \u{25B2} more above ".chars().count() } else { 0 };
     let block = list_block(title, border_style, bg, has_more_above, has_more_below);
+    let block = with_nav_hints(block, &nav, border_color, title_w, width);
     if hints.is_empty() { block } else { block.title_bottom(hint_line.left_aligned()) }
 }
 
@@ -1501,6 +1517,26 @@ mod tests {
         let mut buf = ratatui::buffer::Buffer::empty(area);
         ratatui::widgets::Widget::render(block, area, &mut buf);
         (0..width).map(|x| buf[(x, 2)].symbol().to_string()).collect()
+    }
+
+    fn top_border(block: Block<'static>, width: u16) -> String {
+        let area = Rect::new(0, 0, width, 3);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(block, area, &mut buf);
+        (0..width).map(|x| buf[(x, 0)].symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn movement_hints_go_to_the_top_edge_when_they_fit_beside_the_title() {
+        let hints = [("/", "filter".to_string()), ("PgUp/PgDn", "page".to_string())];
+        let wide = list_block_hinted(" Jobs ", Style::default(), Color::Reset, false, false, &hints, 60);
+        assert!(top_border(wide.clone(), 60).contains("PgUp/PgDn:page"));
+        assert!(!bottom_border(wide, 60).contains("PgUp"));
+        let narrow = top_border(list_block_hinted(" Jobs ", Style::default(), Color::Reset, false, false, &hints, 24), 24);
+        assert!(narrow.contains("Jobs") && !narrow.contains("PgUp"), "{narrow}");
+        let two = [("PgUp/PgDn", "page".to_string()), ("Home/End", "top/bottom".to_string())];
+        let partly = top_border(list_block_hinted(" Jobs ", Style::default(), Color::Reset, false, false, &two, 40), 40);
+        assert!(partly.contains("PgUp/PgDn:page") && !partly.contains("Home"), "the first keys that fit stay: {partly}");
     }
 
     #[test]

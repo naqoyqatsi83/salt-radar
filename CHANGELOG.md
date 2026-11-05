@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Show the movement keys (`↑↓`, `PgUp/PgDn`, `Home/End`, `←→`) at the top right of every popup's frame instead of at the bottom, and pair Job Detail's others (`y/Y`, `s/S`, `a/A`, `i/I`), so the bottom edge no longer runs off the screen; `?` lists every key
+- Show the movement keys (`↑↓`, `PgUp/PgDn`, `Home/End`, `←→`, the Jobs tab's panel switch and Job Cache's `,`/`.` pages) at the top right of every popup's and tab panel's frame instead of at the bottom, as many as fit beside the title, and pair Job Detail's others (`y/Y`, `s/S`, `a/A`, `i/I`), so the bottom edge no longer runs off the screen; `?` lists every key
 - List the minions that didn't return at the end of the file `a` saves in Job Detail
 
 ## [0.10.1] - 2026-10-30

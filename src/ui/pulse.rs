@@ -37,6 +37,7 @@ fn draw_dot_panel(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
         Style::default().fg(if focused { color::border_focus() } else { color::border() }),
         color::main_bg(),
         &hints,
+        area.width,
     );
 
     let inner = block.inner(area);

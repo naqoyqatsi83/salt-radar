@@ -234,7 +234,7 @@ fn draw_fleet_overview(f: &mut Frame, area: Rect, app: &App) {
     let hints: Vec<(&str, String)> = vec![
         ("f", format!("follow filter: {}", if follow { "on" } else { "off" })),
     ];
-    let block = super::titled_block_hinted(" Fleet Overview ", Style::default().fg(color::border()), color::main_bg(), &hints);
+    let block = super::titled_block_hinted(" Fleet Overview ", Style::default().fg(color::border()), color::main_bg(), &hints, area.width);
 
     let inner = block.inner(area);
     f.render_widget(block, area);

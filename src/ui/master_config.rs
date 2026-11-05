@@ -341,7 +341,7 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
 /// wrapped under their line number when `wrap`.
 fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig, &ConfigSetting)>, wrap: bool) {
     let Some((mc, s)) = setting else {
-        let block = super::titled_block_hinted(" Source ", Style::default().fg(color::border()), color::main_bg(), &[]);
+        let block = super::titled_block_hinted(" Source ", Style::default().fg(color::border()), color::main_bg(), &[], area.width);
         f.render_widget(block, area);
         return;
     };
@@ -352,7 +352,7 @@ fn draw_setting_source(f: &mut Frame, area: Rect, setting: Option<(&MasterConfig
         None => format!(" {} ", s.kind.label()),
     };
     let hints = [("w", if wrap { "no wrap" } else { "wrap" }.to_string())];
-    let block = super::titled_block_hinted(title, Style::default().fg(color::border()), color::main_bg(), &hints);
+    let block = super::titled_block_hinted(title, Style::default().fg(color::border()), color::main_bg(), &hints, area.width);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
