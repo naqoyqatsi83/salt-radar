@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Save what Job Detail's list shows with `v` (text) or `V` (JSON), the `x` outcomes and `/` filter applied: the file is named `job-<jid>-view-…` after them (`job-<jid>-view-failed-not-returned.txt`), so it says it may not hold the whole job. `a`/`A` still save every return
 - Copy (`i`) or save (`I`) the IDs of the minions Job Detail lists, one per line, to work through the failed or unreachable ones elsewhere
 - Copy (`i`) or save (`I`) the IDs of the minions the Minions list shows, one per line, its filter and states applied
+- Add the `TTY` theme, a port of btop's built-in one: only the terminal's 16 colors, so salt-radar takes on the terminal's own palette, with the graphs' level colors in solid bands. Theme files can name those 16 colors (`red`, `bright_red`, …) besides `#RRGGBB`
 
 ### Changed
 

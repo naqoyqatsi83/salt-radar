@@ -227,11 +227,25 @@ fn parse_theme_line(line: &str) -> Option<(&str, &str)> {
     Some((key.trim(), value.trim_matches('"')))
 }
 
-/// `#RRGGBB`, `#RR` (a gray level), or decimal `R G B`; empty means the
-/// terminal's own default color.
+/// The terminal's 16 palette colors by name, for themes like TTY that take
+/// their colors from the terminal's own palette.
+const ANSI_COLORS: [(&str, Color); 16] = [
+    ("black", Color::Black), ("red", Color::Red), ("green", Color::Green), ("yellow", Color::Yellow),
+    ("blue", Color::Blue), ("magenta", Color::Magenta), ("cyan", Color::Cyan), ("white", Color::Gray),
+    ("bright_black", Color::DarkGray), ("bright_red", Color::LightRed), ("bright_green", Color::LightGreen),
+    ("bright_yellow", Color::LightYellow), ("bright_blue", Color::LightBlue), ("bright_magenta", Color::LightMagenta),
+    ("bright_cyan", Color::LightCyan), ("bright_white", Color::White),
+];
+
+/// `#RRGGBB`, `#RR` (a gray level), decimal `R G B`, or one of the
+/// terminal's 16 palette colors by name (`red`, `bright_red`, …); empty
+/// means the terminal's own default color.
 fn parse_theme_color(value: &str) -> Option<Color> {
     let value = value.trim();
     if value.is_empty() { return Some(Color::Reset); }
+    if let Some(&(_, c)) = ANSI_COLORS.iter().find(|(name, _)| *name == value) {
+        return Some(c);
+    }
     if let Some(hex) = value.strip_prefix('#') {
         if !hex.is_ascii() { return None; }
         let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
@@ -1020,12 +1034,14 @@ mod tests {
         assert_eq!(parse_theme_color("#ff8000"), Some(Color::Rgb(255, 128, 0)));
         assert_eq!(parse_theme_color("#80"), Some(Color::Rgb(128, 128, 128)));
         assert_eq!(parse_theme_color("10 20 30"), Some(Color::Rgb(10, 20, 30)));
+        assert_eq!(parse_theme_color("red"), Some(Color::Red));
+        assert_eq!(parse_theme_color("bright_white"), Some(Color::White));
+        assert_eq!(parse_theme_color("purple"), None, "only the 16 ANSI names");
         assert_eq!(parse_theme_color(""), Some(Color::Reset));
         assert_eq!(parse_theme_color("#12345"), None);
         assert_eq!(parse_theme_color("#gggggg"), None);
         assert_eq!(parse_theme_color("10 20"), None);
         assert_eq!(parse_theme_color("300 0 0"), None);
-        assert_eq!(parse_theme_color("red"), None);
     }
 
     #[test]
@@ -1051,9 +1067,26 @@ mod tests {
     /// and its colored text and search highlights readable.
     #[test]
     fn bundled_themes_keep_status_colors_apart_and_text_readable() {
-        // A transparent background is the terminal's own; assume a dark one.
+        // A transparent background is the terminal's own; assume a dark one,
+        // and palette colors (TTY) as xterm's defaults.
         let rgb = |c: Color| match c {
             Color::Rgb(r, g, b) => (r as f64, g as f64, b as f64),
+            Color::Black => (0.0, 0.0, 0.0),
+            Color::Red => (205.0, 0.0, 0.0),
+            Color::Green => (0.0, 205.0, 0.0),
+            Color::Yellow => (205.0, 205.0, 0.0),
+            Color::Blue => (0.0, 0.0, 238.0),
+            Color::Magenta => (205.0, 0.0, 205.0),
+            Color::Cyan => (0.0, 205.0, 205.0),
+            Color::Gray => (229.0, 229.0, 229.0),
+            Color::DarkGray => (127.0, 127.0, 127.0),
+            Color::LightRed => (255.0, 0.0, 0.0),
+            Color::LightGreen => (0.0, 255.0, 0.0),
+            Color::LightYellow => (255.0, 255.0, 0.0),
+            Color::LightBlue => (92.0, 92.0, 255.0),
+            Color::LightMagenta => (255.0, 0.0, 255.0),
+            Color::LightCyan => (0.0, 255.0, 255.0),
+            Color::White => (255.0, 255.0, 255.0),
             _ => (24.0, 24.0, 24.0),
         };
         // "redmean" weighted RGB distance, a cheap perceptual approximation
@@ -1103,7 +1136,7 @@ mod tests {
             assert!(contrast(t.hi_fg, t.badge_bg) >= 3.0, "{name}: search matches are hard to read");
             checked += 1;
         }
-        assert!(checked > 40, "only {checked} themes found");
+        assert!(checked > 43, "only {checked} themes found");
     }
 
     #[test]
