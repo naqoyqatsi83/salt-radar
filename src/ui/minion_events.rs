@@ -162,12 +162,16 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
     } else {
         format!("filter {}: {} items", app.minion_events_filter, total)
     };
+    let (nav, hints) = super::split_nav_hints(&hints);
     let hint_line = super::border_hints(&hints, color::border_focus());
     let info = super::border_info(format!("{} \u{b7} dim = older than 5m", count), color::border_focus());
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::border_focus()))
         .style(Style::default().bg(color::popup_bg()));
+    if !nav.is_empty() {
+        block = block.title_top(super::border_hints(&nav, color::border_focus()).right_aligned());
+    }
     if super::fits_beside(hint_line.width(), &info, area.width) {
         block = block.title_bottom(info.right_aligned());
     }

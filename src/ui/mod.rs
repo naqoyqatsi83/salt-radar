@@ -434,6 +434,21 @@ pub fn border_hints(hints: &[(&str, String)], border_color: Color) -> Line<'stat
     Line::from(spans)
 }
 
+pub type Hints<'a> = Vec<(&'a str, String)>;
+
+/// Keys that only move around, which popups show on their top edge so the
+/// bottom one keeps the actions.
+const NAV_KEYS: &[&str] = &[
+    "\u{2191}\u{2193}", "\u{2190}\u{2192}", "\u{2190}", "PgUp/PgDn", "Home/End",
+    "\u{2191}\u{2193}/PgUp/PgDn", "Tab/\u{2190}\u{2192}",
+];
+
+/// A popup's hints split into the movement keys (for the top edge) and the
+/// rest (for the bottom edge), each in its original order.
+pub fn split_nav_hints<'a>(hints: &[(&'a str, String)]) -> (Hints<'a>, Hints<'a>) {
+    hints.iter().cloned().partition(|(k, _)| NAV_KEYS.contains(k))
+}
+
 /// Plain `┤ text ├` border segment for read-only info (no key to
 /// highlight) — same bracket/spacing style as `border_hints`, just without
 /// the red key portion.
@@ -1012,8 +1027,10 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "", key: "`Y`", action: "Copy raw JSON (job detail)" },
         Shortcut { tab: "", key: "`s`", action: "Save to file" },
         Shortcut { tab: "", key: "`S`", action: "Save raw JSON to file (job detail; NDJSON in the sniffer)" },
-        Shortcut { tab: "", key: "`a`", action: "Save the listed returns to one file, and the listed minions that didn't return (job detail)" },
-        Shortcut { tab: "", key: "`A`", action: "Save the listed returns as one JSON object (job detail)" },
+        Shortcut { tab: "", key: "`a`", action: "Save every return in the job to one file, then the minions that didn't return (job detail)" },
+        Shortcut { tab: "", key: "`A`", action: "Save every return as one JSON object (job detail)" },
+        Shortcut { tab: "", key: "`v`", action: "Save the returns the list shows (the `o` outcomes and `/` filter applied) to one file named `job-<jid>-view-…`, then the shown minions that didn't return (job detail)" },
+        Shortcut { tab: "", key: "`V`", action: "Save the returns the list shows as one JSON object (job detail)" },
         Shortcut { tab: "", key: "`o`", action: "Pick the outcomes the returns list shows: OK, FAILED, NOT RETURNED; ticked ones are named in the list's top border (job detail)" },
         Shortcut { tab: "", key: "`i`", action: "Copy the listed minions' IDs, one per line (job detail)" },
         Shortcut { tab: "", key: "`I`", action: "Save the listed minions' IDs to a file, one per line (job detail)" },
@@ -1093,9 +1110,13 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         h.push(("Esc", if app.help_search.is_empty() { "close" } else { "clear search" }.to_string()));
         h
     };
+    let (nav, hints) = split_nav_hints(&hints);
     let hint_line = border_hints(&hints, color::border_focus());
     let hint_width = hint_line.width();
     block = block.title_bottom(hint_line.left_aligned());
+    let nav_line = border_hints(&nav, color::border_focus());
+    let nav_shown = !nav.is_empty() && fits_beside(pages_width, &nav_line, area.width);
+    let pages_width = if nav_shown { pages_width + nav_line.width() + 1 } else { pages_width };
     if !app.help_search.is_empty() && !app.help_searching {
         let status = match (focus, matches.len()) {
             (_, 0) => "no matches".to_string(),
@@ -1110,6 +1131,9 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         if fits_beside(pages_width, &status, area.width) {
             block = block.title_top(status.right_aligned());
         }
+    }
+    if nav_shown {
+        block = block.title_top(nav_line.right_aligned());
     }
     let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
     app.help_scroll = app.help_scroll.min(max_scroll);
@@ -1525,6 +1549,14 @@ mod tests {
         assert!(c("ubuntu22") != c("ubuntu24") && c("ubuntu24") != c("ubuntu26") && c("ubuntu22") != c("ubuntu26"));
         let many = color::term_colors(["a", "b", "c", "d", "e", "f", "g"]);
         assert_eq!(color::term_color_in(&many, "g"), color::term_color_in(&many, "a"));
+    }
+
+    #[test]
+    fn movement_hints_split_off_in_order() {
+        let h = |k: &'static str| (k, String::new());
+        let (nav, rest) = split_nav_hints(&[h("q"), h("\u{2191}\u{2193}"), h("Enter"), h("Home/End"), h("/")]);
+        assert_eq!(nav.iter().map(|x| x.0).collect::<Vec<_>>(), ["\u{2191}\u{2193}", "Home/End"]);
+        assert_eq!(rest.iter().map(|x| x.0).collect::<Vec<_>>(), ["q", "Enter", "/"]);
     }
 
     #[test]

@@ -2357,13 +2357,13 @@ impl App {
         format!("{}:\n{}", minion_id, fmt_val(value, 4))
     }
 
-    /// The returns Job Detail lists, concatenated (Salt outputter format,
-    /// same per-return text `y`/`s` use), then the listed minions that didn't
-    /// return — for jobs with too many targeted minions to review one at a
-    /// time via the left panel.
-    fn format_all_returns_console(jid: &str, l: &JidLookup, shown: &[usize]) -> String {
-        let returns: Vec<&JidReturn> = shown.iter().filter_map(|&i| l.returns.get(i)).collect();
-        let missing: Vec<&str> = shown.iter().filter(|&&i| i >= l.returns.len()).filter_map(|&i| l.entry_id(i)).collect();
+    /// The returns among Job Detail's `entries`, concatenated (Salt outputter
+    /// format, same per-return text `y`/`s` use), then the entries that
+    /// didn't return — for jobs with too many targeted minions to review one
+    /// at a time via the left panel.
+    fn format_all_returns_console(jid: &str, l: &JidLookup, entries: &[usize]) -> String {
+        let returns: Vec<&JidReturn> = entries.iter().filter_map(|&i| l.returns.get(i)).collect();
+        let missing: Vec<&str> = entries.iter().filter(|&&i| i >= l.returns.len()).filter_map(|&i| l.entry_id(i)).collect();
         let mut out = format!(
             "JID: {}\nFunction: {}\nTarget: {}\n{} returns\n\n",
             jid, l.fun, l.tgt, returns.len(),
@@ -2389,10 +2389,10 @@ impl App {
         out
     }
 
-    /// The returns Job Detail lists as a single JSON object keyed by minion
-    /// id — the `A` (all, JSON) counterpart of `format_all_returns_console`.
-    fn format_all_returns_json(l: &JidLookup, shown: &[usize]) -> String {
-        let map: serde_json::Map<String, serde_json::Value> = shown.iter().filter_map(|&i| l.returns.get(i))
+    /// The returns among Job Detail's `entries` as a single JSON object keyed
+    /// by minion id — the JSON counterpart of `format_all_returns_console`.
+    fn format_all_returns_json(l: &JidLookup, entries: &[usize]) -> String {
+        let map: serde_json::Map<String, serde_json::Value> = entries.iter().filter_map(|&i| l.returns.get(i))
             .map(|r| (r.minion_id.clone(), r.full_return.clone()))
             .collect();
         serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or_default()
@@ -3281,16 +3281,18 @@ pub fn shown_minion_list(lookup: &JidLookup, shown: &[usize]) -> String {
     shown.iter().filter_map(|&i| lookup.entry_id(i)).map(|id| format!("{}\n", id)).collect()
 }
 
-/// What a file saved from Job Detail's list is named after: the ticked
-/// outcomes (`failed-not-returned`), `filtered` for a `/` filter alone, or
-/// `whole` when nothing is left out.
-pub fn shown_file_tag(filter: &str, outcomes: OutcomeFilter, whole: &str) -> String {
+/// What a file saved from what Job Detail's list shows is named after, so
+/// its name says it may not be the whole job: `view-` and the ticked
+/// outcomes (`view-failed-not-returned`), `view-filtered` for a `/` filter
+/// alone, or `all` when nothing is left out.
+pub fn view_file_tag(filter: &str, outcomes: OutcomeFilter) -> String {
     if !outcomes.is_all() {
-        outcomes.shown().map(|o| o.label().to_lowercase().replace(' ', "-")).collect::<Vec<_>>().join("-")
+        let ticked: Vec<String> = outcomes.shown().map(|o| o.label().to_lowercase().replace(' ', "-")).collect();
+        format!("view-{}", if ticked.is_empty() { "none".to_string() } else { ticked.join("-") })
     } else if !filter.is_empty() {
-        "filtered".to_string()
+        "view-filtered".to_string()
     } else {
-        whole.to_string()
+        "all".to_string()
     }
 }
 
@@ -3989,13 +3991,13 @@ mod tests {
         let mut problems = OutcomeFilter::default();
         problems.toggle(Outcome::Ok);
         assert_eq!(shown_minion_list(&l, &shown_entries(&l, "", problems)), "web02\ndb01\nweb03\ndb02\n");
-        assert_eq!(shown_file_tag("", problems, "all"), "failed-not-returned");
-        assert_eq!(shown_file_tag("web*", OutcomeFilter::default(), "all"), "filtered");
-        assert_eq!(shown_file_tag("", OutcomeFilter::default(), "all"), "all");
+        assert_eq!(view_file_tag("", problems), "view-failed-not-returned");
+        assert_eq!(view_file_tag("web*", OutcomeFilter::default()), "view-filtered");
+        assert_eq!(view_file_tag("", OutcomeFilter::default()), "all");
     }
 
     #[test]
-    fn save_all_writes_the_listed_returns_then_the_listed_missing_minions() {
+    fn save_view_writes_the_listed_returns_then_the_listed_missing_minions() {
         let l = mixed_lookup();
         let mut problems = OutcomeFilter::default();
         problems.toggle(Outcome::Ok);

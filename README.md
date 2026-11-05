@@ -385,8 +385,10 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `Y` | Copy raw JSON (job detail) |
 | `s` | Save to file |
 | `S` | Save raw JSON to file (job detail; NDJSON in the sniffer) |
-| `a` | Save the listed returns to one file, and the listed minions that didn't return (job detail) |
-| `A` | Save the listed returns as one JSON object (job detail) |
+| `a` | Save every return in the job to one file, then the minions that didn't return (job detail) |
+| `A` | Save every return as one JSON object (job detail) |
+| `v` | Save the returns the list shows (the `o` outcomes and `/` filter applied) to one file named `job-<jid>-view-…`, then the shown minions that didn't return (job detail) |
+| `V` | Save the returns the list shows as one JSON object (job detail) |
 | `o` | Pick the outcomes the returns list shows: OK, FAILED, NOT RETURNED; ticked ones are named in the list's top border (job detail) |
 | `i` | Copy the listed minions' IDs, one per line (job detail) |
 | `I` | Save the listed minions' IDs to a file, one per line (job detail) |

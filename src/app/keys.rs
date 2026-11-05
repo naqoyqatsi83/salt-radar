@@ -550,23 +550,30 @@ impl App {
                                 }
                             }
                         }
-                        KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('i') | KeyCode::Char('I') => {
+                        KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('v') | KeyCode::Char('V')
+                        | KeyCode::Char('i') | KeyCode::Char('I') => {
                             if let Some(ref l) = lookup {
-                                let shown = crate::app::shown_entries(l, return_filter, *outcomes);
-                                let returned = shown.iter().any(|&i| i < l.returns.len());
-                                let tag = |whole| crate::app::shown_file_tag(return_filter, *outcomes, whole);
+                                // `a`/`A` take the whole job; the others what the list shows.
+                                let whole = matches!(code, KeyCode::Char('a') | KeyCode::Char('A'));
+                                let entries = if whole {
+                                    (0..l.entry_count()).collect()
+                                } else {
+                                    crate::app::shown_entries(l, return_filter, *outcomes)
+                                };
+                                let returned = entries.iter().any(|&i| i < l.returns.len());
+                                let view = if whole { "all".to_string() } else { crate::app::view_file_tag(return_filter, *outcomes) };
                                 match code {
-                                    KeyCode::Char('a') if !shown.is_empty() => {
-                                        save_text = Some((Self::format_all_returns_console(jid, l, &shown), format!("job-{}-{}", jid, tag("all")), "txt"));
+                                    KeyCode::Char('a') | KeyCode::Char('v') if !entries.is_empty() => {
+                                        save_text = Some((Self::format_all_returns_console(jid, l, &entries), format!("job-{}-{}", jid, view), "txt"));
                                     }
-                                    KeyCode::Char('A') if returned => {
-                                        save_text = Some((Self::format_all_returns_json(l, &shown), format!("job-{}-{}", jid, tag("all")), "json"));
+                                    KeyCode::Char('A') | KeyCode::Char('V') if returned => {
+                                        save_text = Some((Self::format_all_returns_json(l, &entries), format!("job-{}-{}", jid, view), "json"));
                                     }
-                                    KeyCode::Char('i') if !shown.is_empty() => {
-                                        clipboard_text = Some(crate::app::shown_minion_list(l, &shown));
+                                    KeyCode::Char('i') if !entries.is_empty() => {
+                                        clipboard_text = Some(crate::app::shown_minion_list(l, &entries));
                                     }
-                                    KeyCode::Char('I') if !shown.is_empty() => {
-                                        save_text = Some((crate::app::shown_minion_list(l, &shown), format!("job-{}-{}-minions", jid, tag("all")), "txt"));
+                                    KeyCode::Char('I') if !entries.is_empty() => {
+                                        save_text = Some((crate::app::shown_minion_list(l, &entries), format!("job-{}-minions-{}", jid, view), "txt"));
                                     }
                                     _ => {}
                                 }

@@ -268,10 +268,16 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::border_focus()))
         .style(Style::default().bg(color::popup_bg()));
-    if more.0 {
-        block = block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::border_focus()))).right_aligned());
+    let (nav, hints) = super::split_nav_hints(hints);
+    let nav_line = super::border_hints(&nav, color::border_focus());
+    let more_above = Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::border_focus())));
+    if more.0 && super::fits_beside(nav_line.width(), &more_above, area.width) {
+        block = block.title_top(more_above.right_aligned());
     }
-    let hint_line = super::border_hints(hints, color::border_focus());
+    if !nav.is_empty() {
+        block = block.title_top(nav_line.right_aligned());
+    }
+    let hint_line = super::border_hints(&hints, color::border_focus());
     if more.1 && super::fits_beside(hint_line.width(), &super::more_below(color::border_focus()), area.width) {
         block = block.title_bottom(super::more_below(color::border_focus()));
     }
@@ -1323,19 +1329,21 @@ fn draw_job_detail(
     }
 
     // Drawn after the panels so the hints reflect this frame's matches and failures.
-    let (nav, hints) = if searching {
-        (Vec::new(), vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())])
+    let hints = if searching {
+        vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())]
     } else {
         job_detail_hints(JobDetailHintState {
             filter_active: return_is_filtering,
             right_focus: panel_focus,
             scroll_mode: content_scroll_mode,
             filter_set: !return_filter.is_empty(),
+            outcomes_set: !outcomes.is_all(),
             picker_open: outcome_picker.is_some(),
             search_ready: !search_matches.is_empty(),
             fail_ready: !fail_lines.is_empty(),
         })
     };
+    let (nav, hints) = super::split_nav_hints(&hints);
     f.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -1579,6 +1587,8 @@ pub(super) fn style_ranges(line: Line<'static>, ranges: &[(usize, usize)], style
 struct JobDetailHintState {
     filter_active: bool,
     picker_open: bool,
+    /// Something is unticked in the `o` picker.
+    outcomes_set: bool,
     right_focus: bool,
     scroll_mode: bool,
     filter_set: bool,
@@ -1586,26 +1596,14 @@ struct JobDetailHintState {
     fail_ready: bool,
 }
 
-type Hints = Vec<(&'static str, String)>;
-
-/// Job Detail's key hints: the navigation keys for the outer frame's top
-/// edge, everything else for its bottom edge.
-fn job_detail_hints(st: JobDetailHintState) -> (Hints, Hints) {
+fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
     let h = |k: &'static str, v: &str| (k, v.to_string());
     if st.filter_active {
-        return (Vec::new(), vec![h("Esc", "cancel filter"), h("Enter", "confirm")]);
+        return vec![h("Esc", "cancel filter"), h("Enter", "confirm")];
     }
     if st.picker_open {
-        return (
-            vec![h("\u{2191}\u{2193}", "move")],
-            vec![h("Space", "tick"), h("1-3", "tick OK/FAILED/NOT RETURNED"), h("Enter/Esc", "close")],
-        );
+        return vec![h("\u{2191}\u{2193}", "move"), h("Space", "tick"), h("1-3", "tick OK/FAILED/NOT RETURNED"), h("Enter/Esc", "close")];
     }
-    let nav = if st.right_focus {
-        vec![h("\u{2191}\u{2193}", "scroll"), h("PgUp/PgDn", "page"), h("Home/End", "top/bottom")]
-    } else {
-        vec![h("\u{2191}\u{2193}", "navigate"), h("PgUp/PgDn", "page"), h("Home/End", "top/bottom")]
-    };
     let mut hints = if st.right_focus {
         if st.scroll_mode {
             vec![h("Esc/q", "exit scroll")]
@@ -1618,9 +1616,12 @@ fn job_detail_hints(st: JobDetailHintState) -> (Hints, Hints) {
         vec![h("q/Esc", "close")]
     };
     if st.right_focus {
-        hints.push(h("/", "search"));
+        hints.extend([h("\u{2191}\u{2193}", "scroll"), h("PgUp/PgDn", "page"), h("Home/End", "top/bottom"), h("/", "search")]);
     } else {
-        hints.extend([h("Enter", "view"), h("/", "filter"), h("o", "outcomes")]);
+        hints.extend([
+            h("\u{2191}\u{2193}", "navigate"), h("PgUp/PgDn", "page"), h("Home/End", "top/bottom"),
+            h("Enter", "view"), h("/", "filter"), h("o", "outcomes"),
+        ]);
     }
     if st.search_ready {
         hints.push(h("n/N", "match"));
@@ -1630,10 +1631,15 @@ fn job_detail_hints(st: JobDetailHintState) -> (Hints, Hints) {
     }
     hints.extend([h("y/Y", "copy/json"), h("s/S", "save/json")]);
     if !st.right_focus {
-        hints.extend([h("a/A", "save all"), h("i/I", "minion list")]);
+        hints.push(h("a/A", "save all"));
+        // Only worth a hint when the view leaves something out.
+        if st.filter_set || st.outcomes_set {
+            hints.push(h("v/V", "save view"));
+        }
+        hints.push(h("i/I", "minion list"));
     }
     hints.push(h("?", "all keys"));
-    (nav, hints)
+    hints
 }
 
 /// The severity, rule and description stay at the top, the description

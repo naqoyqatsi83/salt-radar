@@ -53,9 +53,14 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         ]
     };
     let title = if state.dirty() { " Config Editor \u{25CF} unsaved changes " } else { " Config Editor " };
+    let (nav, hints) = super::split_nav_hints(&hints);
     let hint_line = super::border_hints(&hints, color::border_focus());
     let saved_to = super::border_info(format!("saved to: {}", config_path), color::border_focus());
     let mut block = super::titled_block(title, Style::default().fg(color::border_focus()), color::main_bg());
+    let nav_line = super::border_hints(&nav, color::border_focus());
+    if !nav.is_empty() && super::fits_beside(title.chars().count() + 2, &nav_line, area.width) {
+        block = block.title_top(nav_line.right_aligned());
+    }
     if super::fits_beside(hint_line.width(), &saved_to, area.width) {
         block = block.title_bottom(saved_to.right_aligned());
     }
@@ -269,13 +274,20 @@ fn draw_path_browser(f: &mut Frame, b: &PathBrowser, label: &str) {
     ];
     let title = format!(" {}: select a {} ", label, what);
     let title_width = title.chars().count() + 2;
+    let (nav, hints) = super::split_nav_hints(&hints);
+    let nav_line = super::border_hints(&nav, color::border_focus());
     let mut block = super::titled_block(title, Style::default().fg(color::border_focus()), color::popup_bg())
         .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned());
+    let nav_shown = !nav.is_empty() && super::fits_beside(title_width, &nav_line, area.width);
+    let title_width = if nav_shown { title_width + nav_line.width() + 1 } else { title_width };
     if b.typing(std::time::Instant::now()) {
         let jump = super::border_info(format!("jump: {}", b.typed), color::border_focus());
         if super::fits_beside(title_width, &jump, area.width) {
             block = block.title_top(jump.right_aligned());
         }
+    }
+    if nav_shown {
+        block = block.title_top(nav_line.right_aligned());
     }
     let inner = block.inner(area);
     f.render_widget(block, area);

@@ -10,12 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Show only some outcomes in Job Detail's returns list: `o` opens a picker on the list's bottom edge to tick OK, FAILED and NOT RETURNED (`Space` or `1`–`3`, or a click), each with its count. While something is unticked, the list's top border names what is shown, each outcome in its own color, next to the `/` filter's count
+- Save what Job Detail's list shows with `v` (text) or `V` (JSON), the `o` outcomes and `/` filter applied: the file is named `job-<jid>-view-…` after them (`job-<jid>-view-failed-not-returned.txt`), so it says it may not hold the whole job. `a`/`A` still save every return
 - Copy (`i`) or save (`I`) the IDs of the minions Job Detail lists, one per line, to work through the failed or unreachable ones elsewhere
 
 ### Changed
 
-- Save only the returns Job Detail lists with `a`/`A`, and with `a` the listed minions that didn't return, so a file can hold just the failures; the file is named after what's listed (`job-<jid>-failed-not-returned.txt`)
-- Move Job Detail's navigation hints (`↑↓`, `PgUp/PgDn`, `Home/End`) to the top right of its frame and pair the rest (`y/Y`, `s/S`, `a/A`, `i/I`), so the bottom edge no longer runs off the screen; `?` lists every key
+- Show the movement keys (`↑↓`, `PgUp/PgDn`, `Home/End`, `←→`) at the top right of every popup's frame instead of at the bottom, and pair Job Detail's others (`y/Y`, `s/S`, `a/A`, `i/I`), so the bottom edge no longer runs off the screen; `?` lists every key
+- List the minions that didn't return at the end of the file `a` saves in Job Detail
 
 ## [0.10.1] - 2026-10-30
 
