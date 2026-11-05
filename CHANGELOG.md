@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0-rc1] - 2026-11-05
+
 ### Added
 
 - Show only some outcomes in Job Detail's returns list: `x` opens a picker on the list's bottom edge to tick OK, FAILED and NOT RETURNED (`Space` or `1`–`3`, or a click), each with its count. While something is unticked, the list's top border names what is shown, each outcome in its own color, next to the `/` filter's count
