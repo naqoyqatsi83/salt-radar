@@ -741,7 +741,8 @@ pub enum DetailPopup {
     /// `search` is the `/` query in the body (being typed while
     /// `searching`), `search_focus` the match `n`/`N` last landed on.
     SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch, search: String, searching: bool, search_focus: Option<usize> },
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
+    /// `outcome_picker` is the `o` picker's cursor while it's open.
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, outcomes: OutcomeFilter, outcome_picker: Option<usize>, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     /// An alert's detail: `scroll` and the search over its items work as
     /// in `SaltEvent`.
     Alert { alert: AlertEntry, scroll: usize, search: String, searching: bool, search_focus: Option<usize> },
@@ -2356,15 +2357,18 @@ impl App {
         format!("{}:\n{}", minion_id, fmt_val(value, 4))
     }
 
-    /// Every return in a job lookup, concatenated (Salt outputter format,
-    /// same per-return text `y`/`s` use) — for jobs with too many targeted
-    /// minions to review one at a time via the left panel.
-    fn format_all_returns_console(jid: &str, l: &crate::types::JidLookup) -> String {
+    /// The returns Job Detail lists, concatenated (Salt outputter format,
+    /// same per-return text `y`/`s` use), then the listed minions that didn't
+    /// return — for jobs with too many targeted minions to review one at a
+    /// time via the left panel.
+    fn format_all_returns_console(jid: &str, l: &JidLookup, shown: &[usize]) -> String {
+        let returns: Vec<&JidReturn> = shown.iter().filter_map(|&i| l.returns.get(i)).collect();
+        let missing: Vec<&str> = shown.iter().filter(|&&i| i >= l.returns.len()).filter_map(|&i| l.entry_id(i)).collect();
         let mut out = format!(
             "JID: {}\nFunction: {}\nTarget: {}\n{} returns\n\n",
-            jid, l.fun, l.tgt, l.returns.len(),
+            jid, l.fun, l.tgt, returns.len(),
         );
-        for ret in &l.returns {
+        for ret in returns {
             out.push_str(&"=".repeat(60));
             out.push('\n');
             if !ret.formatted_text.is_empty() {
@@ -2374,13 +2378,21 @@ impl App {
             }
             out.push_str("\n\n");
         }
+        if !missing.is_empty() {
+            out.push_str(&"=".repeat(60));
+            out.push_str(&format!("\nNo return from {} minions:\n", missing.len()));
+            for id in missing {
+                out.push_str(id);
+                out.push('\n');
+            }
+        }
         out
     }
 
-    /// Every return in a job lookup as a single JSON object keyed by minion
+    /// The returns Job Detail lists as a single JSON object keyed by minion
     /// id — the `A` (all, JSON) counterpart of `format_all_returns_console`.
-    fn format_all_returns_json(l: &crate::types::JidLookup) -> String {
-        let map: serde_json::Map<String, serde_json::Value> = l.returns.iter()
+    fn format_all_returns_json(l: &JidLookup, shown: &[usize]) -> String {
+        let map: serde_json::Map<String, serde_json::Value> = shown.iter().filter_map(|&i| l.returns.get(i))
             .map(|r| (r.minion_id.clone(), r.full_return.clone()))
             .collect();
         serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or_default()
@@ -3253,6 +3265,35 @@ pub fn return_matches(minion_id: &str, filter: &str) -> bool {
     terms.is_empty() || terms.iter().any(|t| App::host_matches_term(minion_id, t))
 }
 
+/// Whether Job Detail lists entry `i`: its outcome is ticked and its minion
+/// matches the `/` filter.
+pub fn entry_shown(lookup: &JidLookup, i: usize, filter: &str, outcomes: OutcomeFilter) -> bool {
+    outcomes.shows(lookup.entry_outcome(i)) && lookup.entry_id(i).is_some_and(|id| return_matches(id, filter))
+}
+
+/// The entries Job Detail lists, in list order.
+pub fn shown_entries(lookup: &JidLookup, filter: &str, outcomes: OutcomeFilter) -> Vec<usize> {
+    (0..lookup.entry_count()).filter(|&i| entry_shown(lookup, i, filter, outcomes)).collect()
+}
+
+/// The minion IDs Job Detail lists, one per line, for `i`/`I`.
+pub fn shown_minion_list(lookup: &JidLookup, shown: &[usize]) -> String {
+    shown.iter().filter_map(|&i| lookup.entry_id(i)).map(|id| format!("{}\n", id)).collect()
+}
+
+/// What a file saved from Job Detail's list is named after: the ticked
+/// outcomes (`failed-not-returned`), `filtered` for a `/` filter alone, or
+/// `whole` when nothing is left out.
+pub fn shown_file_tag(filter: &str, outcomes: OutcomeFilter, whole: &str) -> String {
+    if !outcomes.is_all() {
+        outcomes.shown().map(|o| o.label().to_lowercase().replace(' ', "-")).collect::<Vec<_>>().join("-")
+    } else if !filter.is_empty() {
+        "filtered".to_string()
+    } else {
+        whole.to_string()
+    }
+}
+
 /// Where a filter's terms match in `text`, for highlighting: a regex term's
 /// matches, a glob matching the whole text, or a plain term's occurrences.
 pub fn filter_match_ranges(text: &str, filter: &str) -> Vec<(usize, usize)> {
@@ -3307,10 +3348,10 @@ fn ansi_theme_color(slot: u16, background: bool) -> Color {
 
 /// Moves the selection to the nearest returns-list entry matching `filter`,
 /// looking forward from the current one first.
-pub fn snap_to_matching_return(lookup: &JidLookup, selected: &mut Option<usize>, filter: &str) {
-    if filter.is_empty() { return; }
+pub fn snap_to_matching_return(lookup: &JidLookup, selected: &mut Option<usize>, filter: &str, outcomes: OutcomeFilter) {
+    if filter.is_empty() && outcomes.is_all() { return; }
     let n = lookup.entry_count();
-    let matches = |i: usize| lookup.entry_id(i).is_some_and(|id| return_matches(id, filter));
+    let matches = |i: usize| entry_shown(lookup, i, filter, outcomes);
     let cur = selected.unwrap_or(0).min(n.saturating_sub(1));
     let hit = (cur..n).find(|&i| matches(i)).or_else(|| (0..cur).rev().find(|&i| matches(i)));
     if hit.is_some() { *selected = hit; }
@@ -3901,8 +3942,69 @@ mod tests {
         assert_eq!(l.entry_count(), 3);
         assert_eq!((l.entry_id(0), l.entry_id(1), l.entry_id(2), l.entry_id(3)), (Some("web01"), Some("db01"), Some("web02"), None));
         let mut sel = Some(0);
-        snap_to_matching_return(&l, &mut sel, "web02");
+        snap_to_matching_return(&l, &mut sel, "web02", OutcomeFilter::default());
         assert_eq!(sel, Some(2), "the filter can land on a missing minion");
+    }
+
+    fn mixed_lookup() -> JidLookup {
+        parse_jid_lookup(&json!({
+            "found": true,
+            "returns": [
+                {"minion_id": "web01", "success": true, "retcode": 0, "full_return": true},
+                {"minion_id": "web02", "success": false, "retcode": 1, "full_return": "boom"},
+                {"minion_id": "db01", "success": false, "retcode": 1, "full_return": "boom"},
+            ],
+            "missing": ["web03", "db02"],
+        }))
+    }
+
+    #[test]
+    fn outcome_filter_lists_only_the_ticked_outcomes() {
+        let l = mixed_lookup();
+        let mut problems = OutcomeFilter::default();
+        problems.toggle(Outcome::Ok);
+        assert_eq!(shown_entries(&l, "", OutcomeFilter::default()), [0, 1, 2, 3, 4]);
+        assert_eq!(shown_entries(&l, "", problems), [1, 2, 3, 4]);
+        assert_eq!(shown_entries(&l, "web*", problems), [1, 3], "the outcomes and the `/` filter both apply");
+        let mut none = problems;
+        none.toggle(Outcome::Failed);
+        none.toggle(Outcome::Missing);
+        assert!(shown_entries(&l, "", none).is_empty());
+    }
+
+    #[test]
+    fn unticking_the_selected_outcome_moves_the_selection_to_a_listed_minion() {
+        let l = mixed_lookup();
+        let mut missing_only = OutcomeFilter::default();
+        missing_only.toggle(Outcome::Ok);
+        missing_only.toggle(Outcome::Failed);
+        let mut sel = Some(1);
+        snap_to_matching_return(&l, &mut sel, "", missing_only);
+        assert_eq!(sel, Some(3));
+    }
+
+    #[test]
+    fn minion_list_and_file_names_follow_what_is_listed() {
+        let l = mixed_lookup();
+        let mut problems = OutcomeFilter::default();
+        problems.toggle(Outcome::Ok);
+        assert_eq!(shown_minion_list(&l, &shown_entries(&l, "", problems)), "web02\ndb01\nweb03\ndb02\n");
+        assert_eq!(shown_file_tag("", problems, "all"), "failed-not-returned");
+        assert_eq!(shown_file_tag("web*", OutcomeFilter::default(), "all"), "filtered");
+        assert_eq!(shown_file_tag("", OutcomeFilter::default(), "all"), "all");
+    }
+
+    #[test]
+    fn save_all_writes_the_listed_returns_then_the_listed_missing_minions() {
+        let l = mixed_lookup();
+        let mut problems = OutcomeFilter::default();
+        problems.toggle(Outcome::Ok);
+        let shown = shown_entries(&l, "", problems);
+        let text = App::format_all_returns_console("123", &l, &shown);
+        assert!(text.contains("2 returns") && !text.contains("web01"));
+        assert!(text.ends_with("No return from 2 minions:\nweb03\ndb02\n"));
+        let json: serde_json::Value = serde_json::from_str(&App::format_all_returns_json(&l, &shown)).unwrap();
+        assert_eq!(json.as_object().unwrap().keys().collect::<Vec<_>>(), ["db01", "web02"]);
     }
 
     #[test]

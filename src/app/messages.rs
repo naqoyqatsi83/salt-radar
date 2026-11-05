@@ -377,17 +377,16 @@ impl App {
                                     let select_minion = self.job_detail_select_minion.take().or(keep_minion);
                                     // Opened from a minion's activity: select that minion's return.
                                     // Otherwise snap to the first filter match if one was committed before data arrived.
-                                    if let Some(DetailPopup::JobDetail { ref return_filter, ref mut selected_return, ref lookup, .. }) = self.detail_popup {
+                                    if let Some(DetailPopup::JobDetail { ref return_filter, outcomes, ref mut selected_return, ref lookup, .. }) = self.detail_popup {
                                         if let (Some(mid), Some(l)) = (select_minion, lookup) {
                                             if let Some(idx) = (0..l.entry_count()).find(|&i| l.entry_id(i) == Some(mid.as_str())) {
                                                 *selected_return = Some(idx);
                                             }
-                                        } else if !return_filter.is_empty() {
-                                            if let Some(ref l) = lookup {
-                                                let first = (0..l.entry_count()).find(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter)));
-                                                if let Some(idx) = first {
-                                                    *selected_return = Some(idx);
-                                                }
+                                            // A refresh can move the kept minion to an outcome that isn't ticked.
+                                            crate::app::snap_to_matching_return(l, selected_return, return_filter, outcomes);
+                                        } else if let Some(ref l) = lookup {
+                                            if let Some(&idx) = crate::app::shown_entries(l, return_filter, outcomes).first() {
+                                                *selected_return = Some(idx);
                                             }
                                         }
                                     }

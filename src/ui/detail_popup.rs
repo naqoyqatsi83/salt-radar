@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, DetailPopup, PingState};
-use crate::types::{KeyStatus, SnifferState};
+use crate::types::{KeyStatus, Outcome, OutcomeFilter, SnifferState};
 
 use super::color;
 
@@ -31,13 +31,13 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let search = PopupSearch { query: search, typing: *searching, focus: *search_focus, cursor: app.input_cursor };
             draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, &mut app.event_search_matches, search, clipboard_at, save_at, clipboard_msg, highlight);
         }
-        DetailPopup::JobDetail { jid, lookup, selected_return, job, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
+        DetailPopup::JobDetail { jid, lookup, selected_return, job, return_filter, return_is_filtering, outcomes, outcome_picker, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
             f.render_widget(Clear, area);
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &mut app.job_detail_hits, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *outcomes, *outcome_picker, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &mut app.job_detail_hits, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert { alert, scroll, search, searching, search_focus } => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -948,6 +948,8 @@ fn draw_job_detail(
     job: &crate::app::JobHeader,
     return_filter: &str,
     return_is_filtering: bool,
+    outcomes: OutcomeFilter,
+    outcome_picker: Option<usize>,
     panel_focus: bool,
     content_scroll: usize,
     content_scroll_mode: bool,
@@ -1077,21 +1079,36 @@ fn draw_job_detail(
     // ── Build LEFT panel: returns table ──
     let left_border_color = if !panel_focus { color::border_focus() } else { color::border() };
     let total_returns = lookup.as_ref().map_or(0, |l| l.entry_count());
-    let shown_returns = lookup.as_ref().map_or(0, |l| {
-        (0..l.entry_count()).filter(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter))).count()
-    });
-    let returns_title = if return_filter.is_empty() {
+    let shown = lookup.as_ref().map_or_else(Vec::new, |l| crate::app::shown_entries(l, return_filter, outcomes));
+    let shown_returns = shown.len();
+    let returns_title = if return_filter.is_empty() && outcomes.is_all() {
         format!("Returns ({})", total_returns)
     } else {
         format!("Returns ({}/{})", shown_returns, total_returns)
     };
+    let mut title = super::bracket_title(vec![Span::styled(
+        returns_title,
+        Style::default().fg(color::title()).add_modifier(Modifier::BOLD),
+    )], left_border_color);
+    // What the `o` picker left ticked, each in its own color.
+    if !outcomes.is_all() {
+        let mut ticked: Vec<Span<'static>> = Vec::new();
+        for o in outcomes.shown() {
+            if !ticked.is_empty() {
+                ticked.push(Span::styled(" \u{b7} ", Style::default().fg(color::label_fg())));
+            }
+            ticked.push(Span::styled(o.label(), Style::default().fg(outcome_color(o)).add_modifier(Modifier::BOLD)));
+        }
+        if ticked.is_empty() {
+            ticked.push(Span::styled("nothing ticked", Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
+        }
+        title.push(Span::styled("\u{2500}", Style::default().fg(left_border_color)));
+        title.extend(super::bracket_title(ticked, left_border_color));
+    }
     let mut left_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(left_border_color))
-        .title(Line::from(super::bracket_title(vec![Span::styled(
-            returns_title,
-            Style::default().fg(color::title()).add_modifier(Modifier::BOLD),
-        )], left_border_color)))
+        .title(Line::from(title))
         .style(Style::default().bg(color::popup_bg()));
     if !return_filter.is_empty() && !return_is_filtering {
         left_block = left_block.title_bottom(Line::from(Span::styled(
@@ -1108,7 +1125,6 @@ fn draw_job_detail(
         // them flush with the panel's right edge.
         let id_w = (left_inner.width as usize).saturating_sub(t.width() - t.id_w);
         let mut sel_shown = false;
-        let mut shown: Vec<usize> = Vec::new();
         let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
         let (header_area, list_area) = if l.entry_count() > 0 {
             let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(left_inner);
@@ -1137,20 +1153,13 @@ fn draw_job_detail(
                 Style::default().fg(color::inactive_fg()),
             )));
         } else {
-            for i in 0..l.entry_count() {
-                let Some(id) = l.entry_id(i) else { continue };
-                if !crate::app::return_matches(id, return_filter) {
-                    continue;
-                }
+            for &i in &shown {
                 let line = t.row(l, i, i == sel, id_w, return_filter);
                 sel_shown |= i == sel;
-                shown.push(i);
                 left_lines.push(if i == sel { color::selected_row(line) } else { line });
             }
         }
-        let sel_vis_idx = (0..=sel)
-            .filter(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter)))
-            .count().saturating_sub(1);
+        let sel_vis_idx = shown.iter().filter(|&&i| i <= sel).count().saturating_sub(1);
         if left_lines.is_empty() {
             left_lines.push(Line::from(Span::styled(
                 "  No matching hosts.",
@@ -1201,6 +1210,9 @@ fn draw_job_detail(
         let filter_area = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
             .split(left_inner)[1];
         f.render_widget(filter_bar, filter_area);
+    }
+    if let (Some(cursor), Some(l)) = (outcome_picker, lookup.as_ref()) {
+        draw_outcome_picker(f, horiz[0], l, outcomes, cursor, hits);
     }
 
     // ── Build RIGHT panel: return content preview ──
@@ -1311,14 +1323,15 @@ fn draw_job_detail(
     }
 
     // Drawn after the panels so the hints reflect this frame's matches and failures.
-    let hints = if searching {
-        vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())]
+    let (nav, hints) = if searching {
+        (Vec::new(), vec![("Esc", "cancel search".to_string()), ("Enter", "find".to_string())])
     } else {
         job_detail_hints(JobDetailHintState {
             filter_active: return_is_filtering,
             right_focus: panel_focus,
             scroll_mode: content_scroll_mode,
             filter_set: !return_filter.is_empty(),
+            picker_open: outcome_picker.is_some(),
             search_ready: !search_matches.is_empty(),
             fail_ready: !fail_lines.is_empty(),
         })
@@ -1327,6 +1340,7 @@ fn draw_job_detail(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(color::border_focus()))
+            .title_top(super::border_hints(&nav, color::border_focus()).right_aligned())
             .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned()),
         area,
     );
@@ -1356,6 +1370,54 @@ fn shorten_middle(s: &str, w: usize) -> String {
 }
 
 const NO_RETURN: &str = "NO RETURN";
+
+fn outcome_color(o: Outcome) -> Color {
+    match o {
+        Outcome::Ok => color::outcome_ok(),
+        Outcome::Failed => color::outcome_failed(),
+        Outcome::Missing => color::outcome_missing(),
+    }
+}
+
+/// Job Detail's `o` picker: a box rising from the returns panel's bottom
+/// edge with a checkbox per outcome and how many minions have it.
+fn draw_outcome_picker(f: &mut Frame, panel: Rect, l: &crate::types::JidLookup, outcomes: OutcomeFilter, cursor: usize, hits: &mut crate::types::JobDetailHits) {
+    let counts = Outcome::ALL.map(|o| (0..l.entry_count()).filter(|&i| l.entry_outcome(i) == o).count());
+    let label_w = Outcome::ALL.iter().map(|o| o.label().len()).max().unwrap_or(0);
+    let count_w = counts.iter().map(|n| n.to_string().len()).max().unwrap_or(1);
+    let inner_w = 3 + 4 + label_w + 2 + count_w + 1;
+    let w = ((inner_w + 2) as u16).min(panel.width.saturating_sub(2));
+    let h = (Outcome::ALL.len() as u16 + 2).min(panel.height);
+    let area = Rect { x: panel.x + 1, y: panel.bottom().saturating_sub(h), width: w, height: h };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::border_focus()))
+        .title(Line::from(super::bracket_title(vec![Span::styled("Show", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))], color::border_focus())))
+        .style(Style::default().bg(color::popup_bg()));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let lines: Vec<Line<'static>> = Outcome::ALL.iter().zip(counts).enumerate().map(|(i, (&o, n))| {
+        let at = i == cursor;
+        let mark = if outcomes.shows(o) { "[x]" } else { "[ ]" };
+        let line = Line::from(vec![
+            Span::styled(format!(" {} ", if at { "\u{25b6}" } else { " " }), Style::default().fg(color::cyan())),
+            Span::styled(format!("{} ", mark), Style::default().fg(color::main_fg()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<label_w$}", o.label()), Style::default().fg(outcome_color(o)).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {:>count_w$} ", n), Style::default().fg(if n == 0 { color::inactive_fg() } else { color::main_fg() })),
+        ]);
+        if at { color::selected_row(line) } else { line }
+    }).collect();
+    if cursor < inner.height as usize {
+        f.buffer_mut().set_style(Rect { y: inner.y + cursor as u16, height: 1, ..inner }, color::select_bg());
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+    hits.picker_box = area;
+    hits.picker = Outcome::ALL.iter().enumerate()
+        .filter(|&(i, _)| i < inner.height as usize)
+        .map(|(i, &o)| (inner.y + i as u16, o))
+        .collect();
+}
 
 /// Column layout of Job Detail's returns list. State runs get right-aligned
 /// `ok`/`chg`/`fail` count columns, each as wide as this job's largest number
@@ -1516,6 +1578,7 @@ pub(super) fn style_ranges(line: Line<'static>, ranges: &[(usize, usize)], style
 /// `f/F` only show when there's a search match or failed state to jump to.
 struct JobDetailHintState {
     filter_active: bool,
+    picker_open: bool,
     right_focus: bool,
     scroll_mode: bool,
     filter_set: bool,
@@ -1523,55 +1586,54 @@ struct JobDetailHintState {
     fail_ready: bool,
 }
 
-fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
+type Hints = Vec<(&'static str, String)>;
+
+/// Job Detail's key hints: the navigation keys for the outer frame's top
+/// edge, everything else for its bottom edge.
+fn job_detail_hints(st: JobDetailHintState) -> (Hints, Hints) {
+    let h = |k: &'static str, v: &str| (k, v.to_string());
     if st.filter_active {
-        return vec![("Esc", "cancel filter".to_string()), ("Enter", "confirm".to_string())];
+        return (Vec::new(), vec![h("Esc", "cancel filter"), h("Enter", "confirm")]);
     }
-    let mut hints: Vec<(&'static str, String)> = if st.right_focus {
+    if st.picker_open {
+        return (
+            vec![h("\u{2191}\u{2193}", "move")],
+            vec![h("Space", "tick"), h("1-3", "tick OK/FAILED/NOT RETURNED"), h("Enter/Esc", "close")],
+        );
+    }
+    let nav = if st.right_focus {
+        vec![h("\u{2191}\u{2193}", "scroll"), h("PgUp/PgDn", "page"), h("Home/End", "top/bottom")]
+    } else {
+        vec![h("\u{2191}\u{2193}", "navigate"), h("PgUp/PgDn", "page"), h("Home/End", "top/bottom")]
+    };
+    let mut hints = if st.right_focus {
         if st.scroll_mode {
-            vec![("Esc/q", "exit scroll".to_string())]
+            vec![h("Esc/q", "exit scroll")]
         } else {
-            vec![("Esc/q", "back to list".to_string()), ("Enter", "scroll".to_string())]
+            vec![h("Esc/q", "back to list"), h("Enter", "scroll")]
         }
     } else if st.filter_set {
-        vec![("Esc", "clear filter".to_string()), ("q", "close".to_string())]
+        vec![h("Esc", "clear filter"), h("q", "close")]
     } else {
-        vec![("q/Esc", "close".to_string())]
+        vec![h("q/Esc", "close")]
     };
     if st.right_focus {
-        hints.push(("/", "search output".to_string()));
+        hints.push(h("/", "search"));
+    } else {
+        hints.extend([h("Enter", "view"), h("/", "filter"), h("o", "outcomes")]);
     }
     if st.search_ready {
-        hints.push(("n/N", "next/prev match".to_string()));
+        hints.push(h("n/N", "match"));
     }
     if st.fail_ready {
-        hints.push(("f/F", "next/prev fail".to_string()));
+        hints.push(h("f/F", "fail"));
     }
-    if st.right_focus {
-        hints.extend([
-            ("\u{2191}\u{2193}", "scroll".to_string()),
-            ("PgUp/PgDn", "page".to_string()),
-            ("Home/End", "top/bottom".to_string()),
-        ]);
-    } else {
-        hints.extend([
-            ("\u{2191}\u{2193}", "navigate".to_string()),
-            ("PgUp/PgDn", "page".to_string()),
-            ("Home/End", "top/bottom".to_string()),
-            ("Enter", "view".to_string()),
-            ("/", "filter hosts".to_string()),
-        ]);
-    }
-    hints.extend([
-        ("y", "copy".to_string()),
-        ("Y", "json".to_string()),
-        ("s", "save".to_string()),
-        ("S", "save json".to_string()),
-    ]);
+    hints.extend([h("y/Y", "copy/json"), h("s/S", "save/json")]);
     if !st.right_focus {
-        hints.extend([("a", "save all".to_string()), ("A", "save all json".to_string())]);
+        hints.extend([h("a/A", "save all"), h("i/I", "minion list")]);
     }
-    hints
+    hints.push(h("?", "all keys"));
+    (nav, hints)
 }
 
 /// The severity, rule and description stay at the top, the description

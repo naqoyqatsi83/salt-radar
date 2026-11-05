@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Show only some outcomes in Job Detail's returns list: `o` opens a picker on the list's bottom edge to tick OK, FAILED and NOT RETURNED (`Space` or `1`–`3`, or a click), each with its count. While something is unticked, the list's top border names what is shown, each outcome in its own color, next to the `/` filter's count
+- Copy (`i`) or save (`I`) the IDs of the minions Job Detail lists, one per line, to work through the failed or unreachable ones elsewhere
+
+### Changed
+
+- Save only the returns Job Detail lists with `a`/`A`, and with `a` the listed minions that didn't return, so a file can hold just the failures; the file is named after what's listed (`job-<jid>-failed-not-returned.txt`)
+- Move Job Detail's navigation hints (`↑↓`, `PgUp/PgDn`, `Home/End`) to the top right of its frame and pair the rest (`y/Y`, `s/S`, `a/A`, `i/I`), so the bottom edge no longer runs off the screen; `?` lists every key
+
 ## [0.10.1] - 2026-10-30
 
 ### Fixed

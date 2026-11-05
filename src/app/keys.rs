@@ -171,7 +171,7 @@ impl App {
                 self.sniffer.as_ref().is_some_and(|s| s.highlight_input.is_some())
             } else {
                 match &self.detail_popup {
-                    Some(DetailPopup::JobDetail { return_is_filtering, .. }) => *return_is_filtering || self.job_searching,
+                    Some(DetailPopup::JobDetail { return_is_filtering, outcome_picker, .. }) => *return_is_filtering || outcome_picker.is_some() || self.job_searching,
                     Some(DetailPopup::SaltEvent { searching, .. }) | Some(DetailPopup::Alert { searching, .. }) => *searching,
                     _ => false,
                 }
@@ -223,6 +223,8 @@ impl App {
                     ref mut selected_return,
                     ref mut return_filter,
                     ref mut return_is_filtering,
+                    ref mut outcomes,
+                    ref mut outcome_picker,
                     ref mut panel_focus,
                     ref mut content_scroll,
                     ref mut content_scroll_mode,
@@ -241,8 +243,32 @@ impl App {
                             _ => { line_edit::edit(return_filter, &mut self.input_cursor, code); }
                         }
                         if let Some(ref l) = lookup {
-                            crate::app::snap_to_matching_return(l, selected_return, return_filter);
+                            crate::app::snap_to_matching_return(l, selected_return, return_filter, *outcomes);
                         }
+                        return false;
+                    }
+                    if let Some(cursor) = outcome_picker {
+                        let toggle = match code {
+                            KeyCode::Up | KeyCode::Char('k') => { *cursor = cursor.saturating_sub(1); None }
+                            KeyCode::Down | KeyCode::Char('j') => { *cursor = (*cursor + 1).min(Outcome::ALL.len() - 1); None }
+                            KeyCode::Char(' ') | KeyCode::Char('x') => Some(*cursor),
+                            KeyCode::Char(c @ '1'..='3') => Some(c as usize - '1' as usize),
+                            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('q') => {
+                                *outcome_picker = None;
+                                None
+                            }
+                            _ => None,
+                        };
+                        if let Some(i) = toggle {
+                            outcomes.toggle(Outcome::ALL[i]);
+                            if let Some(ref l) = lookup {
+                                crate::app::snap_to_matching_return(l, selected_return, return_filter, *outcomes);
+                            }
+                        }
+                        return false;
+                    }
+                    if code == KeyCode::Char('o') && lookup.is_some() && !self.job_searching {
+                        *outcome_picker = Some(0);
                         return false;
                     }
                     // Right panel (content preview) focused
@@ -456,9 +482,7 @@ impl App {
                         KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j')
                         | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => {
                             if let Some(ref l) = lookup {
-                                let visible: Vec<usize> = (0..l.entry_count())
-                                    .filter(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter)))
-                                    .collect();
+                                let visible = crate::app::shown_entries(l, return_filter, *outcomes);
                                 if !visible.is_empty() {
                                     let cur = selected_return.unwrap_or(0);
                                     let pos = visible.iter().position(|&i| i >= cur).unwrap_or(visible.len() - 1);
@@ -526,19 +550,25 @@ impl App {
                                 }
                             }
                         }
-                        KeyCode::Char('a') => {
+                        KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('i') | KeyCode::Char('I') => {
                             if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let text = Self::format_all_returns_console(jid, l);
-                                    save_text = Some((text, format!("job-{}-all", jid), "txt"));
-                                }
-                            }
-                        }
-                        KeyCode::Char('A') => {
-                            if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let text = Self::format_all_returns_json(l);
-                                    save_text = Some((text, format!("job-{}-all", jid), "json"));
+                                let shown = crate::app::shown_entries(l, return_filter, *outcomes);
+                                let returned = shown.iter().any(|&i| i < l.returns.len());
+                                let tag = |whole| crate::app::shown_file_tag(return_filter, *outcomes, whole);
+                                match code {
+                                    KeyCode::Char('a') if !shown.is_empty() => {
+                                        save_text = Some((Self::format_all_returns_console(jid, l, &shown), format!("job-{}-{}", jid, tag("all")), "txt"));
+                                    }
+                                    KeyCode::Char('A') if returned => {
+                                        save_text = Some((Self::format_all_returns_json(l, &shown), format!("job-{}-{}", jid, tag("all")), "json"));
+                                    }
+                                    KeyCode::Char('i') if !shown.is_empty() => {
+                                        clipboard_text = Some(crate::app::shown_minion_list(l, &shown));
+                                    }
+                                    KeyCode::Char('I') if !shown.is_empty() => {
+                                        save_text = Some((crate::app::shown_minion_list(l, &shown), format!("job-{}-{}-minions", jid, tag("all")), "txt"));
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -1803,15 +1833,32 @@ impl App {
         let hits = &self.job_detail_hits;
         let clicked = hits.rows.iter().find(|&&(y, _)| y == row).map(|&(_, i)| i).filter(|_| inside(hits.list));
         let on_preview = inside(hits.preview);
+        let picked = hits.picker.iter().find(|&&(y, _)| y == row).map(|&(_, o)| o).filter(|_| inside(hits.picker_box));
+        let in_picker = inside(hits.picker_box);
         let is_double = clicked.is_some() && self.register_click(col, row);
         if self.job_searching {
             return false;
         }
         let Some(DetailPopup::JobDetail {
             ref mut selected_return, ref mut panel_focus, ref mut content_scroll,
-            ref mut content_scroll_mode, ref lookup, return_is_filtering, ..
+            ref mut content_scroll_mode, ref lookup, return_is_filtering,
+            ref mut outcomes, ref mut outcome_picker, ref return_filter, ..
         }) = self.detail_popup else { return false };
         if return_is_filtering || lookup.is_none() {
+            return false;
+        }
+        if let Some(cursor) = outcome_picker {
+            match picked {
+                Some(o) => {
+                    *cursor = Outcome::ALL.iter().position(|&x| x == o).unwrap_or(0);
+                    outcomes.toggle(o);
+                    if let Some(l) = lookup {
+                        crate::app::snap_to_matching_return(l, selected_return, return_filter, *outcomes);
+                    }
+                }
+                None if !in_picker => *outcome_picker = None,
+                None => {}
+            }
             return false;
         }
         if let Some(i) = clicked {
@@ -1936,6 +1983,8 @@ impl App {
             job,
             return_filter: String::new(),
             return_is_filtering: false,
+            outcomes: OutcomeFilter::default(),
+            outcome_picker: None,
             panel_focus: false,
             content_scroll: 0,
             content_scroll_mode: false,

@@ -1073,6 +1073,57 @@ pub struct JobDetailHits {
     pub list: ratatui::layout::Rect,
     pub rows: Vec<(u16, usize)>,
     pub preview: ratatui::layout::Rect,
+    /// The outcome picker's rows (screen y, outcome) and its box, while open.
+    pub picker: Vec<(u16, Outcome)>,
+    pub picker_box: ratatui::layout::Rect,
+}
+
+/// How one minion did in a job, as Job Detail's returns list shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Ok,
+    Failed,
+    Missing,
+}
+
+impl Outcome {
+    pub const ALL: [Outcome; 3] = [Outcome::Ok, Outcome::Failed, Outcome::Missing];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Outcome::Ok => "OK",
+            Outcome::Failed => "FAILED",
+            Outcome::Missing => "NOT RETURNED",
+        }
+    }
+}
+
+/// The outcomes Job Detail lists, ticked in its `o` picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutcomeFilter([bool; 3]);
+
+impl Default for OutcomeFilter {
+    fn default() -> Self {
+        Self([true; 3])
+    }
+}
+
+impl OutcomeFilter {
+    pub fn shows(self, o: Outcome) -> bool {
+        self.0[o as usize]
+    }
+
+    pub fn toggle(&mut self, o: Outcome) {
+        self.0[o as usize] ^= true;
+    }
+
+    pub fn is_all(self) -> bool {
+        self.0.iter().all(|&b| b)
+    }
+
+    pub fn shown(self) -> impl Iterator<Item = Outcome> {
+        Outcome::ALL.into_iter().filter(move |&o| self.shows(o))
+    }
 }
 
 // ─── JID lookup result ────────────────────────────────────────────────────
@@ -1118,6 +1169,14 @@ impl JidLookup {
         match self.returns.get(i) {
             Some(r) => Some(&r.minion_id),
             None => self.missing.get(i - self.returns.len()).map(String::as_str),
+        }
+    }
+
+    pub fn entry_outcome(&self, i: usize) -> Outcome {
+        match self.returns.get(i) {
+            Some(r) if r.success => Outcome::Ok,
+            Some(_) => Outcome::Failed,
+            None => Outcome::Missing,
         }
     }
 }

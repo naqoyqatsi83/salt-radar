@@ -385,8 +385,11 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | `Y` | Copy raw JSON (job detail) |
 | `s` | Save to file |
 | `S` | Save raw JSON to file (job detail; NDJSON in the sniffer) |
-| `a` | Save every return in the job to one file (job detail) |
-| `A` | Save every return as one JSON object (job detail) |
+| `a` | Save the listed returns to one file, and the listed minions that didn't return (job detail) |
+| `A` | Save the listed returns as one JSON object (job detail) |
+| `o` | Pick the outcomes the returns list shows: OK, FAILED, NOT RETURNED; ticked ones are named in the list's top border (job detail) |
+| `i` | Copy the listed minions' IDs, one per line (job detail) |
+| `I` | Save the listed minions' IDs to a file, one per line (job detail) |
 | `j`/`k` | Next/previous return (job detail) |
 | `PgUp`/`PgDn` | Jump 10 returns |
 | `Home`/`End` | First/last return (job detail) |
