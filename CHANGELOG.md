@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0-rc4] - 2026-11-06
+
 ### Fixed
 
 - Give a job's arguments rows of their own in Job Detail's header, wrapped two columns short of the popup's edge, as they're indented from the left (up to 4 rows, then `…`), instead of one line that pushed the target, start time and return counts off screen for a long command
