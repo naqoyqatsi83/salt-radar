@@ -1042,14 +1042,16 @@ fn draw_job_detail(
     let fixed_w = job_spans.iter().map(|s| s.content.chars().count()).sum::<usize>() + "  Tgt: ".len()
         + epoch_str.chars().count() + returns_str.chars().count()
         + outcome_spans.iter().map(|s| s.content.chars().count()).sum::<usize>();
-    let tgt_w = (outer_inner.width as usize).saturating_sub(fixed_w).max(12);
+    // The header keeps the same two columns free on the right as on the left.
+    let header_w = (outer_inner.width as usize).saturating_sub(HEADER_MARGIN);
+    let tgt_w = header_w.saturating_sub(fixed_w).max(12);
     header_lines.push(Line::from(job_spans.into_iter().chain([
         Span::styled("  Tgt: ".to_string(), Style::default().fg(color::label_fg())),
         Span::styled(shorten_middle(&job.tgt, tgt_w), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
         Span::styled(epoch_str, Style::default().fg(color::inactive_fg())),
         Span::styled(returns_str, Style::default().fg(color::label_fg())),
     ]).chain(outcome_spans).collect::<Vec<_>>()));
-    let args_w = (outer_inner.width as usize).saturating_sub(ARGS_LABEL.len());
+    let args_w = header_w.saturating_sub(ARGS_LABEL.len());
     for (i, row) in args_rows(&job.args, args_w, ARGS_ROWS).into_iter().enumerate() {
         header_lines.push(Line::from(vec![
             Span::styled(if i == 0 { ARGS_LABEL.to_string() } else { " ".repeat(ARGS_LABEL.len()) }, Style::default().fg(color::label_fg())),
@@ -1356,6 +1358,9 @@ fn draw_job_detail(
 }
 
 const ARGS_LABEL: &str = "  Args: ";
+/// Columns Job Detail's header leaves free at its right edge, as its rows'
+/// two-space indent does at the left.
+const HEADER_MARGIN: usize = 2;
 /// Rows Job Detail's header gives a job's arguments at most.
 const ARGS_ROWS: usize = 4;
 
