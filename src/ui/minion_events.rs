@@ -62,7 +62,7 @@ fn fit(s: &str, w: usize) -> String {
     }
 }
 
-fn ago(secs: f64) -> String {
+pub(super) fn ago(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     match s {
         0..=59 => format!("{}s", s),

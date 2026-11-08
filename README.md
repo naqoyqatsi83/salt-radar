@@ -117,6 +117,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 ### Minions
 - Scrollable minion list: ID, key status, OS, Salt version, Ping and Arch, plus optional Proto (auth protocol from the Salt version: v0 red, v2 yellow, v3), Seen (time since last check-in), Fail% (share of the minion's last 50 returns that failed, worst first when sorted) and Lag columns; sorting keeps timed-out minions in their own section
 - Lag: how slowly the minion answers compared with the other minions on the same jobs, so a minion that's consistently slow stands out whatever the jobs were. For every job with at least two returns, each minion's time from publish to return is divided by the job's median (a `state.apply` and a `test.ping` rate the same way); the column shows the median of the minion's last 50 ratios, gray up to 1.5x, yellow up to 3x, red beyond. A job is rated once every target returned or it passed `job_straggler_secs`, and minions returning later are rated against that median. Return times under 0.5 s count as 0.5 s, so ping jitter doesn't read as lag, and a job where both the minion and the median took under 0.5 s isn't rated at all (it says nothing about lag), so the column shows `—` until the minion has answered a job that took time. Ping: the time to the minion's latest `test.ping` return, from any source. Both fill in from jobs seen while salt-radar runs
+- `Enter` opens a minion's detail: everything the columns can show, whichever are enabled, with the failure count and latest failure, the lag's job count and p95, and its grains on request, as `salt <id> grains.items` prints them (admin mode, `g`); the fields sit side by side in up to three columns as the width allows, leaving the height to the grains; `y`/`s` copy or save all of it as text, `Y`/`S` as JSON
 - One row per key, so the list adds up to the Dashboard's Minion Key Status: pending, rejected and denied keys are listed too, and an ID with an accepted and a denied key (a minion that came back with a new key) shows twice, once per key
 - Freshly-active marker (`●`) next to minions that checked in recently, threshold adapts to the fleet's own median check-in age
 - Fleet overview panel: OS Distribution, Salt Version, and Architecture distribution bars
@@ -384,9 +385,9 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Key | Action |
 |-----|--------|
 | `y` | Copy to clipboard |
-| `Y` | Copy raw JSON (job detail) |
+| `Y` | Copy raw JSON (job and minion detail) |
 | `s` | Save to file |
-| `S` | Save raw JSON to file (job detail; NDJSON in the sniffer) |
+| `S` | Save raw JSON to file (job and minion detail; NDJSON in the sniffer) |
 | `a` | Save every return in the job to one file, then the minions that didn't return (job detail) |
 | `A` | Save every return as one JSON object (job detail) |
 | `v` | Save the returns the list shows (the `o` outcomes and `/` filter applied) to one file named `job-<jid>-view-…`, then the shown minions that didn't return (job detail) |

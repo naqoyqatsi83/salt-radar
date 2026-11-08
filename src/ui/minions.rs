@@ -195,7 +195,7 @@ fn minion_cell(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, w: usize
 }
 
 /// What a Minions cell shows, and how.
-fn minion_text(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, now: u64, health: Option<&MinionHealth>) -> (String, Style) {
+pub(super) fn minion_text(minion: &MinionInfo, ks: Option<KeyStatus>, col: Column, now: u64, health: Option<&MinionHealth>) -> (String, Style) {
     let dim = Style::default().fg(color::inactive_fg());
     // A timed-out minion's grains are stale/unknown, so its detail columns
     // read as a dash and everything is dimmed.

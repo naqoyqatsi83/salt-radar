@@ -851,9 +851,17 @@ impl MinionActivityItem {
 
 // ─── Detail popup variants ──────────────────────────────────────────────────
 
+/// A minion's fetched grains: Salt's own output and the JSON for saving (null
+/// when it returned none). No lines means the fetch is still running.
+#[derive(Clone, Debug, Default)]
+pub struct MinionGrains {
+    pub lines: Vec<Line<'static>>,
+    pub json: serde_json::Value,
+}
+
 #[derive(Clone, Debug)]
 pub enum DetailPopup {
-    Minion(String, PingState, Option<Vec<(String, String)>>, usize),
+    Minion(String, PingState, Option<MinionGrains>, usize),
     /// `search` is the `/` query in the body (being typed while
     /// `searching`), `search_focus` the match `n`/`N` last landed on.
     SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch, search: String, searching: bool, search_focus: Option<usize> },

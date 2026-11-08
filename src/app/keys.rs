@@ -158,6 +158,8 @@ impl App {
         // Sibling of clipboard_text for 's'/'S' ("save to file"): (content, filename hint)
         // (content, filename hint, extension)
         let mut save_text: Option<(String, String, &str)> = None;
+        // Built after the popup's match, which holds a borrow of the popup.
+        let mut minion_export: Option<char> = None;
         let had_popup = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
         // The sniffer lives outside `detail_popup` (see its field doc) so it
         // keeps running when you're elsewhere, but it still owns the Events
@@ -811,7 +813,7 @@ impl App {
                         }
                         KeyCode::Char('g') | KeyCode::Char('G') if self.admin_mode => {
                             trigger_grains_fetch = Some(mid.clone());
-                            *grains = Some(Vec::new());
+                            *grains = Some(MinionGrains::default());
                             *grains_scroll = 0;
                         }
                         KeyCode::Char('a') | KeyCode::Char('A') if self.admin_mode => {
@@ -827,25 +829,22 @@ impl App {
                             *grains_scroll = grains_scroll.saturating_sub(1);
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
-                            let max = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            let max = grains.as_ref().map_or(0, |p| p.lines.len().saturating_sub(1));
                             *grains_scroll = (*grains_scroll + 1).min(max);
                         }
                         KeyCode::PageUp => {
                             *grains_scroll = grains_scroll.saturating_sub(10);
                         }
                         KeyCode::PageDown => {
-                            let max = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            let max = grains.as_ref().map_or(0, |p| p.lines.len().saturating_sub(1));
                             *grains_scroll = (*grains_scroll + 10).min(max);
                         }
                         KeyCode::Home => { *grains_scroll = 0; }
                         KeyCode::End => {
-                            *grains_scroll = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            *grains_scroll = grains.as_ref().map_or(0, |p| p.lines.len().saturating_sub(1));
                         }
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            clipboard_text = Some(mid.clone());
-                        }
-                        KeyCode::Char('s') | KeyCode::Char('S') => {
-                            save_text = Some((mid.clone(), format!("minion-{}", mid), "txt"));
+                        KeyCode::Char(key @ ('y' | 'Y' | 's' | 'S')) => {
+                            minion_export = Some(key);
                         }
                         _ => {}
                     }
@@ -1033,6 +1032,16 @@ impl App {
                         }
                         _ => {}
                     }
+                }
+            }
+        }
+        if let Some(key) = minion_export {
+            let json = key.is_ascii_uppercase();
+            if let Some((id, text)) = crate::ui::detail_popup::minion_detail_export(self, json) {
+                if key.eq_ignore_ascii_case(&'y') {
+                    clipboard_text = Some(text);
+                } else {
+                    save_text = Some((text, format!("minion-{}", id), if json { "json" } else { "txt" }));
                 }
             }
         }

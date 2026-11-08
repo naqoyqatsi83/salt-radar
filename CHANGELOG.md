@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Show the auth protocol, failure rate with the latest failure, lag and ping in Minion Detail, which had less than the Minions columns can show, with the fields in up to three columns as the width allows, leaving more height for the grains
+- Copy or save a minion's details and grains from Minion Detail, as text (`y`/`s`) or JSON (`Y`/`S`); these only took its ID before
+
 ### Changed
 
+- Show a minion's grains in Minion Detail exactly as `salt <id> grains.items` prints them, in the theme's colors and without cutting long values; a minion that doesn't answer shows Salt's message instead of loading forever
 - Show the Minions Ping and Arch columns by default, and list the columns in the `v` picker and the Config Editor in the order ID, Key, OS, Salt, Proto, Seen, Fail%, Lag, Ping, Arch; a saved `minion_columns` keeps its own choice and order
 
 ### Fixed

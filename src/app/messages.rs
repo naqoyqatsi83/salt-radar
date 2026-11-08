@@ -303,19 +303,13 @@ impl App {
                         }
                         "minion_grains" => {
                             if let Some(mid) = data["minion_id"].as_str() {
-                                let pairs: Vec<(String, String)> = data["grains"].as_array()
-                                    .map(|arr| {
-                                        arr.iter().filter_map(|v| {
-                                            let obj = v.as_object()?;
-                                            let key = obj.get("key")?.as_str()?;
-                                            let val = obj.get("value")?.as_str()?;
-                                            Some((key.to_string(), val.to_string()))
-                                        }).collect()
-                                    })
-                                    .unwrap_or_default();
+                                let output = data["output"].as_str().unwrap_or("").trim_end();
+                                let output = if output.is_empty() { "salt grains.items returned nothing" } else { output };
+                                let style = ratatui::style::Style::default().fg(crate::ui::color::main_fg());
+                                let lines = App::ansi_text_to_lines(output, style);
                                 if let Some(DetailPopup::Minion(ref popup_id, _, ref mut grains, _)) = self.detail_popup {
                                     if popup_id == mid {
-                                        *grains = Some(pairs);
+                                        *grains = Some(MinionGrains { lines, json: data["grains"].clone() });
                                     }
                                 }
                             }

@@ -1891,38 +1891,41 @@ def cmd_minion_ping(opts, req):
 
 
 def cmd_minion_grains(opts, req):
-    """Fetch all grains from a single minion via salt {mid} grains.items --out=json."""
+    """A minion's grains exactly as `salt {mid} grains.items` prints them, and
+    as JSON for saving (null when the minion returned no grains).
+
+    The output is taken whatever the exit code: a minion that doesn't answer
+    exits non-zero with Salt's own explanation on stdout.
+    """
+    import subprocess as sp
     mid = req.get("minion_id", "")
-    if not mid:
-        result(req["id"], "minion_grains", data={"minion_id": mid, "grains": []})
-        return
+    outputs = {}
+
+    def run(key, out_args):
+        try:
+            cp = sp.run(["salt", mid, "grains.items", "--timeout=15"] + out_args,
+                        capture_output=True, text=True, timeout=20)
+            outputs[key] = cp.stdout
+        except sp.TimeoutExpired:
+            outputs[key] = "salt grains.items timed out after 20s"
+        except Exception as exc:
+            outputs[key] = str(exc)
+
+    threads = [
+        threading.Thread(target=run, args=("text", ["--force-color"]), daemon=True),
+        threading.Thread(target=run, args=("json", ["--out=json"]), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     try:
-        import subprocess as sp, json as json_mod
-        output = _run_salt_cmd(["salt", mid, "grains.items", "--out=json", "--timeout=15"], timeout=20)
-        pairs = []
-        if output:
-            data = json_mod.loads(output)
-            grains_data = data.get(mid, {})
-            if not isinstance(grains_data, dict):
-                grains_data = data.get("return", grains_data)
-            if isinstance(grains_data, dict):
-                for key in sorted(grains_data.keys()):
-                    val = grains_data[key]
-                    if isinstance(val, str):
-                        val_str = val
-                    elif isinstance(val, (list, dict)):
-                        # Pretty-print nested structures (interfaces, disks,
-                        # pythonpath, etc.) instead of a single-line repr —
-                        # the TUI renders each line indented under the key.
-                        val_str = json_mod.dumps(val, indent=2, sort_keys=True)
-                    else:
-                        val_str = str(val)
-                    if len(val_str) > 2000:
-                        val_str = val_str[:2000] + "\n..."
-                    pairs.append({"key": key, "value": val_str})
-    except Exception:
-        pairs = []
-    result(req["id"], "minion_grains", data={"minion_id": mid, "grains": pairs})
+        grains = json.loads(outputs.get("json", "")).get(mid)
+    except (ValueError, AttributeError):
+        grains = None
+    if not isinstance(grains, dict):
+        grains = None
+    result(req["id"], "minion_grains", data={"minion_id": mid, "output": outputs.get("text", ""), "grains": grains})
 
 
 def _cached_job_targets(opts, jid):

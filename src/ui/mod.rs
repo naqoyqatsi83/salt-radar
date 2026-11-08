@@ -1117,9 +1117,9 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ]),
     ("Popups", &[
         Shortcut { tab: "", key: "`y`", action: "Copy to clipboard" },
-        Shortcut { tab: "", key: "`Y`", action: "Copy raw JSON (job detail)" },
+        Shortcut { tab: "", key: "`Y`", action: "Copy raw JSON (job and minion detail)" },
         Shortcut { tab: "", key: "`s`", action: "Save to file" },
-        Shortcut { tab: "", key: "`S`", action: "Save raw JSON to file (job detail; NDJSON in the sniffer)" },
+        Shortcut { tab: "", key: "`S`", action: "Save raw JSON to file (job and minion detail; NDJSON in the sniffer)" },
         Shortcut { tab: "", key: "`a`", action: "Save every return in the job to one file, then the minions that didn't return (job detail)" },
         Shortcut { tab: "", key: "`A`", action: "Save every return as one JSON object (job detail)" },
         Shortcut { tab: "", key: "`v`", action: "Save the returns the list shows (the `o` outcomes and `/` filter applied) to one file named `job-<jid>-view-…`, then the shown minions that didn't return (job detail)" },

@@ -4,8 +4,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, DetailPopup, PingState};
-use crate::types::{KeyStatus, Outcome, OutcomeFilter, SnifferState, Status};
+use crate::app::{App, DetailPopup, MinionGrains, MinionHealth, PingState};
+use crate::types::{Column, KeyStatus, MinionInfo, Outcome, OutcomeFilter, SnifferState, Status};
 
 use super::color;
 
@@ -357,35 +357,6 @@ fn clipboard_status(clipboard_at: Option<std::time::Instant>, save_at: Option<st
     None
 }
 
-/// Lightweight, allocation-cheap coloring for a single line of a grain
-/// value — the agent pretty-prints nested lists/dicts as JSON, so a plain
-/// per-token parse isn't needed, just enough of a heuristic (quoted
-/// strings, booleans/null, numbers, bare structural punctuation) to make
-/// a wall of grains scannable at a glance.
-fn grain_value_style(line: &str) -> Style {
-    let trimmed = line.trim().trim_end_matches(',');
-    if trimmed == "true" {
-        Style::default().fg(color::green())
-    } else if trimmed == "false" {
-        Style::default().fg(color::red())
-    } else if matches!(trimmed, "null" | "[" | "]" | "{" | "}" | "[]" | "{}") {
-        Style::default().fg(color::inactive_fg())
-    } else if trimmed.starts_with('"') {
-        Style::default().fg(color::main_fg())
-    } else if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
-        Style::default().fg(color::yellow())
-    } else {
-        Style::default().fg(color::main_fg())
-    }
-}
-
-/// Rendered line count for one grain: 1 for a scalar (`key: value` on one
-/// line), or 1 + the value's own line count for a pretty-printed nested
-/// list/dict (a `key:` line followed by each indented value line).
-fn grain_height(val: &str) -> usize {
-    if val.contains('\n') { 1 + val.lines().count() } else { 1 }
-}
-
 /// Coloring for one line of `App::format_return_as_console`'s output —
 /// mirrors Salt's own highstate-style CLI coloring (green/red result,
 /// cyan keys) well enough to keep job output scannable without needing a
@@ -483,24 +454,104 @@ fn nested_display(value: &serde_json::Value, indent: usize, prefix: &str, retcod
     }
 }
 
-fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo, ping_state: &PingState, grains: &Option<Vec<(String, String)>>, grains_scroll: usize, app: &App) -> usize {
-    let mut lines = header_lines(" Minion Detail ", area.width);
-    lines.push(row("ID", minion.id.clone(), color::cyan()));
+/// A Minions column's value and color, as the table shows it.
+fn column_value(minion: &MinionInfo, col: Column, now: f64, health: Option<&MinionHealth>) -> (String, Color) {
+    let (text, style) = super::minions::minion_text(minion, minion.key_status, col, now as u64, health);
+    (text, style.fg.unwrap_or_else(color::main_fg))
+}
 
-    let key_status_text = match minion.key_status {
-        Some(KeyStatus::Accepted) => "accepted".to_string(),
-        Some(KeyStatus::Pending) => "pending".to_string(),
-        Some(KeyStatus::Rejected) => "rejected".to_string(),
-        Some(KeyStatus::Denied) => "denied".to_string(),
-        None => "unknown".to_string(),
-    };
+/// The Minions table's health columns, with what the table has no room for.
+fn health_rows(minion: &MinionInfo, health: Option<&MinionHealth>, now: f64) -> Vec<Line<'static>> {
+    let (mut fail, fail_color) = column_value(minion, Column::FailPct, now, health);
+    let (mut lag, lag_color) = column_value(minion, Column::Lag, now, health);
+    let (ping, ping_color) = column_value(minion, Column::Ping, now, health);
+    let mut last_failure = None;
+    if let Some(h) = health {
+        if !h.recent.is_empty() {
+            fail.push_str(&format!(" ({} of last {} returns)", h.failed(), h.recent.len()));
+        }
+        if h.failed() > 0 {
+            last_failure = h.last_failure.as_ref().map(|(ts, what)| format!("{} ago: {}", super::minion_events::ago(now - ts), what));
+        }
+        if let Some(p95) = h.lag_at(0.95) {
+            let jobs = if h.lag.len() == 1 { "1 job".to_string() } else { format!("{} jobs", h.lag.len()) };
+            lag.push_str(&format!(" over {}, p95 {}", jobs, super::format_lag(p95)));
+        }
+    }
+    let mut rows = vec![field("Fail%", fail, fail_color)];
+    rows.extend(last_failure.map(|text| field("Last Failure", text, color::yellow())));
+    rows.push(field("Lag", lag, lag_color));
+    rows.push(field("Ping", ping, ping_color));
+    rows
+}
+
+/// A Minion Detail row: the labels are shorter than `row` leaves room for,
+/// and the width matters here, since it decides how many columns fit.
+fn field(label: &'static str, value: String, value_color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {:<15}", label), Style::default().fg(color::label_fg())),
+        Span::styled(value, Style::default().fg(value_color).add_modifier(Modifier::BOLD)),
+    ])
+}
+
+/// Lays out groups of rows side by side, as many columns as `width` holds:
+/// one per group, then the first two stacked beside the last, then a single
+/// column. The last column is measured up to `LAST_COLUMN_MAX`, so one long
+/// value (a failed job's arguments) is clipped at the edge instead of costing
+/// a column. Spare width widens the gaps, up to `MAX_EXTRA_GAP` so a value stays
+/// near its label and the columns near each other on a very wide screen.
+fn arrange_columns(groups: [Vec<Line<'static>>; 3], width: usize) -> Vec<Line<'static>> {
+    const GAP: usize = 2;
+    const LAST_COLUMN_MAX: usize = 44;
+    const MAX_EXTRA_GAP: usize = 8;
+    let layouts: [&[&[usize]]; 2] = [&[&[0], &[1], &[2]], &[&[0, 1], &[2]]];
+    for layout in layouts {
+        let columns: Vec<Vec<&Line<'static>>> = layout.iter()
+            .map(|col| col.iter().flat_map(|&g| &groups[g]).collect())
+            .collect();
+        let widest = |c: &Vec<&Line<'static>>| c.iter().map(|l| l.width()).max().unwrap_or(0);
+        let last = columns.len() - 1;
+        let widths: Vec<usize> = columns.iter().map(widest).collect();
+        let needed: usize = widths[..last].iter().map(|w| w + GAP).sum::<usize>() + widths[last].min(LAST_COLUMN_MAX);
+        if needed > width { continue; }
+        let gap = GAP + ((width - needed) / columns.len()).min(MAX_EXTRA_GAP);
+        let height = columns.iter().map(Vec::len).max().unwrap_or(0);
+        return (0..height).map(|i| {
+            let mut spans = Vec::new();
+            for (j, column) in columns.iter().enumerate() {
+                let line = column.get(i);
+                if let Some(line) = line { spans.extend(line.spans.iter().cloned()); }
+                if j < last {
+                    spans.push(Span::raw(" ".repeat(widths[j] + gap - line.map_or(0, |l| l.width()))));
+                }
+            }
+            Line::from(spans)
+        }).collect();
+    }
+    groups.into_iter().flatten().collect()
+}
+
+fn key_label(status: Option<KeyStatus>) -> &'static str {
+    match status {
+        Some(KeyStatus::Accepted) => "accepted",
+        Some(KeyStatus::Pending) => "pending",
+        Some(KeyStatus::Rejected) => "rejected",
+        Some(KeyStatus::Denied) => "denied",
+        None => "unknown",
+    }
+}
+
+/// Minion Detail's fields: who it is, what it runs, how it's doing.
+fn minion_detail_groups(minion: &MinionInfo, ping_state: &PingState, health: Option<&MinionHealth>, now: f64) -> [Vec<Line<'static>>; 3] {
+    let mut identity = vec![field("ID", minion.id.clone(), color::cyan())];
+
     let key_status_color = match minion.key_status {
         Some(KeyStatus::Accepted) => color::green(),
         Some(KeyStatus::Pending) => color::yellow(),
         Some(KeyStatus::Rejected) | Some(KeyStatus::Denied) => color::red(),
         None => color::inactive_fg(),
     };
-    lines.push(row("Key Status", key_status_text, key_status_color));
+    identity.push(field("Key Status", key_label(minion.key_status).to_string(), key_status_color));
 
     // Connection status — depends on PingState
     let (connected_text, connected_color) = match *ping_state {
@@ -518,7 +569,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
         PingState::Result(true) => ("connected".to_string(), color::green()),
         PingState::Result(false) => ("disconnected".to_string(), color::red()),
     };
-    lines.push(row("Connection", connected_text, connected_color));
+    identity.push(field("Connection", connected_text, connected_color));
 
     // OS information
     let os_display = if !minion.osfinger.is_empty() {
@@ -528,17 +579,83 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     } else {
         minion.os.clone()
     };
-    lines.push(row("OS", os_display, color::green()));
+    let mut system = vec![field("OS", os_display, color::green())];
     if !minion.osfinger.is_empty() && !minion.osrelease.is_empty() {
-        lines.push(row("OS Release", minion.osrelease.clone(), color::main_fg()));
+        system.push(field("OS Release", minion.osrelease.clone(), color::main_fg()));
     }
 
     // Grains information
-    lines.push(row("Salt Version", minion.salt_version.clone(), color::yellow()));
-    lines.push(row("CPU Arch", minion.cpuarch.clone(), color::main_fg()));
+    let (proto, proto_color) = column_value(minion, Column::Proto, now, health);
+    system.push(field("Salt Version", minion.salt_version.clone(), color::yellow()));
+    system.push(field("Auth Protocol", proto, proto_color));
+    system.push(field("CPU Arch", minion.cpuarch.clone(), color::main_fg()));
 
     // Last seen information
-    lines.push(row("Last Seen", format_epoch(minion.last_seen_epoch), color::inactive_fg()));
+    let mut activity = vec![field("Last Seen", format_epoch(minion.last_seen_epoch), color::inactive_fg())];
+    activity.extend(health_rows(minion, health, now));
+    [identity, system, activity]
+}
+
+/// What `y`/`s` copy and save: the fields, then the grains as Salt prints them.
+fn minion_detail_text(minion: &MinionInfo, ping_state: &PingState, health: Option<&MinionHealth>, grains: Option<&MinionGrains>, now: f64) -> String {
+    let mut groups = minion_detail_groups(minion, ping_state, health, now);
+    // Connection comes third; unchecked, it only says how to check it.
+    if matches!(ping_state, PingState::Idle) { groups[0].truncate(2); }
+    let plain = |line: &Line<'_>| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+    let mut text: Vec<String> = groups.iter().flatten().map(|l| plain(l).trim_start().to_string()).collect();
+    if let Some(grains) = grains.filter(|g| !g.lines.is_empty()) {
+        text.push(String::new());
+        text.extend(grains.lines.iter().map(plain));
+    }
+    text.join("\n") + "\n"
+}
+
+/// What `Y`/`S` copy and save: the same as `minion_detail_text` as JSON, with
+/// null for what isn't known (`grains` until they're fetched).
+fn minion_detail_json(minion: &MinionInfo, ping_state: &PingState, health: Option<&MinionHealth>, grains: Option<&MinionGrains>) -> serde_json::Value {
+    serde_json::json!({
+        "id": minion.id,
+        "key_status": key_label(minion.key_status),
+        "connected": if let PingState::Result(connected) = ping_state { Some(*connected) } else { None },
+        "timed_out": minion.timed_out,
+        "os": minion.os,
+        "osrelease": minion.osrelease,
+        "osfinger": minion.osfinger,
+        "salt_version": minion.salt_version,
+        "auth_protocol": crate::types::auth_protocol(&minion.salt_version),
+        "cpuarch": minion.cpuarch,
+        "last_seen_epoch": minion.last_seen_epoch,
+        "health": health.map(|h| serde_json::json!({
+            "returns": h.recent.len(),
+            "failed": h.failed(),
+            "last_failure": h.last_failure.as_ref().map(|(at, job)| serde_json::json!({"at": at, "job": job})),
+            "lag_median": h.lag_at(0.5),
+            "lag_p95": h.lag_at(0.95),
+            "lag_jobs": h.lag.len(),
+            "last_ping_secs": h.last_ping_secs,
+        })),
+        "grains": grains.map_or(serde_json::Value::Null, |g| g.json.clone()),
+    })
+}
+
+/// The open Minion Detail popup's minion ID and its text or JSON export.
+pub(crate) fn minion_detail_export(app: &App, json: bool) -> Option<(String, String)> {
+    let Some(DetailPopup::Minion(id, ping_state, grains, _)) = &app.detail_popup else { return None };
+    let minion = app.minion_info.iter().find(|m| m.id == *id)?;
+    let health = app.minion_health(id);
+    let text = if json {
+        serde_json::to_string_pretty(&minion_detail_json(minion, ping_state, health, grains.as_ref())).ok()? + "\n"
+    } else {
+        minion_detail_text(minion, ping_state, health, grains.as_ref(), chrono::Utc::now().timestamp().max(0) as f64)
+    };
+    Some((id.clone(), text))
+}
+
+fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &MinionInfo, ping_state: &PingState, grains: &Option<MinionGrains>, grains_scroll: usize, app: &App) -> usize {
+    let mut lines = header_lines(" Minion Detail ", area.width);
+    let now = chrono::Utc::now().timestamp().max(0) as f64;
+    let groups = minion_detail_groups(minion, ping_state, app.minion_health(&minion.id), now);
+    lines.extend(arrange_columns(groups, area.width.saturating_sub(2) as usize));
 
     // ── Grains section ────────────────────────────────────────────────────
     lines.push(Line::from(""));
@@ -565,62 +682,24 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
                 )));
             }
         }
-        Some(pairs) => {
-            if pairs.is_empty() {
+        Some(grains) => {
+            let output = &grains.lines;
+            if output.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "  Loading grains...",
                     Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
                 )));
             } else {
-                // Compute available height for grains. Scroll is by grain
-                // (key), not by rendered line, since a nested value (a list
-                // or dict, pretty-printed by the agent) can span many lines.
-                // max_scroll is found by walking backward from the last
-                // grain accumulating line-heights, so scrolling to the end
-                // lands the last rendered line at the bottom of the frame
-                // instead of pinning the last grain to the top with blank
-                // space below it (and further scrolling has nowhere to go).
-                let used = lines.len();
-                let avail = (area.height as usize).saturating_sub(used).saturating_sub(2); // borders(2)
-                let mut budget = avail;
-                for (i, (_, val)) in pairs.iter().enumerate().rev() {
-                    let h = grain_height(val);
-                    if h > budget {
-                        max_scroll = i + 1;
-                        break;
-                    }
-                    budget -= h;
-                }
+                let avail = (area.height as usize).saturating_sub(lines.len()).saturating_sub(2); // borders(2)
+                max_scroll = output.len().saturating_sub(avail);
                 let scroll = grains_scroll.min(max_scroll);
-
-                let mut rendered = 0usize;
-                let mut shown = 0usize;
-                for (key, val) in pairs.iter().skip(scroll) {
-                    if rendered >= avail { break; }
-                    let mut val_lines = val.lines();
-                    let first = val_lines.next().unwrap_or("");
-                    if val.contains('\n') {
-                        lines.push(Line::from(Span::styled(
-                            format!("  {}:", key),
-                            Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD),
-                        )));
-                        rendered += 1;
-                        for l in std::iter::once(first).chain(val_lines) {
-                            if rendered >= avail { break; }
-                            lines.push(Line::from(Span::styled(format!("    {}", l), grain_value_style(l))));
-                            rendered += 1;
-                        }
-                    } else {
-                        lines.push(Line::from(vec![
-                            Span::styled(format!("  {}: ", key), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
-                            Span::styled(first.to_string(), grain_value_style(first)),
-                        ]));
-                        rendered += 1;
-                    }
-                    shown += 1;
-                }
+                lines.extend(output.iter().skip(scroll).take(avail).map(|line| {
+                    let mut spans = vec![Span::raw("  ")];
+                    spans.extend(line.spans.iter().cloned());
+                    Line::from(spans)
+                }));
                 more_above = scroll > 0;
-                more_below = scroll + shown < pairs.len();
+                more_below = scroll < max_scroll;
             }
         }
     }
@@ -628,8 +707,8 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     let hints: Vec<(&str, String)> = if app.admin_mode {
         vec![
             ("Esc/q", "close".to_string()),
-            ("y", "copy".to_string()),
-            ("s", "save".to_string()),
+            ("y/Y", "copy/json".to_string()),
+            ("s/S", "save/json".to_string()),
             ("g", "fetch grains".to_string()),
             ("\u{2191}\u{2193}", "scroll grains".to_string()),
             ("PgUp/PgDn", "page".to_string()),
@@ -637,7 +716,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
             ("a", "admin off".to_string()),
         ]
     } else {
-        vec![("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string()), ("a", "admin mode for grains".to_string())]
+        vec![("Esc/q", "close".to_string()), ("y/Y", "copy/json".to_string()), ("s/S", "save/json".to_string()), ("a", "admin mode for grains".to_string())]
     };
     render_popup(f, area, &lines, &hints, None, (more_above, more_below), 0, 0);
     max_scroll
@@ -2269,6 +2348,69 @@ fn format_ts(ts: f64) -> String {
 mod tests {
     use super::*;
 
+    fn row_texts(rows: Vec<Line<'static>>) -> Vec<String> {
+        rows.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")).collect()
+    }
+
+    #[test]
+    fn minion_detail_shows_the_health_columns_and_more() {
+        let h = MinionHealth {
+            recent: [true, true, true, false].into(),
+            last_failure: Some((100.0, "state.apply".to_string())),
+            lag: [1.2, 1.2].into(),
+            last_ping_secs: Some(0.195),
+        };
+        assert_eq!(row_texts(health_rows(&MinionInfo::default(), Some(&h), 220.0)), [
+            "Fail% 25% (1 of last 4 returns)",
+            "Last Failure 2m ago: state.apply",
+            "Lag 1.2x over 2 jobs, p95 1.2x",
+            "Ping 195ms",
+        ]);
+    }
+
+    #[test]
+    fn minion_detail_uses_the_columns_that_fit() {
+        let groups = || [
+            vec![Line::from("a".repeat(10)), Line::from("b".repeat(4))],
+            vec![Line::from("c".repeat(6))],
+            vec![Line::from("d".repeat(8)), Line::from("e".repeat(90))],
+        ];
+        let texts = |width| row_texts(arrange_columns(groups(), width));
+        let (a, b, c, d, e) = ("a".repeat(10), "b".repeat(4), "c".repeat(6), "d".repeat(8), "e".repeat(90));
+        // 12 + 8 + 44: the long last value is clipped, not given a column of its own.
+        assert_eq!(texts(64), [format!("{a} {c} {d}"), format!("{b} {e}")]);
+        // Too narrow for three: the first two stack beside the last.
+        assert_eq!(texts(63), [format!("{a} {d}"), format!("{b} {e}"), c.clone()]);
+        // Too narrow for two.
+        assert_eq!(texts(55), [a, b, c, d, e]);
+        // Spare width widens the gaps, up to a limit: 10 + gap + 6 + gap + 8.
+        let first_row_width = |width| arrange_columns(groups(), width)[0].width();
+        assert_eq!(first_row_width(64), 28);
+        assert_eq!(first_row_width(67), 30);
+        assert_eq!(first_row_width(300), 44);
+    }
+
+    #[test]
+    fn minion_detail_exports_fields_and_grains() {
+        let minion = MinionInfo { id: "web1".to_string(), key_status: Some(KeyStatus::Accepted), salt_version: "3006.16".to_string(), ..Default::default() };
+        let grains = MinionGrains { lines: vec![Line::from("web1:"), Line::from("    os:")], json: serde_json::json!({"os": "Debian"}) };
+
+        let text = minion_detail_text(&minion, &PingState::Idle, None, Some(&grains), 0.0);
+        assert!(text.starts_with("ID             web1\nKey Status     accepted\nOS"), "{text}");
+        assert!(text.ends_with("\n\nweb1:\n    os:\n"), "{text}");
+        let connected = minion_detail_text(&minion, &PingState::Result(true), None, None, 0.0);
+        assert!(connected.contains("Connection     connected\n"), "{connected}");
+
+        let json = minion_detail_json(&minion, &PingState::Result(true), None, Some(&grains));
+        assert_eq!((&json["id"], &json["connected"], &json["auth_protocol"]), (&serde_json::json!("web1"), &serde_json::json!(true), &serde_json::json!(3)));
+        assert_eq!(json["grains"]["os"], "Debian");
+        assert!(minion_detail_json(&minion, &PingState::Idle, None, None)["grains"].is_null());
+    }
+
+    #[test]
+    fn minion_detail_without_returns_shows_dashes() {
+        assert_eq!(row_texts(health_rows(&MinionInfo::default(), None, 220.0)), ["Fail% \u{2014}", "Lag \u{2014}", "Ping \u{2014}"]);
+    }
 
     #[test]
     fn long_args_wrap_into_rows_and_end_in_an_ellipsis_when_cut() {
