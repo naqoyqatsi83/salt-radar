@@ -826,7 +826,7 @@ impl TableId {
         match self {
             Self::LiveJobs => &["jid", "fun", "args", "target", "source", "tgt", "ok", "fail", "wait", "started"],
             Self::JobCache => &["jid", "user", "started", "target", "fun", "args"],
-            Self::Minions => &["id", "key", "os", "salt", "proto", "arch", "seen", "fail_pct", "lag", "ping"],
+            Self::Minions => &["id", "key", "os", "salt", "proto", "seen", "fail_pct", "lag", "ping", "arch"],
             Self::Events => &["local", "utc", "tag", "minion"],
             Self::Alerts => &["severity", "rule", "description", "since", "count"],
             Self::ApiLog => &["age", "method", "client", "path", "status", "time"],
@@ -837,7 +837,7 @@ impl TableId {
         match self {
             Self::LiveJobs => "jid,fun,args,target,source,tgt,ok,fail,wait",
             Self::JobCache => "jid,user,target,fun,args",
-            Self::Minions => "id,key,os,salt",
+            Self::Minions => "id,key,os,salt,ping,arch",
             Self::Events => "local,utc,tag",
             Self::Alerts => "severity,rule,description",
             Self::ApiLog => "age,method,client,path,status,time",

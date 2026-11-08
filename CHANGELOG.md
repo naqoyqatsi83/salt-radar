@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Show the Minions Ping and Arch columns by default, and list the columns in the `v` picker and the Config Editor in the order ID, Key, OS, Salt, Proto, Seen, Fail%, Lag, Ping, Arch; a saved `minion_columns` keeps its own choice and order
+
 ### Fixed
 
 - Make the `TTY` theme's Dashboard gauges readable: black instead of gray behind them, which hid the Net gauge's text below 1 MB/s, and bright blue instead of dark blue for memory at mid usage
