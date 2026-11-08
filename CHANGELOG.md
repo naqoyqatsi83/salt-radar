@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0-rc5] - 2026-11-09
+
 ### Added
 
 - Show the auth protocol, failure rate with the latest failure, lag and ping in Minion Detail, which had less than the Minions columns can show, with the fields in up to three columns as the width allows, leaving more height for the grains
