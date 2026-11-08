@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Make the `TTY` theme's Dashboard gauges readable: black instead of gray behind them, which hid the Net gauge's text below 1 MB/s, and bright blue instead of dark blue for memory at mid usage
+- Make red text readable on the `TTY` theme's cursor row, active tab and selected Pulse cell: blue instead of red behind them
+
 ## [0.11.0-rc4] - 2026-11-06
 
 ### Fixed
