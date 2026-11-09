@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Find the X11 display to copy to when salt-radar runs under `sudo -i`, `su -` or in a tmux session that was started without X11 and re-attached from an SSH login with X11 forwarding: it is now taken from the tmux session (updated on every attach) or from the login shell above `sudo`, with that user's cookie. Copying only looked at its own environment and the tmux server's, so these setups copied nothing to X11 (#201)
+
 ## [0.11.0-rc6] - 2026-11-09
 
 ### Fixed
