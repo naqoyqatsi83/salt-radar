@@ -232,17 +232,17 @@ The master's configuration, as its files set it:
 
 Every popup with copy-to-clipboard (`y` / `Y`) also supports saving the same content to a file (`s` / `S`) — a small dialog opens on top of the popup, proposing a filename from what's being saved; edit it, `Enter` saves (warning first if the file already exists), `Esc` cancels. JSON saves (`S`, and `A` for all of a job's returns) get a `.json` name, text saves `.txt`. Default save directory is `~` (the launching user's home), configurable as `save_dir` under `[export]` (or live, in the Config Editor).
 
-Copy-to-clipboard (`y` / `Y`) uses two methods:
+Copy-to-clipboard (`y` / `Y`) sends the text two ways at once:
 
-1. **tmux load-buffer** — pushes text into the tmux paste buffer via OSC 52 escape sequence. MobaXterm (or any terminal emulator that handles OSC 52) captures this and places it on the system clipboard. Works automatically when running inside tmux. Requires `set -g set-clipboard on` in `~/.tmux.conf` to push to the system clipboard (without it, content is only available via `Ctrl+b ]` inside tmux).
+1. **OSC 52**: an escape sequence that asks the terminal itself to put the text on the clipboard of the machine you work on. It needs nothing on the server and works over a plain SSH session, in terminals that support it (Windows Terminal, iTerm2, kitty, WezTerm, recent xterm and others; some ask once, or have it as an option to turn on). MobaXterm ignores it, so use X11 forwarding there. Inside tmux it goes through `tmux load-buffer -w` (tmux 3.2 or later), which also fills tmux's paste buffer (`Ctrl+b ]`), and this works when salt-radar runs under `sudo` too. The terminal doesn't report back, so salt-radar can't tell whether it took the text.
 
-2. **xclip** — pushes text to the X11 clipboard via `su` as the user that owns the X11 socket. The code auto-resolves DISPLAY and XAUTHORITY by checking the process environment first, then falling back to the tmux session's global environment, and finally trying the detected user's default `~/.Xauthority` path. This means clipboard works even when salt-radar is launched under `sudo`, with no `sudoers` configuration required.
+2. **xclip over X11 forwarding** (`ssh -X` / `ssh -Y`): when a DISPLAY is available and `xclip` is installed. DISPLAY and XAUTHORITY are found from the process environment, the tmux session's environment, or the files of the user who owns the X11 session, so it works under `sudo` without any `sudoers` changes. If root can't open the display, the copy is retried through `su` as that user. A failure shows xclip's error in the status bar.
 
-If DISPLAY and XAUTHORITY can't be resolved, a transient yellow hint is shown in the status bar explaining that X11 clipboard is unavailable. Run with `ssh -X` or `ssh -Y` to enable X11 forwarding.
+While salt-radar runs, each copy writes what happened to `/tmp/.salt-radar-clip-<pid>.log` (and X11 details to `/tmp/.salt-radar-clip-debug-<pid>.log`), which helps when the clipboard stays empty; both are removed when it quits.
 
 ### Everywhere
 - **Color themes** — btop++-style `.theme` files (see below); the screen behind any popup is dimmed so the popup stands out — how strongly is `popup_dim_pct` in `[ui]` (default 70%, `0` turns it off)
-- **Clipboard integration** — tmux load-buffer + xclip via X11 forwarding. DISPLAY and XAUTHORITY are auto-resolved from the process environment or the tmux session's global environment — no manual configuration needed even when running under `sudo`
+- **Clipboard integration** — OSC 52 (straight to the terminal, or through tmux) plus xclip via X11 forwarding, with no manual configuration, also under `sudo`
 - Filter-as-you-type with `/` on all list tabs — each tab keeps its own filter independently, comma-separated terms (each optionally a glob, or a `/regex/`) are OR'd together, and matched terms are colored, each in its own color; text that isn't a complete `/…/` is plain, so a filter being typed never errors. Job Detail's output search and the help search take a whole-query `/regex/` the same way (`/etc/salt/minion` stays a plain path search), and a match may span differently colored parts of a line
 - Keyboard-driven navigation with `?` for help
 
@@ -251,7 +251,7 @@ If DISPLAY and XAUTHORITY can't be resolved, a transient yellow hint is shown in
 ### Requirements
 - A Salt Master (reads `/etc/salt/master`, connects to the Salt event bus)
 - Python 3 with the `salt` package installed
-- **Optional — clipboard:** `xclip` (for X11 clipboard integration). Not required when using tmux with `set -g set-clipboard on` and a terminal that supports OSC 52 (MobaXterm, iTerm2, etc.)
+- **Optional — clipboard:** `xclip` (for X11 clipboard integration). Not required with a terminal that supports OSC 52 (Windows Terminal, iTerm2, etc.); MobaXterm needs it
 
 ### From a release package
 
@@ -486,7 +486,7 @@ src/
 │   ├── messages.rs      # Agent results/events in, agent commands out, fleet scan
 │   ├── config_editor.rs # Config Editor: field model, path browser, saving, theme preview
 │   ├── line_edit.rs     # Cursor editing shared by every one-line text input
-│   └── clipboard.rs     # Clipboard (tmux/OSC 52, X11 via xclip) and save-to-file
+│   └── clipboard.rs     # Clipboard (OSC 52, tmux, X11 via xclip) and save-to-file
 ├── types.rs             # Data types (minion, event, job, alert, etc.)
 ├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management

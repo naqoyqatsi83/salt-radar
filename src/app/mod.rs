@@ -221,7 +221,6 @@ pub struct App {
     /// When pending_jid_lookup was started, for timeout detection
     pending_jid_lookup_at: Option<Instant>,
     /// When Y is pressed, stores (request_id, jid) so the response auto-copies JSON
-    pending_y_copy: Option<(u64, String)>,
     /// Event Detail's own jid_lookup, requested when pretty view is first
     /// toggled on for a job-return event (request_id, jid, minion_id) — kept
     /// separate from `pending_jid_lookup` (Job Detail's own) since the two
@@ -1066,7 +1065,6 @@ impl App {
             config_tick: config_secs,
             pending_jid_lookup: None,
             pending_jid_lookup_at: None,
-            pending_y_copy: None,
             pending_event_pretty: None,
             pending_event_pretty_at: None,
             events_total: 0,
@@ -1234,7 +1232,6 @@ impl App {
     /// responsive for an active feature (sniffer, fleet scan, pending lookups).
     pub fn needs_fast_poll(&self) -> bool {
         self.pending_jid_lookup.is_some()
-            || self.pending_y_copy.is_some()
             || self.fleet_scanning
             || self.cache_loading
             || self.sniffer.as_ref().is_some_and(|s| !s.paused)
@@ -4525,6 +4522,12 @@ mod tests {
         assert!(name.starts_with("job-123-web-1-"), "{}", name);
         assert!(name.ends_with(".json"), "{}", name);
         assert!(App::propose_save_filename("///", "txt").starts_with("salt-radar-"));
+    }
+
+    #[test]
+    fn osc52_sequence_encodes_text_and_wraps_for_tmux_passthrough() {
+        assert_eq!(App::osc52_sequence("hi", false), "\x1b]52;c;aGk=\x07");
+        assert_eq!(App::osc52_sequence("hi", true), "\x1bPtmux;\x1b\x1b]52;c;aGk=\x07\x1b\\");
     }
 
     #[test]

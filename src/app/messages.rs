@@ -16,7 +16,6 @@ impl App {
             let n = q.len().min(MAX_PER_DRAIN);
             q.drain(..n).collect()
         };
-        let mut y_copy_json: Option<String> = None;
         let mut sniffer_tail_moved = false;
         for msg in batch {
             match msg {
@@ -411,21 +410,6 @@ impl App {
                                     }
                                 }
                             }
-                            // Y key pending: copy pretty JSON of selected return
-                            if let Some((y_id, _)) = self.pending_y_copy {
-                                if id == y_id {
-                                    self.pending_y_copy = None;
-                                    let idx = match self.detail_popup {
-                                        Some(DetailPopup::JobDetail { selected_return, .. }) => selected_return.unwrap_or(0),
-                                        _ => 0,
-                                    };
-                                    if idx < jid_data.returns.len() {
-                                        let json = serde_json::to_string_pretty(&jid_data.returns[idx].full_return)
-                                            .unwrap_or_else(|_| jid_data.returns[idx].summary.clone());
-                                        y_copy_json = Some(json);
-                                    }
-                                }
-                            }
                         }
                     }
                 }
@@ -661,15 +645,6 @@ impl App {
                 let visible_len = state.filtered_indices().len();
                 Self::advance_tail_selection(&mut state.selected, state.following, false, visible_len);
             }
-        }
-        if let Some(json) = y_copy_json {
-            // Store in a temp file for clipboard
-            let _ = std::fs::write(&self.copy_path, &json);
-            self.clipboard_msg = Some((
-                format!(" Copied {} bytes of JSON job return -- use y for display format ", json.len()),
-                std::time::Instant::now(),
-            ));
-            self.clipboard_at = Some(std::time::Instant::now());
         }
     }
 

@@ -350,213 +350,256 @@ impl App {
         format!("uid:{}", uid)
     }
 
-    /// Spawn xclip in the background (detached) and pipe text to its stdin.
-    /// xclip MUST stay alive as the clipboard selection owner — we can't wait
-    /// for it or kill it. Returns true if spawn succeeded.
-    pub(crate) fn run_xclip_detached(
-        xauth: Option<&str>,
-        display: &str,
-        text: &str,
-    ) -> bool {
-        let mut cmd = std::process::Command::new("xclip");
-        cmd.args(["-selection", "clipboard", "-display", display]);
-        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
-        if let Some(xa) = xauth {
-            cmd.env("XAUTHORITY", xa);
-        }
-
-        match cmd.spawn() {
-            Ok(mut child) => {
-                if let Some(mut stdin) = child.stdin.take() {
-                    let owned = text.to_string();
-                    std::thread::spawn(move || {
-                        let _ = stdin.write_all(owned.as_bytes());
-                        // stdin drops → EOF → xclip reads full input
-                    });
+    /// The terminals of this process and its ancestors, nearest first:
+    /// `sudo` with `use_pty` (the default on Ubuntu and RHEL) runs us on a
+    /// pty of its own, so the tmux pane's tty is only on sudo's parent.
+    fn own_and_ancestor_ttys() -> Vec<String> {
+        let mut ttys = Vec::new();
+        let mut pid = std::process::id();
+        for _ in 0..16 {
+            if let Ok(tty) = std::fs::read_link(format!("/proc/{}/fd/0", pid)) {
+                let tty = tty.to_string_lossy().to_string();
+                if tty.starts_with("/dev/") && !ttys.contains(&tty) {
+                    ttys.push(tty);
                 }
-                // Forget child to prevent Drop from reaping (which blocks
-                // forever since xclip waits for clipboard paste requests).
-                std::mem::forget(child);
-                true
             }
-            Err(_) => false,
+            let ppid = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()
+                .and_then(|s| s.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse::<u32>().ok());
+            match ppid {
+                Some(p) if p > 1 => pid = p,
+                _ => break,
+            }
+        }
+        ttys
+    }
+
+    /// The tmux socket and clients showing the pane salt-radar runs in,
+    /// matched by terminal rather than `$TMUX`, which `sudo` drops. Every
+    /// server under /tmp/tmux-* is asked, since root may see several.
+    pub(crate) fn tmux_own_pane() -> Option<(String, Vec<String>)> {
+        let ttys = Self::own_and_ancestor_ttys();
+        let mut sockets: Vec<String> = std::env::var("TMUX").ok()
+            .and_then(|t| t.split(',').next().map(str::to_string))
+            .into_iter()
+            .collect();
+        if let Ok(entries) = std::fs::read_dir("/tmp") {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let sock = format!("/tmp/{}/default", name);
+                if name.starts_with("tmux-") && !sockets.contains(&sock) && std::path::Path::new(&sock).exists() {
+                    sockets.push(sock);
+                }
+            }
+        }
+        for socket in sockets {
+            let Some(panes) = Self::run_cmd_with_output(
+                std::process::Command::new("tmux").args(["-S", &socket, "list-panes", "-a", "-F", "#{pane_tty} #{session_id}"]),
+                3,
+            ) else { continue };
+            let session = ttys.iter().find_map(|tty| {
+                panes.lines().find_map(|l| l.strip_prefix(tty.as_str())?.strip_prefix(' '))
+            });
+            let Some(session) = session else { continue };
+            let clients = Self::run_cmd_with_output(
+                std::process::Command::new("tmux").args(["-S", &socket, "list-clients", "-t", session, "-F", "#{client_tty}"]),
+                3,
+            )?;
+            return Some((socket, clients.lines().filter(|l| !l.is_empty()).map(str::to_string).collect()));
+        }
+        None
+    }
+
+    /// The OSC 52 "set clipboard" sequence, optionally wrapped in tmux's
+    /// passthrough for a tmux too old for `load-buffer -w`.
+    pub(crate) fn osc52_sequence(text: &str, tmux_passthrough: bool) -> String {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+        if tmux_passthrough {
+            format!("\x1bPtmux;\x1b\x1b]52;c;{}\x07\x1b\\", b64)
+        } else {
+            format!("\x1b]52;c;{}\x07", b64)
         }
     }
 
+    /// Runs one xclip invocation (direct or through `su`) with the copy file
+    /// as stdin. xclip forks into the background once it has read its input,
+    /// so the process we started exits right away: 0 when it reached the X
+    /// server, non-zero with the reason on stderr when it couldn't.
+    fn run_xclip(&self, cmd: &mut std::process::Command) -> Result<(), String> {
+        let input = std::fs::File::open(&self.copy_path).map_err(|e| e.to_string())?;
+        let err_path = format!("{}.err", self.clip_log_path);
+        let err_file = std::fs::File::create(&err_path).map_err(|e| e.to_string())?;
+        let mut child = cmd.stdin(input).stdout(Stdio::null()).stderr(err_file).spawn().map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            match child.try_wait() {
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                Ok(status) => break status,
+                Err(_) => break None,
+            }
+        };
+        let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&err_path);
+        let reason = || stderr.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string());
+        match status {
+            Some(s) if s.success() => Ok(()),
+            Some(s) => Err(reason().unwrap_or_else(|| s.to_string())),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(reason().unwrap_or_else(|| "no answer from the X server in 3s".to_string()))
+            }
+        }
+    }
+
+    /// Copies the copy file to the X11 clipboard: directly first, then (as
+    /// root) through `su` as the user that owns the X11 session, since the
+    /// X server may not let root's cookie in. Returns the first failure,
+    /// which is the one about the direct attempt.
+    fn copy_via_xclip(&self, display: &str, xauth: Option<&str>, x11_user: &str, log: &mut Vec<String>) -> Result<(), String> {
+        let xclip = |xa: Option<&str>| {
+            let mut c = std::process::Command::new("xclip");
+            c.args(["-selection", "clipboard", "-display", display]);
+            if let Some(xa) = xa {
+                c.env("XAUTHORITY", xa);
+            }
+            c
+        };
+        let mut attempts = vec![(format!("xclip XAUTHORITY={:?}", xauth), xclip(xauth))];
+        if xauth.is_some() {
+            attempts.push(("xclip without XAUTHORITY".to_string(), xclip(None)));
+        }
+        // SAFETY: geteuid can't fail.
+        if unsafe { libc::geteuid() } == 0 {
+            let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+            let disp = format!("DISPLAY={}", quote(display));
+            let mut users = vec![x11_user.to_string()];
+            users.extend(std::env::var("SUDO_USER").ok());
+            users.dedup();
+            for user in users.iter().filter(|u| !u.is_empty() && *u != "root") {
+                let su = |login: bool, env: &str| {
+                    let mut c = std::process::Command::new("su");
+                    if login {
+                        c.arg("-l");
+                    }
+                    c.args(["-c", &format!("{} xclip -selection clipboard", env), user]);
+                    c
+                };
+                attempts.push((format!("su -l {}", user), su(true, &disp)));
+                if let Some(xa) = xauth {
+                    attempts.push((format!("su {} XAUTHORITY={}", user, xa), su(false, &format!("XAUTHORITY={} {}", quote(xa), disp))));
+                }
+                attempts.push((format!("su {}", user), su(false, &disp)));
+            }
+        }
+        let mut first_err = None;
+        for (label, mut cmd) in attempts {
+            match self.run_xclip(&mut cmd) {
+                Ok(()) => {
+                    log.push(format!("{}: ok", label));
+                    return Ok(());
+                }
+                Err(e) => {
+                    log.push(format!("{}: {}", label, e));
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+        Err(first_err.unwrap_or_default())
+    }
+
     pub fn copy_to_clipboard(&mut self, text: &str) {
-        // 1. Write to local file (always works, easy debug)
         let _ = std::fs::write(&self.copy_path, text);
 
-        let mut warnings: Vec<&str> = Vec::new();
-        let mut ok_tmux = false;
-        let mut ok_xclip = false;
+        let mut log: Vec<String> = Vec::new();
+        let mut copied: Vec<&str> = Vec::new();
+        let mut problems: Vec<String> = Vec::new();
 
-        // 2. tmux load-buffer (for Ctrl+b ] paste inside tmux).
-        if let Some(socket) = Self::tmux_socket_path() {
-            let (ok, _) = Self::run_cmd_with_stdin(
-                std::process::Command::new("tmux").args(["-S", &socket, "load-buffer", "-"]),
-                text, 3,
-            );
-            ok_tmux = ok;
-            // Check if tmux will push to system clipboard via OSC 52
-            let set_clip_on = std::process::Command::new("tmux")
-                .args(["-S", &socket, "show-options", "-g", "set-clipboard"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim() == "set-clipboard on")
-                .unwrap_or(false);
-            if ok && !set_clip_on {
-                warnings.push("tmux set-clipboard is off — paste with Ctrl+b ]");
+        // OSC 52 asks the terminal itself to set the clipboard, so it works
+        // over plain SSH. Inside tmux it has to go through tmux, which sends
+        // it on to the terminal of each client showing our pane.
+        let mut osc52 = None;
+        match Self::tmux_own_pane() {
+            Some((socket, clients)) => {
+                let mut sent = false;
+                for client in &clients {
+                    let (ok, err) = Self::run_cmd_with_stdin(
+                        std::process::Command::new("tmux").args(["-S", &socket, "load-buffer", "-w", "-t", client, "-"]),
+                        text, 3,
+                    );
+                    log.push(format!("tmux load-buffer -w -t {}: {}", client, if ok { "ok" } else { err.trim() }));
+                    sent |= ok;
+                }
+                if sent {
+                    copied.push("OSC 52 via tmux");
+                } else {
+                    let (ok, err) = Self::run_cmd_with_stdin(
+                        std::process::Command::new("tmux").args(["-S", &socket, "load-buffer", "-"]),
+                        text, 3,
+                    );
+                    log.push(format!("tmux load-buffer: {}", if ok { "ok" } else { err.trim() }));
+                    if ok {
+                        copied.push("tmux buffer");
+                    }
+                    osc52 = Some(Self::osc52_sequence(text, true));
+                    copied.push("OSC 52 via tmux passthrough");
+                }
+            }
+            None => {
+                osc52 = Some(Self::osc52_sequence(text, false));
+                copied.push("OSC 52");
             }
         }
 
-        // 3. xclip
         let (display, xauth) = Self::resolve_x11_env();
         let x11_user = display.as_ref().map(|d| Self::detect_x11_user(d)).unwrap_or_default();
-
-        // Write full diagnostics before attempting anything
         Self::debug_x11(&display, &xauth, &x11_user, &self.clip_debug_path);
-
         let xclip_avail = std::process::Command::new("sh")
             .args(["-c", "command -v xclip"])
             .stdout(Stdio::null()).stderr(Stdio::null())
             .status().map(|s| s.success()).unwrap_or(false);
-
-        let mut xclip_log: Vec<String> = Vec::new();
-
-        if let Some(ref disp) = display {
-            if !xclip_avail {
-                warnings.push("xclip not installed");
-                xclip_log.push("xclip not installed".to_string());
-            } else {
-                // --- Strategy 0: Direct xclip as root (detached) ---
-                // xclip MUST stay alive as clipboard owner — spawn and
-                // forget. We can't use run_cmd_with_stdin() which enforces
-                // a timeout and kills the process.
-                let with_xa = xauth.as_deref();
-                if Self::run_xclip_detached(with_xa, disp, text) {
-                    ok_xclip = true;
-                    xclip_log.push(format!("detached xclip(root) XA={:?}: OK", with_xa));
-                } else {
-                    xclip_log.push(format!("detached xclip(root) XA={:?}: FAIL", with_xa));
-                }
-
-                // --- Strategy 1: Direct xclip as root without XAUTHORITY ---
-                if !ok_xclip {
-                    if Self::run_xclip_detached(None, disp, text) {
-                        ok_xclip = true;
-                        xclip_log.push("detached xclip(root) no-XA: OK".to_string());
-                    } else {
-                        xclip_log.push("detached xclip(root) no-XA: FAIL".to_string());
-                    }
-                }
-
-                // --- su approaches as fallback (these use run_cmd_with_stdin
-                //     because su should exit quickly) ---
-                if !ok_xclip && xclip_avail {
-                    let cur_user = Self::current_user();
-                    let mut users_to_try = vec![x11_user.clone()];
-                    if cur_user != x11_user {
-                        users_to_try.push(cur_user);
-                    }
-
-                    for user in &users_to_try {
-                        if !std::process::Command::new("id")
-                            .arg(user).stdout(Stdio::null()).stderr(Stdio::null())
-                            .status().map(|s| s.success()).unwrap_or(false)
-                        {
-                            xclip_log.push(format!("su: user {} not found, skip", user));
-                            continue;
-                        }
-
-                        // su -l (login shell triggers pam_xauth) — background
-                        // xclip so su exits immediately (xclip stays alive)
-                        let copy_path = &self.copy_path;
-                        let cmd1 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < {}' >/dev/null 2>&1 &", disp, copy_path);
-                        let (ok, _) = Self::run_cmd_with_stdin(
-                            std::process::Command::new("su").args(["-l", user, "-c", &cmd1]),
-                            "", 5,
-                        );
-                        if ok {
-                            ok_xclip = true;
-                            xclip_log.push(format!("su -l {}: OK", user));
-                            break;
-                        }
-                        xclip_log.push(format!("su -l {}: FAIL", user));
-
-                        // su with explicit XAUTHORITY
-                        if let Some(ref xa) = xauth {
-                            let cmd2 = format!("nohup sh -c 'XAUTHORITY={} DISPLAY={} xclip -selection clipboard < {}' >/dev/null 2>&1 &", xa, disp, copy_path);
-                            let (ok, _) = Self::run_cmd_with_stdin(
-                                std::process::Command::new("su").args(["-c", &cmd2, user]),
-                                "", 5,
-                            );
-                            if ok {
-                                ok_xclip = true;
-                                xclip_log.push(format!("su {} with-XA: OK", user));
-                                break;
-                            }
-                            xclip_log.push(format!("su {} with-XA: FAIL", user));
-                        }
-
-                        // su without XAUTHORITY (xclip auto-detects)
-                        let cmd3 = format!("nohup sh -c 'DISPLAY={} xclip -selection clipboard < {}' >/dev/null 2>&1 &", disp, copy_path);
-                        let (ok, _) = Self::run_cmd_with_stdin(
-                            std::process::Command::new("su").args(["-c", &cmd3, user]),
-                            "", 5,
-                        );
-                        if ok {
-                            ok_xclip = true;
-                            xclip_log.push(format!("su {} no-XA: OK", user));
-                            break;
-                        }
-                        xclip_log.push(format!("su {} no-XA: FAIL", user));
-                    }
-                }
+        match display.as_deref() {
+            None => log.push("X11: no DISPLAY".to_string()),
+            Some(_) if !xclip_avail => {
+                log.push("X11: xclip not installed".to_string());
+                problems.push("X11 skipped: xclip not installed".to_string());
             }
-        } else {
-            xclip_log.push("no DISPLAY".to_string());
+            Some(disp) => match self.copy_via_xclip(disp, xauth.as_deref(), &x11_user, &mut log) {
+                Ok(()) => copied.push("X11"),
+                Err(e) => problems.push(format!("X11 copy failed: {}", e)),
+            },
         }
 
-        // 4. Compose status message with all findings
-        let details = if !ok_tmux && !ok_xclip {
-            warnings.push("clipboard copy failed");
-            warnings.join("; ")
-        } else if ok_tmux && ok_xclip {
-            String::new()
-        } else if ok_tmux {
-            format!("Copied to tmux buffer ({}b). {}", text.len(), warnings.join("; "))
-        } else {
-            format!("Copied via X11 ({}b). {}", text.len(), warnings.join("; "))
-        };
-        if details.is_empty() {
-            self.clipboard_msg = None;
-        } else {
-            self.clipboard_msg = Some((details, Instant::now()));
+        self.clipboard_at = (!copied.is_empty()).then(Instant::now);
+        self.clipboard_msg = match (copied.is_empty(), problems.is_empty()) {
+            (_, true) => None,
+            (true, false) => Some(format!(" Copy failed: {} ", problems.join("; "))),
+            (false, false) => Some(format!(" {}; sent via {} ", problems.join("; "), copied.join(" + "))),
         }
+        .map(|m| (m, Instant::now()));
 
-        // 5. Debug log
-        let xa_info = xauth.as_deref().unwrap_or("not_set");
-        let disp_info = display.as_deref().unwrap_or("not_set");
         let _ = std::fs::write(
             &self.clip_log_path,
             format!(
-                "file={}b tmux={} xclip={} display={} xauthority={} xclip_installed={}\n{}",
+                "file={}b sent={} display={} xauthority={} xclip_installed={}\n{}\n",
                 text.len(),
-                if ok_tmux { "ok" } else { "skip" },
-                if ok_xclip { "ok" } else { "fail" },
-                disp_info, xa_info, xclip_avail,
-                xclip_log.join("\n"),
+                copied.join(","),
+                display.as_deref().unwrap_or("not_set"),
+                xauth.as_deref().unwrap_or("not_set"),
+                xclip_avail,
+                log.join("\n"),
             ),
         );
 
-        // 6. Leave alt screen and show text visibly
+        // Leave the alt screen and show the text, so it can also be selected by hand
         use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
         use crossterm::execute;
 
         let _ = disable_raw_mode();
         let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        if let Some(seq) = osc52 {
+            print!("{}", seq);
+        }
 
         println!();
         for line in text.lines() {

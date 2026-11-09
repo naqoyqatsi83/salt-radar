@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Copy to the clipboard (`y`/`Y`) with OSC 52, which lets the terminal itself (Windows Terminal, iTerm2, kitty and others, but not MobaXterm) set its clipboard over plain SSH without X11 or `xclip`; inside tmux it goes through `tmux load-buffer -w`, also when salt-radar runs under `sudo`. It was only put into tmux's paste buffer, so outside tmux X11 was the only way to copy (#201)
+- Report an X11 copy that fails, with xclip's error (e.g. `Can't open display`) in the status bar, instead of "Copied via X11", and retry it as the user who owns the X11 session, which was never tried; "✓ Copied" no longer shows when nothing was copied (#201)
+
 ## [0.11.0-rc5] - 2026-11-09
 
 ### Added

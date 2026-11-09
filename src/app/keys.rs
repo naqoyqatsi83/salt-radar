@@ -207,7 +207,6 @@ impl App {
         }
 
         // Local variable to defer jid_lookup agent command (avoids borrow conflict)
-        let mut trigger_y_lookup: Option<String> = None;
         let mut trigger_grains_fetch: Option<String> = None;
         let mut trigger_event_pretty_lookup: Option<(String, String)> = None;
         // Pre-compute events for MinionEvents popup to avoid borrow conflict
@@ -418,7 +417,6 @@ impl App {
                                         );
                                     }
                                 }
-                                trigger_y_lookup = Some(jid.clone());
                             }
                             KeyCode::Char('s') => {
                                 if let Some(ref l) = lookup {
@@ -519,7 +517,6 @@ impl App {
                                     );
                                 }
                             }
-                            trigger_y_lookup = Some(jid.clone());
                         }
                         KeyCode::Char('s') => {
                             if let Some(ref l) = lookup {
@@ -1047,7 +1044,6 @@ impl App {
         }
         if let Some(text) = clipboard_text {
             self.copy_to_clipboard(&text);
-            self.clipboard_at = Some(Instant::now());
             return false;
         }
         if let Some((content, hint, ext)) = save_text {
@@ -1156,7 +1152,6 @@ impl App {
             }
             if let Some(text) = clipboard_text {
                 self.copy_to_clipboard(&text);
-                self.clipboard_at = Some(Instant::now());
                 return false;
             }
             if let Some((content, hint, ext)) = save_text {
@@ -1168,10 +1163,6 @@ impl App {
             let req_id = self.send_jid_lookup(&jid);
             self.pending_event_pretty = Some((req_id, jid, mid));
             self.pending_event_pretty_at = Some(Instant::now());
-        }
-        if let Some(jid) = trigger_y_lookup {
-            let req_id = self.send_jid_lookup(&jid);
-            self.pending_y_copy = Some((req_id, jid));
         }
         if let Some(mid) = trigger_grains_fetch {
             self.send_agent_cmd("minion_grains", Some(serde_json::json!({"minion_id": mid})));
@@ -1353,7 +1344,6 @@ impl App {
                 let ids = self.shown_minion_ids();
                 if !ids.is_empty() && code == KeyCode::Char('i') {
                     self.copy_to_clipboard(&ids);
-                    self.clipboard_at = Some(Instant::now());
                 } else if !ids.is_empty() {
                     let hint = format!("minions-{}", crate::app::view_file_tag(self.filter_text_for(Tab::Minions), self.minion_states));
                     self.open_save_prompt(ids, &hint, "txt");
