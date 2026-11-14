@@ -1,13 +1,18 @@
 # salt-radar.toml — configuration file for salt-radar
 #
 # salt-radar looks for ./salt-radar.toml in the directory you launch it
-# from first; if that's not present, it falls back to
-# $XDG_CONFIG_HOME/salt-radar/salt-radar.toml (usually
-# ~/.config/salt-radar/salt-radar.toml), creating the directory on first
-# save from the in-app Config Editor (F3).
+# from first (only a file owned by the user it runs as); if that's not
+# present, it falls back to $XDG_CONFIG_HOME/salt-radar/salt-radar.toml
+# (usually ~/.config/salt-radar/salt-radar.toml), creating the directory on
+# first save from the in-app Config Editor (F3).
 # All settings are optional; defaults are shown below.
 
 [salt]
+# These three decide what salt-radar executes. When it runs as root they
+# only count from a file root owns and nobody else can write: under sudo,
+# put them in root's config or /etc/salt-radar/salt-radar.toml, not in the
+# invoking user's file.
+
 # Path to Salt master configuration file
 # master_config = "/etc/salt/master"
 

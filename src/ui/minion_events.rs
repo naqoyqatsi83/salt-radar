@@ -22,9 +22,7 @@ fn format_time_local(ts: f64) -> String {
 /// Classify an event tag into a short type label and return color + JID if applicable.
 fn classify_tag(tag: &str, data: &serde_json::Value) -> (&'static str, Color, Option<String>) {
     if tag.contains("/ret/") {
-        let jid = tag.split('/').nth(2).map(|s| {
-            if s.len() > 18 { format!("{}..", &s[..16]) } else { s.to_string() }
-        });
+        let jid = tag.split('/').nth(2).map(|s| super::truncate(s, 18));
         let fun = data["fun"].as_str().unwrap_or("return");
         return ("return", color::green(), Some(format!("{}/{}", fun, jid.unwrap_or_default())));
     }

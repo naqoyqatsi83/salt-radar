@@ -762,6 +762,15 @@ pub struct CacheJobEntry {
 
 const STATE_APPLY_FUNS: &[&str] = &["state.apply", "state.sls", "state.highstate", "state.top"];
 
+/// Whether `s` is a Salt job ID: 20 digits, followed with `unique_jid` by `_`
+/// and the master's process ID. A job's ID is read from event tags and data,
+/// which a minion can write, and is passed to `salt-run`.
+pub fn is_jid(s: &str) -> bool {
+    let (stamp, pid) = s.split_once('_').map_or((s, None), |(stamp, pid)| (stamp, Some(pid)));
+    let word = |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    stamp.len() == 20 && stamp.bytes().all(|b| b.is_ascii_digit()) && pid.is_none_or(word)
+}
+
 /// Renders a job's raw Salt `arg` list (positional values plus an optional
 /// `{"__kwarg__": true, ...}` dict) for the Args column. For state runs this
 /// is the requested SLS list, or "highstate" when none was named; `test=True`

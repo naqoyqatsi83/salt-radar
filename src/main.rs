@@ -101,7 +101,22 @@ impl OutputBudget {
     }
 }
 
+/// Puts the terminal back before a panic's message is printed: left in raw
+/// mode on the alternate screen, the message is lost and the shell unusable.
+fn restore_terminal_on_panic() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().name() == Some("main") {
+            let _ = disable_raw_mode();
+            let _ = disable_mouse_capture();
+            let _ = io::stdout().execute(LeaveAlternateScreen);
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() -> io::Result<()> {
+    restore_terminal_on_panic();
     // Setup terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;

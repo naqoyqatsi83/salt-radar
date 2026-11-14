@@ -614,17 +614,9 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
             format!("{:>6}", "--")
         };
 
-        let unit_display = if service.unit.len() > 24 {
-            format!("{}..", &service.unit[..22])
-        } else {
-            service.unit.clone()
-        };
+        let unit_display = super::truncate(&service.unit, 24);
 
-        let state_display = if service.state.len() > 11 {
-            format!("{}..", &service.state[..9])
-        } else {
-            service.state.clone()
-        };
+        let state_display = super::truncate(&service.state, 11);
 
         // Restart/flap count over the last 24h (see update_service_trends in app.rs).
         let flap_count = app.service_restart_count_24h(&service.unit);
@@ -1267,11 +1259,7 @@ fn draw_job_pulse(f: &mut Frame, area: Rect, app: &App) {
             color::yellow()
         };
 
-        let fun_short = if job.fun.len() > 35 {
-            format!("{}..", &job.fun[..33])
-        } else {
-            job.fun.clone()
-        };
+        let fun_short = super::truncate(&job.fun, 35);
 
         lines.push(Line::from(vec![
             Span::styled(format!("  {} ", fun_short), Style::default().fg(color::cyan())),
@@ -1381,11 +1369,7 @@ fn draw_api_row(f: &mut Frame, area: Rect, app: &App) {
                 Some(s) if s.starts_with('4') || s.starts_with('5') => color::red(),
                 _ => color::inactive_fg(),
             };
-            let line_short = if rec.request_line.len() > 40 {
-                format!("{}..", &rec.request_line[..38])
-            } else {
-                rec.request_line.clone()
-            };
+            let line_short = super::truncate(&rec.request_line, 40);
             lines.push(Line::from(vec![
                 Span::styled(format!("  {:<42}", line_short), Style::default().fg(color::cyan())),
                 Span::styled(format!("{:<4}", rec.response_status), Style::default().fg(status_color)),

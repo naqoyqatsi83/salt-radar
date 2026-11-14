@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Take `python_bin`, `agent_path` and `master_config` only from a config file that root alone can write when salt-radar runs as root, and `./salt-radar.toml` only when it belongs to the user running salt-radar. These settings decide what salt-radar executes, so a `salt-radar.toml` left in a shared directory, or the config of a user allowed to run only salt-radar through sudo, could run any program as root. Under sudo, set them in root's config or in `/etc/salt-radar/salt-radar.toml`; the status bar says when a user's file tried to. Saved files stay in `save_dir` (a file name can no longer hold a path), and files written into a user's directory as root no longer follow a symlink planted there
+- Only look up real job IDs, and pass job and minion IDs to `salt` and `salt-run` after `--`. A job ID was read from the event's tag as it came, so a minion could send one that `salt-run` read as an option when the job was opened
+- Don't crash on a job function, event tag or salt-api request line with non-ASCII characters where the Dashboard, the Event Sniffer or a minion's activity list shortens it; one minion's return or one HTTP request to salt-api could end every salt-radar showing it. A crash now also gives the terminal back and shows its message, instead of leaving the shell in raw mode
+
 ## [0.11.0-rc7] - 2026-11-09
 
 ### Fixed

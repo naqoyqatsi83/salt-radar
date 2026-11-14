@@ -22,7 +22,7 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::alerts::{AlertEngine, ServiceMemThresholds};
-use crate::config::{load_config_or_fallback, AppConfig};
+use crate::config::{load_config_or_fallback, load_startup_config, AppConfig};
 use crate::types::*;
 
 const JOB_STATS_WINDOW: usize = 500;
@@ -794,7 +794,7 @@ pub fn picker_click(hits: &PickerHits, col: u16, row: u16) -> PickerClick {
 pub fn return_event_jid(evt: &SaltEvent) -> Option<&str> {
     let mut parts = evt.tag.split('/');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some("salt"), Some("job"), Some(jid), Some("ret")) => Some(jid),
+        (Some("salt"), Some("job"), Some(jid), Some("ret")) if is_jid(jid) => Some(jid),
         _ => None,
     }
 }
@@ -894,7 +894,7 @@ impl DetailPopup {
 impl App {
     pub fn new() -> Self {
         let config_path = crate::config::resolve_config_path();
-        let config = load_config_or_fallback(&config_path);
+        let (config, config_warning) = load_startup_config(&config_path);
         let config_secs = config.config_secs;
         let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -1077,7 +1077,7 @@ impl App {
             last_zmq_return: HashMap::new(),
             clipboard_at: None,
             save_at: None,
-            clipboard_msg: None,
+            clipboard_msg: config_warning.map(|w| (w, Instant::now())),
             save_prompt: None,
             output_held: false,
             needs_terminal_clear: false,
@@ -3726,7 +3726,7 @@ pub(crate) struct ReturnTiming {
 fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, usize>, evt: &SaltEvent) -> Option<ReturnTiming> {
     if evt.tag.ends_with("/new") {
         let jid = evt.data["jid"].as_str().unwrap_or("").to_string();
-        if jid.is_empty() { return None; }
+        if !is_jid(&jid) { return None; }
         let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
         let tgt = match &evt.data["tgt"] {
             serde_json::Value::String(s) => s.clone(),
@@ -3781,7 +3781,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             .strip_prefix("salt/job/")
             .and_then(|s| s.split("/ret/").next())
             .unwrap_or("");
-        if jid.is_empty() { return None; }
+        if !is_jid(jid) { return None; }
         let (success, _) = return_outcome(&evt.data, &evt.data["return"]);
         if let Some(job) = index.get(jid).map(|&i| &mut jobs[i]) {
             job.returned += 1;
@@ -3998,7 +3998,7 @@ mod tests {
 
     #[test]
     fn event_search_finds_lines_as_shown() {
-        let evt = SaltEvent { tag: "salt/job/1/ret/web1".into(), ts: 0.0, data: serde_json::json!({"id": "web1", "fun": "test.ping", "jid": "1", "return": true}) };
+        let evt = SaltEvent { tag: "salt/job/1/ret/web1".into(), ts: 0.0, data: serde_json::json!({"id": "web1", "fun": "test.ping", "jid": "20260101000000000001", "return": true}) };
         let raw = event_body_as_shown(&evt, false, &crate::types::PrettyFetch::Idle);
         assert_eq!(search_lines(&raw, "WEB1"), vec![raw.lines().position(|l| l.contains("web1")).unwrap()]);
         // Still fetching the pretty view of a job return: the raw JSON is what's shown.
@@ -4320,12 +4320,12 @@ mod tests {
     fn live_jobs_counts_a_minion_targeted_twice_once() {
         let evt = |tag: &str, data: serde_json::Value| SaltEvent { tag: tag.into(), data, ts: 0.0 };
         let (mut jobs, mut index) = (Vec::new(), HashMap::new());
-        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/new", json!({
-            "jid": "1", "fun": "test.ping", "tgt": "web01,db01,web01", "tgt_type": "list",
+        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/20260101000000000001/new", json!({
+            "jid": "20260101000000000001", "fun": "test.ping", "tgt": "web01,db01,web01", "tgt_type": "list",
             "minions": ["web01", "db01", "web01"],
         })));
         for mid in ["web01", "db01"] {
-            track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/1/ret/{mid}"),
+            track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/20260101000000000001/ret/{mid}"),
                 json!({"id": mid, "fun": "test.ping", "return": true, "retcode": 0, "success": true})));
         }
         assert_eq!((jobs[0].target_count, jobs[0].returned), (2, 2), "nothing left waiting");
@@ -4340,7 +4340,7 @@ mod tests {
         ];
         for (ret, ok, what) in cases {
             let evt = SaltEvent {
-                tag: "salt/job/1/ret/web01".into(),
+                tag: "salt/job/20260101000000000001/ret/web01".into(),
                 data: json!({"id": "web01", "fun": "config.get", "return": ret, "retcode": 0, "success": true}),
                 ts: 0.0,
             };
@@ -4370,12 +4370,12 @@ mod tests {
     #[test]
     fn a_minion_is_rated_against_its_peers_in_the_same_job() {
         let evt = |tag: &str, ts: f64| SaltEvent { tag: tag.into(), ts, data: json!({
-            "jid": "1", "fun": "state.apply", "tgt": "*", "minions": ["a", "b", "c", "d"],
+            "jid": "20260101000000000001", "fun": "state.apply", "tgt": "*", "minions": ["a", "b", "c", "d"],
         }) };
         let (mut jobs, mut index) = (Vec::new(), HashMap::new());
-        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/new", 100.0));
+        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/20260101000000000001/new", 100.0));
         for (mid, ts) in [("a", 110.0), ("b", 112.0), ("c", 140.0)] {
-            let t = track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/1/ret/{mid}"), ts)).unwrap();
+            let t = track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/20260101000000000001/ret/{mid}"), ts)).unwrap();
             assert_eq!((t.secs, t.late_median), (ts - 100.0, None), "collected until settled");
         }
         assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "not complete and not a straggler yet");
@@ -4385,7 +4385,7 @@ mod tests {
         let mut c = MinionHealth::default();
         c.record_lag(40.0, median);
         assert_eq!(c.lag_at(0.5), Some(40.0 / 12.0));
-        let late = track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/ret/d", 190.0)).unwrap();
+        let late = track_job_from_event(&mut jobs, &mut index, &evt("salt/job/20260101000000000001/ret/d", 190.0)).unwrap();
         assert_eq!(late.late_median, Some(12.0), "a late return is rated against the settled median");
         assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "settled once");
     }
@@ -4398,27 +4398,43 @@ mod tests {
         h.record_lag(2.0, 0.03);
         h.record_lag(0.3, 0.9);
         assert_eq!(Vec::from(h.lag.clone()), [4.0, 0.5 / 0.9], "a 2 s answer to a fast job is slow");
-        let new = SaltEvent { tag: "salt/job/2/new".into(), ts: 0.0, data: json!({"jid": "2", "fun": "test.ping", "minions": ["a", "b"]}) };
-        let ret = SaltEvent { tag: "salt/job/2/ret/a".into(), ts: 1.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+        let new = SaltEvent { tag: "salt/job/20260101000000000002/new".into(), ts: 0.0, data: json!({"jid": "20260101000000000002", "fun": "test.ping", "minions": ["a", "b"]}) };
+        let ret = SaltEvent { tag: "salt/job/20260101000000000002/ret/a".into(), ts: 1.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
         let (mut jobs, mut index) = (Vec::new(), HashMap::new());
         track_job_from_event(&mut jobs, &mut index, &new);
         track_job_from_event(&mut jobs, &mut index, &ret);
         jobs[0].age_seconds = 999;
         assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "one return has no peers");
         assert_eq!(jobs[0].lag, JobLag::Settled(None));
-        let local = SaltEvent { tag: "salt/job/3/ret/a".into(), ts: 5.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+        let local = SaltEvent { tag: "salt/job/20260101000000000003/ret/a".into(), ts: 5.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
         assert_eq!(track_job_from_event(&mut jobs, &mut index, &local), None, "no publish seen, no timing");
     }
 
     #[test]
     fn a_return_without_a_publish_is_local_until_a_second_minion_returns() {
         let (mut jobs, mut index) = (Vec::new(), HashMap::new());
-        let ret = |mid: &str| SaltEvent { tag: format!("salt/job/7/ret/{mid}"), ts: 5.0, data: json!({"id": mid, "fun": "test.sleep", "return": true}) };
+        let ret = |mid: &str| SaltEvent { tag: format!("salt/job/20260101000000000007/ret/{mid}"), ts: 5.0, data: json!({"id": mid, "fun": "test.sleep", "return": true}) };
         track_job_from_event(&mut jobs, &mut index, &ret("a"));
         assert!(jobs[0].local && jobs[0].tgt == "a", "looks like a salt-call so far");
         track_job_from_event(&mut jobs, &mut index, &ret("b"));
         assert!(!jobs[0].local, "a salt-call doesn't get two returns");
         assert_eq!((jobs[0].returned, jobs[0].target_count), (2, 2));
+    }
+
+    #[test]
+    fn events_with_a_made_up_jid_are_not_jobs() {
+        // The JID ends up on a `salt-run` command line: a tag can't smuggle an option in.
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        for jid in ["--out-file=/etc/x", "--config-dir=/tmp/x/y", "-c", "1", "2026110521401900000a"] {
+            let ret = SaltEvent { tag: format!("salt/job/{jid}/ret/a"), ts: 5.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+            let new = SaltEvent { tag: "salt/job/x/new".into(), ts: 5.0, data: json!({"jid": jid, "fun": "test.ping", "tgt": "*"}) };
+            track_job_from_event(&mut jobs, &mut index, &ret);
+            track_job_from_event(&mut jobs, &mut index, &new);
+            assert_eq!(return_event_jid(&ret), None, "{jid}");
+        }
+        assert!(jobs.is_empty() && index.is_empty());
+        assert!(is_jid("20261105214019000000") && is_jid("20261105214019000000_4711"), "plain and unique_jid forms");
+        assert!(!is_jid("20261105214019000000_") && !is_jid("20261105214019000000_4711 -c") && !is_jid(""));
     }
 
     #[test]
@@ -4465,9 +4481,9 @@ mod tests {
 
     #[test]
     fn return_events_report_jid_and_outcome() {
-        let evt = SaltEvent { tag: "salt/job/2026/ret/web01".into(), data: json!({}), ts: 0.0 };
-        assert_eq!(return_event_jid(&evt), Some("2026"));
-        let new = SaltEvent { tag: "salt/job/2026/new".into(), data: json!({}), ts: 0.0 };
+        let evt = SaltEvent { tag: "salt/job/20261105214019000000/ret/web01".into(), data: json!({}), ts: 0.0 };
+        assert_eq!(return_event_jid(&evt), Some("20261105214019000000"));
+        let new = SaltEvent { tag: "salt/job/20261105214019000000/new".into(), data: json!({}), ts: 0.0 };
         assert_eq!(return_event_jid(&new), None);
 
         let ok = return_event_result(&json!({"return": true, "retcode": 0, "success": true}));

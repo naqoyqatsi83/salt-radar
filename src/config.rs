@@ -1,4 +1,6 @@
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -11,16 +13,34 @@ use crate::ui::color::Theme;
 pub const TICK_MS_MIN: u64 = 500;
 pub const TICK_MS_MAX: u64 = 30_000;
 
+/// The config file decides what salt-radar executes (`python_bin`,
+/// `agent_path`) and which master config Salt loads, usually as root, so
+/// those are only taken from a file nobody else could have written.
+const SYSTEM_CONFIG: &str = "/etc/salt-radar/salt-radar.toml";
+
+fn euid() -> u32 {
+    // SAFETY: geteuid can't fail.
+    unsafe { libc::geteuid() }
+}
+
+/// Whether only `uid` (and root) can have written `path`: a regular file,
+/// not a symlink, that `uid` owns and others can't write to — nor its
+/// group, for root's files.
+fn written_only_by(path: &Path, uid: u32) -> bool {
+    let others = if uid == 0 { 0o022 } else { 0o002 };
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.uid() == uid && m.mode() & others == 0)
+}
+
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
-/// directory wins if present (lets you keep a per-directory config, and
-/// preserves behavior for anyone already relying on the old cwd-only
-/// lookup); otherwise it resolves to the XDG config dir
+/// directory wins if it's the running user's own (a per-directory config;
+/// someone else's, in a shared directory salt-radar happens to be started
+/// from, is left alone); otherwise it resolves to the XDG config dir
 /// (`$XDG_CONFIG_HOME/salt-radar/salt-radar.toml`, falling back to
 /// `~/.config/salt-radar/salt-radar.toml`) instead of silently writing
 /// into whatever directory the binary happened to be launched from.
 pub fn resolve_config_path() -> PathBuf {
     let cwd_path = PathBuf::from("salt-radar.toml");
-    if cwd_path.is_file() {
+    if written_only_by(&cwd_path, euid()) {
         return cwd_path;
     }
 
@@ -44,9 +64,9 @@ pub struct SudoUser {
 pub fn sudo_user() -> Option<&'static SudoUser> {
     static USER: OnceLock<Option<SudoUser>> = OnceLock::new();
     USER.get_or_init(|| {
-        // SAFETY: geteuid can't fail; getpwnam runs once, here, before any
-        // other thread could call it, and its result is copied out at once.
-        if unsafe { libc::geteuid() } != 0 {
+        // SAFETY: getpwnam runs once, here, before any other thread could
+        // call it, and its result is copied out at once.
+        if euid() != 0 {
             return None;
         }
         let name = std::env::var("SUDO_USER").ok().filter(|n| !n.is_empty() && n != "root")?;
@@ -110,9 +130,20 @@ pub fn give_to_sudo_user(path: &Path) {
         return;
     }
     if let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
-        // SAFETY: a valid NUL-terminated path; a failure just leaves root as owner.
-        unsafe { libc::chown(c.as_ptr(), u.uid, u.gid) };
+        // SAFETY: a valid NUL-terminated path; a failure just leaves root as
+        // owner. lchown: the user could have swapped the file for a symlink.
+        unsafe { libc::lchown(c.as_ptr(), u.uid, u.gid) };
     }
+}
+
+/// Writes a file without following a symlink at `path`: salt-radar writes
+/// into the sudo user's directories as root, where they could plant one.
+pub fn write_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true).create(true).truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?
+        .write_all(content)
 }
 
 /// `create_dir_all`, giving the directories it creates to the sudo user
@@ -139,7 +170,7 @@ pub fn note_version_seen() -> Option<String> {
     if let Some(dir) = path.parent() {
         let _ = create_dir_all_owned(dir);
     }
-    if std::fs::write(&path, format!("{current}\n")).is_ok() {
+    if write_file(&path, format!("{current}\n").as_bytes()).is_ok() {
         give_to_sudo_user(&path);
     }
     previous.filter(|p| !p.is_empty())
@@ -861,11 +892,11 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, format!(
+    write_file(&tmp, format!(
         "# salt-radar settings: only values that differ from the defaults are stored.\n\
          # See salt-radar.toml.example for every setting.\n\n{}",
         body,
-    ))?;
+    ).as_bytes())?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
@@ -874,15 +905,62 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The file `load_config_or_fallback` reads for `path`.
+fn config_source(path: &Path) -> PathBuf {
+    if !path.exists() && sudo_user().is_some() {
+        if let Some(own) = own_config_dir().map(|d| d.join("salt-radar.toml")).filter(|p| p.is_file()) {
+            return own;
+        }
+    }
+    path.to_path_buf()
+}
+
 /// `load_config`, but under sudo a user without a config of their own yet
 /// starts from root's — their first save then writes their own file.
 pub fn load_config_or_fallback(path: &Path) -> AppConfig {
-    if !path.exists() && sudo_user().is_some() {
-        if let Some(own) = own_config_dir().map(|d| d.join("salt-radar.toml")).filter(|p| p.is_file()) {
-            return load_config(&own);
+    load_config(&config_source(path))
+}
+
+/// Replaces the settings that decide what gets executed with `trusted`'s,
+/// returning the names of those that differed.
+fn take_exec_settings(cfg: &mut AppConfig, trusted: &AppConfig) -> Vec<&'static str> {
+    let mut replaced = Vec::new();
+    for (name, value, trusted) in [
+        ("python_bin", &mut cfg.python_bin, &trusted.python_bin),
+        ("agent_path", &mut cfg.agent_path, &trusted.agent_path),
+        ("master_config", &mut cfg.master_config, &trusted.master_config),
+    ] {
+        if value != trusted {
+            value.clone_from(trusted);
+            replaced.push(name);
         }
     }
-    load_config(path)
+    replaced
+}
+
+/// The config salt-radar starts with, and a warning when part of the file
+/// was left out: as root, `python_bin`, `agent_path` and `master_config`
+/// only count from a file that root alone can write — the one loaded,
+/// else root's own config, else `/etc/salt-radar/salt-radar.toml`, else the
+/// defaults. Under sudo the file loaded is the invoking user's, and what it
+/// names would otherwise run as root.
+pub fn load_startup_config(path: &Path) -> (AppConfig, Option<String>) {
+    let source = config_source(path);
+    let mut cfg = load_config(&source);
+    if euid() != 0 || !source.exists() || written_only_by(&source, 0) {
+        return (cfg, None);
+    }
+    let trusted = [own_config_dir().map(|d| d.join("salt-radar.toml")), Some(PathBuf::from(SYSTEM_CONFIG))]
+        .into_iter()
+        .flatten()
+        .find(|p| written_only_by(p, 0))
+        .map_or_else(AppConfig::default, |p| load_config(&p));
+    let replaced = take_exec_settings(&mut cfg, &trusted);
+    let warning = (!replaced.is_empty()).then(|| format!(
+        " {} in {} ignored (the file isn't root's alone): set in {} ",
+        replaced.join(", "), source.display(), SYSTEM_CONFIG,
+    ));
+    (cfg, warning)
 }
 
 pub fn load_config(path: &Path) -> AppConfig {
@@ -1010,6 +1088,56 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap()
             .filter_map(|e| e.ok()).map(|e| e.file_name()).filter(|n| n != "salt-radar.toml").collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn exec_settings_only_count_from_a_file_nobody_else_could_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("trust");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, "[salt]\npython_bin = \"/tmp/evil\"\n").unwrap();
+        let me = std::fs::metadata(&path).unwrap().uid();
+        let chmod = |mode| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        chmod(0o644);
+        assert!(written_only_by(&path, me));
+        assert!(!written_only_by(&path, me + 1), "someone else's file");
+        chmod(0o666);
+        assert!(!written_only_by(&path, me), "anyone can write it");
+        chmod(0o664);
+        assert_eq!(written_only_by(&path, me), me != 0, "group-writable is fine for a user, not for root");
+        chmod(0o644);
+        let link = dir.join("link.toml");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(!written_only_by(&link, me), "a symlink could point anywhere");
+        assert!(!written_only_by(&dir.join("missing.toml"), me));
+
+        let mut cfg = AppConfig { popup_dim_pct: 40, ..load_config(&path) };
+        assert_eq!(take_exec_settings(&mut cfg, &AppConfig::default()), ["python_bin"]);
+        assert_eq!(cfg.python_bin, AppConfig::default().python_bin);
+        assert_eq!(cfg.popup_dim_pct, 40, "everything else is kept");
+        assert!(take_exec_settings(&mut cfg, &AppConfig::default()).is_empty());
+
+        // Only root is held to it; what a user's own file names runs as that user.
+        chmod(0o666);
+        let (cfg, warning) = load_startup_config(&path);
+        assert_eq!((cfg.python_bin == "/tmp/evil", warning.is_none()), (euid() != 0, euid() != 0), "{warning:?}");
+        chmod(0o644);
+        let (cfg, warning) = load_startup_config(&path);
+        assert_eq!((cfg.python_bin.as_str(), warning), ("/tmp/evil", None), "the running user's own file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_file_does_not_follow_a_symlink() {
+        let dir = scratch("nofollow");
+        let (target, link) = (dir.join("target"), dir.join("link"));
+        std::fs::write(&target, "keep").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(write_file(&link, b"clobbered").is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        write_file(&target, b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

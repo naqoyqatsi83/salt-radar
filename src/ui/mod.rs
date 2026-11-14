@@ -371,6 +371,17 @@ pub fn titled_block(title: impl Into<String>, border_style: Style, bg: Color) ->
         .style(Style::default().bg(bg))
 }
 
+/// `s` cut to at most `max` characters, the last two `..` when it was cut.
+/// Counted in characters, never bytes: the text is often a minion's or an
+/// HTTP client's, and a byte cut inside a multi-byte character panics.
+pub fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}..", s.chars().take(max.saturating_sub(2)).collect::<String>())
+    }
+}
+
 /// Windowed-list scroll math shared by every scrollable list panel: given
 /// the selected index, the number of visible rows, and the total row
 /// count, returns `(scroll_offset, has_more_above, has_more_below)` so
@@ -1588,6 +1599,16 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
+
+    #[test]
+    fn truncate_cuts_by_characters() {
+        assert_eq!(truncate("state.apply", 35), "state.apply");
+        assert_eq!(truncate("abcdefgh", 6), "abcd..");
+        // Byte 33 is inside a two-byte character here.
+        let fun = format!("GET /{}", "é".repeat(40));
+        assert_eq!(truncate(&fun, 35).chars().count(), 35);
+        assert_eq!(truncate("ééé", 1), "..");
+    }
 
     fn bottom_border(block: Block<'static>, width: u16) -> String {
         let area = Rect::new(0, 0, width, 3);

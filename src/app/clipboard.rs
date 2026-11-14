@@ -648,14 +648,20 @@ impl App {
                 if filename_empty {
                     return false;
                 }
-                let path = dir.join(&self.save_prompt.as_ref().unwrap().filename);
+                // A name, not a path: the file stays in `save_dir`.
+                let name = std::path::Path::new(&self.save_prompt.as_ref().unwrap().filename);
+                if name.file_name() != Some(name.as_os_str()) {
+                    self.clipboard_msg = Some((" Save failed: the file name can't contain a path ".to_string(), Instant::now()));
+                    return false;
+                }
+                let path = dir.join(name);
                 let already_confirmed = self.save_prompt.as_ref().unwrap().confirm_overwrite;
                 if path.exists() && !already_confirmed {
                     self.save_prompt.as_mut().unwrap().confirm_overwrite = true;
                     return false;
                 }
                 let content = self.save_prompt.as_ref().unwrap().content.clone();
-                let result = crate::config::create_dir_all_owned(&dir).and_then(|_| std::fs::write(&path, &content));
+                let result = crate::config::create_dir_all_owned(&dir).and_then(|_| crate::config::write_file(&path, content.as_bytes()));
                 if result.is_ok() {
                     crate::config::give_to_sudo_user(&path);
                 }

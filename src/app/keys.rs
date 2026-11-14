@@ -707,7 +707,7 @@ impl App {
                             // master's actual Salt output. Only worth doing for
                             // a job-return event, and only once (Idle).
                             if *pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Idle) {
-                                let jid = evt.data.get("jid").and_then(|v| v.as_str());
+                                let jid = evt.data.get("jid").and_then(|v| v.as_str()).filter(|jid| is_jid(jid));
                                 let mid = evt.data.get("id").and_then(|v| v.as_str());
                                 if let (Some(jid), Some(mid)) = (jid, mid) {
                                     trigger_event_pretty_lookup = Some((jid.to_string(), mid.to_string()));

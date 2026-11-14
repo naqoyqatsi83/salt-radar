@@ -88,6 +88,15 @@ def get_opts(master_config):
     return opts
 
 
+# A job ID as Salt makes them: 20 digits, plus `_<pid>` with `unique_jid`.
+# Job IDs reach the agent from event tags and data, which a minion can write.
+_JID = re.compile(r"\d{20}(_\w+)?\Z", re.ASCII)
+
+
+def _is_jid(jid):
+    return isinstance(jid, str) and _JID.match(jid) is not None
+
+
 def _run_salt_cmd(args, timeout=30, env=None):
     """Run a salt command directly (baremetal/VM — agent has local filesystem access)."""
     import subprocess as sp
@@ -1880,7 +1889,8 @@ def cmd_minion_ping(opts, req):
         return
     try:
         import subprocess as sp, json as json_mod
-        output = _run_salt_cmd(["salt", mid, "test.ping", "--out=json", "--timeout=10"], timeout=15)
+        # `--` ends the options: a minion ID may start with a dash.
+        output = _run_salt_cmd(["salt", "--out=json", "--timeout=10", "--", mid, "test.ping"], timeout=15)
         connected = False
         if output:
             data = json_mod.loads(output)
@@ -1903,7 +1913,7 @@ def cmd_minion_grains(opts, req):
 
     def run(key, out_args):
         try:
-            cp = sp.run(["salt", mid, "grains.items", "--timeout=15"] + out_args,
+            cp = sp.run(["salt", "--timeout=15"] + out_args + ["--", mid, "grains.items"],
                         capture_output=True, text=True, timeout=20)
             outputs[key] = cp.stdout
         except sp.TimeoutExpired:
@@ -2039,7 +2049,7 @@ def cmd_job_load(opts, req):
     jid = str(req.get("jid", ""))
     returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
     data = {"jid": jid, "found": False}
-    if jid and returner == "local_cache":
+    if _is_jid(jid) and returner == "local_cache":
         import salt.returners.local_cache as local_cache_mod
 
         local_cache_mod.__opts__ = opts
@@ -2089,8 +2099,8 @@ def cmd_jid_lookup(opts, req):
     show the breakdown in the popup header.
     """
     jid = req.get("jid", "")
-    if not jid:
-        result(req["id"], "jid_lookup", ok=False, data={"error": "jid required"})
+    if not _is_jid(jid):
+        result(req["id"], "jid_lookup", ok=False, data={"error": "not a job ID: {!r}".format(jid)})
         return
 
     import json as json_mod
@@ -2116,16 +2126,17 @@ def cmd_jid_lookup(opts, req):
     t0 = time.time()
     threads = [
         threading.Thread(target=_lookup, args=("raw", [
-            "salt-run", "jobs.lookup_jid", jid, "--force-color",
+            "salt-run", "--force-color",
             # Always show full state detail regardless of the master's
             # configured state_output/state_verbose -- a "terse"/"changes"
             # master default would otherwise hide unchanged/no-op states
             # from this popup even though the user explicitly opened it to
             # see everything about this one job.
             "--state-output=full", "--state-verbose=True",
+            "--", "jobs.lookup_jid", jid,
         ]), daemon=True),
         threading.Thread(target=_lookup, args=("json", [
-            "salt-run", "jobs.lookup_jid", jid, "--out=json",
+            "salt-run", "--out=json", "--", "jobs.lookup_jid", jid,
         ]), daemon=True),
     ]
     for t in threads:

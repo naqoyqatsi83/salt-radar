@@ -2177,11 +2177,7 @@ fn draw_event_sniffer(
                 })
                 .unwrap_or("");
 
-            let tag_disp = if evt.tag.len() > jid_w {
-                format!("{}..", &evt.tag[..jid_w.saturating_sub(2)])
-            } else {
-                evt.tag.clone()
-            };
+            let tag_disp = super::truncate(&evt.tag, jid_w);
 
             // Header row: # | Time | JID | Type — tag column highlighted the
             // same way the Events tab list does: only when a color term
