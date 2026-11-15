@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Count the `[refresh]` intervals in seconds: `dashboard_secs`, `config_secs` and the polls without a setting counted ticks, so with the default 2 s tick everything ran at half the configured rate, and `-`/`+` changed it. `minions_secs`, which nothing used, now sets how often the minion list and which minions have checked in are refreshed; Live Jobs keeps jobs for an hour, which followed `config_secs` (60 × it, so `config_secs = 0` emptied the list) (#206)
+
 ## [0.11.0-rc9] - 2026-11-15
 
 ### Fixed

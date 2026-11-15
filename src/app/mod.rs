@@ -26,6 +26,31 @@ use crate::config::{load_config_or_fallback, load_startup_config, AppConfig};
 use crate::types::*;
 
 const JOB_STATS_WINDOW: usize = 500;
+/// How long a job stays in Live Jobs after it was published.
+const LIVE_JOB_RETENTION_SECS: u64 = 3600;
+/// How often the `job_ping` latency source sends its `test.ping`.
+const JOB_PING_EVERY: Duration = Duration::from_secs(15);
+
+/// A timer for work done every so many seconds, whatever the tick
+/// (`tick_ms`): due on the first tick, then once `every` has passed since
+/// it last was. A tick never lands exactly on time, so up to a tenth of a
+/// second early counts — or `dashboard_secs = 2` with a 2 s tick would
+/// skip every other tick.
+#[derive(Debug, Default)]
+struct Every {
+    last: Option<Instant>,
+}
+
+impl Every {
+    fn due(&mut self, now: Instant, every: Duration) -> bool {
+        let slack = Duration::from_millis(100);
+        let due = self.last.is_none_or(|last| now.saturating_duration_since(last) + slack >= every);
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+}
 const SERVICE_TREND_WINDOW: Duration = Duration::from_secs(24 * 3600);
 const SERVICE_MEM_SAMPLE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -51,7 +76,6 @@ pub struct App {
     // Tabs
     pub current_tab: Tab,
     pub session_start: Instant,
-    pub tick_count: u64,
 
     // Data from agent
     pub agent: AgentState,
@@ -214,7 +238,13 @@ pub struct App {
     /// Timed polls still waiting on their result, by command, so a slow
     /// agent never gets a second copy of one queued behind the first.
     polls_in_flight: HashMap<&'static str, Instant>,
-    config_tick: u64,
+    /// When each timed poll last went out: the collectors (`dashboard_secs`),
+    /// the minion list (`minions_secs`), the config (`config_secs`) and the
+    /// `job_ping` latency probe.
+    dashboard_every: Every,
+    minions_every: Every,
+    config_every: Every,
+    job_ping_every: Every,
     /// Pending jid_lookup (request_id, jid) waiting for async result
     /// Pending jid_lookup (request_id, jid) for auto-updating the popup
     pending_jid_lookup: Option<(u64, String)>,
@@ -901,7 +931,6 @@ impl App {
         let config_path = crate::config::resolve_config_path();
         let (config, config_warning) = load_startup_config(&config_path);
         let config_broken = crate::config::config_error(&config_path).is_some();
-        let config_secs = config.config_secs;
         let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
         let agent_backlog_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -922,7 +951,6 @@ impl App {
             config_path,
             current_tab: Tab::Dashboard,
             session_start: Instant::now(),
-            tick_count: 0,
 
             agent: AgentState {
                 connected: false,
@@ -1062,7 +1090,10 @@ impl App {
             agent_backlog_dropped,
             agent_req_id: 0,
             polls_in_flight: HashMap::new(),
-            config_tick: config_secs,
+            dashboard_every: Every::default(),
+            minions_every: Every::default(),
+            config_every: Every::default(),
+            job_ping_every: Every::default(),
             pending_jid_lookup: None,
             pending_jid_lookup_at: None,
             pending_event_pretty: None,
@@ -2708,11 +2739,15 @@ impl App {
             self.reindex_minions();
         }
 
-        // Refresh collectors at interval, not every tick
+        // Refresh collectors at their intervals, in seconds whatever the tick.
+        let now = Instant::now();
+        let secs = |s: u64| Duration::from_secs(s.max(1));
         if self.config_snapshot.is_some() {
-            let interval = self.config.dashboard_secs.max(1);
-            if self.tick_count.is_multiple_of(interval) {
+            if self.minions_every.due(now, secs(self.config.minions_secs)) {
                 self.send_poll("minion_cache_list", None);
+                self.send_poll("alive_check", None);
+            }
+            if self.dashboard_every.due(now, secs(self.config.dashboard_secs)) {
                 self.send_poll("list_keys", None);
                 self.send_poll("list_processes", None);
                 self.send_poll("list_services", None);
@@ -2803,19 +2838,11 @@ impl App {
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(u64::MAX);
 
-        // Config refresh (keeps at config_secs interval)
-        self.config_tick += 1;
-        if self.config_tick >= self.config.config_secs {
-            self.config_tick = 0;
+        if self.config_every.due(now, secs(self.config.config_secs)) {
             self.send_agent_cmd("config_snapshot", Some(serde_json::json!({"digests": self.config.running_config_digests})));
             if !self.master_config_loading {
                 self.request_master_config();
             }
-        }
-
-        // Alive detection every 5 ticks
-        if self.tick_count.is_multiple_of(5) {
-            self.send_poll("alive_check", None);
         }
 
         // ZMQ panel latency: dispatch/measure per the configured source.
@@ -2837,7 +2864,7 @@ impl App {
                 // round-trip, so starting the clock afterward could catch the
                 // job already returned in a fast/local fleet, always reading
                 // a flat ~0ms instead of the real round-trip time.
-                if self.job_ping_pending.is_none() && self.tick_count.is_multiple_of(15) {
+                if self.job_ping_pending.is_none() && self.job_ping_every.due(now, JOB_PING_EVERY) {
                     self.job_ping_pending = Some((String::new(), Instant::now()));
                     self.send_agent_cmd("job_ping", None);
                 }
@@ -2937,7 +2964,7 @@ impl App {
         self.settle_job_lags();
 
         // Age out old jobs — anything removed while still unfinished is a partial close-out
-        let max_age = self.config.config_secs * 60; // 60 min default
+        let max_age = LIVE_JOB_RETENTION_SECS;
         let mut kept_jobs = Vec::with_capacity(self.jobs.len());
         for job in self.jobs.drain(..) {
             if job.age_seconds < max_age {
@@ -2982,8 +3009,6 @@ impl App {
                 self.clipboard_msg = None;
             }
         }
-
-        self.tick_count += 1;
 
         // Purge minion_info entries without accepted keys (ghost protection)
         if !self.keys.is_empty() {
@@ -3930,6 +3955,24 @@ fn matches_activity_item(item: &MinionActivityItem, terms: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timed_work_follows_seconds_not_ticks() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let two = Duration::from_secs(2);
+        let mut dashboard = Every::default();
+        // A 2 s tick that lands a few ms early or late polls every tick.
+        let fired: Vec<u64> = [0, 1_995, 4_003, 5_998, 8_001].into_iter().filter(|&ms| dashboard.due(at(ms), two)).collect();
+        assert_eq!(fired, [0, 1_995, 4_003, 5_998, 8_001]);
+        // A 500 ms tick polls every 2 s, not every 4th tick by chance.
+        let mut fast = Every::default();
+        let fired: Vec<u64> = (0..=12).map(|n| n * 500).filter(|&ms| fast.due(at(ms), two)).collect();
+        assert_eq!(fired, [0, 2_000, 4_000, 6_000]);
+        // A 5 s tick can't poll more often than it ticks.
+        let mut slow = Every::default();
+        assert!([0, 5_000, 10_000].into_iter().all(|ms| slow.due(at(ms), two)));
+    }
 
     #[test]
     fn tab_bar_clicks_land_on_the_drawn_labels() {

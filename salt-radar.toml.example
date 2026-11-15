@@ -31,13 +31,19 @@
 # running_config_digests = false
 
 [refresh]
-# How often (in seconds) to refresh dashboard collector data
+# The *_secs intervals are seconds, whatever tick_ms is; a slower tick than
+# an interval makes it as slow as the tick.
+
+# How often to refresh the Dashboard's data: keys, processes, services,
+# host resources, salt-api
 # dashboard_secs = 2
 
-# How often to refresh minion cache list from the agent
+# How often to refresh the minion list from the master's minion data cache
+# (OS, version, ...) and which minions have an entry in it
 # minions_secs = 5
 
-# How often to re-fetch config snapshot from the agent
+# How often to read the master config again (the Master Config tab and the
+# master's settings salt-radar uses)
 # config_secs = 60
 
 # How often (ms) the screen redraws and timed work runs, 500-30000. Also
