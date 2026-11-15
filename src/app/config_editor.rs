@@ -50,10 +50,10 @@ impl PathKind {
     /// of this kind.
     pub fn exists(self, raw: &str) -> bool {
         let p = crate::config::expand_home(raw.trim());
-        match self {
+        crate::config::as_invoking_user(|| match self {
             PathKind::File => p.is_file(),
             PathKind::Dir => p.is_dir(),
-        }
+        })
     }
 }
 
@@ -82,7 +82,12 @@ pub struct PathBrowser {
 impl PathBrowser {
     /// Opens at the field's current value — its directory, with the file
     /// itself selected — or the nearest existing ancestor if it's missing.
+    /// Under sudo it shows what the invoking user may see, not root.
     pub fn open(kind: PathKind, value: &str) -> Self {
+        crate::config::as_invoking_user(|| Self::open_at(kind, value))
+    }
+
+    fn open_at(kind: PathKind, value: &str) -> Self {
         let target = crate::config::expand_home(value.trim());
         let (dir, select) = if target.is_dir() {
             (target.clone(), None)
@@ -104,13 +109,15 @@ impl PathBrowser {
     pub fn load(&mut self, select: Option<&str>) {
         let mut dirs = Vec::new();
         let mut files = Vec::new();
-        if let Ok(rd) = std::fs::read_dir(&self.dir) {
-            for e in rd.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if !self.show_hidden && name.starts_with('.') { continue; }
-                if e.path().is_dir() { dirs.push(name); } else { files.push(name); }
+        crate::config::as_invoking_user(|| {
+            if let Ok(rd) = std::fs::read_dir(&self.dir) {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if !self.show_hidden && name.starts_with('.') { continue; }
+                    if e.path().is_dir() { dirs.push(name); } else { files.push(name); }
+                }
             }
-        }
+        });
         dirs.sort();
         files.sort();
         self.entries.clear();

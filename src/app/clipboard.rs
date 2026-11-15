@@ -2,6 +2,10 @@
 //! X11 session) and the save-to-file prompt.
 
 use super::*;
+use crate::config::as_invoking_user;
+
+/// The copied text in the clipboard directory: xclip's input.
+const COPY_FILE: &str = "copy.txt";
 
 /// The tmux pane salt-radar runs in.
 pub(crate) struct TmuxPane {
@@ -149,8 +153,50 @@ impl App {
         ttys
     }
 
-    /// `$TMUX`'s socket first, then every server under /tmp/tmux-*, since
-    /// `sudo` drops `$TMUX` and root may see several.
+    /// The users whose tmux server salt-radar may talk to: the ones it and
+    /// its ancestors run as (the login shell above `sudo` or `su`), and the
+    /// sudo user.
+    fn tmux_users() -> Vec<u32> {
+        let mut uids: Vec<u32> = Self::ancestor_pids().into_iter()
+            .filter_map(|pid| Self::owner_uid(&format!("/proc/{}", pid)))
+            .collect();
+        uids.extend(crate::config::sudo_ids().map(|(uid, _)| uid));
+        uids
+    }
+
+    /// Whether a tmux socket is one of `users`' own: theirs, in a directory
+    /// that is theirs alone. A tmux client does what its server tells it
+    /// (open files, run a command), and anyone can make a
+    /// `/tmp/tmux-<name>/default`.
+    pub(crate) fn tmux_socket_trusted(socket: &str, users: &[u32]) -> bool {
+        let path = std::path::Path::new(socket);
+        let stat = |p: &std::path::Path| std::fs::symlink_metadata(p).ok();
+        match (stat(path), path.parent().and_then(stat)) {
+            (Some(sock), Some(dir)) => {
+                dir.is_dir() && dir.uid() == sock.uid() && dir.mode() & 0o022 == 0 && users.contains(&sock.uid())
+            }
+            _ => false,
+        }
+    }
+
+    /// A `tmux` command on `socket`, run as the socket's owner when
+    /// salt-radar is root and the server isn't root's: a tmux client does
+    /// what its server tells it, and under sudo the server is the user's.
+    fn tmux(socket: &str) -> std::process::Command {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new("tmux");
+        cmd.args(["-S", socket]);
+        if let Ok(owner) = std::fs::metadata(socket) {
+            if crate::config::euid() == 0 && owner.uid() != 0 {
+                cmd.uid(owner.uid()).gid(owner.gid());
+            }
+        }
+        cmd
+    }
+
+    /// `$TMUX`'s socket first, then the servers under /tmp/tmux-*, since
+    /// `sudo` drops `$TMUX` and root may see several; only those of
+    /// `tmux_users`.
     fn tmux_sockets() -> Vec<String> {
         let mut sockets: Vec<String> = std::env::var("TMUX").ok()
             .and_then(|t| t.split(',').next().map(str::to_string))
@@ -161,12 +207,36 @@ impl App {
             for entry in entries.filter_map(|e| e.ok()) {
                 let name = entry.file_name().to_string_lossy().to_string();
                 let sock = format!("/tmp/{}/default", name);
-                if name.starts_with("tmux-") && !sockets.contains(&sock) && std::path::Path::new(&sock).exists() {
+                if name.starts_with("tmux-") && !sockets.contains(&sock) {
                     sockets.push(sock);
                 }
             }
         }
+        let users = Self::tmux_users();
+        sockets.retain(|s| Self::tmux_socket_trusted(s, &users));
         sockets
+    }
+
+    /// A file in this instance's clipboard directory, which is made on first
+    /// use: `mkdtemp` gives it a name nobody could have prepared and mode
+    /// 0700, so the copied text and the logs are readable by nobody else.
+    /// Under sudo it's the invoking user's, like everything in it (see
+    /// `as_invoking_user`, which every access to it goes through): they can
+    /// read the logs, and a symlink they put there leads nowhere they
+    /// couldn't go. None when it can't be made.
+    fn clip_file(&mut self, name: &str) -> Option<std::path::PathBuf> {
+        if self.clip_dir.is_none() {
+            use std::os::unix::ffi::{OsStrExt, OsStringExt};
+            let template = std::env::temp_dir().join("salt-radar-XXXXXX");
+            let mut buf = std::ffi::CString::new(template.as_os_str().as_bytes()).ok()?.into_bytes_with_nul();
+            // SAFETY: `buf` is a writable NUL-terminated template, which mkdtemp fills in.
+            if as_invoking_user(|| unsafe { libc::mkdtemp(buf.as_mut_ptr().cast()) }).is_null() {
+                return None;
+            }
+            buf.pop();
+            self.clip_dir = Some(std::ffi::OsString::from_vec(buf).into());
+        }
+        self.clip_dir.as_ref().map(|dir| dir.join(name))
     }
 
     /// The tmux pane salt-radar runs in, matched by terminal rather than
@@ -175,7 +245,7 @@ impl App {
         let ttys = Self::own_and_ancestor_ttys();
         for socket in Self::tmux_sockets() {
             let Some(panes) = Self::run_cmd_with_output(
-                std::process::Command::new("tmux").args(["-S", &socket, "list-panes", "-a", "-F", "#{pane_tty} #{session_id}"]),
+                Self::tmux(&socket).args(["list-panes", "-a", "-F", "#{pane_tty} #{session_id}"]),
                 3,
             ) else { continue };
             let session = ttys.iter().find_map(|tty| {
@@ -183,7 +253,7 @@ impl App {
             });
             let Some(session) = session else { continue };
             let clients = Self::run_cmd_with_output(
-                std::process::Command::new("tmux").args(["-S", &socket, "list-clients", "-t", session, "-F", "#{client_tty}"]),
+                Self::tmux(&socket).args(["list-clients", "-t", session, "-F", "#{client_tty}"]),
                 3,
             )?;
             return Some(TmuxPane {
@@ -198,8 +268,8 @@ impl App {
     /// A variable from a tmux session's environment, or the server's global
     /// one when `session` is None.
     fn tmux_env(socket: &str, session: Option<&str>, name: &str) -> Option<String> {
-        let mut cmd = std::process::Command::new("tmux");
-        cmd.args(["-S", socket, "show-environment"]);
+        let mut cmd = Self::tmux(socket);
+        cmd.arg("show-environment");
         match session {
             Some(s) => cmd.args(["-t", s]),
             None => cmd.arg("-g"),
@@ -322,7 +392,7 @@ impl App {
 
     /// Writes where salt-radar looked for an X11 display and what it found,
     /// for a user to share when copying doesn't work.
-    pub(crate) fn debug_x11(env: &X11Env, pane: Option<&TmuxPane>, debug_path: &str) {
+    pub(crate) fn debug_x11(env: &X11Env, pane: Option<&TmuxPane>, debug_path: &std::path::Path) {
         use std::fmt::Write;
         let mut d = String::new();
         writeln!(d, "=== salt-radar X11 debug ===").ok();
@@ -363,7 +433,7 @@ impl App {
         let xclip_v = std::process::Command::new("xclip").arg("-version").output().ok()
             .map(|o| String::from_utf8_lossy(if o.stdout.is_empty() { &o.stderr } else { &o.stdout }).lines().next().unwrap_or("").to_string());
         writeln!(d, "xclip: {:?}", xclip_v).ok();
-        let _ = std::fs::write(debug_path, &d);
+        let _ = as_invoking_user(|| std::fs::write(debug_path, &d));
     }
 
     pub(crate) fn uid_to_username(uid: u32) -> String {
@@ -397,9 +467,12 @@ impl App {
     /// so the process we started exits right away: 0 when it reached the X
     /// server, non-zero with the reason on stderr when it couldn't.
     fn run_xclip(&self, cmd: &mut std::process::Command) -> Result<(), String> {
-        let input = std::fs::File::open(&self.copy_path).map_err(|e| e.to_string())?;
-        let err_path = format!("{}.err", self.clip_log_path);
-        let err_file = std::fs::File::create(&err_path).map_err(|e| e.to_string())?;
+        let dir = self.clip_dir.as_ref().ok_or("no private directory for the copy file")?;
+        let err_path = dir.join("xclip.err");
+        let (input, err_file) = as_invoking_user(|| Ok::<_, std::io::Error>((
+            std::fs::File::open(dir.join(COPY_FILE))?,
+            std::fs::File::create(&err_path)?,
+        ))).map_err(|e| e.to_string())?;
         let mut child = cmd.stdin(input).stdout(Stdio::null()).stderr(err_file).spawn().map_err(|e| e.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(3);
         let status = loop {
@@ -409,8 +482,11 @@ impl App {
                 Err(_) => break None,
             }
         };
-        let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
-        let _ = std::fs::remove_file(&err_path);
+        let stderr = as_invoking_user(|| {
+            let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
+            let _ = std::fs::remove_file(&err_path);
+            stderr
+        });
         let reason = || stderr.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string());
         match status {
             Some(s) if s.success() => Ok(()),
@@ -480,7 +556,11 @@ impl App {
     }
 
     pub fn copy_to_clipboard(&mut self, text: &str) {
-        let _ = std::fs::write(&self.copy_path, text);
+        // Plain text only: it's printed below and gets pasted into shells.
+        let text = &Self::strip_ansi(text);
+        if let Some(path) = self.clip_file(COPY_FILE) {
+            let _ = as_invoking_user(|| std::fs::write(path, text));
+        }
 
         let mut log: Vec<String> = Vec::new();
         let mut copied: Vec<&str> = Vec::new();
@@ -496,7 +576,7 @@ impl App {
                 let mut sent = false;
                 for client in clients {
                     let (ok, err) = Self::run_cmd_with_stdin(
-                        std::process::Command::new("tmux").args(["-S", socket, "load-buffer", "-w", "-t", client, "-"]),
+                        Self::tmux(socket).args(["load-buffer", "-w", "-t", client, "-"]),
                         text, 3,
                     );
                     log.push(format!("tmux load-buffer -w -t {}: {}", client, if ok { "ok" } else { err.trim() }));
@@ -506,7 +586,7 @@ impl App {
                     copied.push("OSC 52 via tmux");
                 } else {
                     let (ok, err) = Self::run_cmd_with_stdin(
-                        std::process::Command::new("tmux").args(["-S", socket, "load-buffer", "-"]),
+                        Self::tmux(socket).args(["load-buffer", "-"]),
                         text, 3,
                     );
                     log.push(format!("tmux load-buffer: {}", if ok { "ok" } else { err.trim() }));
@@ -524,7 +604,9 @@ impl App {
         }
 
         let x11 = Self::resolve_x11_env(pane.as_ref());
-        Self::debug_x11(&x11, pane.as_ref(), &self.clip_debug_path);
+        if let Some(path) = self.clip_file("clip-debug.log") {
+            Self::debug_x11(&x11, pane.as_ref(), &path);
+        }
         let X11Env { display, xauth, user: x11_user, source: x11_source } = x11;
         let xclip_avail = std::process::Command::new("sh")
             .args(["-c", "command -v xclip"])
@@ -553,8 +635,9 @@ impl App {
         }
         .map(|m| (m, Instant::now()));
 
-        let _ = std::fs::write(
-            &self.clip_log_path,
+        let log_path = self.clip_file("clip.log");
+        let _ = log_path.map(|path| as_invoking_user(|| std::fs::write(
+            path,
             format!(
                 "file={}b sent={} display={} (from {}, user {}) xauthority={} xclip_installed={}\n{}\n",
                 text.len(),
@@ -566,7 +649,7 @@ impl App {
                 xclip_avail,
                 log.join("\n"),
             ),
-        );
+        )));
 
         // Leave the alt screen and show the text, so it can also be selected by hand
         use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -648,23 +731,16 @@ impl App {
                 if filename_empty {
                     return false;
                 }
-                // A name, not a path: the file stays in `save_dir`.
-                let name = std::path::Path::new(&self.save_prompt.as_ref().unwrap().filename);
-                if name.file_name() != Some(name.as_os_str()) {
-                    self.clipboard_msg = Some((" Save failed: the file name can't contain a path ".to_string(), Instant::now()));
-                    return false;
-                }
-                let path = dir.join(name);
+                let path = dir.join(&self.save_prompt.as_ref().unwrap().filename);
                 let already_confirmed = self.save_prompt.as_ref().unwrap().confirm_overwrite;
-                if path.exists() && !already_confirmed {
+                if as_invoking_user(|| path.exists()) && !already_confirmed {
                     self.save_prompt.as_mut().unwrap().confirm_overwrite = true;
                     return false;
                 }
                 let content = self.save_prompt.as_ref().unwrap().content.clone();
-                let result = crate::config::create_dir_all_owned(&dir).and_then(|_| crate::config::write_file(&path, content.as_bytes()));
-                if result.is_ok() {
-                    crate::config::give_to_sudo_user(&path);
-                }
+                // Under sudo, as the user: the file is theirs, and can only
+                // go where they could have put it themselves.
+                let result = as_invoking_user(|| std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &content)));
                 self.clipboard_msg = Some(match result {
                     Ok(()) => {
                         self.save_at = Some(Instant::now());

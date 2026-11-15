@@ -337,9 +337,9 @@ pub struct App {
 
     /// NDJSON command lines for the agent thread to forward to the agent.
     agent_cmd_tx: std::sync::mpsc::Sender<String>,
-    copy_path: String,
-    clip_log_path: String,
-    clip_debug_path: String,
+    /// Private directory for the copy file and the clipboard logs, made on
+    /// the first copy (see `clip_file`).
+    clip_dir: Option<std::path::PathBuf>,
 
     // ── Activity matrix (job return events per sec) ──────────────────────────
     /// Count of salt/job/*/ret/* events per second for last 60s (ring buffer)
@@ -899,13 +899,6 @@ impl App {
         let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
         let agent_backlog_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let pid = std::process::id();
-
-        // PID-based temp paths to avoid conflicts between multiple users or instances
-        let copy_path = format!("/tmp/.salt-radar-copy-{}.txt", pid);
-        let clip_log_path = format!("/tmp/.salt-radar-clip-{}.log", pid);
-        let clip_debug_path = format!("/tmp/.salt-radar-clip-debug-{}.log", pid);
-
         // Spawn agent
         let rx = agent_rx.clone();
         let dropped = agent_backlog_dropped.clone();
@@ -1136,9 +1129,7 @@ impl App {
             prev_cpu_time: None,
 
             agent_cmd_tx,
-            copy_path,
-            clip_log_path,
-            clip_debug_path,
+            clip_dir: None,
         }
     }
 
@@ -2322,18 +2313,38 @@ impl App {
         self.minion_entries().1.len()
     }
 
-    /// Strip ANSI escape sequences from a string.
+    /// `s` as plain text: without escape sequences (colors, and whatever
+    /// else a minion's output or an HTTP request line carries: cursor
+    /// moves, OSC 52 "set clipboard", title changes) and without any other
+    /// control character than newline and tab. What's copied is printed to
+    /// the terminal and pasted into shells, so none of it may reach either.
     pub fn strip_ansi(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars();
+        let mut chars = s.chars().peekable();
+        // A CSI sequence ends at its final byte, a string sequence (OSC,
+        // DCS, ...) at BEL or ST, or with the line when it's never closed.
+        let skip_csi = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+            while let Some(c) = chars.next_if(|&c| c != '\n') {
+                if ('@'..='~').contains(&c) { break; }
+            }
+        };
+        let skip_string = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+            while let Some(c) = chars.next_if(|&c| c != '\n') {
+                if c == '\x07' || c == '\u{9c}' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) { break; }
+            }
+        };
         while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                // Consume until we hit 'm' (end of CSI sequence)
-                for n in chars.by_ref() {
-                    if n == 'm' { break; }
-                }
-            } else {
-                out.push(c);
+            match c {
+                '\x1b' => match chars.next_if(|&c| c != '\n') {
+                    Some('[') => skip_csi(&mut chars),
+                    Some(']' | 'P' | 'X' | '^' | '_') => skip_string(&mut chars),
+                    _ => {}
+                },
+                '\u{9b}' => skip_csi(&mut chars),
+                '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => skip_string(&mut chars),
+                '\n' | '\t' => out.push(c),
+                c if c.is_control() => {}
+                c => out.push(c),
             }
         }
         out
@@ -2567,11 +2578,11 @@ impl App {
         serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or_default()
     }
 
-    /// Clean up per-instance temp files. Called on exit.
+    /// Removes the clipboard files. Called on exit.
     pub fn cleanup(&self) {
-        let _ = std::fs::remove_file(&self.copy_path);
-        let _ = std::fs::remove_file(&self.clip_log_path);
-        let _ = std::fs::remove_file(&self.clip_debug_path);
+        if let Some(dir) = &self.clip_dir {
+            let _ = crate::config::as_invoking_user(|| std::fs::remove_dir_all(dir));
+        }
     }
 
     /// Saves the hotkey toggles (F2 mouse, F4-F8 graphs, `m` graph style,
@@ -3962,6 +3973,43 @@ mod tests {
             Some(crate::ui::color::green()),
             Some(crate::ui::color::yellow()),
         ]);
+    }
+
+    #[test]
+    fn only_a_users_own_tmux_socket_is_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("salt-radar-test-tmux-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("default");
+        std::fs::write(&socket, "").unwrap();
+        let me = std::fs::metadata(&socket).unwrap().uid();
+        let chmod = |mode| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let trusted = |users: &[u32]| App::tmux_socket_trusted(socket.to_str().unwrap(), users);
+        chmod(0o700);
+        assert!(trusted(&[me]));
+        assert!(!trusted(&[me + 1]), "another user's server");
+        assert!(!trusted(&[]));
+        chmod(0o777);
+        assert!(!trusted(&[me]), "anyone could have put the socket there");
+        chmod(0o700);
+        assert!(!App::tmux_socket_trusted(dir.join("missing").to_str().unwrap(), &[me]));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn strip_ansi_leaves_nothing_a_terminal_would_act_on() {
+        assert_eq!(App::strip_ansi("\x1b[0;31mfail\x1b[0m ok\n\tnext"), "fail ok\n\tnext");
+        // OSC 52 would replace the clipboard just copied; BEL- and ST-terminated.
+        assert_eq!(App::strip_ansi("a\x1b]52;c;cm0gLXJmIH4=\x07b"), "ab");
+        assert_eq!(App::strip_ansi("a\x1b]0;title\x1b\\b"), "ab");
+        // Not colors: the old "skip to the next m" swallowed text or kept the tail.
+        assert_eq!(App::strip_ansi("up\x1b[2Ahome\x1b[Hmore"), "uphomemore");
+        // 8-bit CSI and OSC, a lone ESC, CR, backspace.
+        assert_eq!(App::strip_ansi("a\u{9b}31mb\u{9d}52;c;eA==\u{9c}c\x1bcd\re\x08f"), "abcdef");
+        // Never closed: only the rest of that line goes.
+        assert_eq!(App::strip_ansi("a\x1b]52;c;eA==\nnext line"), "a\nnext line");
+        assert_eq!(App::strip_ansi("é\x1b"), "é");
     }
 
     #[test]

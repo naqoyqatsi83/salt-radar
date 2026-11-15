@@ -1,6 +1,5 @@
-use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::cell::Cell;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -18,7 +17,7 @@ pub const TICK_MS_MAX: u64 = 30_000;
 /// those are only taken from a file nobody else could have written.
 const SYSTEM_CONFIG: &str = "/etc/salt-radar/salt-radar.toml";
 
-fn euid() -> u32 {
+pub fn euid() -> u32 {
     // SAFETY: geteuid can't fail.
     unsafe { libc::geteuid() }
 }
@@ -50,44 +49,123 @@ pub fn resolve_config_path() -> PathBuf {
     }
 }
 
-/// The user who started salt-radar through `sudo`, when it runs as root that
-/// way: their config, themes and files are used instead of root's, which
-/// every sudo user would otherwise share (sudo resets `HOME` to root's and
-/// drops `XDG_*`). Only `SUDO_USER` is followed; no sudo, `sudo -i` or a
-/// real root login leave this `None`.
-pub struct SudoUser {
-    pub home: PathBuf,
-    pub uid: u32,
-    pub gid: u32,
+/// The uid and gid of the user who started salt-radar through `sudo`, when
+/// it runs as root that way, from the `SUDO_UID`/`SUDO_GID` sudo sets. No
+/// sudo and a real root login leave this `None`.
+pub fn sudo_ids() -> Option<(u32, u32)> {
+    if euid() != 0 {
+        return None;
+    }
+    let id = |name: &str| std::env::var(name).ok()?.parse::<u32>().ok();
+    let (uid, gid) = (id("SUDO_UID")?, id("SUDO_GID")?);
+    (uid != 0).then_some((uid, gid))
 }
 
-pub fn sudo_user() -> Option<&'static SudoUser> {
-    static USER: OnceLock<Option<SudoUser>> = OnceLock::new();
-    USER.get_or_init(|| {
-        // SAFETY: getpwnam runs once, here, before any other thread could
-        // call it, and its result is copied out at once.
-        if euid() != 0 {
-            return None;
-        }
-        let name = std::env::var("SUDO_USER").ok().filter(|n| !n.is_empty() && n != "root")?;
-        let name = std::ffi::CString::new(name).ok()?;
-        let pw = unsafe { libc::getpwnam(name.as_ptr()) };
-        if pw.is_null() {
-            return None;
-        }
-        let (dir, uid, gid) = unsafe { ((*pw).pw_dir, (*pw).pw_uid, (*pw).pw_gid) };
-        if dir.is_null() {
-            return None;
-        }
-        let home = PathBuf::from(unsafe { std::ffi::CStr::from_ptr(dir) }.to_string_lossy().into_owned());
-        (home.is_absolute() && home != Path::new("/")).then_some(SudoUser { home, uid, gid })
+/// The home of the user who started salt-radar through `sudo`: their config,
+/// themes and files are used instead of root's, which every sudo user would
+/// otherwise share (sudo resets `HOME` to root's and drops `XDG_*`).
+pub fn sudo_home() -> Option<&'static PathBuf> {
+    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    HOME.get_or_init(|| {
+        let (uid, _) = sudo_ids()?;
+        let home = PathBuf::from(passwd_home(uid)?);
+        (home.is_absolute() && home != Path::new("/")).then_some(home)
     }).as_ref()
+}
+
+/// A user's home directory from the passwd database. The static binary only
+/// reads `/etc/passwd` itself, so an account from a directory service (LDAP,
+/// SSSD) is asked of `getent`, which goes through the system's NSS.
+fn passwd_home(uid: u32) -> Option<String> {
+    // SAFETY: getpwuid runs once (see `sudo_home`), before any other thread
+    // could call it, and its result is copied out at once.
+    let local = unsafe {
+        let pw = libc::getpwuid(uid);
+        (!pw.is_null() && !(*pw).pw_dir.is_null())
+            .then(|| std::ffi::CStr::from_ptr((*pw).pw_dir).to_string_lossy().into_owned())
+    };
+    local.or_else(|| {
+        let out = std::process::Command::new("getent").args(["passwd", &uid.to_string()]).output().ok()?;
+        String::from_utf8(out.stdout).ok()?.lines().next()?.split(':').nth(5).map(str::to_string)
+    }).filter(|home| !home.is_empty())
+}
+
+thread_local! {
+    static ACTING_AS_USER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Puts the thread's filesystem identity back to root's when dropped.
+struct RootFsIdentity {
+    groups: Vec<libc::gid_t>,
+}
+
+impl RootFsIdentity {
+    /// Switches the calling thread's filesystem uid, gid and groups to the
+    /// user's (no supplementary groups), keeping root's to restore. Only
+    /// this thread and only file access change: the agent, the other
+    /// threads and everything else salt-radar does stay root.
+    fn switch_to(uid: u32, gid: u32) -> Self {
+        // SAFETY: plain syscalls on this thread's own credentials; the
+        // buffer is as long as the count getgroups was given.
+        unsafe {
+            let n = libc::getgroups(0, std::ptr::null_mut()).max(0);
+            let mut groups = vec![0; n as usize];
+            let got = libc::getgroups(n, groups.as_mut_ptr()).max(0);
+            groups.truncate(got as usize);
+            set_thread_groups(&[]);
+            libc::setfsgid(gid);
+            libc::setfsuid(uid);
+            // setfsuid reports the previous value, never an error: ask again.
+            assert_eq!(libc::setfsuid(uid) as u32, uid, "can't act as user {uid} for file access");
+            Self { groups }
+        }
+    }
+}
+
+impl Drop for RootFsIdentity {
+    fn drop(&mut self) {
+        // SAFETY: as in `switch_to`.
+        unsafe {
+            libc::setfsuid(0);
+            libc::setfsgid(0);
+            set_thread_groups(&self.groups);
+        }
+        ACTING_AS_USER.set(false);
+    }
+}
+
+/// The supplementary groups of the calling thread alone: the raw syscall,
+/// as libc's `setgroups` changes every thread. Where that syscall takes
+/// 16-bit IDs (32-bit targets) the groups are left as they are.
+unsafe fn set_thread_groups(groups: &[libc::gid_t]) {
+    #[cfg(target_pointer_width = "64")]
+    libc::syscall(libc::SYS_setgroups, groups.len(), groups.as_ptr());
+    #[cfg(not(target_pointer_width = "64"))]
+    let _ = groups;
+}
+
+/// Runs `f` with the file access of the user who started salt-radar through
+/// sudo, for everything read, written or listed on their behalf: saved
+/// files, their config, the clipboard files, the Config Editor's file
+/// browser. A user allowed to run salt-radar through sudo, and nothing
+/// else, can then reach only what they could reach anyway, and what's
+/// written is theirs. Without sudo, `f` just runs.
+///
+/// `f` must not start a process: it would inherit the user's identity for
+/// file access only.
+pub fn as_invoking_user<T>(f: impl FnOnce() -> T) -> T {
+    let Some((uid, gid)) = sudo_ids() else { return f() };
+    if ACTING_AS_USER.replace(true) {
+        return f();
+    }
+    let _root = RootFsIdentity::switch_to(uid, gid);
+    f()
 }
 
 /// The invoking user's home: the sudo user's, or `$HOME`.
 fn home_dir() -> Option<PathBuf> {
-    match sudo_user() {
-        Some(u) => Some(u.home.clone()),
+    match sudo_home() {
+        Some(home) => Some(home.clone()),
         None => std::env::var_os("HOME").map(PathBuf::from),
     }
 }
@@ -95,8 +173,8 @@ fn home_dir() -> Option<PathBuf> {
 /// `$XDG_CONFIG_HOME/salt-radar`, falling back to `~/.config/salt-radar` —
 /// the sudo user's under sudo (their environment's `XDG_*` is gone).
 fn user_config_dir() -> Option<PathBuf> {
-    match sudo_user() {
-        Some(u) => Some(u.home.join(".config/salt-radar")),
+    match sudo_home() {
+        Some(home) => Some(home.join(".config/salt-radar")),
         None => own_config_dir(),
     }
 }
@@ -112,49 +190,13 @@ fn own_config_dir() -> Option<PathBuf> {
 /// `$XDG_STATE_HOME/salt-radar/last-version`, falling back to
 /// `~/.local/state/salt-radar/last-version` (the sudo user's under sudo).
 fn last_version_path() -> Option<PathBuf> {
-    let state = match sudo_user() {
-        Some(u) => Some(u.home.join(".local/state")),
+    let state = match sudo_home() {
+        Some(home) => Some(home.join(".local/state")),
         None => std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state"))),
     };
     state.map(|dir| dir.join("salt-radar").join("last-version"))
-}
-
-/// Hands a file or directory salt-radar created over to the user who ran it
-/// through sudo, when it's in their home — so their home doesn't fill up
-/// with root-owned files they can't edit.
-pub fn give_to_sudo_user(path: &Path) {
-    let Some(u) = sudo_user() else { return };
-    if !path.starts_with(&u.home) {
-        return;
-    }
-    if let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
-        // SAFETY: a valid NUL-terminated path; a failure just leaves root as
-        // owner. lchown: the user could have swapped the file for a symlink.
-        unsafe { libc::lchown(c.as_ptr(), u.uid, u.gid) };
-    }
-}
-
-/// Writes a file without following a symlink at `path`: salt-radar writes
-/// into the sudo user's directories as root, where they could plant one.
-pub fn write_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    std::fs::OpenOptions::new()
-        .write(true).create(true).truncate(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?
-        .write_all(content)
-}
-
-/// `create_dir_all`, giving the directories it creates to the sudo user
-/// (see `give_to_sudo_user`).
-pub fn create_dir_all_owned(dir: &Path) -> std::io::Result<()> {
-    let missing: Vec<PathBuf> = dir.ancestors().take_while(|a| !a.as_os_str().is_empty() && !a.exists()).map(Path::to_path_buf).collect();
-    std::fs::create_dir_all(dir)?;
-    for d in missing.iter().rev() {
-        give_to_sudo_user(d);
-    }
-    Ok(())
 }
 
 /// Records the running version as the last one seen and returns the version
@@ -163,17 +205,17 @@ pub fn create_dir_all_owned(dir: &Path) -> std::io::Result<()> {
 pub fn note_version_seen() -> Option<String> {
     let path = last_version_path()?;
     let current = env!("CARGO_PKG_VERSION");
-    let previous = std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string());
-    if previous.as_deref() == Some(current) {
-        return None;
-    }
-    if let Some(dir) = path.parent() {
-        let _ = create_dir_all_owned(dir);
-    }
-    if write_file(&path, format!("{current}\n").as_bytes()).is_ok() {
-        give_to_sudo_user(&path);
-    }
-    previous.filter(|p| !p.is_empty())
+    as_invoking_user(|| {
+        let previous = std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string());
+        if previous.as_deref() == Some(current) {
+            return None;
+        }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, format!("{current}\n"));
+        previous.filter(|p| !p.is_empty())
+    })
 }
 
 /// Expands a leading `~` / `~/` against the invoking user's home, as the
@@ -872,11 +914,15 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
 /// every setting; saving once slims them down to the real changes.)
 /// Writes the settings that differ from the defaults, atomically (a temp
 /// file renamed over the old one), so two instances saving at once can't
-/// leave a torn file. Under sudo, a config in the user's home stays theirs.
+/// leave a torn file. Under sudo it's written as the invoking user.
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
+    as_invoking_user(|| write_config_file(path, config))
+}
+
+fn write_config_file(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            create_dir_all_owned(parent)?;
+            std::fs::create_dir_all(parent)?;
         }
     }
     let mut out = toml::Table::new();
@@ -892,22 +938,21 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
-    write_file(&tmp, format!(
+    std::fs::write(&tmp, format!(
         "# salt-radar settings: only values that differ from the defaults are stored.\n\
          # See salt-radar.toml.example for every setting.\n\n{}",
         body,
-    ).as_bytes())?;
+    ))?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    give_to_sudo_user(path);
     Ok(())
 }
 
 /// The file `load_config_or_fallback` reads for `path`.
 fn config_source(path: &Path) -> PathBuf {
-    if !path.exists() && sudo_user().is_some() {
+    if !path.exists() && sudo_home().is_some() {
         if let Some(own) = own_config_dir().map(|d| d.join("salt-radar.toml")).filter(|p| p.is_file()) {
             return own;
         }
@@ -965,7 +1010,12 @@ pub fn load_startup_config(path: &Path) -> (AppConfig, Option<String>) {
 
 pub fn load_config(path: &Path) -> AppConfig {
     let mut cfg = AppConfig::default();
-    let data = std::fs::read_to_string(path).ok();
+    // Root's own files are read as root, anything else as the invoking user.
+    let data = if written_only_by(path, 0) {
+        std::fs::read_to_string(path).ok()
+    } else {
+        as_invoking_user(|| std::fs::read_to_string(path).ok())
+    };
     if let Some(data) = data {
         if let Ok(toml_cfg) = toml::from_str::<TomlConfig>(&data) {
             if let Some(s) = toml_cfg.salt {
@@ -1125,19 +1175,6 @@ mod tests {
         chmod(0o644);
         let (cfg, warning) = load_startup_config(&path);
         assert_eq!((cfg.python_bin.as_str(), warning), ("/tmp/evil", None), "the running user's own file");
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn write_file_does_not_follow_a_symlink() {
-        let dir = scratch("nofollow");
-        let (target, link) = (dir.join("target"), dir.join("link"));
-        std::fs::write(&target, "keep").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(write_file(&link, b"clobbered").is_err());
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
-        write_file(&target, b"new").unwrap();
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
