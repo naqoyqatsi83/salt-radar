@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0-rc9] - 2026-11-15
+
 ### Fixed
 
 - Redact every credential in the Master Config tab's file view: values in an inline mapping (`rest_cherrypy: {password: ...}`), every line of a multi-line value, every item of a list or mapping under a credential key (`tokens:`, `credentials:`), and commented-out ones, which were all shown. A value starting with `/` is now only taken for a file path, and shown, when the file or its directory exists, as a secret can start with `/` too; `sdb://` references stay readable. Lines keep their numbers, so each setting still points at the right place in its file
