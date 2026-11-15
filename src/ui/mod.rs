@@ -968,10 +968,18 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     let mut spans: Vec<Span<'static>> = Vec::new();
 
     // Agent status
+    let because = |why: &Option<String>| why.as_deref().map(|w| format!(" ({})", truncate(w, 90))).unwrap_or_default();
     if app.agent.connected {
         spans.push(Span::styled(" agent: ok ", Style::default().fg(color::green())));
     } else {
-        spans.push(Span::styled(" agent: down ", Style::default().fg(color::red())));
+        spans.push(Span::styled(format!(" agent: down{} ", because(&app.agent.last_error)), Style::default().fg(color::red())));
+    }
+    if app.agent.event_bus_error.is_some() {
+        spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::tab_separator())));
+        spans.push(Span::styled(
+            format!(" no events, reconnecting{} ", because(&app.agent.event_bus_error)),
+            Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
+        ));
     }
 
     // Transient clipboard message (auto-clears after 8 seconds)

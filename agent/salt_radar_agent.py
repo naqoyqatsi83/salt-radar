@@ -1850,9 +1850,9 @@ def cmd_master_config(opts, req):
                     entry["running_full"] = _config_text(shown, False)
         if kind == "unknown":
             owner, module_suggest = _setting_owner(str(key), effective)
-            missing = None if owner or module_suggest else _missing_extension(str(key))
-            if missing:
-                entry["notes"] = [missing]
+            left_salt = None if owner or module_suggest else _missing_extension(str(key))
+            if left_salt:
+                entry["notes"] = [left_salt]
             elif module_suggest:
                 entry["suggest"] = module_suggest
             elif owner:
@@ -2471,28 +2471,57 @@ def _jid_to_epoch(jid):
     return 0.0
 
 
+_EVENT_RETRY_SECS = 3
+_EVENT_WAIT_SECS = 2
+
+
 def _event_loop(opts):
-    """Run in a background thread: listen on event bus, forward events to stdout."""
+    """Run in a background thread: listen on event bus, forward events to
+    stdout, for as long as the subscription lasts. Whenever the listener
+    loses the master's event bus or finds it again (Salt reconnects by
+    itself, without a word), and whenever it fails outright and is started
+    again after `_EVENT_RETRY_SECS`, the TUI is told (`event_bus`): nothing
+    else would show that events stopped."""
     import salt.utils.event
-    try:
-        # opts comes from salt.config.master_config(), which always
-        # resolves sock_dir from Salt's own defaults (typically
-        # /var/run/salt/master, not under cachedir) — no need to guess it.
-        sock_dir = opts["sock_dir"]
-        me = salt.utils.event.MasterEvent(sock_dir, opts, listen=True)
-        for evt in me.iter_events(tag="", full=True):
-            if _event_stop.is_set():
-                break
-            if evt is None:
-                continue
-            tag = evt.get("tag", "")
-            evt_data = evt.get("data", {})
-            if _is_own_job_event(tag, evt_data):
-                continue
-            ts = _parse_stamp(evt_data.get("_stamp"))
-            event(tag, evt_data, ts)
-    except Exception as exc:
-        error(None, "event_bus: {}".format(str(exc)))
+
+    def report(up, why=None):
+        ndjson({"type": "event_bus", "ok": True} if up else {"type": "event_bus", "ok": False, "error": why})
+
+    while not _event_stop.is_set():
+        me = None
+        try:
+            # opts comes from salt.config.master_config(), which always
+            # resolves sock_dir from Salt's own defaults (typically
+            # /var/run/salt/master, not under cachedir) — no need to guess it.
+            me = salt.utils.event.MasterEvent(opts["sock_dir"], opts, listen=True)
+            connected = None
+            while not _event_stop.is_set():
+                evt = me.get_event(wait=_EVENT_WAIT_SECS, tag="", full=True)
+                up = bool(getattr(me, "cpub", True))
+                if up != connected:
+                    connected = up
+                    report(up, "no event bus in {} (is salt-master running?)".format(opts["sock_dir"]))
+                if evt is None:
+                    continue
+                tag = evt.get("tag", "")
+                evt_data = evt.get("data", {})
+                if _is_own_job_event(tag, evt_data):
+                    continue
+                ts = _parse_stamp(evt_data.get("_stamp"))
+                event(tag, evt_data, ts)
+            return
+        except Exception as exc:
+            reason = str(exc) or type(exc).__name__
+        finally:
+            if me is not None:
+                try:
+                    me.destroy()
+                except Exception:
+                    pass
+        if _event_stop.is_set():
+            return
+        report(False, reason)
+        _event_stop.wait(_EVENT_RETRY_SECS)
 
 
 def cmd_subscribe_events(opts, req):

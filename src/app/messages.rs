@@ -632,7 +632,10 @@ impl App {
                 AgentMessage::Error { message, .. } => {
                     self.agent.last_error = Some(message);
                     self.agent.connected = false;
+                    // The agent that held the listener is gone.
+                    self.agent.event_bus_error = None;
                 }
+                AgentMessage::EventBus { error } => self.agent.event_bus_error = error,
                 AgentMessage::Progress { cmd, loaded } => {
                     if cmd == "jobs_list" {
                         self.cache_load_progress = Some(loaded);

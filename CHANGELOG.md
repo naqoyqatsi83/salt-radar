@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Redact every credential in the Master Config tab's file view: values in an inline mapping (`rest_cherrypy: {password: ...}`), every line of a multi-line value, every item of a list or mapping under a credential key (`tokens:`, `credentials:`), and commented-out ones, which were all shown. A value starting with `/` is now only taken for a file path, and shown, when the file or its directory exists, as a secret can start with `/` too; `sdb://` references stay readable. Lines keep their numbers, so each setting still points at the right place in its file
 - Write `salt-radar.toml` readable by its owner only while it holds the salt-api password (`stats_auth_password`), and show that password as `••••••••` in the Config Editor, also while typing it
+- Start the event listener again when it fails, every few seconds, and say so in the status bar (`no events, reconnecting`, with the reason) for as long as it's down. It was started once and never again, so after one failure Events, Live Jobs, Pulse and the sniffer stayed frozen for the rest of the session, with nothing on screen saying why (#204)
+- Keep the agent's error output off the screen: a traceback or a Salt warning from the agent was printed over the TUI. Its last line now shows in the status bar when the agent goes down (`agent: down (agent exited, restarting: ...)`), which also shows errors such as a wrong `python_bin` that were not shown anywhere (#203)
+- Say when `salt-radar.toml` can't be loaded (a typo, a value of the wrong type), with the line, instead of silently starting with the defaults, and don't save over it: a hotkey toggle or a Config Editor save then replaced the file with those defaults. Numbers too large for the file are refused in the Config Editor; one saved before made the file unloadable (#205)
+- Show a setting's running value in the Master Config tab when the running master holds it as `None`: after the first setting Salt doesn't know, such values were taken for missing from the running master (#202)
 
 ## [0.11.0-rc8] - 2026-11-15
 

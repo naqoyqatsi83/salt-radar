@@ -1334,4 +1334,6 @@ pub struct AgentState {
     pub connected: bool,
     pub version: Option<ConfigSnapshot>,
     pub last_error: Option<String>,
+    /// Why no events are coming in, while the agent's listener is down.
+    pub event_bus_error: Option<String>,
 }

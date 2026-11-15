@@ -253,6 +253,9 @@ pub struct App {
     pub save_prompt: Option<SaveFilePrompt>,
     /// A redraw is waiting for `max_output_kbs` to allow it; the header says so.
     pub output_held: bool,
+    /// The config file couldn't be parsed at startup, so `config` is the
+    /// defaults: saving them from the Config Editor would wipe the file.
+    config_broken: bool,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
     /// Dashboard ZMQ panel's latency figure, in milliseconds. Populated by
@@ -500,6 +503,8 @@ pub enum AgentMessage {
     Result { id: u64, cmd: String, ok: bool, data: serde_json::Value, received: Instant },
     Event { tag: String, data: serde_json::Value, ts: f64, received: Instant },
     Error { message: String },
+    /// The agent's event bus listener went up (`None`) or down (why).
+    EventBus { error: Option<String> },
     /// Incremental progress for a long-running command (currently just
     /// `jobs_list`'s live job-cache walk) — arrives zero or more times
     /// before the final `Result`.
@@ -895,6 +900,7 @@ impl App {
     pub fn new() -> Self {
         let config_path = crate::config::resolve_config_path();
         let (config, config_warning) = load_startup_config(&config_path);
+        let config_broken = crate::config::config_error(&config_path).is_some();
         let config_secs = config.config_secs;
         let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -922,6 +928,7 @@ impl App {
                 connected: false,
                 version: None,
                 last_error: None,
+                event_bus_error: None,
             },
             config_snapshot: None,
 
@@ -1072,6 +1079,7 @@ impl App {
             save_at: None,
             clipboard_msg: config_warning.map(|w| (w, Instant::now())),
             save_prompt: None,
+            config_broken,
             output_held: false,
             needs_terminal_clear: false,
             zmq_latency_ms: 0.0,
@@ -2608,6 +2616,12 @@ impl App {
             graph_style, mouse, tick_ms, minions_follow_filter, api_hide_stats_polls, master_wrap,
             minions_split_pct, events_split_pct, jobs_split_pct, api_split_pct, pulse_split_pct, master_split_pct);
         if !changed {
+            return;
+        }
+        // `on_disk` is the defaults when the file can't be parsed: writing
+        // it back would replace the user's settings with a toggle.
+        if let Some(e) = crate::config::config_error(&self.config_path) {
+            self.clipboard_msg = Some((format!(" Settings not saved, {} has an error ({}) ", self.config_path.display(), e), Instant::now()));
             return;
         }
         match crate::config::write_config(&self.config_path, &on_disk) {

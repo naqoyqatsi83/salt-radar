@@ -406,8 +406,10 @@ impl App {
             }
         }
         // Parse and build new config
-        let parse_u64 = |key| vals.get(key).and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
-        let parse_usize = |key| vals.get(key).and_then(|v| v.parse::<usize>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
+        // TOML integers are 64-bit signed: anything above wouldn't load again.
+        let parse_u64 = |key| vals.get(key).and_then(|v| v.parse::<u64>().ok()).filter(|v| *v <= i64::MAX as u64)
+            .ok_or_else(|| format!("Invalid {}: expected an integer up to {}", key, i64::MAX));
+        let parse_usize = |key| parse_u64(key).map(|v| v as usize);
         let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
         let parse_bool = |key| vals.get(key) == Some(&"on");
         let columns = |key, table: TableId| vals.get(key).copied().unwrap_or(table.default_columns()).to_string();
@@ -497,6 +499,15 @@ impl App {
             master_wrap: parse_bool("master_wrap"),
         };
 
+        // The editor's fields started from the defaults when the file
+        // couldn't be parsed: saving them would wipe what's in it.
+        let file = self.config_path.display();
+        if let Some(e) = crate::config::config_error(&self.config_path) {
+            return Err(format!("Not saved: {} has an error ({}). Fix it and restart salt-radar", file, e));
+        }
+        if self.config_broken {
+            return Err(format!("Not saved: {} had an error at startup. Restart salt-radar to load it", file));
+        }
         crate::config::write_config(&self.config_path, &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
         let latency_source_changed = new_config.zmq_latency_source != self.config.zmq_latency_source;
