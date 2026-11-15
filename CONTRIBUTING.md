@@ -19,8 +19,8 @@ Open an issue first for anything bigger than a small fix, so the change can be
 agreed on before you write it. Pull requests go to the `dev` branch; `main`
 only holds releases.
 
-- Keep `cargo clippy --all-targets -- -D warnings` and `cargo test` passing;
-  CI runs both on every pull request. The minimum Rust version is the
+- Keep `cargo clippy --all-targets -- -D warnings`, `cargo test` and the agent's tests (`python3 -m unittest discover -s agent/tests`, needs PyYAML) passing;
+  CI runs them on every pull request. The minimum Rust version is the
   `rust-version` in `Cargo.toml`.
 - salt-radar is read-only towards Salt outside admin mode: it must not change
   keys, files or minions, or send jobs to minions, unless the user asked for it

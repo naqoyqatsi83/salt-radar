@@ -32,3 +32,14 @@ jobs:
 
       - name: Tests
         run: cargo test
+
+      # The agent's own tests: what it blanks in master config files, and
+      # its event listener. Python 3.10 is what Salt's packages ship.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Agent tests
+        run: |
+          python -m pip install --quiet pyyaml
+          python -m unittest discover -s agent/tests -v

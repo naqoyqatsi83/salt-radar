@@ -108,7 +108,10 @@ and that all three assets contain the themes.
 - Release: `cargo build --release`
 - Static binary for the test pod: see "Testing on Kubernetes" above (musl target)
 - Tests: `cargo test`; lints: `cargo clippy --all-targets -- -D warnings`.
-  The **CI** workflow (`.github/workflows/ci.yml`) runs both on every push and
+  Agent tests: `python3 -m unittest discover -s agent/tests` (needs PyYAML,
+  not Salt). They cover what the agent redacts from master config files:
+  add a case there for any change to the redaction.
+  The **CI** workflow (`.github/workflows/ci.yml`) runs all three on every push and
   pull request to `dev`/`main` — keep them passing.
 - Minimum Rust version: 1.88 (`rust-version` in `Cargo.toml`, set by the
   locked dependencies)
