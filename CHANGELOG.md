@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0-rc8] - 2026-11-15
+
 ### Fixed
 
 - Take `python_bin`, `agent_path` and `master_config` only from a config file that root alone can write when salt-radar runs as root, and `./salt-radar.toml` only when it belongs to the user running salt-radar. These settings decide what salt-radar executes, so a `salt-radar.toml` left in a shared directory, or the config of a user allowed to run only salt-radar through sudo, could run any program as root. Under sudo, set them in root's config or in `/etc/salt-radar/salt-radar.toml`; the status bar says when a user's file tried to
