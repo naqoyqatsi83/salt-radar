@@ -2201,6 +2201,38 @@ def cmd_job_load(opts, req):
     result(req["id"], "job_load", ok=True, data=data)
 
 
+_ANSI_SGR = re.compile("\x1b\\[[0-9;]*m")
+# A column-0 "mid:" line of `salt-run jobs.lookup_jid --force-color` output,
+# found in the colored text itself: color codes may come before the ID,
+# after it and after the colon.
+_MINION_HEADER = re.compile(
+    r"^(?:\x1b\[[0-9;]*m)*(\S[^\n]*?)(?:\x1b\[[0-9;]*m)*:(?:\x1b\[[0-9;]*m|[ \t])*$", re.M)
+
+
+def _minion_sections(output, mids):
+    """{mid: (start, end)}: where each minion's own part of the colored
+    lookup output is, from its "mid:" header up to the next minion's. Found
+    in one pass over the output, without a copy of it: a lookup of a job on
+    thousands of minions prints tens of MB.
+
+    A part starts at the minion's ID, after the color codes before it, and
+    ends at the newline before the next minion's line, so the codes that
+    open the next header stay with the next minion. Only the first header
+    of each of `mids` counts; a nested key that looks like one can't come
+    before it."""
+    mids = set(mids)
+    starts = []
+    for m in _MINION_HEADER.finditer(output):
+        mid = _ANSI_SGR.sub("", m.group(1))
+        if mid in mids:
+            mids.discard(mid)
+            starts.append((max(m.start() - 1, 0), m.start(1), mid))
+    sections = {}
+    for i, (_, start, mid) in enumerate(starts):
+        sections[mid] = (start, starts[i + 1][0] if i + 1 < len(starts) else len(output))
+    return sections
+
+
 def cmd_jid_lookup(opts, req):
     """Look up a specific job's per-minion returns.
 
@@ -2298,71 +2330,7 @@ def cmd_jid_lookup(opts, req):
     if isinstance(lookup_data, dict) and set(lookup_data.keys()) == {"outputter", "data"}:
         lookup_data = lookup_data["data"]
 
-    import re
-    _ansi_re = re.compile("\x1b\\[[0-9;]*m")
-
-    def _strip_ansi_with_map(text):
-        """Strip ANSI escapes while tracking, for each character kept, its
-        index in the original string — so a position found in the stripped
-        text (used for reliably matching a bare "mid:" header even though
-        `--force-color` puts escape codes right before it) can be mapped
-        back to a slice boundary in the original (still-colored) text.
-
-        Walks escape-code matches only (`finditer`), copying each run of
-        plain text between them in one slice, rather than a Python-level
-        loop doing a regex match at every single character position — for
-        a lookup spanning thousands of minions (hundreds of thousands of
-        lines) the per-character version added a real, visible delay on its
-        own before the O(n^2) bug below was even reached."""
-        out_parts = []
-        pos_map = []
-        last = 0
-        for m in _ansi_re.finditer(text):
-            if m.start() > last:
-                out_parts.append(text[last:m.start()])
-                pos_map.extend(range(last, m.start()))
-            last = m.end()
-        if last < len(text):
-            out_parts.append(text[last:])
-            pos_map.extend(range(last, len(text)))
-        return "".join(out_parts), pos_map
-
-    _stripped, _pos_map = _strip_ansi_with_map(raw_output)
-
-    def _to_raw_pos(stripped_pos):
-        if stripped_pos >= len(_pos_map):
-            return len(raw_output)
-        return _pos_map[stripped_pos]
-
-    # Precompute every minion's [start, end) span in the stripped text in a
-    # single regex pass over column-0 "mid:" header lines. A `.find()` per
-    # minion is O(minions x text) -- for a 4000-minion `grains.items` job
-    # (tens of MB of output) that alone could outlast the lookup timeout.
-    # Each section's end is simply the next header's start.
-    if _stripped.strip():
-        # Each entry is (newline_pos, content_start, mid) -- content_start
-        # (right after "mid:") is where THIS minion's own slice begins;
-        # newline_pos (the position of the newline preceding "mid:") is what
-        # closes the PREVIOUS minion's slice. Keeping these distinct matters:
-        # the raw text between a newline and the next visible character can
-        # contain that next minion's own leading ANSI codes (`--force-color`
-        # puts them immediately before the name), and ending a slice at
-        # "next minion's content_start" instead of "next minion's newline_pos"
-        # would pull those codes into the wrong (preceding) minion's section.
-        _mids = {str(k) for k in lookup_data}
-        _mid_starts = []
-        for m in re.finditer(r"^(\S[^\n]*?):[ \t]*$", _stripped, re.M):
-            mid_str = m.group(1)
-            if mid_str in _mids:
-                _mids.discard(mid_str)
-                start = m.start()
-                _mid_starts.append((max(start - 1, 0), start, mid_str))
-        _mid_spans = {}
-        for idx, (_newline_pos, content_start, mid_str) in enumerate(_mid_starts):
-            end = _mid_starts[idx + 1][0] if idx + 1 < len(_mid_starts) else len(_stripped)
-            _mid_spans[mid_str] = (_to_raw_pos(content_start), _to_raw_pos(end))
-    else:
-        _mid_spans = {}
+    _mid_spans = _minion_sections(raw_output, (str(k) for k in lookup_data))
 
     def _extract_section(mid):
         """Pull this minion's own section out of the raw multi-minion CLI
