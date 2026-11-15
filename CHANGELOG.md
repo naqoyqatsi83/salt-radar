@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0-rc10] - 2026-11-15
+
 ### Added
 
 - Publish a `SHA256SUMS` file with each release, to check the downloaded `.deb`, `.rpm` or `.tar.gz` with `sha256sum -c --ignore-missing SHA256SUMS`. Releases are now also built only from the exact dependency versions in `Cargo.lock`, with the GitHub Actions used pinned to fixed commits (#210)
