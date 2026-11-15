@@ -100,7 +100,10 @@ agent (`/usr/share/salt-radar/salt_radar_agent.py`) and the bundled themes
 manual install. There is no local packaging step — the
 package metadata (version, control file, RPM spec) is generated in the
 workflow from `Cargo.toml`. After a release, check that the workflow passed
-and that all three assets contain the themes.
+and that all three assets contain the themes. The workflow also publishes a
+`SHA256SUMS` file for the three. Third-party actions in the workflows are
+pinned to a commit SHA with the version as a comment; to update one, look up
+the new tag's commit (`gh api repos/<owner>/<action>/git/ref/tags/<tag>`).
 
 ## Building
 

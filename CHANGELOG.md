@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Publish a `SHA256SUMS` file with each release, to check the downloaded `.deb`, `.rpm` or `.tar.gz` with `sha256sum -c --ignore-missing SHA256SUMS`. Releases are now also built only from the exact dependency versions in `Cargo.lock`, with the GitHub Actions used pinned to fixed commits (#210)
+
 ### Fixed
 
 - Count only Salt's own processes on the Dashboard: a command that only named a daemon, such as `journalctl -u salt-master`, counted as a master process. Process memory now uses the system's page size instead of assuming 4 KB (#209)
