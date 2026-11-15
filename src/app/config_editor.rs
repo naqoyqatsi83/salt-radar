@@ -390,7 +390,9 @@ impl App {
         }
     }
 
-    pub(crate) fn save_config_from_editor(&mut self) -> Result<(), String> {
+    /// Saves the editor's settings and applies them. `Ok` holds what the
+    /// status bar says: the settings that only apply at the next start.
+    pub(crate) fn save_config_from_editor(&mut self) -> Result<String, String> {
         let fields = match self.config_editor {
             Some(ref state) => &state.fields,
             _ => return Err("No editor state".into()),
@@ -513,6 +515,12 @@ impl App {
         crate::config::write_config(&self.config_path, &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
         let latency_source_changed = new_config.zmq_latency_source != self.config.zmq_latency_source;
+        // The running agent was started with these; a new one would be needed.
+        let at_next_start: Vec<&str> = [
+            ("python_bin", &new_config.python_bin, &self.config.python_bin),
+            ("agent_path", &new_config.agent_path, &self.config.agent_path),
+            ("master_config", &new_config.master_config, &self.config.master_config),
+        ].into_iter().filter(|(_, new, old)| new != old).map(|(name, _, _)| name).collect();
         self.needs_mouse_toggle |= new_config.mouse != self.config.mouse;
         self.persisted_config = new_config.clone();
         self.config = new_config;
@@ -537,7 +545,11 @@ impl App {
             self.zmq_ping_sent_at = None;
             self.job_ping_pending = None;
         }
-        Ok(())
+        Ok(if at_next_start.is_empty() {
+            " Config saved ".to_string()
+        } else {
+            format!(" Config saved: {} take effect when salt-radar is started again ", at_next_start.join(", "))
+        })
     }
 
     pub(crate) fn handle_config_editor_key(&mut self, code: KeyCode) -> bool {
@@ -641,7 +653,7 @@ impl App {
                     let quick = s.quick;
                     match finish {
                         Some(true) if quick => match self.save_config_from_editor() {
-                            Ok(()) => {
+                            Ok(_) => {
                                 self.config_editor = None;
                                 self.clipboard_msg = Some((" Columns saved ".into(), std::time::Instant::now()));
                             }
@@ -883,9 +895,9 @@ impl App {
 
     pub(crate) fn save_editor_and_close(&mut self) {
         match self.save_config_from_editor() {
-            Ok(()) => {
+            Ok(saved) => {
                 self.config_editor = None;
-                self.clipboard_msg = Some((" Config saved ".into(), std::time::Instant::now()));
+                self.clipboard_msg = Some((saved, std::time::Instant::now()));
             }
             Err(e) => {
                 if let Some(ref mut s) = self.config_editor {

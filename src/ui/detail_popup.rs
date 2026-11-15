@@ -261,7 +261,7 @@ impl PopupSearch<'_> {
 /// rows — instead of scrolling away with the rest; `0` means the whole
 /// body scrolls together as before. `scroll` applies only to the
 /// non-pinned remainder.
-fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&str, String)], status: Option<Line<'static>>, more: (bool, bool), scroll: u16, pinned_header: usize) {
+fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&str, String)], status: Option<Line<'static>>, more: (bool, bool), scroll: usize, pinned_header: usize) {
     // Clear the area first — prevents underlying content from bleeding through
     f.render_widget(Clear, area);
     let mut block = Block::default()
@@ -304,7 +304,7 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
     let pinned_header = pinned_header.min(lines.len());
     if pinned_header == 0 {
         f.render_widget(
-            Paragraph::new(lines.to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::popup_bg())),
+            Paragraph::new(lines.get(scroll..).unwrap_or_default().to_vec()).style(Style::default().bg(color::popup_bg())),
             body_area,
         );
     } else {
@@ -317,7 +317,7 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
             split[0],
         );
         f.render_widget(
-            Paragraph::new(lines[pinned_header..].to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::popup_bg())),
+            Paragraph::new(lines.get(pinned_header + scroll..).unwrap_or_default().to_vec()).style(Style::default().bg(color::popup_bg())),
             split[1],
         );
     }
@@ -1254,8 +1254,7 @@ fn draw_job_detail(
             .map(|(row, &i)| (list_area.y + row as u16, i))
             .collect();
         f.render_widget(
-            Paragraph::new(left_lines)
-                .scroll((left_scroll as u16, 0))
+            Paragraph::new(left_lines.split_off(left_scroll.min(left_lines.len())))
                 .style(Style::default().bg(color::popup_bg())),
             list_area,
         );
@@ -1382,8 +1381,7 @@ fn draw_job_detail(
     f.render_widget(&right_block, horiz[1]);
 
     f.render_widget(
-        Paragraph::new(right_lines)
-            .scroll((effective_scroll as u16, 0))
+        Paragraph::new(right_lines.split_off(effective_scroll.min(right_lines.len())))
             .style(Style::default().bg(color::popup_bg())),
         right_inner,
     );
@@ -2247,12 +2245,12 @@ fn draw_event_sniffer(
         let scroll = if sel < event_line_starts.len() {
             let sel_line = event_line_starts[sel].saturating_sub(pinned_header);
             let max_scroll = event_only_len.saturating_sub(scrollable_height);
-            sel_line.saturating_sub(scrollable_height / 3).min(max_scroll) as u16
+            sel_line.saturating_sub(scrollable_height / 3).min(max_scroll)
         } else {
             0
         };
         let more_above = scroll > 0;
-        let more_below = (scroll as usize) + scrollable_height < event_only_len;
+        let more_below = scroll + scrollable_height < event_only_len;
 
         let hints = sniffer_hints(state);
         let status = sniffer_status(input_cursor, clipboard_at, save_at, state, clipboard_warning);

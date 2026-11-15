@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Count only Salt's own processes on the Dashboard: a command that only named a daemon, such as `journalctl -u salt-master`, counted as a master process. Process memory now uses the system's page size instead of assuming 4 KB (#209)
+- Keep the service list when systemd reports a service without a main process, which emptied it; read a service's uptime correctly when its process name contains `)` (#209)
+- Log in to salt-api again when its password changed instead of reusing the token cached for the old one, and read the key list through Salt when the PKI directory can't be read, which always fell back to running `salt-key` (#209)
+- Say in the status bar when a saved `python_bin`, `agent_path` or `master_config` only takes effect at the next start, and drop the commands sent while the agent can't be started instead of keeping them all; scroll Job Detail and the Event Sniffer past 65,535 lines, where they jumped back to the top (#209)
 - Keep the buffer sizes (`[events] buffer_size`, `sniffer_buffer_size`, `[api] stats_window`, `log_cap`) in a sensible range, and apply a smaller size from the Config Editor at once: the buffer kept its old length, as each new item only replaced one old one. `buffer_size = 0` kept only the newest event, and a very large size made salt-radar abort at startup, as the whole event buffer was allocated up front (#208)
 - Find each minion's part of a Job Detail lookup in Salt's colored output directly, without a copy of it and a map of every character back to it, which took about 25 times the size of the output: around a GB for a job on thousands of minions (#207)
 - Count the `[refresh]` intervals in seconds: `dashboard_secs`, `config_secs` and the polls without a setting counted ticks, so with the default 2 s tick everything ran at half the configured rate, and `-`/`+` changed it. `minions_secs`, which nothing used, now sets how often the minion list and which minions have checked in are refreshed; Live Jobs keeps jobs for an hour, which followed `config_secs` (60 × it, so `config_secs = 0` emptied the list) (#206)

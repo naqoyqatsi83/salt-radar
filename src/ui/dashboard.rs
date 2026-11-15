@@ -716,7 +716,7 @@ fn draw_host_row(f: &mut Frame, area: Rect, app: &App) {
     }
     let mem_total_kb = app.system_info.mem_total_kb;
     let mem_avail_kb = app.system_info.mem_avail_kb;
-    let mem_pct = ((mem_total_kb - mem_avail_kb) as f64 / mem_total_kb as f64) * 100.0;
+    let mem_pct = (mem_total_kb.saturating_sub(mem_avail_kb) as f64 / mem_total_kb as f64) * 100.0;
 
     // The core count comes with the agent's config snapshot; without it there
     // is no meaningful load percentage, only the raw load averages.

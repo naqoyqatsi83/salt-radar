@@ -75,6 +75,9 @@ fn run_agent_once(
             q.push_back(AgentMessage::Error {
                 message: format!("Failed to spawn agent: {}", e),
             });
+            // Nothing will read what was sent meanwhile: drop it, or every
+            // poll piles up here for as long as the agent can't start.
+            while cmds.try_recv().is_ok() {}
             return Some(VecDeque::new());
         }
     };

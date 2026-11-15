@@ -25,6 +25,7 @@ def _import_salt():
     import salt.version
     import salt.utils.event
     import salt.cache
+    import salt.key
     import salt.runner
     import salt.client
     import salt.pillar
@@ -204,8 +205,24 @@ def cmd_list_keys(opts, req):
     result(req["id"], "list_keys", data={"keys": keys})
 
 
+# Salt's daemons, and the role each one's main process has.
+_SALT_DAEMONS = {"salt-master": "Master", "salt-minion": "Minion", "salt-api": "API", "salt-syndic": "Syndic"}
+
+
+def _salt_program(words):
+    """The Salt daemon a command line (split into words) runs: `salt-master
+    ...` or `python... /usr/bin/salt-master ...`, and None for one that only
+    mentions it (`journalctl -u salt-master`, `tail .../master`, an editor
+    on /usr/bin/salt-master)."""
+    names = [os.path.basename(w) for w in words[:2]]
+    if names and names[0].startswith("python"):
+        names = names[1:]
+    return names[0] if names and names[0] in _SALT_DAEMONS else None
+
+
 def cmd_list_processes(opts, req):
     processes = []
+    page_kb = os.sysconf("SC_PAGE_SIZE") // 1024
     # Simple /proc scanner to match Rust implementation
     try:
         for pid_dir in os.listdir("/proc"):
@@ -227,28 +244,22 @@ def cmd_list_processes(opts, req):
                         # it for any process whose name has embedded whitespace.
                         rest = content[content.rindex(")") + 2:].split()
                         # rest[0] is field 3 (state); rss is field 24 -> index 21
-                        rss_kb = int(rest[21]) * 4
+                        rss_kb = int(rest[21]) * page_kb
                         # utime (field 14) + stime (field 15) -> indices 11, 12
                         cpu_ticks = int(rest[11]) + int(rest[12])
 
-                    # Determine role. Every real salt-* process (including
-                    # its sub-workers/threads: MWorker-N, EventPublisher,
-                    # ReqServer, FileserverUpdate, Maintenance, ...) still
-                    # carries "salt-master"/"salt-minion"/"salt-api"/
-                    # "salt-syndic" somewhere in its cmdline, so a process
-                    # matching none of these isn't an unclassified Salt
-                    # process -- it's an unrelated process on the host
-                    # (this scan walks all of /proc, not just Salt's PIDs)
-                    # and must be skipped, not counted as "Unknown".
-                    if "MWorker-" in cmdline: role = "Worker"
-                    elif "EventPublisher" in cmdline: role = "EventPublisher"
-                    elif "ReqServer" in cmdline: role = "ReqServer"
-                    elif "salt-master" in cmdline: role = "Master"
-                    elif "salt-api" in cmdline: role = "API"
-                    elif "salt-syndic" in cmdline: role = "Syndic"
-                    elif "salt-minion" in cmdline: role = "Minion"
-                    else:
+                    # Only Salt's own daemons and their sub-processes (which
+                    # keep the daemon in their title: `salt-master
+                    # MWorker-0`), not whatever merely names one, such as
+                    # `systemctl status salt-master` (this scan walks all of
+                    # /proc, not just Salt's PIDs).
+                    program = _salt_program(cmdline.split())
+                    if program is None:
                         continue
+                    if program == "salt-master" and "MWorker-" in cmdline: role = "Worker"
+                    elif program == "salt-master" and "EventPublisher" in cmdline: role = "EventPublisher"
+                    elif program == "salt-master" and "ReqServer" in cmdline: role = "ReqServer"
+                    else: role = _SALT_DAEMONS[program]
 
                     processes.append({
                         "pid": pid,
@@ -291,7 +302,7 @@ def cmd_list_services(opts, req):
 
                 active_state = props.get("ActiveState", "inactive")
                 sub_state = props.get("SubState", "")
-                main_pid = int(props.get("MainPID", "0"))
+                main_pid = int(props.get("MainPID") or 0)
 
                 active = active_state == "active"
 
@@ -330,7 +341,7 @@ def cmd_list_services(opts, req):
                     try:
                         with open("/proc/{}/stat".format(main_pid), "r") as f:
                             stat_line = f.read()
-                        start_ticks = int(stat_line.split(")")[1].strip().split()[19])
+                        start_ticks = int(stat_line.rsplit(")", 1)[1].strip().split()[19])
                         with open("/proc/uptime", "r") as f:
                             uptime = float(f.read().split()[0])
                         clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
@@ -366,7 +377,7 @@ def cmd_list_services(opts, req):
                 unit = "{}.service".format(binary)
                 with open("/proc/{}/stat".format(pid), "r") as f:
                     stat_line = f.read()
-                state_char = stat_line.split(")")[1].strip().split()[0] if ")" in stat_line else "?"
+                state_char = stat_line.rsplit(")", 1)[1].strip().split()[0] if ")" in stat_line else "?"
                 active = state_char not in ("Z", "T", "X")
                 state = {"R": "running", "S": "sleeping", "D": "waiting",
                          "Z": "zombie", "T": "stopped", "X": "dead"}.get(state_char, "?")
@@ -381,7 +392,7 @@ def cmd_list_services(opts, req):
                     pass
                 start_ticks = 0
                 try:
-                    start_ticks = int(stat_line.split(")")[1].strip().split()[19])
+                    start_ticks = int(stat_line.rsplit(")", 1)[1].strip().split()[19])
                 except (IndexError, ValueError):
                     pass
                 uptime_seconds = 0
@@ -643,7 +654,8 @@ def _get_api_token(base, eauth, username, password, force_relogin=False):
     token came back 401 -- Salt tokens expire server-side on their own
     schedule that this agent has no visibility into).
     """
-    key = (base, eauth, username)
+    import hashlib
+    key = (base, eauth, username, hashlib.sha256(password.encode("utf-8")).hexdigest())
     cached = _api_token_cache.get(key)
     if cached and not force_relogin:
         return cached
@@ -1258,14 +1270,9 @@ def _source_relations(key, sources, order):
 
 
 def _is_salt_master(argv):
-    """Whether a command line (split into words) runs salt-master itself:
-    `salt-master ...` or `python... salt-master ...`, not a `journalctl -u
-    salt-master`, `tail .../master` or an editor on /usr/bin/salt-master that
-    merely mentions it."""
-    names = [os.path.basename(a.decode("utf-8", "replace")) for a in argv[:2]]
-    if names and names[0].startswith("python"):
-        names = names[1:]
-    return bool(names) and names[0] == "salt-master"
+    """Whether a command line (split into words, bytes) runs salt-master
+    itself (see `_salt_program`)."""
+    return _salt_program([a.decode("utf-8", "replace") for a in argv]) == "salt-master"
 
 
 def _salt_master_started():
