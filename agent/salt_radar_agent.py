@@ -880,7 +880,8 @@ def cmd_config_snapshot(opts, req):
 # (`mysql.pass`, `gitfs_password`, `vault: {token: ...}`, `secret_key`).
 _SECRET_LAST_PARTS = {
     "pass", "passwd", "password", "passphrase", "pw", "bindpw", "secret",
-    "token", "apikey", "key", "credential", "credentials", "creds", "priv",
+    "token", "tokens", "apikey", "apikeys", "key", "credential", "credentials", "creds", "priv",
+    "passphrases",
 }
 _SECRET_ANYWHERE = ("password", "passwd", "secret")
 _REDACTED = "<redacted>"
@@ -894,16 +895,37 @@ def _is_secret_name(name):
     return re.split(r"[._\-]", name)[-1] in _SECRET_LAST_PARTS
 
 
+def _looks_like_path(value):
+    """Whether a credential-looking setting's text names a file rather than
+    holding the secret (`ssl_key: /etc/pki/key.pem`): it reads as a path and
+    that path, or the directory it would be in, exists on this master. A
+    secret that merely starts with `/` (one base64 string in 64 does)
+    names no existing directory."""
+    if not value.startswith(("/", "~")) or any(c.isspace() for c in value):
+        return False
+    path = os.path.expanduser(value)
+    if os.path.exists(path):
+        return True
+    parent = os.path.dirname(path.rstrip("/"))
+    return parent not in ("", "/") and os.path.isdir(parent)
+
+
+def _points_to_secret(value):
+    """Whether a credential-looking setting's text says where the secret is
+    rather than being it: a file (see `_looks_like_path`) or an `sdb://`
+    reference."""
+    return value.startswith("sdb://") or _looks_like_path(value)
+
+
 def _is_secret_value(value):
     """A value worth hiding: text or a number, but not a flag, an empty value
-    or a filesystem path (`ssl_key: /etc/pki/key.pem` names a file, it isn't
-    the key)."""
+    or where the secret is kept (see `_points_to_secret`)."""
     if isinstance(value, bool) or value is None:
         return False
     if isinstance(value, (int, float)):
         return True
     if isinstance(value, str):
-        return bool(value.strip()) and not value.startswith(("/", "~"))
+        return bool(value.strip()) and not _points_to_secret(value)
     return False
 
 
@@ -936,53 +958,163 @@ def _redact_urls(text):
     return _URL_CREDENTIALS.sub(blank, text)
 
 
-def _redact(value):
+def _redact(value, secret=False):
     """Copy of a config value with credential-looking entries replaced, at any
     depth (ext_pillar lists, rest_cherrypy dicts, ...), and credentials in
-    URLs blanked, in keys too (gitfs per-remote options are keyed by URL)."""
+    URLs blanked, in keys too (gitfs per-remote options are keyed by URL).
+    Under a credential-looking key (`secret`), every value is one: a list
+    of tokens, or a mapping of them."""
     if isinstance(value, dict):
         return {
-            (_redact_urls(k) if isinstance(k, str) else k):
-                (_REDACTED if _is_secret_name(k) and _is_secret_value(v) else _redact(v))
+            (_redact_urls(k) if isinstance(k, str) else k): _redact(v, secret or _is_secret_name(k))
             for k, v in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [_redact(v) for v in value]
+        return [_redact(v, secret) for v in value]
+    if secret and _is_secret_value(value):
+        return _REDACTED
     if isinstance(value, str):
         return _redact_urls(value)
     return value
 
 
 _YAML_ENTRY = re.compile(r"^(\s*(?:-\s+)?)([\"']?)([^\s:\"'#][^:\"'#]*)\2(\s*:\s*)(.*)$")
+_BLOCK_INDICATOR = re.compile(r"[|>][1-9+-]{0,2}$")
+_COMMENT = re.compile(r"(?:^|\s)#")
+_FLOW_ENTRY = re.compile(r"([{,]\s*)([\"']?)([^\s:\"'{},#][^:\"'{},#]*)\2(\s*:\s*)([^,}]*)")
 
 
-def _redact_text(text):
-    """A config file's text with credential values blanked line by line,
-    including the indented lines of a block scalar (`password: |`), and
-    credentials in URLs anywhere, comments included."""
+def _redact_flow_entries(line):
+    """`{port: 8000, password: x}` on a line that isn't YAML, with x blanked."""
+    def blank(m):
+        value = m.group(5).strip().strip("\"'")
+        if not _is_secret_name(m.group(3)) or not value or value.lower() in ("true", "false", "null", "~")                 or _points_to_secret(value):
+            return m.group(0)
+        return "{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED)
+    return _FLOW_ENTRY.sub(blank, line)
+
+
+def _secret_spans(text):
+    """[(start, end)] character spans of every value under a credential-
+    looking key in a YAML text, at any depth and in any style: plain,
+    quoted, multi-line, block (`|`), inside a flow mapping on one line
+    (`{port: 8000, password: x}`), each item of a list under such a key.
+    Flags, nulls and paths are left (see `_is_secret_value`). Raises on a
+    text that isn't YAML."""
+    import yaml
+    spans, seen = [], set()
+
+    def secret_scalars(node):
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, yaml.ScalarNode):
+            tag = node.tag or ""
+            if tag.endswith((":bool", ":null")) or not node.value.strip():
+                return
+            if tag.endswith(":str") and _points_to_secret(node.value):
+                return
+            spans.append((node.start_mark.index, node.end_mark.index))
+        elif isinstance(node, yaml.SequenceNode):
+            for item in node.value:
+                secret_scalars(item)
+        elif isinstance(node, yaml.MappingNode):
+            for _, item in node.value:
+                secret_scalars(item)
+
+    def walk(node):
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            for key, item in node.value:
+                if isinstance(key, yaml.ScalarNode) and _is_secret_name(key.value):
+                    secret_scalars(item)
+                else:
+                    walk(item)
+        elif isinstance(node, yaml.SequenceNode):
+            for item in node.value:
+                walk(item)
+
+    for doc in yaml.compose_all(text, Loader=yaml.SafeLoader):
+        if doc is not None:
+            walk(doc)
+    return spans
+
+
+def _blank_span(piece):
+    """A value's text replaced by `<redacted>`, line for line: each of its
+    lines keeps its indentation, so the file keeps its line numbers."""
+    lines = piece.split("\n")
+    return "\n".join([_REDACTED] + [
+        l[:len(l) - len(l.lstrip())] + _REDACTED if l.strip() else l for l in lines[1:]
+    ])
+
+
+def _redact_entry(line):
+    """One `key: value` line with the value blanked when the key looks like
+    a credential, or None: for comments and for text that isn't YAML.
+    Returns the opening line of a block scalar unchanged, with `True` to
+    say the indented lines after it are its value."""
+    m = _YAML_ENTRY.match(line)
+    if not (m and _is_secret_name(m.group(3))):
+        return None
+    value = m.group(5).split(" #")[0].strip()
+    if _BLOCK_INDICATOR.match(value):
+        return line, True
+    unquoted = value.strip("\"'")
+    if not unquoted or unquoted.lower() in ("true", "false", "yes", "no", "on", "off", "null", "~") \
+            or _points_to_secret(unquoted):
+        return None
+    return "{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED), False
+
+
+def _redact_lines(lines, entries):
+    """Credentials in URLs blanked on every line, and with `entries`, the
+    value of any credential-looking `key: value` line (and the lines of a
+    block scalar after one): the line-by-line fallback for a file that
+    isn't YAML. Comments are always handled this way: a commented-out
+    password is still a password."""
     out = []
     block_indent = None
-    for line in text.splitlines():
+    for line in lines:
         if block_indent is not None:
             indent = len(line) - len(line.lstrip())
             if line.strip() and indent > block_indent:
                 out.append(" " * indent + _REDACTED)
                 continue
             block_indent = None
-        m = _YAML_ENTRY.match(line)
-        if m and _is_secret_name(m.group(3)):
-            value = m.group(5).split(" #")[0].strip()
-            if value in ("|", ">", "|-", ">-", "|+", ">+"):
-                block_indent = len(m.group(1))
-                out.append(line)
-                continue
-            unquoted = value.strip("\"'")
-            if unquoted and unquoted.lower() not in ("true", "false", "yes", "no", "on", "off", "null", "~") \
-                    and not unquoted.startswith(("/", "~", "{", "[")):
-                out.append("{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED))
-                continue
+        hit = _redact_entry(line) if entries else None
+        if hit:
+            line, block = hit
+            if block:
+                block_indent = len(line) - len(line.lstrip())
+            out.append(line if block else _redact_urls(line))
+            continue
+        c = _COMMENT.search(line)
+        if c:
+            code, comment = line[:c.end()], line[c.end():]
+            hit = _redact_entry(comment)
+            line = code + (hit[0] if hit and not hit[1] else _redact_flow_entries(comment))
+        if entries:
+            line = _redact_flow_entries(line)
         out.append(_redact_urls(line))
-    return "\n".join(out)
+    return out
+
+
+def _redact_text(text):
+    """A config file's text with the value of every credential-looking key
+    blanked (see `_secret_spans`), commented-out ones too, and credentials
+    in URLs anywhere, keeping every line where it was. A file that isn't
+    YAML is blanked line by line instead."""
+    try:
+        spans = sorted(_secret_spans(text), reverse=True)
+    except Exception:
+        return "\n".join(_redact_lines(text.splitlines(), entries=True))
+    for start, end in spans:
+        piece = text[start:end].rstrip()
+        text = text[:start] + _blank_span(piece) + text[start + len(piece):]
+    return "\n".join(_redact_lines(text.splitlines(), entries=False))
 
 
 def _config_text(value, flow):

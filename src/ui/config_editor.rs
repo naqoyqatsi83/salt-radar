@@ -213,8 +213,20 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 let sel_style = if is_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
 
                 let value_style = sel_style.fg(if editing { color::yellow() } else { color::main_fg() });
+                // The salt-api password is never drawn: one bullet per
+                // character while typed, so the cursor still lines up.
+                let secret = field.label == "stats_auth_password";
                 let value_spans = if editing {
-                    super::input_spans("", &state.input, app.input_cursor, value_style)
+                    let masked;
+                    let input = if secret {
+                        masked = "\u{2022}".repeat(state.input.chars().count());
+                        &masked
+                    } else {
+                        &state.input
+                    };
+                    super::input_spans("", input, app.input_cursor, value_style)
+                } else if secret && !field.label_value.is_empty() {
+                    vec![Span::styled("\u{2022}".repeat(8), value_style)]
                 } else {
                     vec![Span::styled(field.label_value.clone(), value_style)]
                 };

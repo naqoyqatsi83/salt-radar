@@ -1,5 +1,6 @@
 use std::cell::Cell;
-use std::os::unix::fs::MetadataExt;
+use std::io::Write;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -938,11 +939,14 @@ fn write_config_file(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, format!(
+    let _ = std::fs::remove_file(&tmp);
+    // Only its owner may read a file holding the salt-api password.
+    let mode = if config.api_stats_auth_password.is_empty() { 0o644 } else { 0o600 };
+    std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?.write_all(format!(
         "# salt-radar settings: only values that differ from the defaults are stored.\n\
          # See salt-radar.toml.example for every setting.\n\n{}",
         body,
-    ))?;
+    ).as_bytes())?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
@@ -1175,6 +1179,19 @@ mod tests {
         chmod(0o644);
         let (cfg, warning) = load_startup_config(&path);
         assert_eq!((cfg.python_bin.as_str(), warning), ("/tmp/evil", None), "the running user's own file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_config_holding_the_api_password_is_private() {
+        let dir = scratch("mode");
+        let path = dir.join("salt-radar.toml");
+        let mode = || std::fs::metadata(&path).unwrap().mode() & 0o777;
+        write_config(&path, &AppConfig { api_stats_auth_password: "pw".into(), ..AppConfig::default() }).unwrap();
+        assert_eq!(mode(), 0o600);
+        assert_eq!(load_config(&path).api_stats_auth_password, "pw");
+        write_config(&path, &AppConfig { popup_dim_pct: 40, ..AppConfig::default() }).unwrap();
+        assert_ne!(mode(), 0o600, "no password: the umask decides, as before");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
