@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- List a release candidate's `.deb` in `SHA256SUMS` under the name it's downloaded with: GitHub replaces the `~` in the file's name with `.`, so `sha256sum -c` didn't find it
 - Notice when the master's event publisher is gone and say `no events, reconnecting` in the status bar until it's back: Salt's listener reconnects by itself and reports being connected all along, so the status never showed. The publisher's socket is now asked directly (#204)
 - Say what to do when the config can't be read or saved under sudo because the file or its directory isn't the invoking user's (left by a run as root): the message names the `chown` that hands it over
 - Decide whether `python_bin`, `agent_path` and `master_config` may be taken from a config file on the file as it was opened and read, not by looking it up by name again afterwards, and only for a file whose directories are root's alone too: a root-owned file in a user's home or under `/tmp` no longer counts. Without a config of their own, a sudo user now also gets these three from `/etc/salt-radar/salt-radar.toml`

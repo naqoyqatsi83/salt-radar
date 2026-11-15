@@ -162,7 +162,13 @@ jobs:
           cp $HOME/rpmbuild/RPMS/x86_64/salt-radar-*.rpm "${{ runner.temp }}/upload/"
 
       - name: Stage .deb for upload
-        run: cp ${{ runner.temp }}/deb/salt-radar_*.deb ${{ runner.temp }}/upload/
+        # GitHub replaces the "~" of a release candidate's .deb with "." in the
+        # asset's name: name it that way here, so SHA256SUMS lists the file
+        # as it's downloaded.
+        run: |
+          for deb in ${{ runner.temp }}/deb/salt-radar_*.deb; do
+            cp "$deb" "${{ runner.temp }}/upload/$(basename "$deb" | tr '~' '.')"
+          done
 
       - name: Checksums
         run: |
