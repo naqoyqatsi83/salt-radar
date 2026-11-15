@@ -513,7 +513,7 @@ impl App {
         let mut new_config = new_config;
         new_config.clamp_buffer_sizes();
         crate::config::write_config(&self.config_path, &new_config)
-            .map_err(|e| format!("Write failed: {}", e))?;
+            .map_err(|e| format!("Write failed: {}", crate::config::config_io_error(&self.config_path, &e)))?;
         let latency_source_changed = new_config.zmq_latency_source != self.config.zmq_latency_source;
         // The running agent was started with these; a new one would be needed.
         let at_next_start: Vec<&str> = [

@@ -889,11 +889,12 @@ def cmd_config_snapshot(opts, req):
 # ── Master configuration browser ────────────────────────────────────────────
 
 # Last parts of a setting's name that mark its value as a credential
-# (`mysql.pass`, `gitfs_password`, `vault: {token: ...}`, `secret_key`).
+# (`mysql.pass`, `gitfs_password`, `vault: {token: ...}`, `secret_key`,
+# `nacl.config: {sk: ...}`, `mattermost.hook`, `slack_webhook.webhook`).
 _SECRET_LAST_PARTS = {
     "pass", "passwd", "password", "passphrase", "pw", "bindpw", "secret",
     "token", "tokens", "apikey", "apikeys", "key", "credential", "credentials", "creds", "priv",
-    "passphrases",
+    "passphrases", "sk", "psk", "keyid", "hook", "webhook", "authorization", "bearer",
 }
 _SECRET_ANYWHERE = ("password", "passwd", "secret")
 _REDACTED = "<redacted>"
@@ -970,12 +971,41 @@ def _redact_urls(text):
     return _URL_CREDENTIALS.sub(blank, text)
 
 
+# Texts found under a credential-looking key so far. The same text under a
+# harmless name is blanked too: a YAML anchor reused, a password repeated in
+# another option. Short ones are left out, they'd blank ordinary values.
+_known_credentials = set()
+_KNOWN_CREDENTIAL_MIN = 6
+
+
+def _note_credentials(value, secret=False):
+    """Remembers every credential text in a config value (see
+    `_known_credentials`), before any of it is redacted."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _note_credentials(v, secret or _is_secret_name(k))
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _note_credentials(v, secret)
+    elif secret and isinstance(value, str) and len(value.strip()) >= _KNOWN_CREDENTIAL_MIN and _is_secret_value(value):
+        _known_credentials.add(value.strip())
+
+
+def _redact_known(text):
+    """Text with every credential noted so far blanked wherever it is."""
+    for known in _known_credentials:
+        if known in text:
+            text = text.replace(known, _REDACTED)
+    return text
+
+
 def _redact(value, secret=False):
     """Copy of a config value with credential-looking entries replaced, at any
     depth (ext_pillar lists, rest_cherrypy dicts, ...), and credentials in
     URLs blanked, in keys too (gitfs per-remote options are keyed by URL).
     Under a credential-looking key (`secret`), every value is one: a list
-    of tokens, or a mapping of them."""
+    of tokens, or a mapping of them. A credential noted before
+    (`_note_credentials`) is blanked wherever it turns up."""
     if isinstance(value, dict):
         return {
             (_redact_urls(k) if isinstance(k, str) else k): _redact(v, secret or _is_secret_name(k))
@@ -986,7 +1016,7 @@ def _redact(value, secret=False):
     if secret and _is_secret_value(value):
         return _REDACTED
     if isinstance(value, str):
-        return _redact_urls(value)
+        return _redact_known(_redact_urls(value))
     return value
 
 
@@ -1014,12 +1044,15 @@ def _secret_spans(text):
     Flags, nulls and paths are left (see `_is_secret_value`). Raises on a
     text that isn't YAML."""
     import yaml
-    spans, seen = [], set()
+    # An anchored node comes up again at each alias of it, so each pass
+    # keeps its own record: a value first met under a harmless key is still
+    # blanked, where it's written, once a credential key refers to it.
+    spans, walked, blanked = [], set(), set()
 
     def secret_scalars(node):
-        if id(node) in seen:
+        if id(node) in blanked:
             return
-        seen.add(id(node))
+        blanked.add(id(node))
         if isinstance(node, yaml.ScalarNode):
             tag = node.tag or ""
             if tag.endswith((":bool", ":null")) or not node.value.strip():
@@ -1035,9 +1068,9 @@ def _secret_spans(text):
                 secret_scalars(item)
 
     def walk(node):
-        if id(node) in seen:
+        if id(node) in walked:
             return
-        seen.add(id(node))
+        walked.add(id(node))
         if isinstance(node, yaml.MappingNode):
             for key, item in node.value:
                 if isinstance(key, yaml.ScalarNode) and _is_secret_name(key.value):
@@ -1064,53 +1097,58 @@ def _blank_span(piece):
 
 
 def _redact_entry(line):
-    """One `key: value` line with the value blanked when the key looks like
-    a credential, or None: for comments and for text that isn't YAML.
-    Returns the opening line of a block scalar unchanged, with `True` to
-    say the indented lines after it are its value."""
+    """One `key: value` line whose key looks like a credential, as (the
+    line with the value blanked, the key's indent, whether the value starts
+    on the next line), or None: for other lines, and for a flag or a path.
+    The more indented lines after it are the rest of its value: a block
+    scalar, a quoted text running on, or with nothing after the colon, a
+    mapping or a list, whose items may sit at the key's own indent."""
     m = _YAML_ENTRY.match(line)
     if not (m and _is_secret_name(m.group(3))):
         return None
+    indent = len(m.group(1))
     value = m.group(5).split(" #")[0].strip()
-    if _BLOCK_INDICATOR.match(value):
-        return line, True
+    if not value or _BLOCK_INDICATOR.match(value):
+        return line, indent, not value
     unquoted = value.strip("\"'")
     if not unquoted or unquoted.lower() in ("true", "false", "yes", "no", "on", "off", "null", "~") \
             or _points_to_secret(unquoted):
         return None
-    return "{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED), False
+    return "{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED), indent, False
 
 
 def _redact_lines(lines, entries):
     """Credentials in URLs blanked on every line, and with `entries`, the
-    value of any credential-looking `key: value` line (and the lines of a
-    block scalar after one): the line-by-line fallback for a file that
-    isn't YAML. Comments are always handled this way: a commented-out
-    password is still a password."""
+    value of any credential-looking `key: value` line and the lines after
+    it that belong to that value (see `_redact_entry`): the line-by-line
+    fallback for a file that isn't YAML. Comments are always handled this
+    way: a commented-out password is still a password."""
     out = []
-    block_indent = None
+    block = None
     for line in lines:
-        if block_indent is not None:
+        if block is not None:
+            if not line.strip():
+                out.append(line)
+                continue
             indent = len(line) - len(line.lstrip())
-            if line.strip() and indent > block_indent:
+            key_indent, items_too = block
+            if indent > key_indent or (items_too and indent == key_indent and line.lstrip().startswith("- ")):
                 out.append(" " * indent + _REDACTED)
                 continue
-            block_indent = None
+            block = None
         hit = _redact_entry(line) if entries else None
         if hit:
-            line, block = hit
-            if block:
-                block_indent = len(line) - len(line.lstrip())
-            out.append(line if block else _redact_urls(line))
+            line, block = hit[0], hit[1:]
+            out.append(_redact_urls(line))
             continue
         c = _COMMENT.search(line)
         if c:
             code, comment = line[:c.end()], line[c.end():]
             hit = _redact_entry(comment)
-            line = code + (hit[0] if hit and not hit[1] else _redact_flow_entries(comment))
+            line = code + (hit[0] if hit and hit[0] != comment else _redact_flow_entries(comment))
         if entries:
             line = _redact_flow_entries(line)
-        out.append(_redact_urls(line))
+        out.append(_redact_known(_redact_urls(line)))
     return out
 
 
@@ -1608,26 +1646,21 @@ _DIGEST_TEMPLATE = (
     "{% set out = {} %}{% for k in opts %}{% if not k.startswith('__') %}"
     "{% do out.update({k: (opts[k]|tojson)|sha256}) %}{% endif %}{% endfor %}{{ out|tojson }}"
 )
-# The runner jobs salt-radar starts itself to fetch them, kept out of the
-# events it forwards and the job cache it lists: they're its own plumbing,
-# not anything an admin ran. While a fetch is in flight its job's events can
-# arrive before its JID is known, so they're also recognised by function.
-_OWN_RUNNER_FUNS = ("runner.test.get_opts", "runner.salt.cmd")
-_own_jids = set()
-_own_fetch = threading.Event()
+# The runner whose return is the master's whole configuration, credentials
+# included: salt-radar runs it itself to fetch the running options, and
+# anyone else may. Its jobs are shown like any other job, with that return
+# redacted like the Master Config tab's values.
+_OPTS_RUNNER = "runner.test.get_opts"
 
 
-def _is_own_job_event(tag, data):
-    """Whether an event belongs to one of salt-radar's own runner jobs."""
-    if not tag.startswith("salt/run/"):
-        return False
-    jid = tag.split("/")[2] if tag.count("/") >= 2 else ""
-    if jid in _own_jids:
-        return True
-    if _own_fetch.is_set() and isinstance(data, dict) and data.get("fun") in _OWN_RUNNER_FUNS:
-        _own_jids.add(jid)
-        return True
-    return False
+def _shown_event_data(tag, data):
+    """An event's data as it's forwarded to the TUI."""
+    if tag.startswith("salt/run/") and isinstance(data, dict) and data.get("fun") == _OPTS_RUNNER \
+            and isinstance(data.get("return"), dict):
+        shown = _plain(data["return"])
+        _note_credentials(shown)
+        return dict(data, **{"return": _redact(shown)})
+    return data
 
 
 def _running_master_opts(path, started, digests):
@@ -1649,7 +1682,6 @@ def _running_master_opts(path, started, digests):
         client_opts = salt.config.client_config(path)
         key = salt.utils.master.get_master_key(salt.utils.user.get_user(), client_opts)
         events = salt.utils.event.get_master_event(client_opts, client_opts["sock_dir"], listen=True)
-        _own_fetch.set()
         try:
             low = {"fun": "test.get_opts"}
             if digests:
@@ -1660,7 +1692,6 @@ def _running_master_opts(path, started, digests):
             jid = pub.get("jid") if isinstance(pub, dict) else None
             if not jid:
                 return None, "the master refused the request: {}".format(pub)
-            _own_jids.add(jid)
             deadline = time.time() + 10
             while time.time() < deadline:
                 evt = events.get_event(wait=1, tag="salt/run/{}/ret".format(jid), full=True)
@@ -1674,7 +1705,6 @@ def _running_master_opts(path, started, digests):
                     return running, None
             return None, "no answer from the master within 10s"
         finally:
-            _own_fetch.clear()
             events.destroy()
     except Exception as exc:
         return None, str(exc)
@@ -1774,6 +1804,9 @@ def cmd_master_config(opts, req):
     defaults = salt.config.DEFAULT_MASTER_OPTS
     effective = salt.config.master_config(path)
     order = _config_files(path)
+    _note_credentials(_plain(effective))
+    for _fn, data, _err, _group in order:
+        _note_credentials(_plain(data))
 
     files = []
     sources = {}
@@ -1800,6 +1833,8 @@ def cmd_master_config(opts, req):
     started = _salt_master_started()
     digests = bool(req.get("digests"))
     running_opts, running_error = _running_master_opts(path, started, digests)
+    if running_opts is not None and not digests:
+        _note_credentials(_plain(running_opts))
     as_started = _as_started(effective)
     file_digests = {}
     if digests and running_opts is not None:
@@ -2093,6 +2128,21 @@ def _cached_job_targets(opts, jid):
         return []
 
 
+def _job_fun(opts, jid):
+    """The function a job ran, from the local_cache job load ("" for other
+    job-cache backends or when it can't be read)."""
+    returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
+    if returner != "local_cache":
+        return ""
+    try:
+        import salt.returners.local_cache as local_cache_mod
+
+        local_cache_mod.__opts__ = opts
+        return str((local_cache_mod.get_load(jid) or {}).get("fun", ""))
+    except Exception:
+        return ""
+
+
 def _derive_retcode_and_success(return_val):
     """`(retcode, success)` read from a return's data, the same rule as
     salt-radar's `derive_success_retcode`: a failed state, a `False`, a
@@ -2337,6 +2387,13 @@ def cmd_jid_lookup(opts, req):
     if isinstance(lookup_data, dict) and set(lookup_data.keys()) == {"outputter", "data"}:
         lookup_data = lookup_data["data"]
 
+    # A lookup of a `test.get_opts` runner job prints the master's whole
+    # configuration: shown redacted, from the data, not as Salt printed it.
+    if _job_fun(opts, jid) == _OPTS_RUNNER:
+        _note_credentials(lookup_data)
+        lookup_data = _redact(lookup_data)
+        raw_output = ""
+
     _mid_spans = _minion_sections(raw_output, (str(k) for k in lookup_data))
 
     def _extract_section(mid):
@@ -2450,6 +2507,23 @@ _EVENT_RETRY_SECS = 3
 _EVENT_WAIT_SECS = 2
 
 
+def _publisher_listening(opts):
+    """Whether the master's event publisher takes connections: Salt's own
+    listener reconnects by itself and keeps saying it's connected (`cpub`)
+    while the publisher is gone, so this asks the socket."""
+    if opts.get("ipc_mode") == "tcp":
+        family, address = socket.AF_INET, ("127.0.0.1", int(opts.get("tcp_master_pub_port", 4512)))
+    else:
+        family, address = socket.AF_UNIX, os.path.join(opts["sock_dir"], "master_event_pub.ipc")
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1)
+            probe.connect(address)
+        return True
+    except OSError:
+        return False
+
+
 def _event_loop(opts):
     """Run in a background thread: listen on event bus, forward events to
     stdout, for as long as the subscription lasts. Whenever the listener
@@ -2472,7 +2546,8 @@ def _event_loop(opts):
             connected = None
             while not _event_stop.is_set():
                 evt = me.get_event(wait=_EVENT_WAIT_SECS, tag="", full=True)
-                up = bool(getattr(me, "cpub", True))
+                # An event says so itself; without one, the socket is asked.
+                up = evt is not None or (bool(getattr(me, "cpub", True)) and _publisher_listening(opts))
                 if up != connected:
                     connected = up
                     report(up, "no event bus in {} (is salt-master running?)".format(opts["sock_dir"]))
@@ -2480,10 +2555,8 @@ def _event_loop(opts):
                     continue
                 tag = evt.get("tag", "")
                 evt_data = evt.get("data", {})
-                if _is_own_job_event(tag, evt_data):
-                    continue
                 ts = _parse_stamp(evt_data.get("_stamp"))
-                event(tag, evt_data, ts)
+                event(tag, _shown_event_data(tag, evt_data), ts)
             return
         except Exception as exc:
             reason = str(exc) or type(exc).__name__
@@ -2723,7 +2796,7 @@ def cmd_jobs_list(opts, req):
 
     jobs = []
     for jid, info in result_data.items():
-        if not isinstance(info, dict) or jid in _own_jids:
+        if not isinstance(info, dict):
             continue
         fun = info.get("Function", info.get("fun", ""))
         tgt = info.get("Target", info.get("tgt", ""))

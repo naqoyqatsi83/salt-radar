@@ -102,13 +102,34 @@ class RedactionTest(unittest.TestCase):
     def test_urls(self):
         self.check("gitfs_remotes:\n  - https://deploy:S3CR3T1@git.example/repo.git\n", ["https://deploy:", "git.example"])
 
+    def test_other_credential_names(self):
+        self.check(
+            "nacl.config:\n  sk: S3CR3T1\n  box_type: sealedbox\nmattermost.hook: S3CR3T2\n"
+            "slack_webhook.webhook: T0/B0/S3CR3T3\ns3.keyid: S3CR3T4\n",
+            ["box_type: sealedbox"],
+        )
+        self.check("headers:\n  Authorization: Bearer S3CR3T1\nwifi_psk: S3CR3T2\n", ["headers:"])
+        self.check("external_auth:\n  pam:\n    bob:\n      - .*\n", ["bob:", "- .*"])
+
     def test_anchors_and_tags(self):
         self.check("vault: &v {token: S3CR3T1}\nvault2: *v\n")
+        self.check("shared: &pw S3CR3T1\nmysql.pass: *pw\nport: 1\n", ["mysql.pass: *pw", "port: 1"])
+        self.check("mysql.pass: &pw S3CR3T1\nother: *pw\n", ["other: *pw"])
         self.check("password: !!binary U0VDUkVU\nnote: x\n", ["note: x"], secrets=["U0VDUkVU"])
 
     def test_a_file_that_is_not_yaml(self):
         self.check("password: S3CR3T1\n  bad: [\n token: S3CR3T2\n")
         self.check("rest_cherrypy: {password: S3CR3T1\n: :\n")
+        # Whatever stops it being YAML, a credential's value on the lines
+        # after its key is still blanked.
+        broken = "a: [\n"
+        self.check(broken + "password: \"abc\n  S3CR3T1\"\nport: 1\n", ["port: 1"])
+        self.check(broken + "tokens:\n  - S3CR3T1\n  - S3CR3T2\nport: 1\n", ["port: 1"])
+        self.check(broken + "tokens:\n- S3CR3T1\n- S3CR3T2\nport: 1\n", ["port: 1"])
+        self.check(broken + "vault:\n  token:\n    S3CR3T1\n  url: x\n", ["url: x"])
+        self.check(broken + "key: |\n  S3CR3T1\n\n  S3CR3T2\nport: 1\n", ["port: 1"])
+        self.check(broken + "- password: S3CR3T1\n  user: bob\n", ["user: bob"])
+        self.check("a: \x01\npassword:\n  S3CR3T1\n")
 
     def test_windows_line_endings(self):
         self.check("password: S3CR3T1\r\nport: 8000\r\n", ["port: 8000"])
@@ -129,6 +150,30 @@ class RedactionTest(unittest.TestCase):
         )
         flags = {"key_pass": None, "rotate_aes_key": True}
         self.assertEqual(agent._redact(flags), flags)
+
+    def test_a_credential_is_blanked_under_any_name_once_known(self):
+        """An anchor's value loads under both keys; a password may be repeated."""
+        config = {"shared": "S3CR3T1-long", "mysql.pass": "S3CR3T1-long", "note": "uses S3CR3T1-long", "pin_pass": "1234", "port": "1234"}
+        self.addCleanup(agent._known_credentials.clear)
+        agent._note_credentials(config)
+        self.assertEqual(agent._redact(config), {
+            "shared": agent._REDACTED, "mysql.pass": agent._REDACTED, "note": "uses " + agent._REDACTED,
+            "pin_pass": agent._REDACTED, "port": "1234",
+        })
+        self.check("# was S3CR3T1-long\nnote: S3CR3T1-long\nport: 1234\n", ["port: 1234"])
+
+    def test_the_options_runner_return_is_redacted_in_its_event(self):
+        self.addCleanup(agent._known_credentials.clear)
+        """`test.get_opts` returns the master's whole configuration."""
+        data = {"fun": "runner.test.get_opts", "jid": "20261115100000000000",
+                "return": {"worker_threads": 5, "rest_cherrypy": {"port": 8000, "password": "S3CR3T1"}}}
+        shown = agent._shown_event_data("salt/run/20261115100000000000/ret", data)
+        self.assertEqual(shown["return"], {"worker_threads": 5, "rest_cherrypy": {"port": 8000, "password": agent._REDACTED}})
+        self.assertEqual(shown["fun"], data["fun"])
+        self.assertEqual(data["return"]["rest_cherrypy"]["password"], "S3CR3T1", "the event itself isn't changed")
+        other = {"fun": "runner.jobs.list_jobs", "return": {"password": "x"}}
+        self.assertIs(agent._shown_event_data("salt/run/1/ret", other), other)
+        self.assertIs(agent._shown_event_data("salt/job/1/ret/m", data), data)
 
 
 if __name__ == "__main__":

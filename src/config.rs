@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -31,12 +31,34 @@ pub fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-/// Whether only `uid` (and root) can have written `path`: a regular file,
-/// not a symlink, that `uid` owns and others can't write to — nor its
-/// group, for root's files.
-fn written_only_by(path: &Path, uid: u32) -> bool {
+/// Whether only `uid` (and root) can write to what `meta` describes: `uid`
+/// owns it and others can't write to it — nor its group, for root's.
+fn only_writable_by(meta: &std::fs::Metadata, uid: u32) -> bool {
     let others = if uid == 0 { 0o022 } else { 0o002 };
-    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.uid() == uid && m.mode() & others == 0)
+    meta.uid() == uid && meta.mode() & others == 0
+}
+
+/// Whether only `uid` (and root) can have written `path`: a regular file,
+/// not a symlink, that passes `only_writable_by`.
+fn written_only_by(path: &Path, uid: u32) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && only_writable_by(&m, uid))
+}
+
+/// Opens `path` if root alone decides what is read from it: the file and
+/// every directory on the way to it are root's and nobody else can write
+/// to them, so nobody else can change the file or put another in its
+/// place. The answer is about the file that was opened, which is the one
+/// then read: looked up again by name, it could be a different one.
+fn open_roots_own(path: &Path) -> Option<std::fs::File> {
+    let real = std::fs::canonicalize(path).ok()?;
+    let roots = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && only_writable_by(&m, 0));
+    if !real.ancestors().skip(1).all(roots) {
+        return None;
+    }
+    let file = std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&real).ok()?;
+    file.metadata().is_ok_and(|m| m.is_file() && only_writable_by(&m, 0)).then_some(file)
 }
 
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
@@ -971,6 +993,28 @@ fn write_config_file(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `err` from reading or writing the config at `path`, as text. Under sudo
+/// the file is handled as the invoking user: when it's refused because the
+/// file or its directory belongs to someone else (root, from a salt-radar
+/// run without sudo or an old version), the text says how to hand it over.
+pub fn config_io_error(path: &Path, err: &std::io::Error) -> String {
+    let hint = || {
+        if err.kind() != std::io::ErrorKind::PermissionDenied {
+            return None;
+        }
+        let (uid, _) = sudo_ids()?;
+        let foreign = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.uid() != uid);
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+        let target = dir.filter(|d| foreign(d)).or_else(|| foreign(path).then_some(path))?;
+        let user = std::env::var("SUDO_USER").unwrap_or_else(|_| uid.to_string());
+        Some(format!("{} isn't {user}'s; as root: chown -R {user}: {}", target.display(), target.display()))
+    };
+    match hint() {
+        Some(hint) => format!("{err}: {hint}"),
+        None => err.to_string(),
+    }
+}
+
 /// The file `load_config_or_fallback` reads for `path`.
 fn config_source(path: &Path) -> PathBuf {
     if !path.exists() && sudo_home().is_some() {
@@ -1006,63 +1050,90 @@ fn take_exec_settings(cfg: &mut AppConfig, trusted: &AppConfig) -> Vec<&'static 
 
 /// The config salt-radar starts with, and a warning when part of the file
 /// was left out: as root, `python_bin`, `agent_path` and `master_config`
-/// only count from a file that root alone can write — the one loaded,
-/// else root's own config, else `/etc/salt-radar/salt-radar.toml`, else the
-/// defaults. Under sudo the file loaded is the invoking user's, and what it
-/// names would otherwise run as root.
+/// only count from a file root alone decides the content of (see
+/// `open_roots_own`) — the one loaded, else root's own config, else
+/// `/etc/salt-radar/salt-radar.toml`, else the defaults. Under sudo the file
+/// loaded is the invoking user's, and what it names would otherwise run as
+/// root.
 pub fn load_startup_config(path: &Path) -> (AppConfig, Option<String>) {
     let source = config_source(path);
-    let mut cfg = load_config(&source);
-    let broken = read_config(&source).err().map(|e| format!(
+    // Read once: what's used and what's judged are the same bytes.
+    let (read, trusted) = read_config(&source);
+    let broken = read.as_ref().err().map(|e| format!(
         " {} not loaded, {}: using the defaults, and settings won't be saved until it's fixed ", source.display(), e,
     ));
-    if euid() != 0 || !source.exists() || written_only_by(&source, 0) {
+    let mut cfg = config_from(read.ok().flatten());
+    if trusted {
         return (cfg, broken);
     }
-    let trusted = [own_config_dir().map(|d| d.join("salt-radar.toml")), Some(PathBuf::from(SYSTEM_CONFIG))]
+    let roots = [own_config_dir().map(|d| d.join("salt-radar.toml")), Some(PathBuf::from(SYSTEM_CONFIG))]
         .into_iter()
         .flatten()
-        .find(|p| written_only_by(p, 0))
-        .map_or_else(AppConfig::default, |p| load_config(&p));
-    let replaced = take_exec_settings(&mut cfg, &trusted);
-    let warning = (!replaced.is_empty()).then(|| format!(
+        .find_map(|p| match read_config(&p) {
+            (Ok(Some(settings)), true) => Some(config_from(Some(settings))),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let defaults = AppConfig::default();
+    let set_in_file = [
+        ("python_bin", cfg.python_bin != defaults.python_bin),
+        ("agent_path", cfg.agent_path != defaults.agent_path),
+        ("master_config", cfg.master_config != defaults.master_config),
+    ];
+    // Only what the file itself set is reported as ignored.
+    let ignored: Vec<&str> = take_exec_settings(&mut cfg, &roots).into_iter()
+        .filter(|name| set_in_file.contains(&(name, true)))
+        .collect();
+    let warning = (!ignored.is_empty()).then(|| format!(
         " {} in {} ignored (the file isn't root's alone): set in {} ",
-        replaced.join(", "), source.display(), SYSTEM_CONFIG,
+        ignored.join(", "), source.display(), SYSTEM_CONFIG,
     ));
     (cfg, broken.or(warning))
 }
 
-/// The settings in the file at `path`, `None` without a file, or why the
-/// file can't be used: it can't be read, or isn't valid (a typo, a value of
-/// the wrong type), with the line.
-fn read_config(path: &Path) -> Result<Option<TomlConfig>, String> {
+/// The settings in the file at `path` (`None` without a file, or why the
+/// file can't be used: it can't be read, or isn't valid — a typo, a value of
+/// the wrong type — with the line), and whether what they say to execute
+/// may be: always for a user's own salt-radar; as root only when root alone
+/// decides what the file holds.
+fn read_config(path: &Path) -> (Result<Option<TomlConfig>, String>, bool) {
+    let roots_own = if euid() == 0 { open_roots_own(path) } else { None };
+    let trusted = euid() != 0 || roots_own.is_some();
     // Root's own files are read as root, anything else as the invoking user.
-    let data = if written_only_by(path, 0) {
-        std::fs::read_to_string(path)
-    } else {
-        as_invoking_user(|| std::fs::read_to_string(path))
+    let data = match roots_own {
+        Some(mut file) => {
+            let mut data = String::new();
+            file.read_to_string(&mut data).map(|_| data)
+        }
+        None => as_invoking_user(|| std::fs::read_to_string(path)),
     };
     let data = match data {
         Ok(data) => data,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Ok(None), trusted),
+        Err(e) => return (Err(config_io_error(path, &e)), trusted),
     };
-    toml::from_str::<TomlConfig>(&data).map(Some).map_err(|e| match e.span() {
+    let settings = toml::from_str::<TomlConfig>(&data).map(Some).map_err(|e| match e.span() {
         Some(span) => format!("line {}: {}", data[..span.start.min(data.len())].matches('\n').count() + 1, e.message()),
         None => e.message().to_string(),
-    })
+    });
+    (settings, trusted)
 }
 
 /// Why the config file for `path` can't be used, when it can't. The
 /// settings are then the defaults, which must not be saved over it.
 pub fn config_error(path: &Path) -> Option<String> {
-    read_config(&config_source(path)).err()
+    read_config(&config_source(path)).0.err()
 }
 
 pub fn load_config(path: &Path) -> AppConfig {
+    config_from(read_config(path).0.ok().flatten())
+}
+
+/// The defaults with a file's settings over them.
+fn config_from(settings: Option<TomlConfig>) -> AppConfig {
     let mut cfg = AppConfig::default();
-    if let Ok(Some(toml_cfg)) = read_config(path) {
-        load_settings(&mut cfg, toml_cfg);
+    if let Some(settings) = settings {
+        load_settings(&mut cfg, settings);
     }
     cfg.clamp_buffer_sizes();
     cfg
@@ -1216,13 +1287,31 @@ mod tests {
         assert_eq!(cfg.popup_dim_pct, 40, "everything else is kept");
         assert!(take_exec_settings(&mut cfg, &AppConfig::default()).is_empty());
 
-        // Only root is held to it; what a user's own file names runs as that user.
-        chmod(0o666);
-        let (cfg, warning) = load_startup_config(&path);
-        assert_eq!((cfg.python_bin == "/tmp/evil", warning.is_none()), (euid() != 0, euid() != 0), "{warning:?}");
-        chmod(0o644);
-        let (cfg, warning) = load_startup_config(&path);
-        assert_eq!((cfg.python_bin.as_str(), warning), ("/tmp/evil", None), "the running user's own file");
+        // Only root is held to it; what a user's own file names runs as that
+        // user. For root, a file under the world-writable temp dir is never
+        // root's alone, whatever its own mode: it could be swapped.
+        for mode in [0o666, 0o644] {
+            chmod(mode);
+            let (cfg, warning) = load_startup_config(&path);
+            assert_eq!((cfg.python_bin == "/tmp/evil", warning.is_none()), (euid() != 0, euid() != 0), "{mode:o} {warning:?}");
+            assert_eq!(read_config(&path).1, euid() != 0);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn roots_own_files_are_in_directories_only_root_can_change() {
+        let dir = scratch("roots-own");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, "").unwrap();
+        assert!(open_roots_own(&path).is_none(), "anyone can rename things in the temp dir");
+        assert!(open_roots_own(&dir).is_none(), "not a file");
+        assert!(open_roots_own(&dir.join("missing.toml")).is_none());
+        let link = dir.join("passwd");
+        std::os::unix::fs::symlink("/etc/passwd", &link).unwrap();
+        let system = ["/", "/etc", "/etc/passwd"].iter().all(|p| std::fs::metadata(p).is_ok_and(|m| only_writable_by(&m, 0)));
+        assert_eq!(open_roots_own(Path::new("/etc/passwd")).is_some(), system);
+        assert_eq!(open_roots_own(&link).is_some(), system, "judged by where it leads, which is what gets read");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

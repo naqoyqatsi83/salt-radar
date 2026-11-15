@@ -2699,7 +2699,7 @@ impl App {
         }
         match crate::config::write_config(&self.config_path, &on_disk) {
             Ok(()) => self.persisted_config = self.config.clone(),
-            Err(e) => self.clipboard_msg = Some((format!("Settings not saved: {}", e), Instant::now())),
+            Err(e) => self.clipboard_msg = Some((format!("Settings not saved: {}", crate::config::config_io_error(&self.config_path, &e)), Instant::now())),
         }
     }
 
@@ -4084,7 +4084,7 @@ mod tests {
         std::fs::write(&socket, "").unwrap();
         let me = std::fs::metadata(&socket).unwrap().uid();
         let chmod = |mode| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
-        let trusted = |users: &[u32]| App::tmux_socket_trusted(socket.to_str().unwrap(), users);
+        let trusted = |users: &[u32]| App::tmux_socket_owner(socket.to_str().unwrap(), users).is_some();
         chmod(0o700);
         assert!(trusted(&[me]));
         assert!(!trusted(&[me + 1]), "another user's server");
@@ -4092,7 +4092,7 @@ mod tests {
         chmod(0o777);
         assert!(!trusted(&[me]), "anyone could have put the socket there");
         chmod(0o700);
-        assert!(!App::tmux_socket_trusted(dir.join("missing").to_str().unwrap(), &[me]));
+        assert!(App::tmux_socket_owner(dir.join("missing").to_str().unwrap(), &[me]).is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

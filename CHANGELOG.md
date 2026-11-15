@@ -11,8 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Publish a `SHA256SUMS` file with each release, to check the downloaded `.deb`, `.rpm` or `.tar.gz` with `sha256sum -c --ignore-missing SHA256SUMS`. Releases are now also built only from the exact dependency versions in `Cargo.lock`, with the GitHub Actions used pinned to fixed commits (#210)
 
+### Changed
+
+- Show the job salt-radar runs to ask the master for its running options (`runner.test.get_opts`, or `runner.salt.cmd` with `running_config_digests`) in Events, Live Jobs and the Job Cache like any other job. It was kept out of them, and while it ran, so was any other job of those two runners. The return of a `test.get_opts` runner job, which is the master's whole configuration, is shown with its credentials redacted, in its event and in Job Detail, whoever ran it
+
 ### Fixed
 
+- Notice when the master's event publisher is gone and say `no events, reconnecting` in the status bar until it's back: Salt's listener reconnects by itself and reports being connected all along, so the status never showed. The publisher's socket is now asked directly (#204)
+- Say what to do when the config can't be read or saved under sudo because the file or its directory isn't the invoking user's (left by a run as root): the message names the `chown` that hands it over
+- Decide whether `python_bin`, `agent_path` and `master_config` may be taken from a config file on the file as it was opened and read, not by looking it up by name again afterwards, and only for a file whose directories are root's alone too: a root-owned file in a user's home or under `/tmp` no longer counts. Without a config of their own, a sudo user now also gets these three from `/etc/salt-radar/salt-radar.toml`
+- Run `tmux` as the user its socket was checked to belong to instead of looking at the socket again, and read the X11 cookie file for the clipboard log as the invoking user, whose environment can name it
+- Redact more in the Master Config tab: in a file that isn't valid YAML, the lines after a credential key that belong to its value (a quoted text running on, a list, a nested mapping, a block with blank lines); a value written under another name with a YAML anchor and referred to from a credential key, and any credential of six characters or more wherever else the same text turns up, in the files and in the settings list; and the keys `sk`, `psk`, `keyid`, `hook`, `webhook`, `authorization` and `bearer` (`nacl.config: {sk: ...}`, `mattermost.hook`, `slack_webhook.webhook`)
 - Count only Salt's own processes on the Dashboard: a command that only named a daemon, such as `journalctl -u salt-master`, counted as a master process. Process memory now uses the system's page size instead of assuming 4 KB (#209)
 - Keep the service list when systemd reports a service without a main process, which emptied it; read a service's uptime correctly when its process name contains `)` (#209)
 - Log in to salt-api again when its password changed instead of reusing the token cached for the old one, and read the key list through Salt when the PKI directory can't be read, which always fell back to running `salt-key` (#209)

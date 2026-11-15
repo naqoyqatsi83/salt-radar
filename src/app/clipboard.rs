@@ -7,9 +7,17 @@ use crate::config::as_invoking_user;
 /// The copied text in the clipboard directory: xclip's input.
 const COPY_FILE: &str = "copy.txt";
 
+/// A tmux server's socket and the user and group it was found to belong to
+/// when it was checked (see `App::tmux_socket_owner`).
+#[derive(Clone)]
+pub(crate) struct TmuxSocket {
+    path: String,
+    owner: (u32, u32),
+}
+
 /// The tmux pane salt-radar runs in.
 pub(crate) struct TmuxPane {
-    socket: String,
+    socket: TmuxSocket,
     session: String,
     clients: Vec<String>,
 }
@@ -164,32 +172,30 @@ impl App {
         uids
     }
 
-    /// Whether a tmux socket is one of `users`' own: theirs, in a directory
-    /// that is theirs alone. A tmux client does what its server tells it
-    /// (open files, run a command), and anyone can make a
-    /// `/tmp/tmux-<name>/default`.
-    pub(crate) fn tmux_socket_trusted(socket: &str, users: &[u32]) -> bool {
+    /// The user and group of a tmux socket that is one of `users`' own:
+    /// theirs, in a directory that is theirs alone; None for any other. A
+    /// tmux client does what its server tells it (open files, run a
+    /// command), and anyone can make a `/tmp/tmux-<name>/default`.
+    pub(crate) fn tmux_socket_owner(socket: &str, users: &[u32]) -> Option<(u32, u32)> {
         let path = std::path::Path::new(socket);
-        let stat = |p: &std::path::Path| std::fs::symlink_metadata(p).ok();
-        match (stat(path), path.parent().and_then(stat)) {
-            (Some(sock), Some(dir)) => {
-                dir.is_dir() && dir.uid() == sock.uid() && dir.mode() & 0o022 == 0 && users.contains(&sock.uid())
-            }
-            _ => false,
-        }
+        let sock = std::fs::symlink_metadata(path).ok()?;
+        let dir = std::fs::symlink_metadata(path.parent()?).ok()?;
+        (dir.is_dir() && dir.uid() == sock.uid() && dir.mode() & 0o022 == 0 && users.contains(&sock.uid()))
+            .then_some((sock.uid(), sock.gid()))
     }
 
     /// A `tmux` command on `socket`, run as the socket's owner when
     /// salt-radar is root and the server isn't root's: a tmux client does
     /// what its server tells it, and under sudo the server is the user's.
-    fn tmux(socket: &str) -> std::process::Command {
+    /// The owner is the one the socket was trusted for: the user could have
+    /// put something else at that path since, so it isn't looked at again.
+    fn tmux(socket: &TmuxSocket) -> std::process::Command {
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new("tmux");
-        cmd.args(["-S", socket]);
-        if let Ok(owner) = std::fs::metadata(socket) {
-            if crate::config::euid() == 0 && owner.uid() != 0 {
-                cmd.uid(owner.uid()).gid(owner.gid());
-            }
+        cmd.args(["-S", &socket.path]);
+        let (uid, gid) = socket.owner;
+        if crate::config::euid() == 0 && uid != 0 {
+            cmd.uid(uid).gid(gid);
         }
         cmd
     }
@@ -197,7 +203,7 @@ impl App {
     /// `$TMUX`'s socket first, then the servers under /tmp/tmux-*, since
     /// `sudo` drops `$TMUX` and root may see several; only those of
     /// `tmux_users`.
-    fn tmux_sockets() -> Vec<String> {
+    fn tmux_sockets() -> Vec<TmuxSocket> {
         let mut sockets: Vec<String> = std::env::var("TMUX").ok()
             .and_then(|t| t.split(',').next().map(str::to_string))
             .filter(|s| !s.is_empty())
@@ -213,8 +219,9 @@ impl App {
             }
         }
         let users = Self::tmux_users();
-        sockets.retain(|s| Self::tmux_socket_trusted(s, &users));
-        sockets
+        sockets.into_iter()
+            .filter_map(|path| Self::tmux_socket_owner(&path, &users).map(|owner| TmuxSocket { path, owner }))
+            .collect()
     }
 
     /// A file in this instance's clipboard directory, which is made on first
@@ -267,7 +274,7 @@ impl App {
 
     /// A variable from a tmux session's environment, or the server's global
     /// one when `session` is None.
-    fn tmux_env(socket: &str, session: Option<&str>, name: &str) -> Option<String> {
+    fn tmux_env(socket: &TmuxSocket, session: Option<&str>, name: &str) -> Option<String> {
         let mut cmd = Self::tmux(socket);
         cmd.arg("show-environment");
         match session {
@@ -299,7 +306,7 @@ impl App {
         if let Some(p) = pane {
             if let Some(d) = Self::tmux_env(&p.socket, Some(&p.session), "DISPLAY") {
                 let xa = Self::tmux_env(&p.socket, Some(&p.session), "XAUTHORITY");
-                found = Some((d, xa, user_of(Self::owner_uid(&p.socket)), format!("tmux session {}", p.session)));
+                found = Some((d, xa, user_of(Some(p.socket.owner.0)), format!("tmux session {}", p.session)));
             }
         }
         if found.is_none() {
@@ -324,7 +331,7 @@ impl App {
             if let Some(s) = socket {
                 if let Some(d) = Self::tmux_env(&s, None, "DISPLAY") {
                     let xa = Self::tmux_env(&s, None, "XAUTHORITY");
-                    found = Some((d, xa, user_of(Self::owner_uid(&s)), "tmux global environment".to_string()));
+                    found = Some((d, xa, user_of(Some(s.owner.0)), "tmux global environment".to_string()));
                 }
             }
         }
@@ -401,15 +408,15 @@ impl App {
         }
         match pane {
             Some(p) => {
-                writeln!(d, "tmux pane: socket {} session {} clients {:?}", p.socket, p.session, p.clients).ok();
+                writeln!(d, "tmux pane: socket {} session {} clients {:?}", p.socket.path, p.session, p.clients).ok();
                 writeln!(d, "tmux session DISPLAY: {:?}", Self::tmux_env(&p.socket, Some(&p.session), "DISPLAY")).ok();
             }
             None => {
-                writeln!(d, "tmux pane: not found (ttys {:?}, sockets {:?})", Self::own_and_ancestor_ttys(), Self::tmux_sockets()).ok();
+                writeln!(d, "tmux pane: not found (ttys {:?}, sockets {:?})", Self::own_and_ancestor_ttys(), Self::tmux_sockets().iter().map(|s| &s.path).collect::<Vec<_>>()).ok();
             }
         }
         for s in Self::tmux_sockets() {
-            writeln!(d, "tmux global DISPLAY on {}: {:?}", s, Self::tmux_env(&s, None, "DISPLAY")).ok();
+            writeln!(d, "tmux global DISPLAY on {}: {:?}", s.path, Self::tmux_env(&s, None, "DISPLAY")).ok();
         }
         writeln!(d, "\n--- ancestors ---").ok();
         for pid in Self::ancestor_pids() {
@@ -424,7 +431,14 @@ impl App {
         writeln!(d, "user: {}", env.user).ok();
         writeln!(d, "XAUTHORITY: {:?}", env.xauth).ok();
         if let Some(ref xa) = env.xauth {
-            let out = std::process::Command::new("xauth").args(["-f", xa, "list"]).output().ok();
+            // The path can come from the invoking user's environment and the
+            // output goes to their log: read it as them, not as root.
+            let mut xauth = std::process::Command::new("xauth");
+            if let Some((uid, gid)) = crate::config::sudo_ids() {
+                use std::os::unix::process::CommandExt;
+                xauth.uid(uid).gid(gid);
+            }
+            let out = xauth.args(["-f", xa, "list"]).output().ok();
             match out {
                 Some(o) => writeln!(d, "xauth list: [{}] {}", String::from_utf8_lossy(&o.stdout).trim(), String::from_utf8_lossy(&o.stderr).trim()).ok(),
                 None => writeln!(d, "xauth list: (failed to run)").ok(),

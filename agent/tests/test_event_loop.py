@@ -57,6 +57,8 @@ class EventLoopTest(unittest.TestCase):
         sys.modules.update({"salt": salt, "salt.utils": utils, "salt.utils.event": event})
         self.sent = []
         self.saved = (agent.ndjson, agent._EVENT_RETRY_SECS)
+        self.listening = agent._publisher_listening
+        agent._publisher_listening = lambda opts: True
         agent.ndjson = self.sent.append
         agent._EVENT_RETRY_SECS = 0.05
         agent._event_stop.clear()
@@ -64,6 +66,7 @@ class EventLoopTest(unittest.TestCase):
     def tearDown(self):
         agent._event_stop.set()
         agent.ndjson, agent._EVENT_RETRY_SECS = self.saved
+        agent._publisher_listening = self.listening
         for name, module in self.modules.items():
             if module is None:
                 sys.modules.pop(name, None)
@@ -92,6 +95,21 @@ class EventLoopTest(unittest.TestCase):
             ("event_bus", True, None), ("event", "salt/test/3.7"),
         ])
         self.assertEqual(destroyed, [2, 3], "every listener that was made is closed")
+
+    @unittest.skipUnless(hasattr(__import__("socket"), "AF_UNIX"), "needs Unix sockets")
+    def test_the_publisher_socket_is_asked_whether_it_listens(self):
+        """Salt's listener keeps saying it's connected while the publisher is gone."""
+        import socket
+        import tempfile
+        with tempfile.TemporaryDirectory() as sock_dir:
+            opts = {"sock_dir": sock_dir}
+            self.assertFalse(self.listening(opts), "no socket")
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(os.path.join(sock_dir, "master_event_pub.ipc"))
+            server.listen(1)
+            self.assertTrue(self.listening(opts))
+            server.close()
+            self.assertFalse(self.listening(opts), "the socket file is left behind by a publisher that died")
 
 
 if __name__ == "__main__":
