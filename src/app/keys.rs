@@ -124,12 +124,10 @@ impl App {
                         Err(e) => self.sniffer_input_error = Some(e),
                         Ok(terms) => {
                             if !terms.is_empty() {
-                                let sniffer_max = self.config.sniffer_buffer_size;
                                 self.sniffer = Some(crate::types::SnifferState {
                                     query: self.sniffer_input_text.trim().to_string(),
                                     terms,
-                                    buffer: std::collections::VecDeque::with_capacity(sniffer_max),
-                                    max_size: sniffer_max,
+                                    buffer: std::collections::VecDeque::new(),
                                     paused: false,
                                     selected: 0,
                                     following: true,

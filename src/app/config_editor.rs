@@ -508,12 +508,15 @@ impl App {
         if self.config_broken {
             return Err(format!("Not saved: {} had an error at startup. Restart salt-radar to load it", file));
         }
+        let mut new_config = new_config;
+        new_config.clamp_buffer_sizes();
         crate::config::write_config(&self.config_path, &new_config)
             .map_err(|e| format!("Write failed: {}", e))?;
         let latency_source_changed = new_config.zmq_latency_source != self.config.zmq_latency_source;
         self.needs_mouse_toggle |= new_config.mouse != self.config.mouse;
         self.persisted_config = new_config.clone();
         self.config = new_config;
+        self.fit_buffers();
         // A sort on a column that was just hidden would keep reordering the
         // table with no header showing why.
         let stale: Vec<TableId> = self.table_sorts.iter()

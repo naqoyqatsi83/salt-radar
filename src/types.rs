@@ -373,7 +373,6 @@ pub struct SnifferState {
     /// in what's shown.
     pub terms: Vec<crate::sniff::SniffTerm>,
     pub buffer: VecDeque<SaltEvent>,
-    pub max_size: usize,
     pub paused: bool,
     pub selected: usize,
     /// Events display oldest-at-top, newest-at-bottom. While following,

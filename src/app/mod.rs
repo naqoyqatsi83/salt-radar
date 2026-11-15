@@ -931,7 +931,6 @@ impl App {
         let config_path = crate::config::resolve_config_path();
         let (config, config_warning) = load_startup_config(&config_path);
         let config_broken = crate::config::config_error(&config_path).is_some();
-        let event_buffer_size = config.event_buffer_size;
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
         let agent_backlog_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
         // Spawn agent
@@ -973,7 +972,7 @@ impl App {
             minion_info_dirty: false,
             minion_index: HashMap::new(),
 
-            events: VecDeque::with_capacity(event_buffer_size),
+            events: VecDeque::new(),
             events_since_last_tick: 0,
             event_breakdown: EventBreakdown::default(),
             events_per_sec: 0.0,
@@ -2615,6 +2614,49 @@ impl App {
             .map(|r| (r.minion_id.clone(), r.full_return.clone()))
             .collect();
         serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or_default()
+    }
+
+    /// Trims every buffer to its size setting, oldest first, keeping each
+    /// selection on the item it was on (or the oldest one left): after a
+    /// size was lowered in the Config Editor, each new item would otherwise
+    /// only replace one old one, and the buffer keep its old length.
+    pub(crate) fn fit_buffers(&mut self) {
+        let excess = self.events.len().saturating_sub(self.config.event_buffer_size);
+        if excess > 0 {
+            let shown_dropped = if self.applied_filter.is_empty() {
+                excess
+            } else {
+                self.events.iter().take(excess).filter(|e| self.events_matcher.matches(e)).count()
+            };
+            self.events.drain(..excess);
+            self.rebuild_filtered_events_cache();
+            if !self.events_following {
+                self.event_selected = self.event_selected.saturating_sub(shown_dropped);
+            }
+        }
+        if let Some(ref mut state) = self.sniffer {
+            let excess = state.buffer.len().saturating_sub(self.config.sniffer_buffer_size);
+            if excess > 0 {
+                let highlight = &state.highlight_terms;
+                let shown_dropped = state.buffer.iter().take(excess)
+                    .filter(|e| highlight.is_empty() || crate::sniff::matches(highlight, e))
+                    .count();
+                state.buffer.drain(..excess);
+                if !state.following {
+                    state.selected = state.selected.saturating_sub(shown_dropped);
+                }
+                self.sniffer_dirty = true;
+            }
+        }
+        let excess = self.api_requests_log.len().saturating_sub(self.config.api_log_cap);
+        self.api_requests_log.drain(..excess);
+        self.api_log_selected = self.api_log_selected.saturating_sub(excess);
+        let window = self.config.api_stats_window;
+        let excess = self.api_status_window.len().saturating_sub(window);
+        self.api_status_window.drain(..excess);
+        let excess = self.api_login_latencies.len().saturating_sub(window);
+        self.api_login_latencies.drain(..excess);
+        self.clamp_selection();
     }
 
     /// Removes the clipboard files. Called on exit.

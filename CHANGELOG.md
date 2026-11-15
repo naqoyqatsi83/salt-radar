@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep the buffer sizes (`[events] buffer_size`, `sniffer_buffer_size`, `[api] stats_window`, `log_cap`) in a sensible range, and apply a smaller size from the Config Editor at once: the buffer kept its old length, as each new item only replaced one old one. `buffer_size = 0` kept only the newest event, and a very large size made salt-radar abort at startup, as the whole event buffer was allocated up front (#208)
 - Find each minion's part of a Job Detail lookup in Salt's colored output directly, without a copy of it and a map of every character back to it, which took about 25 times the size of the output: around a GB for a job on thousands of minions (#207)
 - Count the `[refresh]` intervals in seconds: `dashboard_secs`, `config_secs` and the polls without a setting counted ticks, so with the default 2 s tick everything ran at half the configured rate, and `-`/`+` changed it. `minions_secs`, which nothing used, now sets how often the minion list and which minions have checked in are refreshed; Live Jobs keeps jobs for an hour, which followed `config_secs` (60 × it, so `config_secs = 0` emptied the list) (#206)
 

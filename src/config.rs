@@ -13,6 +13,14 @@ use crate::ui::color::Theme;
 pub const TICK_MS_MIN: u64 = 500;
 pub const TICK_MS_MAX: u64 = 30_000;
 
+/// The range each buffer size is kept in, when loaded and when edited: at
+/// least enough to be of use, at most what still fits in memory (events can
+/// be several KB each). `(min, max)`.
+pub const EVENT_BUFFER_RANGE: (usize, usize) = (100, 200_000);
+pub const SNIFFER_BUFFER_RANGE: (usize, usize) = (10, 100_000);
+pub const API_STATS_WINDOW_RANGE: (usize, usize) = (10, 100_000);
+pub const API_LOG_CAP_RANGE: (usize, usize) = (10, 100_000);
+
 /// The config file decides what salt-radar executes (`python_bin`,
 /// `agent_path`) and which master config Salt loads, usually as root, so
 /// those are only taken from a file nobody else could have written.
@@ -529,6 +537,15 @@ pub const SPLIT_PCT_MIN: u64 = 20;
 pub const SPLIT_PCT_MAX: u64 = 80;
 
 impl AppConfig {
+    /// Every buffer size moved into its range (see `EVENT_BUFFER_RANGE`).
+    pub fn clamp_buffer_sizes(&mut self) {
+        let clamp = |v: &mut usize, (min, max): (usize, usize)| *v = (*v).clamp(min, max);
+        clamp(&mut self.event_buffer_size, EVENT_BUFFER_RANGE);
+        clamp(&mut self.sniffer_buffer_size, SNIFFER_BUFFER_RANGE);
+        clamp(&mut self.api_stats_window, API_STATS_WINDOW_RANGE);
+        clamp(&mut self.api_log_cap, API_LOG_CAP_RANGE);
+    }
+
     /// The left panel's width setting of a tab split in two side by side.
     pub fn split_pct_mut(&mut self, tab: Tab) -> Option<&mut u64> {
         match tab {
@@ -1045,107 +1062,112 @@ pub fn config_error(path: &Path) -> Option<String> {
 pub fn load_config(path: &Path) -> AppConfig {
     let mut cfg = AppConfig::default();
     if let Ok(Some(toml_cfg)) = read_config(path) {
-        if let Some(s) = toml_cfg.salt {
-            if let Some(v) = s.master_config { cfg.master_config = v; }
-            if let Some(v) = s.running_config_digests { cfg.running_config_digests = v; }
-            if let Some(v) = s.python_bin { cfg.python_bin = v; }
-            if let Some(v) = s.agent_path { cfg.agent_path = v; }
-        }
-        if let Some(r) = toml_cfg.refresh {
-            if let Some(v) = r.dashboard_secs { cfg.dashboard_secs = v; }
-            if let Some(v) = r.minions_secs { cfg.minions_secs = v; }
-            if let Some(v) = r.config_secs { cfg.config_secs = v; }
-            if let Some(v) = r.tick_ms { cfg.tick_ms = v.clamp(TICK_MS_MIN, TICK_MS_MAX); }
-            if let Some(v) = r.max_output_kbs { cfg.max_output_kbs = v; }
-        }
-        if let Some(e) = toml_cfg.events {
-            if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
-            if let Some(v) = e.sniffer_buffer_size { cfg.sniffer_buffer_size = v; }
-            if let Some(v) = e.time_format.filter(|v| crate::app::EVENT_TIME_FORMATS.contains(&v.as_str())) { cfg.event_time_format = v; }
-            if let Some(v) = e.event_columns { cfg.event_columns = v; }
-        }
-        if let Some(a) = toml_cfg.alerts {
-            if let Some(v) = a.stale_minion_secs { cfg.stale_minion_secs = v; }
-            if let Some(v) = a.pending_key_secs { cfg.pending_key_secs = v; }
-            if let Some(v) = a.job_straggler_secs { cfg.job_straggler_secs = v; }
-            if let Some(v) = a.disk_usage_pct { cfg.disk_usage_pct = v; }
-            if let Some(v) = a.auth_storm_rate_per_sec { cfg.auth_storm_rate_per_sec = v; }
-            if let Some(v) = a.worker_saturation_pct { cfg.worker_saturation_pct = v; }
-            if let Some(v) = a.pending_key_churn_per_min { cfg.pending_key_churn_per_min = v; }
-            if let Some(v) = a.service_flap_threshold_24h { cfg.service_flap_threshold_24h = v; }
-            if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
-            if let Some(v) = a.service_mem_abs_threshold_mb { cfg.service_mem_abs_threshold_mb = v; }
-            if let Some(v) = a.service_mem_pct_threshold { cfg.service_mem_pct_threshold = v; }
-            if let Some(v) = a.api_auth_latency_warn_secs { cfg.api_auth_latency_warn_secs = v; }
-            if let Some(v) = a.service_mem_abs_threshold_master_mb { cfg.service_mem_abs_threshold_master_mb = v; }
-            if let Some(v) = a.service_mem_pct_threshold_master { cfg.service_mem_pct_threshold_master = v; }
-            if let Some(v) = a.service_mem_abs_threshold_minion_mb { cfg.service_mem_abs_threshold_minion_mb = v; }
-            if let Some(v) = a.service_mem_pct_threshold_minion { cfg.service_mem_pct_threshold_minion = v; }
-            if let Some(v) = a.service_mem_abs_threshold_api_mb { cfg.service_mem_abs_threshold_api_mb = v; }
-            if let Some(v) = a.service_mem_pct_threshold_api { cfg.service_mem_pct_threshold_api = v; }
-            if let Some(v) = a.service_mem_abs_threshold_syndic_mb { cfg.service_mem_abs_threshold_syndic_mb = v; }
-            if let Some(v) = a.service_mem_pct_threshold_syndic { cfg.service_mem_pct_threshold_syndic = v; }
-            if let Some(v) = a.alert_columns { cfg.alert_columns = v; }
-        }
-        if let Some(a) = toml_cfg.api {
-            if let Some(v) = a.stats_window { cfg.api_stats_window = v; }
-            if let Some(v) = a.log_cap { cfg.api_log_cap = v; }
-            if let Some(v) = a.log_max_age_secs { cfg.api_log_max_age_secs = v; }
-            if let Some(v) = a.hide_stats_polls { cfg.api_hide_stats_polls = v; }
-            if let Some(v) = a.stats_auth_mode { cfg.api_stats_auth_mode = v; }
-            if let Some(v) = a.stats_auth_eauth { cfg.api_stats_auth_eauth = v; }
-            if let Some(v) = a.stats_auth_username { cfg.api_stats_auth_username = v; }
-            if let Some(v) = a.stats_auth_password { cfg.api_stats_auth_password = v; }
-            if let Some(v) = a.stats_auth_username_pillar_path { cfg.api_stats_auth_username_pillar_path = v; }
-            if let Some(v) = a.stats_auth_password_pillar_path { cfg.api_stats_auth_password_pillar_path = v; }
-            if let Some(v) = a.request_columns { cfg.api_request_columns = v; }
-        }
-        if let Some(d) = toml_cfg.dashboard {
-            if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
-            if let Some(v) = d.zmq_latency_ceiling_ms { cfg.zmq_latency_ceiling_ms = v.max(0.0); }
-            if let Some(v) = d.show_zmq_graph { cfg.show_zmq_graph = v; }
-            if let Some(v) = d.show_events_graph { cfg.show_events_graph = v; }
-            if let Some(v) = d.show_activity_graph { cfg.show_activity_graph = v; }
-            if let Some(v) = d.show_cpu_graph { cfg.show_cpu_graph = v; }
-            if let Some(v) = d.show_mem_graph { cfg.show_mem_graph = v; }
-            if let Some(v) = d.graph_order { cfg.graph_order = v; }
-            if let Some(v) = d.graph_style { cfg.graph_style = v; }
-            if let Some(v) = d.show_host_resources { cfg.show_host_resources = v; }
-            if let Some(v) = d.show_services { cfg.show_services = v; }
-            if let Some(v) = d.show_key_status { cfg.show_key_status = v; }
-            if let Some(v) = d.show_event_types { cfg.show_event_types = v; }
-            if let Some(v) = d.show_job_pulse { cfg.show_job_pulse = v; }
-            if let Some(v) = d.show_salt_api { cfg.show_salt_api = v; }
-        }
-        if let Some(m) = toml_cfg.minions {
-            if let Some(v) = m.follow_filter { cfg.minions_follow_filter = v; }
-            if let Some(v) = m.minion_columns { cfg.minion_columns = v; }
-        }
-        if let Some(e) = toml_cfg.export {
-            if let Some(v) = e.save_dir { cfg.save_dir = v; }
-        }
-        if let Some(j) = toml_cfg.jobs {
-            if let Some(v) = j.lookup_timeout_secs { cfg.lookup_timeout_secs = v.max(1); }
-            if let Some(v) = j.live_columns { cfg.jobs_live_columns = v; }
-            if let Some(v) = j.cache_columns { cfg.jobs_cache_columns = v; }
-        }
-        if let Some(u) = toml_cfg.ui {
-            if let Some(v) = u.color_theme { cfg.color_theme = v; }
-            if let Some(v) = u.theme_background { cfg.theme_background = v; }
-            if let Some(v) = u.popup_dim_pct { cfg.popup_dim_pct = v.min(100); }
-            if let Some(v) = u.confirm_quit { cfg.confirm_quit = v; }
-            if let Some(v) = u.mouse { cfg.mouse = v; }
-            let split = |v: u64| v.clamp(SPLIT_PCT_MIN, SPLIT_PCT_MAX);
-            if let Some(v) = u.minions_split_pct { cfg.minions_split_pct = split(v); }
-            if let Some(v) = u.events_split_pct { cfg.events_split_pct = split(v); }
-            if let Some(v) = u.jobs_split_pct { cfg.jobs_split_pct = split(v); }
-            if let Some(v) = u.api_split_pct { cfg.api_split_pct = split(v); }
-            if let Some(v) = u.pulse_split_pct { cfg.pulse_split_pct = split(v); }
-            if let Some(v) = u.master_split_pct { cfg.master_split_pct = split(v); }
-            if let Some(v) = u.master_wrap { cfg.master_wrap = v; }
-        }
+        load_settings(&mut cfg, toml_cfg);
     }
+    cfg.clamp_buffer_sizes();
     cfg
+}
+
+fn load_settings(cfg: &mut AppConfig, toml_cfg: TomlConfig) {
+    if let Some(s) = toml_cfg.salt {
+        if let Some(v) = s.master_config { cfg.master_config = v; }
+        if let Some(v) = s.running_config_digests { cfg.running_config_digests = v; }
+        if let Some(v) = s.python_bin { cfg.python_bin = v; }
+        if let Some(v) = s.agent_path { cfg.agent_path = v; }
+    }
+    if let Some(r) = toml_cfg.refresh {
+        if let Some(v) = r.dashboard_secs { cfg.dashboard_secs = v; }
+        if let Some(v) = r.minions_secs { cfg.minions_secs = v; }
+        if let Some(v) = r.config_secs { cfg.config_secs = v; }
+        if let Some(v) = r.tick_ms { cfg.tick_ms = v.clamp(TICK_MS_MIN, TICK_MS_MAX); }
+        if let Some(v) = r.max_output_kbs { cfg.max_output_kbs = v; }
+    }
+    if let Some(e) = toml_cfg.events {
+        if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
+        if let Some(v) = e.sniffer_buffer_size { cfg.sniffer_buffer_size = v; }
+        if let Some(v) = e.time_format.filter(|v| crate::app::EVENT_TIME_FORMATS.contains(&v.as_str())) { cfg.event_time_format = v; }
+        if let Some(v) = e.event_columns { cfg.event_columns = v; }
+    }
+    if let Some(a) = toml_cfg.alerts {
+        if let Some(v) = a.stale_minion_secs { cfg.stale_minion_secs = v; }
+        if let Some(v) = a.pending_key_secs { cfg.pending_key_secs = v; }
+        if let Some(v) = a.job_straggler_secs { cfg.job_straggler_secs = v; }
+        if let Some(v) = a.disk_usage_pct { cfg.disk_usage_pct = v; }
+        if let Some(v) = a.auth_storm_rate_per_sec { cfg.auth_storm_rate_per_sec = v; }
+        if let Some(v) = a.worker_saturation_pct { cfg.worker_saturation_pct = v; }
+        if let Some(v) = a.pending_key_churn_per_min { cfg.pending_key_churn_per_min = v; }
+        if let Some(v) = a.service_flap_threshold_24h { cfg.service_flap_threshold_24h = v; }
+        if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
+        if let Some(v) = a.service_mem_abs_threshold_mb { cfg.service_mem_abs_threshold_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold { cfg.service_mem_pct_threshold = v; }
+        if let Some(v) = a.api_auth_latency_warn_secs { cfg.api_auth_latency_warn_secs = v; }
+        if let Some(v) = a.service_mem_abs_threshold_master_mb { cfg.service_mem_abs_threshold_master_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold_master { cfg.service_mem_pct_threshold_master = v; }
+        if let Some(v) = a.service_mem_abs_threshold_minion_mb { cfg.service_mem_abs_threshold_minion_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold_minion { cfg.service_mem_pct_threshold_minion = v; }
+        if let Some(v) = a.service_mem_abs_threshold_api_mb { cfg.service_mem_abs_threshold_api_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold_api { cfg.service_mem_pct_threshold_api = v; }
+        if let Some(v) = a.service_mem_abs_threshold_syndic_mb { cfg.service_mem_abs_threshold_syndic_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold_syndic { cfg.service_mem_pct_threshold_syndic = v; }
+        if let Some(v) = a.alert_columns { cfg.alert_columns = v; }
+    }
+    if let Some(a) = toml_cfg.api {
+        if let Some(v) = a.stats_window { cfg.api_stats_window = v; }
+        if let Some(v) = a.log_cap { cfg.api_log_cap = v; }
+        if let Some(v) = a.log_max_age_secs { cfg.api_log_max_age_secs = v; }
+        if let Some(v) = a.hide_stats_polls { cfg.api_hide_stats_polls = v; }
+        if let Some(v) = a.stats_auth_mode { cfg.api_stats_auth_mode = v; }
+        if let Some(v) = a.stats_auth_eauth { cfg.api_stats_auth_eauth = v; }
+        if let Some(v) = a.stats_auth_username { cfg.api_stats_auth_username = v; }
+        if let Some(v) = a.stats_auth_password { cfg.api_stats_auth_password = v; }
+        if let Some(v) = a.stats_auth_username_pillar_path { cfg.api_stats_auth_username_pillar_path = v; }
+        if let Some(v) = a.stats_auth_password_pillar_path { cfg.api_stats_auth_password_pillar_path = v; }
+        if let Some(v) = a.request_columns { cfg.api_request_columns = v; }
+    }
+    if let Some(d) = toml_cfg.dashboard {
+        if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
+        if let Some(v) = d.zmq_latency_ceiling_ms { cfg.zmq_latency_ceiling_ms = v.max(0.0); }
+        if let Some(v) = d.show_zmq_graph { cfg.show_zmq_graph = v; }
+        if let Some(v) = d.show_events_graph { cfg.show_events_graph = v; }
+        if let Some(v) = d.show_activity_graph { cfg.show_activity_graph = v; }
+        if let Some(v) = d.show_cpu_graph { cfg.show_cpu_graph = v; }
+        if let Some(v) = d.show_mem_graph { cfg.show_mem_graph = v; }
+        if let Some(v) = d.graph_order { cfg.graph_order = v; }
+        if let Some(v) = d.graph_style { cfg.graph_style = v; }
+        if let Some(v) = d.show_host_resources { cfg.show_host_resources = v; }
+        if let Some(v) = d.show_services { cfg.show_services = v; }
+        if let Some(v) = d.show_key_status { cfg.show_key_status = v; }
+        if let Some(v) = d.show_event_types { cfg.show_event_types = v; }
+        if let Some(v) = d.show_job_pulse { cfg.show_job_pulse = v; }
+        if let Some(v) = d.show_salt_api { cfg.show_salt_api = v; }
+    }
+    if let Some(m) = toml_cfg.minions {
+        if let Some(v) = m.follow_filter { cfg.minions_follow_filter = v; }
+        if let Some(v) = m.minion_columns { cfg.minion_columns = v; }
+    }
+    if let Some(e) = toml_cfg.export {
+        if let Some(v) = e.save_dir { cfg.save_dir = v; }
+    }
+    if let Some(j) = toml_cfg.jobs {
+        if let Some(v) = j.lookup_timeout_secs { cfg.lookup_timeout_secs = v.max(1); }
+        if let Some(v) = j.live_columns { cfg.jobs_live_columns = v; }
+        if let Some(v) = j.cache_columns { cfg.jobs_cache_columns = v; }
+    }
+    if let Some(u) = toml_cfg.ui {
+        if let Some(v) = u.color_theme { cfg.color_theme = v; }
+        if let Some(v) = u.theme_background { cfg.theme_background = v; }
+        if let Some(v) = u.popup_dim_pct { cfg.popup_dim_pct = v.min(100); }
+        if let Some(v) = u.confirm_quit { cfg.confirm_quit = v; }
+        if let Some(v) = u.mouse { cfg.mouse = v; }
+        let split = |v: u64| v.clamp(SPLIT_PCT_MIN, SPLIT_PCT_MAX);
+        if let Some(v) = u.minions_split_pct { cfg.minions_split_pct = split(v); }
+        if let Some(v) = u.events_split_pct { cfg.events_split_pct = split(v); }
+        if let Some(v) = u.jobs_split_pct { cfg.jobs_split_pct = split(v); }
+        if let Some(v) = u.api_split_pct { cfg.api_split_pct = split(v); }
+        if let Some(v) = u.pulse_split_pct { cfg.pulse_split_pct = split(v); }
+        if let Some(v) = u.master_split_pct { cfg.master_split_pct = split(v); }
+        if let Some(v) = u.master_wrap { cfg.master_wrap = v; }
+    }
 }
 
 #[cfg(test)]
@@ -1214,6 +1236,19 @@ mod tests {
         assert_eq!(load_config(&path).api_stats_auth_password, "pw");
         write_config(&path, &AppConfig { popup_dim_pct: 40, ..AppConfig::default() }).unwrap();
         assert_ne!(mode(), 0o600, "no password: the umask decides, as before");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn buffer_sizes_stay_in_their_ranges() {
+        let dir = scratch("sizes");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, "[events]\nbuffer_size = 0\nsniffer_buffer_size = 999999999\n[api]\nlog_cap = 500\n").unwrap();
+        let cfg = load_config(&path);
+        assert_eq!(cfg.event_buffer_size, EVENT_BUFFER_RANGE.0, "0 kept only the newest event");
+        assert_eq!(cfg.sniffer_buffer_size, SNIFFER_BUFFER_RANGE.1);
+        assert_eq!(cfg.api_log_cap, 500, "in range: kept");
+        assert_eq!(load_config(&dir.join("missing.toml")).event_buffer_size, AppConfig::default().event_buffer_size);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

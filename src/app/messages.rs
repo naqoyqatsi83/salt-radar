@@ -599,7 +599,7 @@ impl App {
                         if !state.paused {
                             if let Some(evt) = self.events.back() {
                                 if crate::sniff::matches(&state.terms, evt) {
-                                    let will_evict = state.buffer.len() >= state.max_size;
+                                    let will_evict = state.buffer.len() >= self.config.sniffer_buffer_size;
                                     // `selected`/`following` track the filtered (displayed)
                                     // view, not the raw buffer — only touch them when this
                                     // push/evict actually changes what's shown, i.e. when the
