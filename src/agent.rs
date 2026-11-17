@@ -30,17 +30,24 @@ pub fn agent_main(
     cmds: Receiver<String>,
 ) {
     loop {
-        if !run_agent_once(&tx, &dropped, agent_path, python_bin, master_config, &cmds) {
-            return;
-        }
+        let Some(last_words) = run_agent_once(&tx, &dropped, agent_path, python_bin, master_config, &cmds) else { return };
         {
             let mut q = tx.lock().unwrap();
-            q.push_back(AgentMessage::Error {
-                id: None,
-                message: "Agent process exited, restarting...".to_string(),
-            });
+            q.push_back(AgentMessage::Error { message: exit_message(&last_words) });
         }
         thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+/// Lines of the agent's stderr kept for `exit_message`.
+const STDERR_TAIL: usize = 20;
+
+/// Why the agent is being restarted: the last thing it said on stderr,
+/// which for a Python process that died is the exception.
+fn exit_message(stderr_tail: &VecDeque<String>) -> String {
+    match stderr_tail.iter().rev().find(|l| !l.trim().is_empty()) {
+        Some(line) => format!("agent exited, restarting: {}", line.trim()),
+        None => "agent exited, restarting".to_string(),
     }
 }
 
@@ -51,7 +58,7 @@ fn run_agent_once(
     python_bin: &str,
     master_config: &str,
     cmds: &Receiver<String>,
-) -> bool {
+) -> Option<VecDeque<String>> {
     // Start the Python agent process
     let mut child = match Command::new(python_bin)
         .arg(agent_path)
@@ -66,10 +73,12 @@ fn run_agent_once(
         Err(e) => {
             let mut q = tx.lock().unwrap();
             q.push_back(AgentMessage::Error {
-                id: None,
                 message: format!("Failed to spawn agent: {}", e),
             });
-            return true;
+            // Nothing will read what was sent meanwhile: drop it, or every
+            // poll piles up here for as long as the agent can't start.
+            while cmds.try_recv().is_ok() {}
+            return Some(VecDeque::new());
         }
     };
 
@@ -109,8 +118,11 @@ fn run_agent_once(
                     received,
                 },
                 Some("error") => AgentMessage::Error {
-                    id: parsed.get("id").and_then(|v| v.as_u64()),
                     message: parsed["message"].as_str().unwrap_or("unknown error").to_string(),
+                },
+                Some("event_bus") => AgentMessage::EventBus {
+                    error: (!parsed["ok"].as_bool().unwrap_or(false))
+                        .then(|| parsed["error"].as_str().unwrap_or("unknown error").to_string()),
                 },
                 Some("progress") => AgentMessage::Progress {
                     cmd: parsed["cmd"].as_str().unwrap_or("").to_string(),
@@ -141,12 +153,19 @@ fn run_agent_once(
         }
     });
 
-    // Stderr reader thread (logging only)
+    // Stderr reader thread: the agent's stderr is this terminal, which the
+    // TUI draws on, so its last lines are kept for the status bar instead.
     let stderr = child.stderr.take().unwrap();
-    thread::spawn(move || {
+    let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL)));
+    let tail = stderr_tail.clone();
+    let stderr_reader = thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for l in reader.lines().map_while(Result::ok) {
-            eprintln!("[salt-radar-agent] {}", l);
+            let mut tail = tail.lock().unwrap();
+            if tail.len() == STDERR_TAIL {
+                tail.pop_front();
+            }
+            tail.push_back(l);
         }
     });
 
@@ -166,20 +185,42 @@ fn run_agent_once(
 
     // Forward each command the moment it's sent — round-trip timings (the
     // ZMQ panel's agent_ipc latency) depend on it — waking at least every
-    // 100ms to notice the agent exiting. Returns true when the agent
-    // exited (agent_main respawns it), false when the app has gone away.
+    // 100ms to notice the agent exiting. Returns the end of its stderr when
+    // the agent exited (agent_main respawns it), None when the app has gone
+    // away.
     loop {
         match cmds.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(cmd) => { let _ = stdin.write_all(cmd.as_bytes()); }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 let _ = child.kill();
-                return false;
+                return None;
             }
         }
         match child.try_wait() {
             Ok(None) => {}
-            _ => return true,
+            _ => {
+                // Its stderr ends with it; a child of it holding the pipe
+                // open mustn't hold up the restart.
+                let deadline = Instant::now() + std::time::Duration::from_millis(500);
+                while !stderr_reader.is_finished() && Instant::now() < deadline {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                return Some(std::mem::take(&mut *stderr_tail.lock().unwrap()));
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_message_quotes_the_agents_last_words() {
+        let tail: VecDeque<String> = ["Traceback (most recent call last):", "ModuleNotFoundError: No module named 'salt'  ", ""]
+            .into_iter().map(String::from).collect();
+        assert_eq!(exit_message(&tail), "agent exited, restarting: ModuleNotFoundError: No module named 'salt'");
+        assert_eq!(exit_message(&VecDeque::new()), "agent exited, restarting");
     }
 }

@@ -100,7 +100,10 @@ agent (`/usr/share/salt-radar/salt_radar_agent.py`) and the bundled themes
 manual install. There is no local packaging step — the
 package metadata (version, control file, RPM spec) is generated in the
 workflow from `Cargo.toml`. After a release, check that the workflow passed
-and that all three assets contain the themes.
+and that all three assets contain the themes. The workflow also publishes a
+`SHA256SUMS` file for the three. Third-party actions in the workflows are
+pinned to a commit SHA with the version as a comment; to update one, look up
+the new tag's commit (`gh api repos/<owner>/<action>/git/ref/tags/<tag>`).
 
 ## Building
 
@@ -108,7 +111,10 @@ and that all three assets contain the themes.
 - Release: `cargo build --release`
 - Static binary for the test pod: see "Testing on Kubernetes" above (musl target)
 - Tests: `cargo test`; lints: `cargo clippy --all-targets -- -D warnings`.
-  The **CI** workflow (`.github/workflows/ci.yml`) runs both on every push and
+  Agent tests: `python3 -m unittest discover -s agent/tests` (needs PyYAML,
+  not Salt). They cover what the agent redacts from master config files:
+  add a case there for any change to the redaction.
+  The **CI** workflow (`.github/workflows/ci.yml`) runs all three on every push and
   pull request to `dev`/`main` — keep them passing.
 - Minimum Rust version: 1.88 (`rust-version` in `Cargo.toml`, set by the
   locked dependencies)

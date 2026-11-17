@@ -25,6 +25,7 @@ def _import_salt():
     import salt.version
     import salt.utils.event
     import salt.cache
+    import salt.key
     import salt.runner
     import salt.client
     import salt.pillar
@@ -86,6 +87,15 @@ def get_opts(master_config):
     salt = _import_salt()
     opts = salt.config.master_config(master_config)
     return opts
+
+
+# A job ID as Salt makes them: 20 digits, plus `_<pid>` with `unique_jid`.
+# Job IDs reach the agent from event tags and data, which a minion can write.
+_JID = re.compile(r"\d{20}(_\w+)?\Z", re.ASCII)
+
+
+def _is_jid(jid):
+    return isinstance(jid, str) and _JID.match(jid) is not None
 
 
 def _run_salt_cmd(args, timeout=30, env=None):
@@ -195,8 +205,24 @@ def cmd_list_keys(opts, req):
     result(req["id"], "list_keys", data={"keys": keys})
 
 
+# Salt's daemons, and the role each one's main process has.
+_SALT_DAEMONS = {"salt-master": "Master", "salt-minion": "Minion", "salt-api": "API", "salt-syndic": "Syndic"}
+
+
+def _salt_program(words):
+    """The Salt daemon a command line (split into words) runs: `salt-master
+    ...` or `python... /usr/bin/salt-master ...`, and None for one that only
+    mentions it (`journalctl -u salt-master`, `tail .../master`, an editor
+    on /usr/bin/salt-master)."""
+    names = [os.path.basename(w) for w in words[:2]]
+    if names and names[0].startswith("python"):
+        names = names[1:]
+    return names[0] if names and names[0] in _SALT_DAEMONS else None
+
+
 def cmd_list_processes(opts, req):
     processes = []
+    page_kb = os.sysconf("SC_PAGE_SIZE") // 1024
     # Simple /proc scanner to match Rust implementation
     try:
         for pid_dir in os.listdir("/proc"):
@@ -218,28 +244,22 @@ def cmd_list_processes(opts, req):
                         # it for any process whose name has embedded whitespace.
                         rest = content[content.rindex(")") + 2:].split()
                         # rest[0] is field 3 (state); rss is field 24 -> index 21
-                        rss_kb = int(rest[21]) * 4
+                        rss_kb = int(rest[21]) * page_kb
                         # utime (field 14) + stime (field 15) -> indices 11, 12
                         cpu_ticks = int(rest[11]) + int(rest[12])
 
-                    # Determine role. Every real salt-* process (including
-                    # its sub-workers/threads: MWorker-N, EventPublisher,
-                    # ReqServer, FileserverUpdate, Maintenance, ...) still
-                    # carries "salt-master"/"salt-minion"/"salt-api"/
-                    # "salt-syndic" somewhere in its cmdline, so a process
-                    # matching none of these isn't an unclassified Salt
-                    # process -- it's an unrelated process on the host
-                    # (this scan walks all of /proc, not just Salt's PIDs)
-                    # and must be skipped, not counted as "Unknown".
-                    if "MWorker-" in cmdline: role = "Worker"
-                    elif "EventPublisher" in cmdline: role = "EventPublisher"
-                    elif "ReqServer" in cmdline: role = "ReqServer"
-                    elif "salt-master" in cmdline: role = "Master"
-                    elif "salt-api" in cmdline: role = "API"
-                    elif "salt-syndic" in cmdline: role = "Syndic"
-                    elif "salt-minion" in cmdline: role = "Minion"
-                    else:
+                    # Only Salt's own daemons and their sub-processes (which
+                    # keep the daemon in their title: `salt-master
+                    # MWorker-0`), not whatever merely names one, such as
+                    # `systemctl status salt-master` (this scan walks all of
+                    # /proc, not just Salt's PIDs).
+                    program = _salt_program(cmdline.split())
+                    if program is None:
                         continue
+                    if program == "salt-master" and "MWorker-" in cmdline: role = "Worker"
+                    elif program == "salt-master" and "EventPublisher" in cmdline: role = "EventPublisher"
+                    elif program == "salt-master" and "ReqServer" in cmdline: role = "ReqServer"
+                    else: role = _SALT_DAEMONS[program]
 
                     processes.append({
                         "pid": pid,
@@ -263,7 +283,7 @@ def cmd_list_services(opts, req):
         # Get all salt-* service properties from systemd in one call
         cp = sp.run(
             ["systemctl", "show", "salt-*.service",
-             "--property=Id,ActiveState,SubState,MainPID,ActiveEnterTimestamp,MemoryCurrent"],
+             "--property=Id,ActiveState,SubState,MainPID,MemoryCurrent"],
             capture_output=True, text=True, timeout=10
         )
 
@@ -282,7 +302,7 @@ def cmd_list_services(opts, req):
 
                 active_state = props.get("ActiveState", "inactive")
                 sub_state = props.get("SubState", "")
-                main_pid = int(props.get("MainPID", "0"))
+                main_pid = int(props.get("MainPID") or 0)
 
                 active = active_state == "active"
 
@@ -321,7 +341,7 @@ def cmd_list_services(opts, req):
                     try:
                         with open("/proc/{}/stat".format(main_pid), "r") as f:
                             stat_line = f.read()
-                        start_ticks = int(stat_line.split(")")[1].strip().split()[19])
+                        start_ticks = int(stat_line.rsplit(")", 1)[1].strip().split()[19])
                         with open("/proc/uptime", "r") as f:
                             uptime = float(f.read().split()[0])
                         clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
@@ -334,7 +354,6 @@ def cmd_list_services(opts, req):
                     "active": active,
                     "state": state,
                     "uptime_seconds": uptime_seconds,
-                    "active_enter_timestamp": props.get("ActiveEnterTimestamp", ""),
                     "memory_kb": memory_kb,
                 })
     except Exception:
@@ -358,7 +377,7 @@ def cmd_list_services(opts, req):
                 unit = "{}.service".format(binary)
                 with open("/proc/{}/stat".format(pid), "r") as f:
                     stat_line = f.read()
-                state_char = stat_line.split(")")[1].strip().split()[0] if ")" in stat_line else "?"
+                state_char = stat_line.rsplit(")", 1)[1].strip().split()[0] if ")" in stat_line else "?"
                 active = state_char not in ("Z", "T", "X")
                 state = {"R": "running", "S": "sleeping", "D": "waiting",
                          "Z": "zombie", "T": "stopped", "X": "dead"}.get(state_char, "?")
@@ -373,7 +392,7 @@ def cmd_list_services(opts, req):
                     pass
                 start_ticks = 0
                 try:
-                    start_ticks = int(stat_line.split(")")[1].strip().split()[19])
+                    start_ticks = int(stat_line.rsplit(")", 1)[1].strip().split()[19])
                 except (IndexError, ValueError):
                     pass
                 uptime_seconds = 0
@@ -392,7 +411,6 @@ def cmd_list_services(opts, req):
                         "active": active,
                         "state": state,
                         "uptime_seconds": uptime_seconds,
-                        "active_enter_timestamp": "",
                         "memory_kb": rss_kb,
                     })
                 elif "MWorker" in raw or "ReqServer" in raw:
@@ -401,7 +419,6 @@ def cmd_list_services(opts, req):
                         "active": active,
                         "state": state,
                         "uptime_seconds": uptime_seconds,
-                        "active_enter_timestamp": "",
                         "memory_kb": rss_kb,
                     })
             except (IOError, OSError, ValueError, IndexError):
@@ -637,7 +654,8 @@ def _get_api_token(base, eauth, username, password, force_relogin=False):
     token came back 401 -- Salt tokens expire server-side on their own
     schedule that this agent has no visibility into).
     """
-    key = (base, eauth, username)
+    import hashlib
+    key = (base, eauth, username, hashlib.sha256(password.encode("utf-8")).hexdigest())
     cached = _api_token_cache.get(key)
     if cached and not force_relogin:
         return cached
@@ -794,10 +812,8 @@ def cmd_get_api_stats(opts, req):
         "scheme": scheme,
         "current_requests": app_stats.get("Current Requests", 0),
         "total_requests": app_stats.get("Total Requests", 0),
-        "requests_per_sec": app_stats.get("Requests/Second", 0.0),
         "bytes_read_per_sec": app_stats.get("Bytes Read/Second", 0.0),
         "bytes_written_per_sec": app_stats.get("Bytes Written/Second", 0.0),
-        "uptime_secs": app_stats.get("Uptime", 0.0),
         "requests": requests,
     })
 
@@ -816,17 +832,6 @@ def cmd_get_zmq_connections(opts, req):
                 if len(local_raw) != 2: continue
 
                 local_port = int(local_raw[1], 16)
-                remote_raw = parts[2].split(':')
-                if len(remote_raw) != 2: continue
-
-                remote_ip_hex = remote_raw[0]
-                remote_port = int(remote_raw[1], 16)
-
-                # Convert hex IP to dotted quad
-                import socket, struct
-                ip_bytes = struct.pack("<L", int(remote_ip_hex, 16))
-                remote_addr = socket.inet_ntoa(ip_bytes)
-
                 state = parts[3]
                 # Map hex state to string
                 state_map = {"01": "ESTABLISHED", "02": "SYN_SENT", "03": "SYN_RECV", "04": "FIN_WAIT1"}
@@ -834,8 +839,6 @@ def cmd_get_zmq_connections(opts, req):
 
                 connections.append({
                     "local_port": local_port,
-                    "remote_addr": remote_addr,
-                    "remote_port": remote_port,
                     "state": state_str,
                 })
     except Exception:
@@ -850,11 +853,7 @@ def cmd_get_zmq_connections(opts, req):
 def cmd_version(opts, req):
     salt = _import_salt()
     ver = getattr(salt.version, "__version__", "?")
-    pyver = "{}.{}.{}".format(sys.version_info.major, sys.version_info.minor, sys.version_info.micro)
-    result(req["id"], "version", data={
-        "salt_version": ver,
-        "python_version": pyver,
-    })
+    result(req["id"], "version", data={"salt_version": ver})
 
 
 def _detect_api_port(opts):
@@ -876,30 +875,11 @@ def cmd_config_snapshot(opts, req):
 
     data = {
         "salt_version": str(getattr(_import_salt().version, "__version__", "?")),
-        "python_version": "{}.{}.{}".format(
-            sys.version_info.major, sys.version_info.minor, sys.version_info.micro
-        ),
         "worker_threads": opts.get("worker_threads"),
         "minimum_auth_version": _running_option(opts, req, "minimum_auth_version", 0),
-        "transport": opts.get("transport", "zeromq"),
-        "sock_dir": opts.get("sock_dir", ""),
-        "reactor_count": len(opts.get("reactor", []) if isinstance(opts.get("reactor"), list) else []),
-        "fileserver_backends": list(opts.get("fileserver_backend", [])),
-        "gitfs_remote_count": len(opts.get("gitfs_remotes", [])),
-        "ext_pillar_names": (
-            list(opts.get("ext_pillar", {}).keys())
-            if isinstance(opts.get("ext_pillar"), dict)
-            else []
-        ),
-        "master_job_cache": opts.get("master_job_cache", "local"),
-        "pillar_cache": bool(opts.get("pillar_cache", False)),
-        "presence_events": bool(opts.get("presence_events", False)),
-        "interface": opts.get("interface", "0.0.0.0"),
         "publish_port": opts.get("publish_port", 4505),
         "ret_port": opts.get("ret_port", 4506),
         "api_port": _detect_api_port(opts),
-        "pki_dir": opts.get("pki_dir", "/etc/salt/pki/master"),
-        "cachedir": opts.get("cachedir", "/var/cache/salt/master"),
         "cpu_count": opts.get("cpu_count", os.cpu_count() or 0),
         "hostname": hostname,
     }
@@ -909,10 +889,12 @@ def cmd_config_snapshot(opts, req):
 # ── Master configuration browser ────────────────────────────────────────────
 
 # Last parts of a setting's name that mark its value as a credential
-# (`mysql.pass`, `gitfs_password`, `vault: {token: ...}`, `secret_key`).
+# (`mysql.pass`, `gitfs_password`, `vault: {token: ...}`, `secret_key`,
+# `nacl.config: {sk: ...}`, `mattermost.hook`, `slack_webhook.webhook`).
 _SECRET_LAST_PARTS = {
     "pass", "passwd", "password", "passphrase", "pw", "bindpw", "secret",
-    "token", "apikey", "key", "credential", "credentials", "creds", "priv",
+    "token", "tokens", "apikey", "apikeys", "key", "credential", "credentials", "creds", "priv",
+    "passphrases", "sk", "psk", "keyid", "hook", "webhook", "authorization", "bearer",
 }
 _SECRET_ANYWHERE = ("password", "passwd", "secret")
 _REDACTED = "<redacted>"
@@ -926,16 +908,37 @@ def _is_secret_name(name):
     return re.split(r"[._\-]", name)[-1] in _SECRET_LAST_PARTS
 
 
+def _looks_like_path(value):
+    """Whether a credential-looking setting's text names a file rather than
+    holding the secret (`ssl_key: /etc/pki/key.pem`): it reads as a path and
+    that path, or the directory it would be in, exists on this master. A
+    secret that merely starts with `/` (one base64 string in 64 does)
+    names no existing directory."""
+    if not value.startswith(("/", "~")) or any(c.isspace() for c in value):
+        return False
+    path = os.path.expanduser(value)
+    if os.path.exists(path):
+        return True
+    parent = os.path.dirname(path.rstrip("/"))
+    return parent not in ("", "/") and os.path.isdir(parent)
+
+
+def _points_to_secret(value):
+    """Whether a credential-looking setting's text says where the secret is
+    rather than being it: a file (see `_looks_like_path`) or an `sdb://`
+    reference."""
+    return value.startswith("sdb://") or _looks_like_path(value)
+
+
 def _is_secret_value(value):
     """A value worth hiding: text or a number, but not a flag, an empty value
-    or a filesystem path (`ssl_key: /etc/pki/key.pem` names a file, it isn't
-    the key)."""
+    or where the secret is kept (see `_points_to_secret`)."""
     if isinstance(value, bool) or value is None:
         return False
     if isinstance(value, (int, float)):
         return True
     if isinstance(value, str):
-        return bool(value.strip()) and not value.startswith(("/", "~"))
+        return bool(value.strip()) and not _points_to_secret(value)
     return False
 
 
@@ -968,53 +971,200 @@ def _redact_urls(text):
     return _URL_CREDENTIALS.sub(blank, text)
 
 
-def _redact(value):
+# Texts found under a credential-looking key so far. The same text under a
+# harmless name is blanked too: a YAML anchor reused, a password repeated in
+# another option. Short ones are left out, they'd blank ordinary values.
+_known_credentials = set()
+_KNOWN_CREDENTIAL_MIN = 6
+
+
+def _note_credentials(value, secret=False):
+    """Remembers every credential text in a config value (see
+    `_known_credentials`), before any of it is redacted."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _note_credentials(v, secret or _is_secret_name(k))
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _note_credentials(v, secret)
+    elif secret and isinstance(value, str) and len(value.strip()) >= _KNOWN_CREDENTIAL_MIN and _is_secret_value(value):
+        _known_credentials.add(value.strip())
+
+
+def _redact_known(text):
+    """Text with every credential noted so far blanked wherever it is."""
+    for known in _known_credentials:
+        if known in text:
+            text = text.replace(known, _REDACTED)
+    return text
+
+
+def _redact(value, secret=False):
     """Copy of a config value with credential-looking entries replaced, at any
     depth (ext_pillar lists, rest_cherrypy dicts, ...), and credentials in
-    URLs blanked, in keys too (gitfs per-remote options are keyed by URL)."""
+    URLs blanked, in keys too (gitfs per-remote options are keyed by URL).
+    Under a credential-looking key (`secret`), every value is one: a list
+    of tokens, or a mapping of them. A credential noted before
+    (`_note_credentials`) is blanked wherever it turns up."""
     if isinstance(value, dict):
         return {
-            (_redact_urls(k) if isinstance(k, str) else k):
-                (_REDACTED if _is_secret_name(k) and _is_secret_value(v) else _redact(v))
+            (_redact_urls(k) if isinstance(k, str) else k): _redact(v, secret or _is_secret_name(k))
             for k, v in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [_redact(v) for v in value]
+        return [_redact(v, secret) for v in value]
+    if secret and _is_secret_value(value):
+        return _REDACTED
     if isinstance(value, str):
-        return _redact_urls(value)
+        return _redact_known(_redact_urls(value))
     return value
 
 
 _YAML_ENTRY = re.compile(r"^(\s*(?:-\s+)?)([\"']?)([^\s:\"'#][^:\"'#]*)\2(\s*:\s*)(.*)$")
+_BLOCK_INDICATOR = re.compile(r"[|>][1-9+-]{0,2}$")
+_COMMENT = re.compile(r"(?:^|\s)#")
+_FLOW_ENTRY = re.compile(r"([{,]\s*)([\"']?)([^\s:\"'{},#][^:\"'{},#]*)\2(\s*:\s*)([^,}]*)")
+
+
+def _redact_flow_entries(line):
+    """`{port: 8000, password: x}` on a line that isn't YAML, with x blanked."""
+    def blank(m):
+        value = m.group(5).strip().strip("\"'")
+        if not _is_secret_name(m.group(3)) or not value or value.lower() in ("true", "false", "null", "~")                 or _points_to_secret(value):
+            return m.group(0)
+        return "{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED)
+    return _FLOW_ENTRY.sub(blank, line)
+
+
+def _secret_spans(text):
+    """[(start, end)] character spans of every value under a credential-
+    looking key in a YAML text, at any depth and in any style: plain,
+    quoted, multi-line, block (`|`), inside a flow mapping on one line
+    (`{port: 8000, password: x}`), each item of a list under such a key.
+    Flags, nulls and paths are left (see `_is_secret_value`). Raises on a
+    text that isn't YAML."""
+    import yaml
+    # An anchored node comes up again at each alias of it, so each pass
+    # keeps its own record: a value first met under a harmless key is still
+    # blanked, where it's written, once a credential key refers to it.
+    spans, walked, blanked = [], set(), set()
+
+    def secret_scalars(node):
+        if id(node) in blanked:
+            return
+        blanked.add(id(node))
+        if isinstance(node, yaml.ScalarNode):
+            tag = node.tag or ""
+            if tag.endswith((":bool", ":null")) or not node.value.strip():
+                return
+            if tag.endswith(":str") and _points_to_secret(node.value):
+                return
+            spans.append((node.start_mark.index, node.end_mark.index))
+        elif isinstance(node, yaml.SequenceNode):
+            for item in node.value:
+                secret_scalars(item)
+        elif isinstance(node, yaml.MappingNode):
+            for _, item in node.value:
+                secret_scalars(item)
+
+    def walk(node):
+        if id(node) in walked:
+            return
+        walked.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            for key, item in node.value:
+                if isinstance(key, yaml.ScalarNode) and _is_secret_name(key.value):
+                    secret_scalars(item)
+                else:
+                    walk(item)
+        elif isinstance(node, yaml.SequenceNode):
+            for item in node.value:
+                walk(item)
+
+    for doc in yaml.compose_all(text, Loader=yaml.SafeLoader):
+        if doc is not None:
+            walk(doc)
+    return spans
+
+
+def _blank_span(piece):
+    """A value's text replaced by `<redacted>`, line for line: each of its
+    lines keeps its indentation, so the file keeps its line numbers."""
+    lines = piece.split("\n")
+    return "\n".join([_REDACTED] + [
+        l[:len(l) - len(l.lstrip())] + _REDACTED if l.strip() else l for l in lines[1:]
+    ])
+
+
+def _redact_entry(line):
+    """One `key: value` line whose key looks like a credential, as (the
+    line with the value blanked, the key's indent, whether the value starts
+    on the next line), or None: for other lines, and for a flag or a path.
+    The more indented lines after it are the rest of its value: a block
+    scalar, a quoted text running on, or with nothing after the colon, a
+    mapping or a list, whose items may sit at the key's own indent."""
+    m = _YAML_ENTRY.match(line)
+    if not (m and _is_secret_name(m.group(3))):
+        return None
+    indent = len(m.group(1))
+    value = m.group(5).split(" #")[0].strip()
+    if not value or _BLOCK_INDICATOR.match(value):
+        return line, indent, not value
+    unquoted = value.strip("\"'")
+    if not unquoted or unquoted.lower() in ("true", "false", "yes", "no", "on", "off", "null", "~") \
+            or _points_to_secret(unquoted):
+        return None
+    return "{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED), indent, False
+
+
+def _redact_lines(lines, entries):
+    """Credentials in URLs blanked on every line, and with `entries`, the
+    value of any credential-looking `key: value` line and the lines after
+    it that belong to that value (see `_redact_entry`): the line-by-line
+    fallback for a file that isn't YAML. Comments are always handled this
+    way: a commented-out password is still a password."""
+    out = []
+    block = None
+    for line in lines:
+        if block is not None:
+            if not line.strip():
+                out.append(line)
+                continue
+            indent = len(line) - len(line.lstrip())
+            key_indent, items_too = block
+            if indent > key_indent or (items_too and indent == key_indent and line.lstrip().startswith("- ")):
+                out.append(" " * indent + _REDACTED)
+                continue
+            block = None
+        hit = _redact_entry(line) if entries else None
+        if hit:
+            line, block = hit[0], hit[1:]
+            out.append(_redact_urls(line))
+            continue
+        c = _COMMENT.search(line)
+        if c:
+            code, comment = line[:c.end()], line[c.end():]
+            hit = _redact_entry(comment)
+            line = code + (hit[0] if hit and hit[0] != comment else _redact_flow_entries(comment))
+        if entries:
+            line = _redact_flow_entries(line)
+        out.append(_redact_known(_redact_urls(line)))
+    return out
 
 
 def _redact_text(text):
-    """A config file's text with credential values blanked line by line,
-    including the indented lines of a block scalar (`password: |`), and
-    credentials in URLs anywhere, comments included."""
-    out = []
-    block_indent = None
-    for line in text.splitlines():
-        if block_indent is not None:
-            indent = len(line) - len(line.lstrip())
-            if line.strip() and indent > block_indent:
-                out.append(" " * indent + _REDACTED)
-                continue
-            block_indent = None
-        m = _YAML_ENTRY.match(line)
-        if m and _is_secret_name(m.group(3)):
-            value = m.group(5).split(" #")[0].strip()
-            if value in ("|", ">", "|-", ">-", "|+", ">+"):
-                block_indent = len(m.group(1))
-                out.append(line)
-                continue
-            unquoted = value.strip("\"'")
-            if unquoted and unquoted.lower() not in ("true", "false", "yes", "no", "on", "off", "null", "~") \
-                    and not unquoted.startswith(("/", "~", "{", "[")):
-                out.append("{}{}{}{}{}{}".format(m.group(1), m.group(2), m.group(3), m.group(2), m.group(4), _REDACTED))
-                continue
-        out.append(_redact_urls(line))
-    return "\n".join(out)
+    """A config file's text with the value of every credential-looking key
+    blanked (see `_secret_spans`), commented-out ones too, and credentials
+    in URLs anywhere, keeping every line where it was. A file that isn't
+    YAML is blanked line by line instead."""
+    try:
+        spans = sorted(_secret_spans(text), reverse=True)
+    except Exception:
+        return "\n".join(_redact_lines(text.splitlines(), entries=True))
+    for start, end in spans:
+        piece = text[start:end].rstrip()
+        text = text[:start] + _blank_span(piece) + text[start + len(piece):]
+    return "\n".join(_redact_lines(text.splitlines(), entries=False))
 
 
 def _config_text(value, flow):
@@ -1158,14 +1308,9 @@ def _source_relations(key, sources, order):
 
 
 def _is_salt_master(argv):
-    """Whether a command line (split into words) runs salt-master itself:
-    `salt-master ...` or `python... salt-master ...`, not a `journalctl -u
-    salt-master`, `tail .../master` or an editor on /usr/bin/salt-master that
-    merely mentions it."""
-    names = [os.path.basename(a.decode("utf-8", "replace")) for a in argv[:2]]
-    if names and names[0].startswith("python"):
-        names = names[1:]
-    return bool(names) and names[0] == "salt-master"
+    """Whether a command line (split into words, bytes) runs salt-master
+    itself (see `_salt_program`)."""
+    return _salt_program([a.decode("utf-8", "replace") for a in argv]) == "salt-master"
 
 
 def _salt_master_started():
@@ -1501,26 +1646,21 @@ _DIGEST_TEMPLATE = (
     "{% set out = {} %}{% for k in opts %}{% if not k.startswith('__') %}"
     "{% do out.update({k: (opts[k]|tojson)|sha256}) %}{% endif %}{% endfor %}{{ out|tojson }}"
 )
-# The runner jobs salt-radar starts itself to fetch them, kept out of the
-# events it forwards and the job cache it lists: they're its own plumbing,
-# not anything an admin ran. While a fetch is in flight its job's events can
-# arrive before its JID is known, so they're also recognised by function.
-_OWN_RUNNER_FUNS = ("runner.test.get_opts", "runner.salt.cmd")
-_own_jids = set()
-_own_fetch = threading.Event()
+# The runner whose return is the master's whole configuration, credentials
+# included: salt-radar runs it itself to fetch the running options, and
+# anyone else may. Its jobs are shown like any other job, with that return
+# redacted like the Master Config tab's values.
+_OPTS_RUNNER = "runner.test.get_opts"
 
 
-def _is_own_job_event(tag, data):
-    """Whether an event belongs to one of salt-radar's own runner jobs."""
-    if not tag.startswith("salt/run/"):
-        return False
-    jid = tag.split("/")[2] if tag.count("/") >= 2 else ""
-    if jid in _own_jids:
-        return True
-    if _own_fetch.is_set() and isinstance(data, dict) and data.get("fun") in _OWN_RUNNER_FUNS:
-        _own_jids.add(jid)
-        return True
-    return False
+def _shown_event_data(tag, data):
+    """An event's data as it's forwarded to the TUI."""
+    if tag.startswith("salt/run/") and isinstance(data, dict) and data.get("fun") == _OPTS_RUNNER \
+            and isinstance(data.get("return"), dict):
+        shown = _plain(data["return"])
+        _note_credentials(shown)
+        return dict(data, **{"return": _redact(shown)})
+    return data
 
 
 def _running_master_opts(path, started, digests):
@@ -1542,7 +1682,6 @@ def _running_master_opts(path, started, digests):
         client_opts = salt.config.client_config(path)
         key = salt.utils.master.get_master_key(salt.utils.user.get_user(), client_opts)
         events = salt.utils.event.get_master_event(client_opts, client_opts["sock_dir"], listen=True)
-        _own_fetch.set()
         try:
             low = {"fun": "test.get_opts"}
             if digests:
@@ -1553,7 +1692,6 @@ def _running_master_opts(path, started, digests):
             jid = pub.get("jid") if isinstance(pub, dict) else None
             if not jid:
                 return None, "the master refused the request: {}".format(pub)
-            _own_jids.add(jid)
             deadline = time.time() + 10
             while time.time() < deadline:
                 evt = events.get_event(wait=1, tag="salt/run/{}/ret".format(jid), full=True)
@@ -1567,7 +1705,6 @@ def _running_master_opts(path, started, digests):
                     return running, None
             return None, "no answer from the master within 10s"
         finally:
-            _own_fetch.clear()
             events.destroy()
     except Exception as exc:
         return None, str(exc)
@@ -1667,6 +1804,9 @@ def cmd_master_config(opts, req):
     defaults = salt.config.DEFAULT_MASTER_OPTS
     effective = salt.config.master_config(path)
     order = _config_files(path)
+    _note_credentials(_plain(effective))
+    for _fn, data, _err, _group in order:
+        _note_credentials(_plain(data))
 
     files = []
     sources = {}
@@ -1693,6 +1833,8 @@ def cmd_master_config(opts, req):
     started = _salt_master_started()
     digests = bool(req.get("digests"))
     running_opts, running_error = _running_master_opts(path, started, digests)
+    if running_opts is not None and not digests:
+        _note_credentials(_plain(running_opts))
     as_started = _as_started(effective)
     file_digests = {}
     if digests and running_opts is not None:
@@ -1750,9 +1892,9 @@ def cmd_master_config(opts, req):
                     entry["running_full"] = _config_text(shown, False)
         if kind == "unknown":
             owner, module_suggest = _setting_owner(str(key), effective)
-            missing = None if owner or module_suggest else _missing_extension(str(key))
-            if missing:
-                entry["notes"] = [missing]
+            left_salt = None if owner or module_suggest else _missing_extension(str(key))
+            if left_salt:
+                entry["notes"] = [left_salt]
             elif module_suggest:
                 entry["suggest"] = module_suggest
             elif owner:
@@ -1921,7 +2063,8 @@ def cmd_minion_ping(opts, req):
         return
     try:
         import subprocess as sp, json as json_mod
-        output = _run_salt_cmd(["salt", mid, "test.ping", "--out=json", "--timeout=10"], timeout=15)
+        # `--` ends the options: a minion ID may start with a dash.
+        output = _run_salt_cmd(["salt", "--out=json", "--timeout=10", "--", mid, "test.ping"], timeout=15)
         connected = False
         if output:
             data = json_mod.loads(output)
@@ -1932,38 +2075,41 @@ def cmd_minion_ping(opts, req):
 
 
 def cmd_minion_grains(opts, req):
-    """Fetch all grains from a single minion via salt {mid} grains.items --out=json."""
+    """A minion's grains exactly as `salt {mid} grains.items` prints them, and
+    as JSON for saving (null when the minion returned no grains).
+
+    The output is taken whatever the exit code: a minion that doesn't answer
+    exits non-zero with Salt's own explanation on stdout.
+    """
+    import subprocess as sp
     mid = req.get("minion_id", "")
-    if not mid:
-        result(req["id"], "minion_grains", data={"minion_id": mid, "grains": []})
-        return
+    outputs = {}
+
+    def run(key, out_args):
+        try:
+            cp = sp.run(["salt", "--timeout=15"] + out_args + ["--", mid, "grains.items"],
+                        capture_output=True, text=True, timeout=20)
+            outputs[key] = cp.stdout
+        except sp.TimeoutExpired:
+            outputs[key] = "salt grains.items timed out after 20s"
+        except Exception as exc:
+            outputs[key] = str(exc)
+
+    threads = [
+        threading.Thread(target=run, args=("text", ["--force-color"]), daemon=True),
+        threading.Thread(target=run, args=("json", ["--out=json"]), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     try:
-        import subprocess as sp, json as json_mod
-        output = _run_salt_cmd(["salt", mid, "grains.items", "--out=json", "--timeout=15"], timeout=20)
-        pairs = []
-        if output:
-            data = json_mod.loads(output)
-            grains_data = data.get(mid, {})
-            if not isinstance(grains_data, dict):
-                grains_data = data.get("return", grains_data)
-            if isinstance(grains_data, dict):
-                for key in sorted(grains_data.keys()):
-                    val = grains_data[key]
-                    if isinstance(val, str):
-                        val_str = val
-                    elif isinstance(val, (list, dict)):
-                        # Pretty-print nested structures (interfaces, disks,
-                        # pythonpath, etc.) instead of a single-line repr —
-                        # the TUI renders each line indented under the key.
-                        val_str = json_mod.dumps(val, indent=2, sort_keys=True)
-                    else:
-                        val_str = str(val)
-                    if len(val_str) > 2000:
-                        val_str = val_str[:2000] + "\n..."
-                    pairs.append({"key": key, "value": val_str})
-    except Exception:
-        pairs = []
-    result(req["id"], "minion_grains", data={"minion_id": mid, "grains": pairs})
+        grains = json.loads(outputs.get("json", "")).get(mid)
+    except (ValueError, AttributeError):
+        grains = None
+    if not isinstance(grains, dict):
+        grains = None
+    result(req["id"], "minion_grains", data={"minion_id": mid, "output": outputs.get("text", ""), "grains": grains})
 
 
 def _cached_job_targets(opts, jid):
@@ -1982,12 +2128,64 @@ def _cached_job_targets(opts, jid):
         return []
 
 
-def _cached_job_outcomes(opts, jid):
-    """Each minion's stored `(retcode, success)` for a job, read from the
-    local_cache job directory. `jobs.lookup_jid` returns only the return
-    data, so a command that printed its error and exited non-zero (e.g.
-    `/bin/sh: uptime: not found`, rc 127) would otherwise read as a success.
-    Empty for other job-cache backends or when the files can't be read."""
+def _job_fun(opts, jid):
+    """The function a job ran, from the local_cache job load ("" for other
+    job-cache backends or when it can't be read)."""
+    returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
+    if returner != "local_cache":
+        return ""
+    try:
+        import salt.returners.local_cache as local_cache_mod
+
+        local_cache_mod.__opts__ = opts
+        return str((local_cache_mod.get_load(jid) or {}).get("fun", ""))
+    except Exception:
+        return ""
+
+
+def _derive_retcode_and_success(return_val):
+    """`(retcode, success)` read from a return's data, the same rule as
+    salt-radar's `derive_success_retcode`: a failed state, a `False`, a
+    nonzero `retcode` or an `ERROR:` string is a failure."""
+    if isinstance(return_val, dict):
+        result_val = return_val.get("result")
+        if result_val is not None:
+            if result_val is False:
+                return (1, False)
+            if isinstance(result_val, bool):
+                return (0, True)
+        elif return_val and all(
+            isinstance(v, dict) and ("result" in v or "__run_num__" in v)
+            for v in return_val.values()
+        ):
+            # state.apply-style return: a dict keyed by state ID, each
+            # value its own per-state result dict -- there's no
+            # top-level "result"/"retcode" to find above, so without
+            # this the whole job silently defaulted to "success" (rc=0)
+            # even when every state inside had result=False.
+            any_failed = any(v.get("result") is False for v in return_val.values())
+            return (1, False) if any_failed else (0, True)
+        rc = return_val.get("retcode", 0)
+        if not isinstance(rc, int):
+            try:
+                rc = int(rc)
+            except (ValueError, TypeError):
+                rc = 0
+        return (rc, rc == 0)
+    if return_val is None:
+        return (1, False)
+    if isinstance(return_val, bool):
+        return (0, return_val)
+    # Salt returns error strings starting with "ERROR:" for cmd.run etc.
+    if isinstance(return_val, str) and return_val.startswith(("ERROR:", "error:")):
+        return (1, False)
+    return (0, True)
+
+
+def _cached_returns(opts, jid):
+    """Each minion's stored return for a job (`retcode`, `success`,
+    `return`), read from the local_cache job directory. Empty for other
+    job-cache backends or when the files can't be read."""
     returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
     if returner != "local_cache":
         return {}
@@ -1998,19 +2196,98 @@ def _cached_job_outcomes(opts, jid):
 
         local_cache_mod.__opts__ = opts
         jid_dir = jid_mod.jid_dir(jid, local_cache_mod._job_dir(), opts["hash_type"])
-        outcomes = {}
+        stored = {}
         for mid in os.listdir(jid_dir):
             path = os.path.join(jid_dir, mid, local_cache_mod.RETURN_P)
             if not os.path.isfile(path):
                 continue
             with open(path, "rb") as fh:
-                stored = salt.payload.load(fh)
-            if isinstance(stored, dict):
-                outcomes[mid] = (stored.get("retcode"), stored.get("success"))
-        return outcomes
+                value = salt.payload.load(fh)
+            if isinstance(value, dict):
+                stored[mid] = value
+        return stored
     except Exception:
         traceback.print_exc(file=sys.stderr)
         return {}
+
+
+def _cached_job_outcomes(opts, jid):
+    """Each minion's stored `(retcode, success)` for a job. `jobs.lookup_jid`
+    returns only the return data, so a command that printed its error and
+    exited non-zero (e.g. `/bin/sh: uptime: not found`, rc 127) would
+    otherwise read as a success."""
+    return {mid: (r.get("retcode"), r.get("success")) for mid, r in _cached_returns(opts, jid).items()}
+
+
+def _stored_return_ok(stored):
+    """Whether a cached return succeeded, by the rule Live Jobs applies to a
+    return event: Salt's `success` and `retcode`, plus what the return data
+    shows (a failed state, an `ERROR:` string)."""
+    rc, ok = _derive_retcode_and_success(stored.get("return"))
+    return stored.get("success") is not False and (stored.get("retcode") or 0) == 0 and ok and rc == 0
+
+
+def cmd_job_load(opts, req):
+    """A job salt-radar saw a return for but never its publish (it started
+    before salt-radar did, or its `/new` event was dropped): what the master
+    stored for it in the local_cache job cache. A `salt-call` run has no
+    publish; the master stores its return as the load (`jid: "req"`), so
+    that load has the return's `id` and `return`, which a published job's
+    never has: `salt_call` tells the two apart. `outcomes` is every return
+    cached so far, minion -> success."""
+    jid = str(req.get("jid", ""))
+    returner = opts.get("ext_job_cache") or opts.get("master_job_cache") or "local_cache"
+    data = {"jid": jid, "found": False}
+    if _is_jid(jid) and returner == "local_cache":
+        import salt.returners.local_cache as local_cache_mod
+
+        local_cache_mod.__opts__ = opts
+        load = local_cache_mod.get_load(jid) or {}
+        if load.get("fun"):
+            outcomes = {mid: _stored_return_ok(r) for mid, r in _cached_returns(opts, jid).items()}
+            data.update({
+                "found": True,
+                "salt_call": "return" in load and "id" in load,
+                "fun": load.get("fun"),
+                "arg": load.get("arg", load.get("fun_args", [])),
+                "tgt": load.get("tgt", ""),
+                "minions": [str(m) for m in load.get("Minions", [])],
+                "outcomes": outcomes,
+                "start_epoch": _jid_to_epoch(jid),
+            })
+    result(req["id"], "job_load", ok=True, data=data)
+
+
+_ANSI_SGR = re.compile("\x1b\\[[0-9;]*m")
+# A column-0 "mid:" line of `salt-run jobs.lookup_jid --force-color` output,
+# found in the colored text itself: color codes may come before the ID,
+# after it and after the colon.
+_MINION_HEADER = re.compile(
+    r"^(?:\x1b\[[0-9;]*m)*(\S[^\n]*?)(?:\x1b\[[0-9;]*m)*:(?:\x1b\[[0-9;]*m|[ \t])*$", re.M)
+
+
+def _minion_sections(output, mids):
+    """{mid: (start, end)}: where each minion's own part of the colored
+    lookup output is, from its "mid:" header up to the next minion's. Found
+    in one pass over the output, without a copy of it: a lookup of a job on
+    thousands of minions prints tens of MB.
+
+    A part starts at the minion's ID, after the color codes before it, and
+    ends at the newline before the next minion's line, so the codes that
+    open the next header stay with the next minion. Only the first header
+    of each of `mids` counts; a nested key that looks like one can't come
+    before it."""
+    mids = set(mids)
+    starts = []
+    for m in _MINION_HEADER.finditer(output):
+        mid = _ANSI_SGR.sub("", m.group(1))
+        if mid in mids:
+            mids.discard(mid)
+            starts.append((max(m.start() - 1, 0), m.start(1), mid))
+    sections = {}
+    for i, (_, start, mid) in enumerate(starts):
+        sections[mid] = (start, starts[i + 1][0] if i + 1 < len(starts) else len(output))
+    return sections
 
 
 def cmd_jid_lookup(opts, req):
@@ -2043,8 +2320,8 @@ def cmd_jid_lookup(opts, req):
     show the breakdown in the popup header.
     """
     jid = req.get("jid", "")
-    if not jid:
-        result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "jid required"})
+    if not _is_jid(jid):
+        result(req["id"], "jid_lookup", ok=False, data={"error": "not a job ID: {!r}".format(jid)})
         return
 
     import json as json_mod
@@ -2070,16 +2347,17 @@ def cmd_jid_lookup(opts, req):
     t0 = time.time()
     threads = [
         threading.Thread(target=_lookup, args=("raw", [
-            "salt-run", "jobs.lookup_jid", jid, "--force-color",
+            "salt-run", "--force-color",
             # Always show full state detail regardless of the master's
             # configured state_output/state_verbose -- a "terse"/"changes"
             # master default would otherwise hide unchanged/no-op states
             # from this popup even though the user explicitly opened it to
             # see everything about this one job.
             "--state-output=full", "--state-verbose=True",
+            "--", "jobs.lookup_jid", jid,
         ]), daemon=True),
         threading.Thread(target=_lookup, args=("json", [
-            "salt-run", "jobs.lookup_jid", jid, "--out=json",
+            "salt-run", "--out=json", "--", "jobs.lookup_jid", jid,
         ]), daemon=True),
     ]
     for t in threads:
@@ -2091,7 +2369,6 @@ def cmd_jid_lookup(opts, req):
     json_output = outputs.get("json")
     if not json_output:
         result(req["id"], "jid_lookup", ok=False, data={
-            "found": False,
             "error": errors.get("json", "salt-run returned no output"),
             "subprocess_secs": round(t1 - t0, 2),
         })
@@ -2100,7 +2377,7 @@ def cmd_jid_lookup(opts, req):
     try:
         lookup_data = json_mod.loads(json_output)
     except Exception:
-        result(req["id"], "jid_lookup", ok=False, data={"found": False, "error": "failed to parse salt-run output"})
+        result(req["id"], "jid_lookup", ok=False, data={"error": "failed to parse salt-run output"})
         return
 
     # A state.apply/highstate/orchestrate job's lookup_jid return isn't
@@ -2110,103 +2387,14 @@ def cmd_jid_lookup(opts, req):
     if isinstance(lookup_data, dict) and set(lookup_data.keys()) == {"outputter", "data"}:
         lookup_data = lookup_data["data"]
 
-    def _derive_retcode_and_success(return_val):
-        if isinstance(return_val, dict):
-            result_val = return_val.get("result")
-            if result_val is not None:
-                if result_val is False:
-                    return (1, False)
-                if isinstance(result_val, bool):
-                    return (0, True)
-            elif return_val and all(
-                isinstance(v, dict) and ("result" in v or "__run_num__" in v)
-                for v in return_val.values()
-            ):
-                # state.apply-style return: a dict keyed by state ID, each
-                # value its own per-state result dict -- there's no
-                # top-level "result"/"retcode" to find above, so without
-                # this the whole job silently defaulted to "success" (rc=0)
-                # even when every state inside had result=False.
-                any_failed = any(v.get("result") is False for v in return_val.values())
-                return (1, False) if any_failed else (0, True)
-            rc = return_val.get("retcode", 0)
-            if not isinstance(rc, int):
-                try:
-                    rc = int(rc)
-                except (ValueError, TypeError):
-                    rc = 0
-            return (rc, rc == 0)
-        if return_val is None:
-            return (1, False)
-        if isinstance(return_val, bool):
-            return (0, return_val)
-        return (0, True)
+    # A lookup of a `test.get_opts` runner job prints the master's whole
+    # configuration: shown redacted, from the data, not as Salt printed it.
+    if _job_fun(opts, jid) == _OPTS_RUNNER:
+        _note_credentials(lookup_data)
+        lookup_data = _redact(lookup_data)
+        raw_output = ""
 
-    import re
-    _ansi_re = re.compile("\x1b\\[[0-9;]*m")
-
-    def _strip_ansi_with_map(text):
-        """Strip ANSI escapes while tracking, for each character kept, its
-        index in the original string — so a position found in the stripped
-        text (used for reliably matching a bare "mid:" header even though
-        `--force-color` puts escape codes right before it) can be mapped
-        back to a slice boundary in the original (still-colored) text.
-
-        Walks escape-code matches only (`finditer`), copying each run of
-        plain text between them in one slice, rather than a Python-level
-        loop doing a regex match at every single character position — for
-        a lookup spanning thousands of minions (hundreds of thousands of
-        lines) the per-character version added a real, visible delay on its
-        own before the O(n^2) bug below was even reached."""
-        out_parts = []
-        pos_map = []
-        last = 0
-        for m in _ansi_re.finditer(text):
-            if m.start() > last:
-                out_parts.append(text[last:m.start()])
-                pos_map.extend(range(last, m.start()))
-            last = m.end()
-        if last < len(text):
-            out_parts.append(text[last:])
-            pos_map.extend(range(last, len(text)))
-        return "".join(out_parts), pos_map
-
-    _stripped, _pos_map = _strip_ansi_with_map(raw_output)
-
-    def _to_raw_pos(stripped_pos):
-        if stripped_pos >= len(_pos_map):
-            return len(raw_output)
-        return _pos_map[stripped_pos]
-
-    # Precompute every minion's [start, end) span in the stripped text in a
-    # single regex pass over column-0 "mid:" header lines. A `.find()` per
-    # minion is O(minions x text) -- for a 4000-minion `grains.items` job
-    # (tens of MB of output) that alone could outlast the lookup timeout.
-    # Each section's end is simply the next header's start.
-    if _stripped.strip():
-        # Each entry is (newline_pos, content_start, mid) -- content_start
-        # (right after "mid:") is where THIS minion's own slice begins;
-        # newline_pos (the position of the newline preceding "mid:") is what
-        # closes the PREVIOUS minion's slice. Keeping these distinct matters:
-        # the raw text between a newline and the next visible character can
-        # contain that next minion's own leading ANSI codes (`--force-color`
-        # puts them immediately before the name), and ending a slice at
-        # "next minion's content_start" instead of "next minion's newline_pos"
-        # would pull those codes into the wrong (preceding) minion's section.
-        _mids = {str(k) for k in lookup_data}
-        _mid_starts = []
-        for m in re.finditer(r"^(\S[^\n]*?):[ \t]*$", _stripped, re.M):
-            mid_str = m.group(1)
-            if mid_str in _mids:
-                _mids.discard(mid_str)
-                start = m.start()
-                _mid_starts.append((max(start - 1, 0), start, mid_str))
-        _mid_spans = {}
-        for idx, (_newline_pos, content_start, mid_str) in enumerate(_mid_starts):
-            end = _mid_starts[idx + 1][0] if idx + 1 < len(_mid_starts) else len(_stripped)
-            _mid_spans[mid_str] = (_to_raw_pos(content_start), _to_raw_pos(end))
-    else:
-        _mid_spans = {}
+    _mid_spans = _minion_sections(raw_output, (str(k) for k in lookup_data))
 
     def _extract_section(mid):
         """Pull this minion's own section out of the raw multi-minion CLI
@@ -2249,10 +2437,8 @@ def cmd_jid_lookup(opts, req):
 
     returned = {r["minion_id"] for r in returns}
     data = {
-        "found": True,
         "fun": "",
         "tgt": "",
-        "start_time": "",
         "returns": returns,
         # Targeted minions with no return (yet): still running, down, or
         # never received the job.
@@ -2317,28 +2503,73 @@ def _jid_to_epoch(jid):
     return 0.0
 
 
-def _event_loop(opts):
-    """Run in a background thread: listen on event bus, forward events to stdout."""
-    import salt.utils.event
+_EVENT_RETRY_SECS = 3
+_EVENT_WAIT_SECS = 2
+
+
+def _publisher_listening(opts):
+    """Whether the master's event publisher takes connections: Salt's own
+    listener reconnects by itself and keeps saying it's connected (`cpub`)
+    while the publisher is gone, so this asks the socket."""
+    if opts.get("ipc_mode") == "tcp":
+        family, address = socket.AF_INET, ("127.0.0.1", int(opts.get("tcp_master_pub_port", 4512)))
+    else:
+        family, address = socket.AF_UNIX, os.path.join(opts["sock_dir"], "master_event_pub.ipc")
     try:
-        # opts comes from salt.config.master_config(), which always
-        # resolves sock_dir from Salt's own defaults (typically
-        # /var/run/salt/master, not under cachedir) — no need to guess it.
-        sock_dir = opts["sock_dir"]
-        me = salt.utils.event.MasterEvent(sock_dir, opts, listen=True)
-        for evt in me.iter_events(tag="", full=True):
-            if _event_stop.is_set():
-                break
-            if evt is None:
-                continue
-            tag = evt.get("tag", "")
-            evt_data = evt.get("data", {})
-            if _is_own_job_event(tag, evt_data):
-                continue
-            ts = _parse_stamp(evt_data.get("_stamp"))
-            event(tag, evt_data, ts)
-    except Exception as exc:
-        error(None, "event_bus: {}".format(str(exc)))
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1)
+            probe.connect(address)
+        return True
+    except OSError:
+        return False
+
+
+def _event_loop(opts):
+    """Run in a background thread: listen on event bus, forward events to
+    stdout, for as long as the subscription lasts. Whenever the listener
+    loses the master's event bus or finds it again (Salt reconnects by
+    itself, without a word), and whenever it fails outright and is started
+    again after `_EVENT_RETRY_SECS`, the TUI is told (`event_bus`): nothing
+    else would show that events stopped."""
+    import salt.utils.event
+
+    def report(up, why=None):
+        ndjson({"type": "event_bus", "ok": True} if up else {"type": "event_bus", "ok": False, "error": why})
+
+    while not _event_stop.is_set():
+        me = None
+        try:
+            # opts comes from salt.config.master_config(), which always
+            # resolves sock_dir from Salt's own defaults (typically
+            # /var/run/salt/master, not under cachedir) — no need to guess it.
+            me = salt.utils.event.MasterEvent(opts["sock_dir"], opts, listen=True)
+            connected = None
+            while not _event_stop.is_set():
+                evt = me.get_event(wait=_EVENT_WAIT_SECS, tag="", full=True)
+                # An event says so itself; without one, the socket is asked.
+                up = evt is not None or (bool(getattr(me, "cpub", True)) and _publisher_listening(opts))
+                if up != connected:
+                    connected = up
+                    report(up, "no event bus in {} (is salt-master running?)".format(opts["sock_dir"]))
+                if evt is None:
+                    continue
+                tag = evt.get("tag", "")
+                evt_data = evt.get("data", {})
+                ts = _parse_stamp(evt_data.get("_stamp"))
+                event(tag, _shown_event_data(tag, evt_data), ts)
+            return
+        except Exception as exc:
+            reason = str(exc) or type(exc).__name__
+        finally:
+            if me is not None:
+                try:
+                    me.destroy()
+                except Exception:
+                    pass
+        if _event_stop.is_set():
+            return
+        report(False, reason)
+        _event_stop.wait(_EVENT_RETRY_SECS)
 
 
 def cmd_subscribe_events(opts, req):
@@ -2565,7 +2796,7 @@ def cmd_jobs_list(opts, req):
 
     jobs = []
     for jid, info in result_data.items():
-        if not isinstance(info, dict) or jid in _own_jids:
+        if not isinstance(info, dict):
             continue
         fun = info.get("Function", info.get("fun", ""))
         tgt = info.get("Target", info.get("tgt", ""))
@@ -2702,6 +2933,7 @@ HANDLERS = {
     "zmq_ping": cmd_zmq_ping,
     "job_ping": cmd_job_ping,
     "jid_lookup": cmd_jid_lookup,
+    "job_load": cmd_job_load,
     "subscribe_events": cmd_subscribe_events,
     "unsubscribe_events": cmd_unsubscribe_events,
     "fleet_scan": cmd_fleet_scan,

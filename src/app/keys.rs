@@ -124,12 +124,10 @@ impl App {
                         Err(e) => self.sniffer_input_error = Some(e),
                         Ok(terms) => {
                             if !terms.is_empty() {
-                                let sniffer_max = self.config.sniffer_buffer_size;
                                 self.sniffer = Some(crate::types::SnifferState {
                                     query: self.sniffer_input_text.trim().to_string(),
                                     terms,
-                                    buffer: std::collections::VecDeque::with_capacity(sniffer_max),
-                                    max_size: sniffer_max,
+                                    buffer: std::collections::VecDeque::new(),
                                     paused: false,
                                     selected: 0,
                                     following: true,
@@ -158,6 +156,8 @@ impl App {
         // Sibling of clipboard_text for 's'/'S' ("save to file"): (content, filename hint)
         // (content, filename hint, extension)
         let mut save_text: Option<(String, String, &str)> = None;
+        // Built after the popup's match, which holds a borrow of the popup.
+        let mut minion_export: Option<char> = None;
         let had_popup = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
         // The sniffer lives outside `detail_popup` (see its field doc) so it
         // keeps running when you're elsewhere, but it still owns the Events
@@ -171,7 +171,7 @@ impl App {
                 self.sniffer.as_ref().is_some_and(|s| s.highlight_input.is_some())
             } else {
                 match &self.detail_popup {
-                    Some(DetailPopup::JobDetail { return_is_filtering, .. }) => *return_is_filtering || self.job_searching,
+                    Some(DetailPopup::JobDetail { return_is_filtering, outcome_picker, .. }) => *return_is_filtering || outcome_picker.is_some() || self.job_searching,
                     Some(DetailPopup::SaltEvent { searching, .. }) | Some(DetailPopup::Alert { searching, .. }) => *searching,
                     _ => false,
                 }
@@ -205,7 +205,6 @@ impl App {
         }
 
         // Local variable to defer jid_lookup agent command (avoids borrow conflict)
-        let mut trigger_y_lookup: Option<String> = None;
         let mut trigger_grains_fetch: Option<String> = None;
         let mut trigger_event_pretty_lookup: Option<(String, String)> = None;
         // Pre-compute events for MinionEvents popup to avoid borrow conflict
@@ -223,6 +222,8 @@ impl App {
                     ref mut selected_return,
                     ref mut return_filter,
                     ref mut return_is_filtering,
+                    ref mut outcomes,
+                    ref mut outcome_picker,
                     ref mut panel_focus,
                     ref mut content_scroll,
                     ref mut content_scroll_mode,
@@ -241,8 +242,25 @@ impl App {
                             _ => { line_edit::edit(return_filter, &mut self.input_cursor, code); }
                         }
                         if let Some(ref l) = lookup {
-                            crate::app::snap_to_matching_return(l, selected_return, return_filter);
+                            crate::app::snap_to_matching_return(l, selected_return, return_filter, *outcomes);
                         }
+                        return false;
+                    }
+                    if let Some(cursor) = outcome_picker {
+                        match crate::app::picker_key(code, cursor, Outcome::ALL.len()) {
+                            crate::app::PickerKey::Toggle(i) => {
+                                outcomes.toggle(Outcome::ALL[i]);
+                                if let Some(ref l) = lookup {
+                                    crate::app::snap_to_matching_return(l, selected_return, return_filter, *outcomes);
+                                }
+                            }
+                            crate::app::PickerKey::Close => *outcome_picker = None,
+                            crate::app::PickerKey::Stay => {}
+                        }
+                        return false;
+                    }
+                    if code == KeyCode::Char('x') && lookup.is_some() && !self.job_searching {
+                        *outcome_picker = Some(0);
                         return false;
                     }
                     // Right panel (content preview) focused
@@ -397,7 +415,6 @@ impl App {
                                         );
                                     }
                                 }
-                                trigger_y_lookup = Some(jid.clone());
                             }
                             KeyCode::Char('s') => {
                                 if let Some(ref l) = lookup {
@@ -456,9 +473,7 @@ impl App {
                         KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j')
                         | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => {
                             if let Some(ref l) = lookup {
-                                let visible: Vec<usize> = (0..l.entry_count())
-                                    .filter(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter)))
-                                    .collect();
+                                let visible = crate::app::shown_entries(l, return_filter, *outcomes);
                                 if !visible.is_empty() {
                                     let cur = selected_return.unwrap_or(0);
                                     let pos = visible.iter().position(|&i| i >= cur).unwrap_or(visible.len() - 1);
@@ -500,7 +515,6 @@ impl App {
                                     );
                                 }
                             }
-                            trigger_y_lookup = Some(jid.clone());
                         }
                         KeyCode::Char('s') => {
                             if let Some(ref l) = lookup {
@@ -526,19 +540,32 @@ impl App {
                                 }
                             }
                         }
-                        KeyCode::Char('a') => {
+                        KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('v') | KeyCode::Char('V')
+                        | KeyCode::Char('i') | KeyCode::Char('I') => {
                             if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let text = Self::format_all_returns_console(jid, l);
-                                    save_text = Some((text, format!("job-{}-all", jid), "txt"));
-                                }
-                            }
-                        }
-                        KeyCode::Char('A') => {
-                            if let Some(ref l) = lookup {
-                                if !l.returns.is_empty() {
-                                    let text = Self::format_all_returns_json(l);
-                                    save_text = Some((text, format!("job-{}-all", jid), "json"));
+                                // `a`/`A` take the whole job; the others what the list shows.
+                                let whole = matches!(code, KeyCode::Char('a') | KeyCode::Char('A'));
+                                let entries = if whole {
+                                    (0..l.entry_count()).collect()
+                                } else {
+                                    crate::app::shown_entries(l, return_filter, *outcomes)
+                                };
+                                let returned = entries.iter().any(|&i| i < l.returns.len());
+                                let view = if whole { "all".to_string() } else { crate::app::view_file_tag(return_filter, *outcomes) };
+                                match code {
+                                    KeyCode::Char('a') | KeyCode::Char('v') if !entries.is_empty() => {
+                                        save_text = Some((Self::format_all_returns_console(jid, l, &entries), format!("job-{}-{}", jid, view), "txt"));
+                                    }
+                                    KeyCode::Char('A') | KeyCode::Char('V') if returned => {
+                                        save_text = Some((Self::format_all_returns_json(l, &entries), format!("job-{}-{}", jid, view), "json"));
+                                    }
+                                    KeyCode::Char('i') if !entries.is_empty() => {
+                                        clipboard_text = Some(crate::app::shown_minion_list(l, &entries));
+                                    }
+                                    KeyCode::Char('I') if !entries.is_empty() => {
+                                        save_text = Some((crate::app::shown_minion_list(l, &entries), format!("job-{}-minions-{}", jid, view), "txt"));
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -678,7 +705,7 @@ impl App {
                             // master's actual Salt output. Only worth doing for
                             // a job-return event, and only once (Idle).
                             if *pretty && matches!(pretty_fetch, crate::types::PrettyFetch::Idle) {
-                                let jid = evt.data.get("jid").and_then(|v| v.as_str());
+                                let jid = evt.data.get("jid").and_then(|v| v.as_str()).filter(|jid| is_jid(jid));
                                 let mid = evt.data.get("id").and_then(|v| v.as_str());
                                 if let (Some(jid), Some(mid)) = (jid, mid) {
                                     trigger_event_pretty_lookup = Some((jid.to_string(), mid.to_string()));
@@ -781,7 +808,7 @@ impl App {
                         }
                         KeyCode::Char('g') | KeyCode::Char('G') if self.admin_mode => {
                             trigger_grains_fetch = Some(mid.clone());
-                            *grains = Some(Vec::new());
+                            *grains = Some(MinionGrains::default());
                             *grains_scroll = 0;
                         }
                         KeyCode::Char('a') | KeyCode::Char('A') if self.admin_mode => {
@@ -797,25 +824,22 @@ impl App {
                             *grains_scroll = grains_scroll.saturating_sub(1);
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
-                            let max = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            let max = grains.as_ref().map_or(0, |p| p.lines.len().saturating_sub(1));
                             *grains_scroll = (*grains_scroll + 1).min(max);
                         }
                         KeyCode::PageUp => {
                             *grains_scroll = grains_scroll.saturating_sub(10);
                         }
                         KeyCode::PageDown => {
-                            let max = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            let max = grains.as_ref().map_or(0, |p| p.lines.len().saturating_sub(1));
                             *grains_scroll = (*grains_scroll + 10).min(max);
                         }
                         KeyCode::Home => { *grains_scroll = 0; }
                         KeyCode::End => {
-                            *grains_scroll = grains.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+                            *grains_scroll = grains.as_ref().map_or(0, |p| p.lines.len().saturating_sub(1));
                         }
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            clipboard_text = Some(mid.clone());
-                        }
-                        KeyCode::Char('s') | KeyCode::Char('S') => {
-                            save_text = Some((mid.clone(), format!("minion-{}", mid), "txt"));
+                        KeyCode::Char(key @ ('y' | 'Y' | 's' | 'S')) => {
+                            minion_export = Some(key);
                         }
                         _ => {}
                     }
@@ -877,7 +901,7 @@ impl App {
                                 self.return_to_minion_events = Some((minion_id.clone(), *selected));
                                 let mid = minion_id.clone();
                                 items.get(*selected).and_then(|item| match item {
-                                    MinionActivityItem::Event(_, evt) => match self.return_event_job(evt) {
+                                    MinionActivityItem::Event(evt) => match self.return_event_job(evt) {
                                         Some((jid, header)) => {
                                             self.open_job_detail(jid, header, Some(mid));
                                             None
@@ -897,7 +921,7 @@ impl App {
                             KeyCode::Char('y') | KeyCode::Char('Y') => {
                                 if let Some(item) = items.get(*selected) {
                                     match item {
-                                        MinionActivityItem::Event(_, evt) => {
+                                        MinionActivityItem::Event(evt) => {
                                             clipboard_text = Some(serde_json::to_string_pretty(&evt.data)
                                                 .unwrap_or_else(|_| evt.tag.clone()));
                                         }
@@ -916,7 +940,7 @@ impl App {
                             KeyCode::Char('s') | KeyCode::Char('S') => {
                                 if let Some(item) = items.get(*selected) {
                                     match item {
-                                        MinionActivityItem::Event(_, evt) => {
+                                        MinionActivityItem::Event(evt) => {
                                             let text = serde_json::to_string_pretty(&evt.data)
                                                 .unwrap_or_else(|_| evt.tag.clone());
                                             save_text = Some((text, format!("event-{}", evt.tag), "txt"));
@@ -1006,9 +1030,18 @@ impl App {
                 }
             }
         }
+        if let Some(key) = minion_export {
+            let json = key.is_ascii_uppercase();
+            if let Some((id, text)) = crate::ui::detail_popup::minion_detail_export(self, json) {
+                if key.eq_ignore_ascii_case(&'y') {
+                    clipboard_text = Some(text);
+                } else {
+                    save_text = Some((text, format!("minion-{}", id), if json { "json" } else { "txt" }));
+                }
+            }
+        }
         if let Some(text) = clipboard_text {
             self.copy_to_clipboard(&text);
-            self.clipboard_at = Some(Instant::now());
             return false;
         }
         if let Some((content, hint, ext)) = save_text {
@@ -1117,7 +1150,6 @@ impl App {
             }
             if let Some(text) = clipboard_text {
                 self.copy_to_clipboard(&text);
-                self.clipboard_at = Some(Instant::now());
                 return false;
             }
             if let Some((content, hint, ext)) = save_text {
@@ -1130,14 +1162,34 @@ impl App {
             self.pending_event_pretty = Some((req_id, jid, mid));
             self.pending_event_pretty_at = Some(Instant::now());
         }
-        if let Some(jid) = trigger_y_lookup {
-            let req_id = self.send_jid_lookup(&jid);
-            self.pending_y_copy = Some((req_id, jid));
-        }
         if let Some(mid) = trigger_grains_fetch {
             self.send_agent_cmd("minion_grains", Some(serde_json::json!({"minion_id": mid})));
         }
         if had_popup || sniffer_showing {
+            return false;
+        }
+
+        if let Some(cursor) = self.minion_picker.as_mut().filter(|_| self.current_tab == Tab::Minions) {
+            match crate::app::picker_key(code, cursor, MinionState::ALL.len()) {
+                crate::app::PickerKey::Toggle(i) => {
+                    self.minion_states.toggle(MinionState::ALL[i]);
+                    self.clamp_selection();
+                }
+                crate::app::PickerKey::Close => self.minion_picker = None,
+                crate::app::PickerKey::Stay => {}
+            }
+            return false;
+        }
+
+        if let Some(cursor) = self.job_picker.as_mut().filter(|_| self.current_tab == Tab::Jobs) {
+            match crate::app::picker_key(code, cursor, JobState::ALL.len()) {
+                crate::app::PickerKey::Toggle(i) => {
+                    self.job_states.toggle(JobState::ALL[i]);
+                    self.clamp_selection();
+                }
+                crate::app::PickerKey::Close => self.job_picker = None,
+                crate::app::PickerKey::Stay => {}
+            }
             return false;
         }
 
@@ -1271,21 +1323,28 @@ impl App {
                 self.save_toggles();
             }
             KeyCode::Char('x') | KeyCode::Char('X') => {
-                if self.current_tab == Tab::Minions && self.fleet_data.is_some() {
-                    self.hide_timed_out = !self.hide_timed_out;
-                    self.clamp_selection();
+                if self.current_tab == Tab::Minions {
+                    self.minion_picker = Some(0);
                 } else if self.current_tab == Tab::Api {
                     self.config.api_hide_stats_polls = !self.config.api_hide_stats_polls;
                     self.save_toggles();
                 } else if self.current_tab == Tab::Jobs && !self.cache_focus {
-                    self.jobs_failed_only = !self.jobs_failed_only;
-                    self.job_selected = 0;
+                    self.job_picker = Some(0);
                 }
             }
             KeyCode::Char('z') | KeyCode::Char('Z') => {
-                if self.current_tab == Tab::Minions && !self.hide_timed_out {
+                if self.current_tab == Tab::Minions {
                     self.timed_out_collapsed = !self.timed_out_collapsed;
                     self.clamp_selection();
+                }
+            }
+            KeyCode::Char('i') | KeyCode::Char('I') if self.current_tab == Tab::Minions => {
+                let ids = self.shown_minion_ids();
+                if !ids.is_empty() && code == KeyCode::Char('i') {
+                    self.copy_to_clipboard(&ids);
+                } else if !ids.is_empty() {
+                    let hint = format!("minions-{}", crate::app::view_file_tag(self.filter_text_for(Tab::Minions), self.minion_states));
+                    self.open_save_prompt(ids, &hint, "txt");
                 }
             }
             KeyCode::Char('f') | KeyCode::Char('F') => {
@@ -1572,6 +1631,32 @@ impl App {
             return false;
         }
 
+        if self.current_tab == Tab::Jobs && self.job_picker.is_some() {
+            match crate::app::picker_click(&self.job_picker_hits, col, row) {
+                crate::app::PickerClick::Toggle(i) => {
+                    self.job_picker = Some(i);
+                    self.job_states.toggle(JobState::ALL[i]);
+                    self.clamp_selection();
+                }
+                crate::app::PickerClick::Outside => self.job_picker = None,
+                crate::app::PickerClick::Inside => {}
+            }
+            return false;
+        }
+
+        if self.current_tab == Tab::Minions && self.minion_picker.is_some() {
+            match crate::app::picker_click(&self.minion_picker_hits, col, row) {
+                crate::app::PickerClick::Toggle(i) => {
+                    self.minion_picker = Some(i);
+                    self.minion_states.toggle(MinionState::ALL[i]);
+                    self.clamp_selection();
+                }
+                crate::app::PickerClick::Outside => self.minion_picker = None,
+                crate::app::PickerClick::Inside => {}
+            }
+            return false;
+        }
+
         if let Some(hit) = self.header_hits.iter().find(|h| h.y == row && col >= h.x0 && col < h.x1).copied() {
             match hit.table {
                 TableId::LiveJobs => self.cache_focus = false,
@@ -1595,7 +1680,7 @@ impl App {
                 // Must match draw_minion_list's own conditions exactly (src/ui/minions.rs)
                 // -- unlike Events/Alerts/Jobs, Minions' own `visible` count is reduced
                 // by this same overhead, not just its data_start.
-                let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Minions).is_empty() || self.hide_timed_out;
+                let filter_shown = self.is_filtering || !self.filter_text_for(Tab::Minions).is_empty();
                 let overhead = if filter_shown { 1 } else { 0 }
                     + if self.admin_mode { 1 } else { 0 };
                 let visible = inner_h.saturating_sub(overhead).saturating_sub(2).max(1);
@@ -1803,15 +1888,31 @@ impl App {
         let hits = &self.job_detail_hits;
         let clicked = hits.rows.iter().find(|&&(y, _)| y == row).map(|&(_, i)| i).filter(|_| inside(hits.list));
         let on_preview = inside(hits.preview);
+        let picked = crate::app::picker_click(&hits.picker, col, row);
         let is_double = clicked.is_some() && self.register_click(col, row);
         if self.job_searching {
             return false;
         }
         let Some(DetailPopup::JobDetail {
             ref mut selected_return, ref mut panel_focus, ref mut content_scroll,
-            ref mut content_scroll_mode, ref lookup, return_is_filtering, ..
+            ref mut content_scroll_mode, ref lookup, return_is_filtering,
+            ref mut outcomes, ref mut outcome_picker, ref return_filter, ..
         }) = self.detail_popup else { return false };
         if return_is_filtering || lookup.is_none() {
+            return false;
+        }
+        if let Some(cursor) = outcome_picker {
+            match picked {
+                crate::app::PickerClick::Toggle(i) => {
+                    *cursor = i;
+                    outcomes.toggle(Outcome::ALL[i]);
+                    if let Some(l) = lookup {
+                        crate::app::snap_to_matching_return(l, selected_return, return_filter, *outcomes);
+                    }
+                }
+                crate::app::PickerClick::Outside => *outcome_picker = None,
+                crate::app::PickerClick::Inside => {}
+            }
             return false;
         }
         if let Some(i) = clicked {
@@ -1893,7 +1994,7 @@ impl App {
             if self.register_click(col, row) {
                 if let Some(item) = items.get(item_idx) {
                     match item {
-                        MinionActivityItem::Event(_, evt) => {
+                        MinionActivityItem::Event(evt) => {
                             self.return_to_minion_events = Some((mid.clone(), item_idx));
                             match self.return_event_job(evt) {
                                 Some((jid, header)) => self.open_job_detail(jid, header, Some(mid)),
@@ -1936,6 +2037,8 @@ impl App {
             job,
             return_filter: String::new(),
             return_is_filtering: false,
+            outcomes: OutcomeFilter::default(),
+            outcome_picker: None,
             panel_focus: false,
             content_scroll: 0,
             content_scroll_mode: false,
@@ -2134,7 +2237,7 @@ impl App {
                     };
                     self.detail_popup = Some(DetailPopup::Minion(mid, state, None, 0));
                     self.popup_tab = Some(self.current_tab);
-                } else if !self.hide_timed_out {
+                } else {
                     // Header row selected — toggle collapse
                     self.timed_out_collapsed = !self.timed_out_collapsed;
                 }

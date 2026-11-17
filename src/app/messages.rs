@@ -16,7 +16,6 @@ impl App {
             let n = q.len().min(MAX_PER_DRAIN);
             q.drain(..n).collect()
         };
-        let mut y_copy_json: Option<String> = None;
         let mut sniffer_tail_moved = false;
         for msg in batch {
             match msg {
@@ -45,6 +44,11 @@ impl App {
                                 self.clamp_selection();
                             } else {
                                 self.master_config_error = Some(data["error"].as_str().unwrap_or("unknown error").to_string());
+                            }
+                        }
+                        "job_load" if ok => {
+                            if let Some(&i) = data["jid"].as_str().and_then(|jid| self.jobs_index.get(jid)) {
+                                apply_job_load(&mut self.jobs[i], &data);
                             }
                         }
                         "minion_cache_list" if ok => {
@@ -163,10 +167,8 @@ impl App {
                                     error: data["error"].as_str().unwrap_or("").to_string(),
                                     current_requests: data["current_requests"].as_u64().unwrap_or(0),
                                     total_requests: data["total_requests"].as_u64().unwrap_or(0),
-                                    requests_per_sec: data["requests_per_sec"].as_f64().unwrap_or(0.0),
                                     bytes_read_per_sec: data["bytes_read_per_sec"].as_f64().unwrap_or(0.0),
                                     bytes_written_per_sec: data["bytes_written_per_sec"].as_f64().unwrap_or(0.0),
-                                    uptime_secs: data["uptime_secs"].as_f64().unwrap_or(0.0),
                                     requests: serde_json::from_value(data["requests"].clone()).unwrap_or_default(),
                                 };
 
@@ -300,19 +302,13 @@ impl App {
                         }
                         "minion_grains" => {
                             if let Some(mid) = data["minion_id"].as_str() {
-                                let pairs: Vec<(String, String)> = data["grains"].as_array()
-                                    .map(|arr| {
-                                        arr.iter().filter_map(|v| {
-                                            let obj = v.as_object()?;
-                                            let key = obj.get("key")?.as_str()?;
-                                            let val = obj.get("value")?.as_str()?;
-                                            Some((key.to_string(), val.to_string()))
-                                        }).collect()
-                                    })
-                                    .unwrap_or_default();
+                                let output = data["output"].as_str().unwrap_or("").trim_end();
+                                let output = if output.is_empty() { "salt grains.items returned nothing" } else { output };
+                                let style = ratatui::style::Style::default().fg(crate::ui::color::main_fg());
+                                let lines = App::ansi_text_to_lines(output, style);
                                 if let Some(DetailPopup::Minion(ref popup_id, _, ref mut grains, _)) = self.detail_popup {
                                     if popup_id == mid {
-                                        *grains = Some(pairs);
+                                        *grains = Some(MinionGrains { lines, json: data["grains"].clone() });
                                     }
                                 }
                             }
@@ -331,7 +327,6 @@ impl App {
                                 self.fleet_scan_completed = false;
                                 self.fleet_data = Some(FleetScan {
                                     minions: Vec::new(),
-                                    scanned_at: Instant::now(),
                                 });
                             } else {
                                 self.fleet_scanning = false;
@@ -380,17 +375,16 @@ impl App {
                                     let select_minion = self.job_detail_select_minion.take().or(keep_minion);
                                     // Opened from a minion's activity: select that minion's return.
                                     // Otherwise snap to the first filter match if one was committed before data arrived.
-                                    if let Some(DetailPopup::JobDetail { ref return_filter, ref mut selected_return, ref lookup, .. }) = self.detail_popup {
+                                    if let Some(DetailPopup::JobDetail { ref return_filter, outcomes, ref mut selected_return, ref lookup, .. }) = self.detail_popup {
                                         if let (Some(mid), Some(l)) = (select_minion, lookup) {
                                             if let Some(idx) = (0..l.entry_count()).find(|&i| l.entry_id(i) == Some(mid.as_str())) {
                                                 *selected_return = Some(idx);
                                             }
-                                        } else if !return_filter.is_empty() {
-                                            if let Some(ref l) = lookup {
-                                                let first = (0..l.entry_count()).find(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter)));
-                                                if let Some(idx) = first {
-                                                    *selected_return = Some(idx);
-                                                }
+                                            // A refresh can move the kept minion to an outcome that isn't ticked.
+                                            crate::app::snap_to_matching_return(l, selected_return, return_filter, outcomes);
+                                        } else if let Some(ref l) = lookup {
+                                            if let Some(&idx) = crate::app::shown_entries(l, return_filter, outcomes).first() {
+                                                *selected_return = Some(idx);
                                             }
                                         }
                                     }
@@ -413,21 +407,6 @@ impl App {
                                         } else {
                                             crate::types::PrettyFetch::Ready(text)
                                         };
-                                    }
-                                }
-                            }
-                            // Y key pending: copy pretty JSON of selected return
-                            if let Some((y_id, _)) = self.pending_y_copy {
-                                if id == y_id {
-                                    self.pending_y_copy = None;
-                                    let idx = match self.detail_popup {
-                                        Some(DetailPopup::JobDetail { selected_return, .. }) => selected_return.unwrap_or(0),
-                                        _ => 0,
-                                    };
-                                    if idx < jid_data.returns.len() {
-                                        let json = serde_json::to_string_pretty(&jid_data.returns[idx].full_return)
-                                            .unwrap_or_else(|_| jid_data.returns[idx].summary.clone());
-                                        y_copy_json = Some(json);
                                     }
                                 }
                             }
@@ -554,7 +533,6 @@ impl App {
                                                 } else {
                                                     self.fleet_data = Some(FleetScan {
                                                         minions: vec![fm],
-                                                        scanned_at: Instant::now(),
                                                     });
                                                 }
                                             }
@@ -602,11 +580,18 @@ impl App {
                     }
 
                     // Track live jobs from events
+                    let mut unknown_jid = None;
                     if let Some(evt) = self.events.back() {
+                        let known = self.jobs.len();
                         if let Some(timing) = track_job_from_event(&mut self.jobs, &mut self.jobs_index, evt) {
                             let fun = evt.data["fun"].as_str().unwrap_or("").to_string();
                             self.record_return_timing(timing, &fun);
                         }
+                        // A return for a job whose publish wasn't seen: ask the job cache what it is.
+                        unknown_jid = self.jobs.get(known).filter(|j| j.local).map(|j| j.jid.clone());
+                    }
+                    if let Some(jid) = unknown_jid {
+                        self.send_agent_cmd("job_load", Some(serde_json::json!({"jid": jid})));
                     }
 
                     // Sniffer: inject matching events into sniffer buffer
@@ -614,7 +599,7 @@ impl App {
                         if !state.paused {
                             if let Some(evt) = self.events.back() {
                                 if crate::sniff::matches(&state.terms, evt) {
-                                    let will_evict = state.buffer.len() >= state.max_size;
+                                    let will_evict = state.buffer.len() >= self.config.sniffer_buffer_size;
                                     // `selected`/`following` track the filtered (displayed)
                                     // view, not the raw buffer — only touch them when this
                                     // push/evict actually changes what's shown, i.e. when the
@@ -647,7 +632,10 @@ impl App {
                 AgentMessage::Error { message, .. } => {
                     self.agent.last_error = Some(message);
                     self.agent.connected = false;
+                    // The agent that held the listener is gone.
+                    self.agent.event_bus_error = None;
                 }
+                AgentMessage::EventBus { error } => self.agent.event_bus_error = error,
                 AgentMessage::Progress { cmd, loaded } => {
                     if cmd == "jobs_list" {
                         self.cache_load_progress = Some(loaded);
@@ -660,15 +648,6 @@ impl App {
                 let visible_len = state.filtered_indices().len();
                 Self::advance_tail_selection(&mut state.selected, state.following, false, visible_len);
             }
-        }
-        if let Some(json) = y_copy_json {
-            // Store in a temp file for clipboard
-            let _ = std::fs::write(&self.copy_path, &json);
-            self.clipboard_msg = Some((
-                format!(" Copied {} bytes of JSON job return -- use y for display format ", json.len()),
-                std::time::Instant::now(),
-            ));
-            self.clipboard_at = Some(std::time::Instant::now());
         }
     }
 

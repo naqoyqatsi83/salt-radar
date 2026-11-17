@@ -22,10 +22,35 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::alerts::{AlertEngine, ServiceMemThresholds};
-use crate::config::{load_config_or_fallback, AppConfig};
+use crate::config::{load_config_or_fallback, load_startup_config, AppConfig};
 use crate::types::*;
 
 const JOB_STATS_WINDOW: usize = 500;
+/// How long a job stays in Live Jobs after it was published.
+const LIVE_JOB_RETENTION_SECS: u64 = 3600;
+/// How often the `job_ping` latency source sends its `test.ping`.
+const JOB_PING_EVERY: Duration = Duration::from_secs(15);
+
+/// A timer for work done every so many seconds, whatever the tick
+/// (`tick_ms`): due on the first tick, then once `every` has passed since
+/// it last was. A tick never lands exactly on time, so up to a tenth of a
+/// second early counts — or `dashboard_secs = 2` with a 2 s tick would
+/// skip every other tick.
+#[derive(Debug, Default)]
+struct Every {
+    last: Option<Instant>,
+}
+
+impl Every {
+    fn due(&mut self, now: Instant, every: Duration) -> bool {
+        let slack = Duration::from_millis(100);
+        let due = self.last.is_none_or(|last| now.saturating_duration_since(last) + slack >= every);
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+}
 const SERVICE_TREND_WINDOW: Duration = Duration::from_secs(24 * 3600);
 const SERVICE_MEM_SAMPLE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -51,7 +76,6 @@ pub struct App {
     // Tabs
     pub current_tab: Tab,
     pub session_start: Instant,
-    pub tick_count: u64,
 
     // Data from agent
     pub agent: AgentState,
@@ -214,14 +238,19 @@ pub struct App {
     /// Timed polls still waiting on their result, by command, so a slow
     /// agent never gets a second copy of one queued behind the first.
     polls_in_flight: HashMap<&'static str, Instant>,
-    config_tick: u64,
+    /// When each timed poll last went out: the collectors (`dashboard_secs`),
+    /// the minion list (`minions_secs`), the config (`config_secs`) and the
+    /// `job_ping` latency probe.
+    dashboard_every: Every,
+    minions_every: Every,
+    config_every: Every,
+    job_ping_every: Every,
     /// Pending jid_lookup (request_id, jid) waiting for async result
     /// Pending jid_lookup (request_id, jid) for auto-updating the popup
     pending_jid_lookup: Option<(u64, String)>,
     /// When pending_jid_lookup was started, for timeout detection
     pending_jid_lookup_at: Option<Instant>,
     /// When Y is pressed, stores (request_id, jid) so the response auto-copies JSON
-    pending_y_copy: Option<(u64, String)>,
     /// Event Detail's own jid_lookup, requested when pretty view is first
     /// toggled on for a job-return event (request_id, jid, minion_id) — kept
     /// separate from `pending_jid_lookup` (Job Detail's own) since the two
@@ -254,10 +283,11 @@ pub struct App {
     pub save_prompt: Option<SaveFilePrompt>,
     /// A redraw is waiting for `max_output_kbs` to allow it; the header says so.
     pub output_held: bool,
+    /// The config file couldn't be parsed at startup, so `config` is the
+    /// defaults: saving them from the Config Editor would wipe the file.
+    config_broken: bool,
     /// Flag for main loop to call terminal.clear() after alt-screen disruption
     pub needs_terminal_clear: bool,
-    /// Set to true when config editor saves — main loop will restart
-    pub needs_restart: bool,
     /// Dashboard ZMQ panel's latency figure, in milliseconds. Populated by
     /// whichever mechanism `config.zmq_latency_source` selects — see the
     /// three `*_ping`/`*_pending` fields below for the source-specific state.
@@ -338,13 +368,11 @@ pub struct App {
     /// Most recent auth events/sec sample
     pub current_auth_rate: f64,
 
-    /// PID-based temp paths to avoid conflicts between users/instances
-    pid: u32,
     /// NDJSON command lines for the agent thread to forward to the agent.
     agent_cmd_tx: std::sync::mpsc::Sender<String>,
-    copy_path: String,
-    clip_log_path: String,
-    clip_debug_path: String,
+    /// Private directory for the copy file and the clipboard logs, made on
+    /// the first copy (see `clip_file`).
+    clip_dir: Option<std::path::PathBuf>,
 
     // ── Activity matrix (job return events per sec) ──────────────────────────
     /// Count of salt/job/*/ret/* events per second for last 60s (ring buffer)
@@ -444,13 +472,21 @@ pub struct App {
     /// Minions Fail% column. Kept apart from the event buffer so busy fleets
     /// don't evict a quiet minion's history.
     pub minion_returns: HashMap<String, MinionHealth>,
-    pub jobs_failed_only: bool,
+    /// The states Live Jobs shows, ticked in its `x` picker, and the
+    /// picker's cursor and last frame while it's open.
+    pub job_states: JobFilter,
+    pub job_picker: Option<usize>,
+    pub job_picker_hits: PickerHits,
     /// Filter state for MinionEvents popup
     pub minion_events_filter: String,
     pub minion_events_is_filtering: bool,
 
-    /// Hide timed-out (non-responsive) minions from list
-    pub hide_timed_out: bool,
+    /// The states the Minions list shows, ticked in its `x` picker.
+    pub minion_states: MinionFilter,
+    /// The Minions `x` picker's cursor while it's open, and where its last
+    /// frame put it.
+    pub minion_picker: Option<usize>,
+    pub minion_picker_hits: PickerHits,
     /// Collapse the timed-out minion section header
     pub timed_out_collapsed: bool,
 
@@ -496,7 +532,9 @@ pub enum AgentMessage {
     /// the main loop to drain it.
     Result { id: u64, cmd: String, ok: bool, data: serde_json::Value, received: Instant },
     Event { tag: String, data: serde_json::Value, ts: f64, received: Instant },
-    Error { id: Option<u64>, message: String },
+    Error { message: String },
+    /// The agent's event bus listener went up (`None`) or down (why).
+    EventBus { error: Option<String> },
     /// Incremental progress for a long-running command (currently just
     /// `jobs_list`'s live job-cache walk) — arrives zero or more times
     /// before the final `Result`.
@@ -525,6 +563,42 @@ pub fn column_editor_items(value: &str, all: &[&'static str]) -> (Vec<&'static s
     let hidden: Vec<&'static str> = all.iter().filter(|a| !items.contains(a)).copied().collect();
     items.extend(hidden);
     (items, shown)
+}
+
+/// Whether the Columns field's `value` shows `key`.
+pub fn column_shown(value: &str, key: &str) -> bool {
+    value.split(',').any(|k| k.trim() == key)
+}
+
+/// A key pressed on the Columns editor's list. `order` is every column as
+/// listed, shown or not, and stays put when one is ticked: only `+`/`-` move
+/// a row. `value` (the shown columns, in list order) follows; at least one
+/// stays shown. Returns the new cursor.
+pub fn column_editor_key(code: KeyCode, order: &mut [&'static str], value: &mut String, cursor: usize) -> usize {
+    let n = order.len();
+    let i = cursor.min(n.saturating_sub(1));
+    let mut shown: Vec<&str> = order.iter().copied().filter(|k| column_shown(value, k)).collect();
+    let i = match code {
+        KeyCode::Up | KeyCode::Char('k') => i.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => (i + 1).min(n.saturating_sub(1)),
+        KeyCode::PageUp => i.saturating_sub(config_editor::PICKER_PAGE),
+        KeyCode::PageDown => (i + config_editor::PICKER_PAGE).min(n.saturating_sub(1)),
+        KeyCode::Home => 0,
+        KeyCode::End => n.saturating_sub(1),
+        KeyCode::Char('+') | KeyCode::Char('=') if i > 0 => { order.swap(i, i - 1); i - 1 }
+        KeyCode::Char('-') | KeyCode::Char('_') if i + 1 < n => { order.swap(i, i + 1); i + 1 }
+        KeyCode::Char(' ') if n > 0 => {
+            match shown.iter().position(|k| *k == order[i]) {
+                Some(at) if shown.len() > 1 => { shown.remove(at); }
+                Some(_) => {}
+                None => shown.push(order[i]),
+            }
+            i
+        }
+        _ => i,
+    };
+    *value = order.iter().copied().filter(|k| shown.contains(k)).collect::<Vec<_>>().join(",");
+    i
 }
 
 pub const ZMQ_LATENCY_SOURCES: &[&str] = &["agent_ipc", "job_ping", "master_stats"];
@@ -679,11 +753,83 @@ fn minion_list_rows<'a>(keys: &'a [KeyInfo], minions: &'a [MinionInfo], index: &
     }).collect()
 }
 
+/// A Minions list row's `MinionState`, given the minions that answered the
+/// last fleet scan; `None` for the "Timed out" header.
+fn minion_state(row: &MinionRow, responded: &HashSet<&str>) -> Option<MinionState> {
+    Some(match row {
+        MinionRow::Minion(m) if m.timed_out => MinionState::TimedOut,
+        MinionRow::Minion(m) if responded.contains(m.id.as_str()) => MinionState::Responsive,
+        MinionRow::Minion(_) => MinionState::NotScanned,
+        MinionRow::Key(k) => match k.status {
+            KeyStatus::Accepted => MinionState::NotScanned,
+            KeyStatus::Pending => MinionState::Pending,
+            KeyStatus::Rejected => MinionState::Rejected,
+            KeyStatus::Denied => MinionState::Denied,
+        },
+        MinionRow::TimedOutHeader => return None,
+    })
+}
+
+/// A Live Jobs job's `JobState`, with `straggler` the seconds after which
+/// a job still waiting for returns counts as stuck.
+pub fn job_state(job: &JobEntry, straggler: u64) -> JobState {
+    if job.failed > 0 {
+        JobState::Failed
+    } else if job.target_count == 0 {
+        JobState::Uncounted
+    } else if job.returned >= job.target_count {
+        JobState::Ok
+    } else if job.age_seconds > straggler {
+        JobState::Stuck
+    } else {
+        JobState::Running
+    }
+}
+
+/// What a key does while a status picker is open.
+pub enum PickerKey {
+    Toggle(usize),
+    Close,
+    Stay,
+}
+
+/// A key pressed in an open status picker of `n` rows, its cursor at `cursor`.
+pub fn picker_key(code: KeyCode, cursor: &mut usize, n: usize) -> PickerKey {
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => { *cursor = cursor.saturating_sub(1); PickerKey::Stay }
+        KeyCode::Down | KeyCode::Char('j') => { *cursor = (*cursor + 1).min(n.saturating_sub(1)); PickerKey::Stay }
+        KeyCode::PageUp | KeyCode::Home => { *cursor = 0; PickerKey::Stay }
+        KeyCode::PageDown | KeyCode::End => { *cursor = n.saturating_sub(1); PickerKey::Stay }
+        KeyCode::Char(' ') => PickerKey::Toggle(*cursor),
+        KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < n => PickerKey::Toggle(c as usize - '1' as usize),
+        KeyCode::Enter | KeyCode::Esc | KeyCode::Char('x') | KeyCode::Char('q') => PickerKey::Close,
+        _ => PickerKey::Stay,
+    }
+}
+
+/// What a click does while a status picker is open: tick a row, nothing (on
+/// its border), or close it (outside).
+pub enum PickerClick {
+    Toggle(usize),
+    Inside,
+    Outside,
+}
+
+pub fn picker_click(hits: &PickerHits, col: u16, row: u16) -> PickerClick {
+    if !hits.area.contains(ratatui::layout::Position { x: col, y: row }) {
+        return PickerClick::Outside;
+    }
+    match hits.rows.iter().find(|&&(y, _)| y == row) {
+        Some(&(_, i)) => PickerClick::Toggle(i),
+        None => PickerClick::Inside,
+    }
+}
+
 /// The JID of a `salt/job/<jid>/ret/<minion>` event.
 pub fn return_event_jid(evt: &SaltEvent) -> Option<&str> {
     let mut parts = evt.tag.split('/');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some("salt"), Some("job"), Some(jid), Some("ret")) => Some(jid),
+        (Some("salt"), Some("job"), Some(jid), Some("ret")) if is_jid(jid) => Some(jid),
         _ => None,
     }
 }
@@ -722,7 +868,7 @@ pub struct JobHeader {
 /// A single item in the unified per-minion activity view.
 #[derive(Clone, Debug)]
 pub enum MinionActivityItem {
-    Event(usize, SaltEvent),
+    Event(SaltEvent),
     CacheJob(CacheJobEntry),
     Alert(AlertEntry),
 }
@@ -730,30 +876,31 @@ pub enum MinionActivityItem {
 impl MinionActivityItem {
     pub fn ts(&self) -> f64 {
         match self {
-            MinionActivityItem::Event(_, evt) => evt.ts,
+            MinionActivityItem::Event(evt) => evt.ts,
             MinionActivityItem::CacheJob(job) => job.start_epoch,
             MinionActivityItem::Alert(_) => 0.0,
-        }
-    }
-
-    pub fn label(&self) -> &str {
-        match self {
-            MinionActivityItem::Event(_, evt) => &evt.tag,
-            MinionActivityItem::CacheJob(job) => &job.fun,
-            MinionActivityItem::Alert(alert) => &alert.description,
         }
     }
 }
 
 // ─── Detail popup variants ──────────────────────────────────────────────────
 
+/// A minion's fetched grains: Salt's own output and the JSON for saving (null
+/// when it returned none). No lines means the fetch is still running.
+#[derive(Clone, Debug, Default)]
+pub struct MinionGrains {
+    pub lines: Vec<Line<'static>>,
+    pub json: serde_json::Value,
+}
+
 #[derive(Clone, Debug)]
 pub enum DetailPopup {
-    Minion(String, PingState, Option<Vec<(String, String)>>, usize),
+    Minion(String, PingState, Option<MinionGrains>, usize),
     /// `search` is the `/` query in the body (being typed while
     /// `searching`), `search_focus` the match `n`/`N` last landed on.
     SaltEvent { evt: SaltEvent, scroll: usize, pretty: bool, pretty_fetch: crate::types::PrettyFetch, search: String, searching: bool, search_focus: Option<usize> },
-    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
+    /// `outcome_picker` is the `o` picker's cursor while it's open.
+    JobDetail { jid: String, lookup: Option<JidLookup>, selected_return: Option<usize>, job: JobHeader, return_filter: String, return_is_filtering: bool, outcomes: OutcomeFilter, outcome_picker: Option<usize>, panel_focus: bool, content_scroll: usize, content_scroll_mode: bool },
     /// An alert's detail: `scroll` and the search over its items work as
     /// in `SaltEvent`.
     Alert { alert: AlertEntry, scroll: usize, search: String, searching: bool, search_focus: Option<usize> },
@@ -782,18 +929,10 @@ impl DetailPopup {
 impl App {
     pub fn new() -> Self {
         let config_path = crate::config::resolve_config_path();
-        let config = load_config_or_fallback(&config_path);
-        let config_secs = config.config_secs;
-        let event_buffer_size = config.event_buffer_size;
+        let (config, config_warning) = load_startup_config(&config_path);
+        let config_broken = crate::config::config_error(&config_path).is_some();
         let agent_rx: Arc<Mutex<VecDeque<AgentMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
         let agent_backlog_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let pid = std::process::id();
-
-        // PID-based temp paths to avoid conflicts between multiple users or instances
-        let copy_path = format!("/tmp/.salt-radar-copy-{}.txt", pid);
-        let clip_log_path = format!("/tmp/.salt-radar-clip-{}.log", pid);
-        let clip_debug_path = format!("/tmp/.salt-radar-clip-debug-{}.log", pid);
-
         // Spawn agent
         let rx = agent_rx.clone();
         let dropped = agent_backlog_dropped.clone();
@@ -811,12 +950,12 @@ impl App {
             config_path,
             current_tab: Tab::Dashboard,
             session_start: Instant::now(),
-            tick_count: 0,
 
             agent: AgentState {
                 connected: false,
                 version: None,
                 last_error: None,
+                event_bus_error: None,
             },
             config_snapshot: None,
 
@@ -833,7 +972,7 @@ impl App {
             minion_info_dirty: false,
             minion_index: HashMap::new(),
 
-            events: VecDeque::with_capacity(event_buffer_size),
+            events: VecDeque::new(),
             events_since_last_tick: 0,
             event_breakdown: EventBreakdown::default(),
             events_per_sec: 0.0,
@@ -884,10 +1023,14 @@ impl App {
             job_detail_select_minion: None,
             job_detail_refresh_at: None,
             minion_returns: HashMap::new(),
-            jobs_failed_only: false,
+            job_states: JobFilter::default(),
+            job_picker: None,
+            job_picker_hits: PickerHits::default(),
             minion_events_filter: String::new(),
             minion_events_is_filtering: false,
-            hide_timed_out: false,
+            minion_states: MinionFilter::default(),
+            minion_picker: None,
+            minion_picker_hits: PickerHits::default(),
             timed_out_collapsed: false,
             needs_mouse_toggle: false,
             last_click_at: None,
@@ -946,10 +1089,12 @@ impl App {
             agent_backlog_dropped,
             agent_req_id: 0,
             polls_in_flight: HashMap::new(),
-            config_tick: config_secs,
+            dashboard_every: Every::default(),
+            minions_every: Every::default(),
+            config_every: Every::default(),
+            job_ping_every: Every::default(),
             pending_jid_lookup: None,
             pending_jid_lookup_at: None,
-            pending_y_copy: None,
             pending_event_pretty: None,
             pending_event_pretty_at: None,
             events_total: 0,
@@ -962,11 +1107,11 @@ impl App {
             last_zmq_return: HashMap::new(),
             clipboard_at: None,
             save_at: None,
-            clipboard_msg: None,
+            clipboard_msg: config_warning.map(|w| (w, Instant::now())),
             save_prompt: None,
+            config_broken,
             output_held: false,
             needs_terminal_clear: false,
-            needs_restart: false,
             zmq_latency_ms: 0.0,
             zmq_latency_seen: false,
             zmq_latency_history: [0.0; 2000],
@@ -1021,11 +1166,8 @@ impl App {
             prev_cpu_idle_jiffies: 0,
             prev_cpu_time: None,
 
-            pid,
             agent_cmd_tx,
-            copy_path,
-            clip_log_path,
-            clip_debug_path,
+            clip_dir: None,
         }
     }
 
@@ -1119,7 +1261,6 @@ impl App {
     /// responsive for an active feature (sniffer, fleet scan, pending lookups).
     pub fn needs_fast_poll(&self) -> bool {
         self.pending_jid_lookup.is_some()
-            || self.pending_y_copy.is_some()
             || self.fleet_scanning
             || self.cache_loading
             || self.sniffer.as_ref().is_some_and(|s| !s.paused)
@@ -1531,18 +1672,17 @@ impl App {
     /// Returns Vec of (index, SaltEvent) pairs for events related to the given minion_id,
     /// newest first. Matches on data["id"], tag patterns /ret/<id>, salt/minion/<id>/start,
     /// and salt/beacon/<id>. Returns owned SaltEvents to avoid borrow conflicts.
-    pub fn events_for_minion(&self, minion_id: &str) -> Vec<(usize, SaltEvent)> {
+    pub fn events_for_minion(&self, minion_id: &str) -> Vec<SaltEvent> {
         self.events
             .iter()
             .rev()
-            .enumerate()
-            .filter(|(_idx, evt)| {
+            .filter(|evt| {
                 evt.data["id"].as_str() == Some(minion_id)
                     || evt.tag.ends_with(&format!("/ret/{}", minion_id))
                     || evt.tag == format!("salt/minion/{}/start", minion_id)
                     || evt.tag.starts_with(&format!("salt/beacon/{}", minion_id))
             })
-            .map(|(idx, evt)| (idx, evt.clone()))
+            .cloned()
             .collect()
     }
 
@@ -1553,11 +1693,11 @@ impl App {
         let mut items: Vec<MinionActivityItem> = Vec::new();
         let mut returned_jids: HashSet<String> = HashSet::new();
 
-        for (idx, evt) in self.events_for_minion(minion_id) {
+        for evt in self.events_for_minion(minion_id) {
             if let Some(jid) = return_event_jid(&evt) {
                 returned_jids.insert(jid.to_string());
             }
-            items.push(MinionActivityItem::Event(idx, evt));
+            items.push(MinionActivityItem::Event(evt));
         }
 
         // A job whose return is already listed would only repeat it, minus the result.
@@ -1788,7 +1928,7 @@ impl App {
 
     pub fn filtered_jobs_len(&self) -> usize {
         let pat = self.filter_text_for(Tab::Jobs);
-        if pat.is_empty() && !self.jobs_failed_only {
+        if pat.is_empty() && self.job_states.is_all() {
             return self.jobs.len();
         }
         self.jobs.iter().filter(self.job_shown()).count()
@@ -1796,7 +1936,16 @@ impl App {
 
     fn job_shown(&self) -> impl Fn(&&JobEntry) -> bool + '_ {
         let matches = Self::job_matcher(self.filter_text_for(Tab::Jobs), self.accepted_ids());
-        move |job| (!self.jobs_failed_only || job.failed > 0) && matches(job)
+        let straggler = self.config.job_straggler_secs;
+        move |job| self.job_states.shows(job_state(job, straggler)) && matches(job)
+    }
+
+    /// How many Live Jobs are in each `JobState`, filters aside: the counts
+    /// its `x` picker shows.
+    pub fn job_state_counts(&self) -> Vec<usize> {
+        JobState::ALL.iter()
+            .map(|&s| self.jobs.iter().filter(|j| job_state(j, self.config.job_straggler_secs) == s).count())
+            .collect()
     }
 
     /// Live Jobs in display order: filtered, then sorted. Unsorted, they
@@ -1946,9 +2095,8 @@ impl App {
             .collect();
         if let Some((col, desc)) = self.sort_of(TableId::Alerts) {
             let rank = |s: AlertSeverity| match s {
-                AlertSeverity::Info => 0,
-                AlertSeverity::Warn => 1,
-                AlertSeverity::Crit => 2,
+                AlertSeverity::Warn => 0,
+                AlertSeverity::Crit => 1,
             };
             alerts.sort_by(|a, b| {
                 let ord = match col {
@@ -2068,9 +2216,40 @@ impl App {
     /// Without readable keys, the accepted minions the master knows.
     fn minion_entries(&self) -> (Vec<MinionRow<'_>>, Vec<MinionRow<'_>>) {
         let matches = Self::minion_row_matcher(self.filter_text_for(Tab::Minions));
+        let responded = self.scan_responded();
+        let states = self.minion_states;
         minion_list_rows(&self.keys, &self.minion_info, &self.minion_index).into_iter()
-            .filter(|r| matches(r))
+            .filter(|r| matches(r) && minion_state(r, &responded).is_some_and(|s| states.shows(s)))
             .partition(|r| !r.timed_out())
+    }
+
+    /// The minions that answered the last fleet scan.
+    fn scan_responded(&self) -> HashSet<&str> {
+        self.fleet_data.as_ref().map_or_else(HashSet::new, |fd| {
+            fd.minions.iter().filter(|m| !m.timed_out).map(|m| m.id.as_str()).collect()
+        })
+    }
+
+    /// How many of the Minions list's rows are in each `MinionState`, filters
+    /// aside: the counts its `x` picker shows.
+    pub fn minion_state_counts(&self) -> Vec<usize> {
+        let responded = self.scan_responded();
+        let mut counts = vec![0; MinionState::ALL.len()];
+        for r in minion_list_rows(&self.keys, &self.minion_info, &self.minion_index) {
+            if let Some(i) = minion_state(&r, &responded).and_then(|s| MinionState::ALL.iter().position(|&x| x == s)) {
+                counts[i] += 1;
+            }
+        }
+        counts
+    }
+
+    /// The IDs the Minions list shows, collapsed timed-out ones included, one
+    /// per line: what `i`/`I` copy and save.
+    pub fn shown_minion_ids(&self) -> String {
+        self.minion_rows_with(false).iter()
+            .filter(|r| !matches!(r, MinionRow::TimedOutHeader))
+            .map(|r| format!("{}\n", r.id()))
+            .collect()
     }
 
     /// The Minions filter: ID, key status and, for minions, OS and version.
@@ -2086,7 +2265,7 @@ impl App {
     /// Rows the Minions list shows, the "Timed out" header included.
     pub fn filtered_minions_len(&self) -> usize {
         let (live, timed_out) = self.minion_entries();
-        if self.hide_timed_out || timed_out.is_empty() {
+        if timed_out.is_empty() {
             live.len()
         } else {
             live.len() + 1 + if self.timed_out_collapsed { 0 } else { timed_out.len() }
@@ -2106,6 +2285,10 @@ impl App {
     /// mixes timed-out minions in with responsive ones. An ID with two keys
     /// (accepted and denied) gets two rows, next to each other by default.
     pub fn minion_rows(&self) -> Vec<MinionRow<'_>> {
+        self.minion_rows_with(self.timed_out_collapsed)
+    }
+
+    fn minion_rows_with(&self, collapsed: bool) -> Vec<MinionRow<'_>> {
         let (mut live, mut timed_out) = self.minion_entries();
         let rank = |r: &MinionRow| match r.key_status() {
             Some(KeyStatus::Accepted) => 0,
@@ -2147,9 +2330,9 @@ impl App {
         };
         live.sort_by(cmp);
         timed_out.sort_by(cmp);
-        if !self.hide_timed_out && !timed_out.is_empty() {
+        if !timed_out.is_empty() {
             live.push(MinionRow::TimedOutHeader);
-            if !self.timed_out_collapsed {
+            if !collapsed {
                 live.extend(timed_out);
             }
         }
@@ -2168,18 +2351,38 @@ impl App {
         self.minion_entries().1.len()
     }
 
-    /// Strip ANSI escape sequences from a string.
+    /// `s` as plain text: without escape sequences (colors, and whatever
+    /// else a minion's output or an HTTP request line carries: cursor
+    /// moves, OSC 52 "set clipboard", title changes) and without any other
+    /// control character than newline and tab. What's copied is printed to
+    /// the terminal and pasted into shells, so none of it may reach either.
     pub fn strip_ansi(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars();
+        let mut chars = s.chars().peekable();
+        // A CSI sequence ends at its final byte, a string sequence (OSC,
+        // DCS, ...) at BEL or ST, or with the line when it's never closed.
+        let skip_csi = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+            while let Some(c) = chars.next_if(|&c| c != '\n') {
+                if ('@'..='~').contains(&c) { break; }
+            }
+        };
+        let skip_string = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+            while let Some(c) = chars.next_if(|&c| c != '\n') {
+                if c == '\x07' || c == '\u{9c}' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) { break; }
+            }
+        };
         while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                // Consume until we hit 'm' (end of CSI sequence)
-                for n in chars.by_ref() {
-                    if n == 'm' { break; }
-                }
-            } else {
-                out.push(c);
+            match c {
+                '\x1b' => match chars.next_if(|&c| c != '\n') {
+                    Some('[') => skip_csi(&mut chars),
+                    Some(']' | 'P' | 'X' | '^' | '_') => skip_string(&mut chars),
+                    _ => {}
+                },
+                '\u{9b}' => skip_csi(&mut chars),
+                '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => skip_string(&mut chars),
+                '\n' | '\t' => out.push(c),
+                c if c.is_control() => {}
+                c => out.push(c),
             }
         }
         out
@@ -2372,15 +2575,18 @@ impl App {
         format!("{}:\n{}", minion_id, fmt_val(value, 4))
     }
 
-    /// Every return in a job lookup, concatenated (Salt outputter format,
-    /// same per-return text `y`/`s` use) — for jobs with too many targeted
-    /// minions to review one at a time via the left panel.
-    fn format_all_returns_console(jid: &str, l: &crate::types::JidLookup) -> String {
+    /// The returns among Job Detail's `entries`, concatenated (Salt outputter
+    /// format, same per-return text `y`/`s` use), then the entries that
+    /// didn't return — for jobs with too many targeted minions to review one
+    /// at a time via the left panel.
+    fn format_all_returns_console(jid: &str, l: &JidLookup, entries: &[usize]) -> String {
+        let returns: Vec<&JidReturn> = entries.iter().filter_map(|&i| l.returns.get(i)).collect();
+        let missing: Vec<&str> = entries.iter().filter(|&&i| i >= l.returns.len()).filter_map(|&i| l.entry_id(i)).collect();
         let mut out = format!(
             "JID: {}\nFunction: {}\nTarget: {}\n{} returns\n\n",
-            jid, l.fun, l.tgt, l.returns.len(),
+            jid, l.fun, l.tgt, returns.len(),
         );
-        for ret in &l.returns {
+        for ret in returns {
             out.push_str(&"=".repeat(60));
             out.push('\n');
             if !ret.formatted_text.is_empty() {
@@ -2390,23 +2596,74 @@ impl App {
             }
             out.push_str("\n\n");
         }
+        if !missing.is_empty() {
+            out.push_str(&"=".repeat(60));
+            out.push_str(&format!("\nNo return from {} minions:\n", missing.len()));
+            for id in missing {
+                out.push_str(id);
+                out.push('\n');
+            }
+        }
         out
     }
 
-    /// Every return in a job lookup as a single JSON object keyed by minion
-    /// id — the `A` (all, JSON) counterpart of `format_all_returns_console`.
-    fn format_all_returns_json(l: &crate::types::JidLookup) -> String {
-        let map: serde_json::Map<String, serde_json::Value> = l.returns.iter()
+    /// The returns among Job Detail's `entries` as a single JSON object keyed
+    /// by minion id — the JSON counterpart of `format_all_returns_console`.
+    fn format_all_returns_json(l: &JidLookup, entries: &[usize]) -> String {
+        let map: serde_json::Map<String, serde_json::Value> = entries.iter().filter_map(|&i| l.returns.get(i))
             .map(|r| (r.minion_id.clone(), r.full_return.clone()))
             .collect();
         serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or_default()
     }
 
-    /// Clean up per-instance temp files. Called on exit.
+    /// Trims every buffer to its size setting, oldest first, keeping each
+    /// selection on the item it was on (or the oldest one left): after a
+    /// size was lowered in the Config Editor, each new item would otherwise
+    /// only replace one old one, and the buffer keep its old length.
+    pub(crate) fn fit_buffers(&mut self) {
+        let excess = self.events.len().saturating_sub(self.config.event_buffer_size);
+        if excess > 0 {
+            let shown_dropped = if self.applied_filter.is_empty() {
+                excess
+            } else {
+                self.events.iter().take(excess).filter(|e| self.events_matcher.matches(e)).count()
+            };
+            self.events.drain(..excess);
+            self.rebuild_filtered_events_cache();
+            if !self.events_following {
+                self.event_selected = self.event_selected.saturating_sub(shown_dropped);
+            }
+        }
+        if let Some(ref mut state) = self.sniffer {
+            let excess = state.buffer.len().saturating_sub(self.config.sniffer_buffer_size);
+            if excess > 0 {
+                let highlight = &state.highlight_terms;
+                let shown_dropped = state.buffer.iter().take(excess)
+                    .filter(|e| highlight.is_empty() || crate::sniff::matches(highlight, e))
+                    .count();
+                state.buffer.drain(..excess);
+                if !state.following {
+                    state.selected = state.selected.saturating_sub(shown_dropped);
+                }
+                self.sniffer_dirty = true;
+            }
+        }
+        let excess = self.api_requests_log.len().saturating_sub(self.config.api_log_cap);
+        self.api_requests_log.drain(..excess);
+        self.api_log_selected = self.api_log_selected.saturating_sub(excess);
+        let window = self.config.api_stats_window;
+        let excess = self.api_status_window.len().saturating_sub(window);
+        self.api_status_window.drain(..excess);
+        let excess = self.api_login_latencies.len().saturating_sub(window);
+        self.api_login_latencies.drain(..excess);
+        self.clamp_selection();
+    }
+
+    /// Removes the clipboard files. Called on exit.
     pub fn cleanup(&self) {
-        let _ = std::fs::remove_file(&self.copy_path);
-        let _ = std::fs::remove_file(&self.clip_log_path);
-        let _ = std::fs::remove_file(&self.clip_debug_path);
+        if let Some(dir) = &self.clip_dir {
+            let _ = crate::config::as_invoking_user(|| std::fs::remove_dir_all(dir));
+        }
     }
 
     /// Saves the hotkey toggles (F2 mouse, F4-F8 graphs, `m` graph style,
@@ -2434,9 +2691,15 @@ impl App {
         if !changed {
             return;
         }
+        // `on_disk` is the defaults when the file can't be parsed: writing
+        // it back would replace the user's settings with a toggle.
+        if let Some(e) = crate::config::config_error(&self.config_path) {
+            self.clipboard_msg = Some((format!(" Settings not saved, {} has an error ({}) ", self.config_path.display(), e), Instant::now()));
+            return;
+        }
         match crate::config::write_config(&self.config_path, &on_disk) {
             Ok(()) => self.persisted_config = self.config.clone(),
-            Err(e) => self.clipboard_msg = Some((format!("Settings not saved: {}", e), Instant::now())),
+            Err(e) => self.clipboard_msg = Some((format!("Settings not saved: {}", crate::config::config_io_error(&self.config_path, &e)), Instant::now())),
         }
     }
 
@@ -2518,11 +2781,15 @@ impl App {
             self.reindex_minions();
         }
 
-        // Refresh collectors at interval, not every tick
+        // Refresh collectors at their intervals, in seconds whatever the tick.
+        let now = Instant::now();
+        let secs = |s: u64| Duration::from_secs(s.max(1));
         if self.config_snapshot.is_some() {
-            let interval = self.config.dashboard_secs.max(1);
-            if self.tick_count.is_multiple_of(interval) {
+            if self.minions_every.due(now, secs(self.config.minions_secs)) {
                 self.send_poll("minion_cache_list", None);
+                self.send_poll("alive_check", None);
+            }
+            if self.dashboard_every.due(now, secs(self.config.dashboard_secs)) {
                 self.send_poll("list_keys", None);
                 self.send_poll("list_processes", None);
                 self.send_poll("list_services", None);
@@ -2613,19 +2880,11 @@ impl App {
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(u64::MAX);
 
-        // Config refresh (keeps at config_secs interval)
-        self.config_tick += 1;
-        if self.config_tick >= self.config.config_secs {
-            self.config_tick = 0;
+        if self.config_every.due(now, secs(self.config.config_secs)) {
             self.send_agent_cmd("config_snapshot", Some(serde_json::json!({"digests": self.config.running_config_digests})));
             if !self.master_config_loading {
                 self.request_master_config();
             }
-        }
-
-        // Alive detection every 5 ticks
-        if self.tick_count.is_multiple_of(5) {
-            self.send_poll("alive_check", None);
         }
 
         // ZMQ panel latency: dispatch/measure per the configured source.
@@ -2647,7 +2906,7 @@ impl App {
                 // round-trip, so starting the clock afterward could catch the
                 // job already returned in a fast/local fleet, always reading
                 // a flat ~0ms instead of the real round-trip time.
-                if self.job_ping_pending.is_none() && self.tick_count.is_multiple_of(15) {
+                if self.job_ping_pending.is_none() && self.job_ping_every.due(now, JOB_PING_EVERY) {
                     self.job_ping_pending = Some((String::new(), Instant::now()));
                     self.send_agent_cmd("job_ping", None);
                 }
@@ -2747,7 +3006,7 @@ impl App {
         self.settle_job_lags();
 
         // Age out old jobs — anything removed while still unfinished is a partial close-out
-        let max_age = self.config.config_secs * 60; // 60 min default
+        let max_age = LIVE_JOB_RETENTION_SECS;
         let mut kept_jobs = Vec::with_capacity(self.jobs.len());
         for job in self.jobs.drain(..) {
             if job.age_seconds < max_age {
@@ -2792,8 +3051,6 @@ impl App {
                 self.clipboard_msg = None;
             }
         }
-
-        self.tick_count += 1;
 
         // Purge minion_info entries without accepted keys (ghost protection)
         if !self.keys.is_empty() {
@@ -2884,7 +3141,6 @@ impl App {
 fn parse_version(data: &serde_json::Value) -> ConfigSnapshot {
     ConfigSnapshot {
         salt_version: data["salt_version"].as_str().unwrap_or("?").to_string(),
-        python_version: data["python_version"].as_str().unwrap_or("?").to_string(),
         ..Default::default()
     }
 }
@@ -2938,29 +3194,10 @@ fn parse_config_snapshot(data: &serde_json::Value) -> ConfigSnapshot {
     ConfigSnapshot {
         salt_version: data["salt_version"].as_str().unwrap_or("?").to_string(),
         minimum_auth_version: data["minimum_auth_version"].as_u64().unwrap_or(0),
-        python_version: data["python_version"].as_str().unwrap_or("?").to_string(),
         worker_threads: data["worker_threads"].as_i64(),
-        transport: data["transport"].as_str().unwrap_or("zeromq").to_string(),
-        sock_dir: data["sock_dir"].as_str().unwrap_or("").to_string(),
-        reactor_count: data["reactor_count"].as_u64().unwrap_or(0) as usize,
-        fileserver_backends: data["fileserver_backends"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default(),
-        gitfs_remote_count: data["gitfs_remote_count"].as_u64().unwrap_or(0) as usize,
-        ext_pillar_names: data["ext_pillar_names"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default(),
-        master_job_cache: data["master_job_cache"].as_str().unwrap_or("local").to_string(),
-        pillar_cache: data["pillar_cache"].as_bool().unwrap_or(false),
-        presence_events: data["presence_events"].as_bool().unwrap_or(false),
-        interface: data["interface"].as_str().unwrap_or("0.0.0.0").to_string(),
         publish_port: data["publish_port"].as_u64().unwrap_or(4505) as u16,
         ret_port: data["ret_port"].as_u64().unwrap_or(4506) as u16,
         api_port: data["api_port"].as_u64().unwrap_or(0) as u16,
-        pki_dir: data["pki_dir"].as_str().unwrap_or("/etc/salt/pki/master").to_string(),
-        cachedir: data["cachedir"].as_str().unwrap_or("/var/cache/salt/master").to_string(),
         cpu_count: data["cpu_count"].as_u64().unwrap_or(0) as u32,
         hostname: data["hostname"].as_str().unwrap_or("?").to_string(),
     }
@@ -3037,62 +3274,6 @@ fn linreg_slope_per_sec(points: &[(f64, f64)]) -> f64 {
     let denom = n * sum_xx - sum_x * sum_x;
     if denom.abs() < f64::EPSILON { return 0.0; }
     (n * sum_xy - sum_x * sum_y) / denom
-}
-
-fn build_jid_lookup_from_events(jid: &str, events: &VecDeque<SaltEvent>) -> Option<JidLookup> {
-    let prefix = format!("salt/job/{}/ret/", jid);
-    let mut returns: Vec<JidReturn> = Vec::new();
-    let mut fun = String::new();
-    let mut tgt = String::new();
-
-    for evt in events {
-        if evt.tag == format!("salt/job/{}/new", jid) {
-            fun = evt.data["fun"].as_str().unwrap_or("").to_string();
-            tgt = evt.data["tgt"].as_str().unwrap_or("").to_string();
-        }
-        if !evt.tag.starts_with(&prefix) { continue; }
-        let minion_id = match evt.data["id"].as_str() {
-            Some(m) if !m.is_empty() => m.to_string(),
-            _ => continue,
-        };
-        let full_return = evt.data["return"].clone();
-        let summary = match &full_return {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
-                // Use a short summary: first 80 chars of formatted representation
-                let formatted = App::format_return_as_console(&minion_id, &full_return);
-                let first_line = formatted.lines().next().unwrap_or(&formatted);
-                let truncated = if first_line.len() > 80 {
-                    format!("{}...", &first_line[..80])
-                } else {
-                    first_line.to_string()
-                };
-                truncated
-            }
-            other => other.to_string(),
-        };
-        let (success, retcode) = return_outcome(&evt.data, &full_return);
-        returns.push(JidReturn {
-            minion_id,
-            success,
-            retcode,
-            summary,
-            full_return,
-            formatted_text: String::new(), // computed on-demand in y handler
-        });
-    }
-    if returns.is_empty() { return None; }
-    Some(JidLookup {
-        found: true,
-        fun,
-        tgt,
-        start_time: String::new(),
-        returns,
-        missing: Vec::new(),
-        subprocess_secs: 0.0,
-        postprocess_secs: 0.0,
-        error: String::new(),
-    })
 }
 
 /// What `y`/`Y` copy for an event's body — matches whatever `draw_event_detail`
@@ -3345,6 +3526,37 @@ pub fn return_matches(minion_id: &str, filter: &str) -> bool {
     terms.is_empty() || terms.iter().any(|t| App::host_matches_term(minion_id, t))
 }
 
+/// Whether Job Detail lists entry `i`: its outcome is ticked and its minion
+/// matches the `/` filter.
+pub fn entry_shown(lookup: &JidLookup, i: usize, filter: &str, outcomes: OutcomeFilter) -> bool {
+    outcomes.shows(lookup.entry_outcome(i)) && lookup.entry_id(i).is_some_and(|id| return_matches(id, filter))
+}
+
+/// The entries Job Detail lists, in list order.
+pub fn shown_entries(lookup: &JidLookup, filter: &str, outcomes: OutcomeFilter) -> Vec<usize> {
+    (0..lookup.entry_count()).filter(|&i| entry_shown(lookup, i, filter, outcomes)).collect()
+}
+
+/// The minion IDs Job Detail lists, one per line, for `i`/`I`.
+pub fn shown_minion_list(lookup: &JidLookup, shown: &[usize]) -> String {
+    shown.iter().filter_map(|&i| lookup.entry_id(i)).map(|id| format!("{}\n", id)).collect()
+}
+
+/// What a file saved from what Job Detail's list shows is named after, so
+/// its name says it may not be the whole job: `view-` and the ticked
+/// outcomes (`view-failed-not-returned`), `view-filtered` for a `/` filter
+/// alone, or `all` when nothing is left out.
+pub fn view_file_tag<T: Status>(filter: &str, ticks: StatusFilter<T>) -> String {
+    if !ticks.is_all() {
+        let ticked: Vec<String> = ticks.shown().map(|o| o.label().to_lowercase().replace(' ', "-")).collect();
+        format!("view-{}", if ticked.is_empty() { "none".to_string() } else { ticked.join("-") })
+    } else if !filter.is_empty() {
+        "view-filtered".to_string()
+    } else {
+        "all".to_string()
+    }
+}
+
 /// Where a filter's terms match in `text`, for highlighting: a regex term's
 /// matches, a glob matching the whole text, or a plain term's occurrences.
 pub fn filter_match_ranges(text: &str, filter: &str) -> Vec<(usize, usize)> {
@@ -3399,10 +3611,10 @@ fn ansi_theme_color(slot: u16, background: bool) -> Color {
 
 /// Moves the selection to the nearest returns-list entry matching `filter`,
 /// looking forward from the current one first.
-pub fn snap_to_matching_return(lookup: &JidLookup, selected: &mut Option<usize>, filter: &str) {
-    if filter.is_empty() { return; }
+pub fn snap_to_matching_return(lookup: &JidLookup, selected: &mut Option<usize>, filter: &str, outcomes: OutcomeFilter) {
+    if filter.is_empty() && outcomes.is_all() { return; }
     let n = lookup.entry_count();
-    let matches = |i: usize| lookup.entry_id(i).is_some_and(|id| return_matches(id, filter));
+    let matches = |i: usize| entry_shown(lookup, i, filter, outcomes);
     let cur = selected.unwrap_or(0).min(n.saturating_sub(1));
     let hit = (cur..n).find(|&i| matches(i)).or_else(|| (0..cur).rev().find(|&i| matches(i)));
     if hit.is_some() { *selected = hit; }
@@ -3504,10 +3716,8 @@ pub(crate) fn return_outcome(salt: &serde_json::Value, full_return: &serde_json:
 
 fn parse_jid_lookup(data: &serde_json::Value) -> JidLookup {
     let mut result = JidLookup {
-        found: data["found"].as_bool().unwrap_or(false),
         fun: data["fun"].as_str().unwrap_or("").to_string(),
         tgt: data["tgt"].as_str().unwrap_or("").to_string(),
-        start_time: data["start_time"].as_str().unwrap_or("").to_string(),
         returns: Vec::new(),
         missing: data["missing"].as_array()
             .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
@@ -3608,7 +3818,7 @@ pub(crate) struct ReturnTiming {
 fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, usize>, evt: &SaltEvent) -> Option<ReturnTiming> {
     if evt.tag.ends_with("/new") {
         let jid = evt.data["jid"].as_str().unwrap_or("").to_string();
-        if jid.is_empty() { return None; }
+        if !is_jid(&jid) { return None; }
         let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
         let tgt = match &evt.data["tgt"] {
             serde_json::Value::String(s) => s.clone(),
@@ -3663,7 +3873,7 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             .strip_prefix("salt/job/")
             .and_then(|s| s.split("/ret/").next())
             .unwrap_or("");
-        if jid.is_empty() { return None; }
+        if !is_jid(jid) { return None; }
         let (success, _) = return_outcome(&evt.data, &evt.data["return"]);
         if let Some(job) = index.get(jid).map(|&i| &mut jobs[i]) {
             job.returned += 1;
@@ -3675,6 +3885,9 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
             // show a target count smaller than what's actually come back.
             job.target_count = job.target_count.max(job.returned);
             let minion = evt.tag.rsplit('/').next().unwrap_or("");
+            // A salt-call has one return: a second minion's means a published
+            // job whose `/new` wasn't seen (it started before salt-radar did).
+            if job.local && minion != job.tgt { job.local = false; }
             if job.local || minion.is_empty() { return None; }
             let secs = (evt.ts - job.created_epoch).max(0.0);
             let late_median = match &mut job.lag {
@@ -3712,6 +3925,38 @@ fn track_job_from_event(jobs: &mut Vec<JobEntry>, index: &mut HashMap<String, us
     None
 }
 
+/// Fills in a Live Jobs job first seen by a return from the agent's
+/// `job_load` reply: a published job gets its function, target, targeted
+/// minions and start from the job cache, and its counts from the returns
+/// cached so far when those are more than the ones seen live (some came in
+/// before salt-radar started). A salt-call run stays as it is.
+fn apply_job_load(job: &mut JobEntry, data: &serde_json::Value) {
+    if !data["found"].as_bool().unwrap_or(false) || data["salt_call"].as_bool().unwrap_or(true) {
+        return;
+    }
+    job.fun = data["fun"].as_str().unwrap_or("?").to_string();
+    job.tgt = match &data["tgt"] {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(ids) => ids.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","),
+        _ => "?".to_string(),
+    };
+    (job.args, job.test_run) = format_job_args(&job.fun, &data["arg"]);
+    let minions = data["minions"].as_array()
+        .map(|a| a.iter().filter_map(|m| m.as_str()).collect::<HashSet<_>>().len())
+        .unwrap_or(0);
+    let outcomes = data["outcomes"].as_object();
+    let cached = outcomes.map_or(0, |o| o.len());
+    if cached >= job.returned {
+        let ok = outcomes.map_or(0, |o| o.values().filter(|v| v.as_bool().unwrap_or(false)).count());
+        (job.returned, job.succeeded, job.failed) = (cached, ok, cached - ok);
+    }
+    job.target_count = minions.max(job.returned);
+    job.local = false;
+    if let Some(start) = data["start_epoch"].as_f64().filter(|s| *s > 0.0) {
+        job.created_epoch = start;
+    }
+}
+
 /// Settles a job's lag once it's complete or older than `straggler_secs`,
 /// returning the return times collected so far and the job's median, when
 /// at least two minions returned.
@@ -3738,30 +3983,12 @@ fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
     scroll.min(total.saturating_sub(visible))
 }
 
-fn parse_fleet_scan(data: &serde_json::Value) -> Vec<FleetMinion> {
-    let mut result = Vec::new();
-    if let Some(arr) = data["minions"].as_array() {
-        for entry in arr {
-            result.push(FleetMinion {
-                id: entry["id"].as_str().unwrap_or("?").to_string(),
-                osfinger: entry["osfinger"].as_str().unwrap_or("").to_string(),
-                osrelease: entry["osrelease"].as_str().unwrap_or("").to_string(),
-                saltversion: entry["saltversion"].as_str().unwrap_or("").to_string(),
-                cpuarch: entry["cpuarch"].as_str().unwrap_or("").to_string(),
-                timed_out: entry["timed_out"].as_bool().unwrap_or(false),
-            });
-        }
-    }
-    result.sort_by(|a, b| a.id.cmp(&b.id));
-    result
-}
-
 /// Whether a minion activity item matches any of the filter's terms (OR'd,
 /// same as every other filter in the app; see `App::filter_terms`).
 fn matches_activity_item(item: &MinionActivityItem, terms: &[&str]) -> bool {
     let m = App::matches_filter;
     terms.iter().any(|&term| match item {
-        MinionActivityItem::Event(_, evt) => m(&evt.tag, term) || m(&evt.data.to_string(), term),
+        MinionActivityItem::Event(evt) => m(&evt.tag, term) || m(&evt.data.to_string(), term),
         MinionActivityItem::CacheJob(job) => m(&job.jid, term) || m(&job.fun, term) || m(&job.args, term),
         MinionActivityItem::Alert(alert) => m(&alert.description, term) || m(&alert.key, term),
     })
@@ -3770,6 +3997,24 @@ fn matches_activity_item(item: &MinionActivityItem, terms: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timed_work_follows_seconds_not_ticks() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let two = Duration::from_secs(2);
+        let mut dashboard = Every::default();
+        // A 2 s tick that lands a few ms early or late polls every tick.
+        let fired: Vec<u64> = [0, 1_995, 4_003, 5_998, 8_001].into_iter().filter(|&ms| dashboard.due(at(ms), two)).collect();
+        assert_eq!(fired, [0, 1_995, 4_003, 5_998, 8_001]);
+        // A 500 ms tick polls every 2 s, not every 4th tick by chance.
+        let mut fast = Every::default();
+        let fired: Vec<u64> = (0..=12).map(|n| n * 500).filter(|&ms| fast.due(at(ms), two)).collect();
+        assert_eq!(fired, [0, 2_000, 4_000, 6_000]);
+        // A 5 s tick can't poll more often than it ticks.
+        let mut slow = Every::default();
+        assert!([0, 5_000, 10_000].into_iter().all(|ms| slow.due(at(ms), two)));
+    }
 
     #[test]
     fn tab_bar_clicks_land_on_the_drawn_labels() {
@@ -3830,6 +4075,43 @@ mod tests {
     }
 
     #[test]
+    fn only_a_users_own_tmux_socket_is_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("salt-radar-test-tmux-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("default");
+        std::fs::write(&socket, "").unwrap();
+        let me = std::fs::metadata(&socket).unwrap().uid();
+        let chmod = |mode| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let trusted = |users: &[u32]| App::tmux_socket_owner(socket.to_str().unwrap(), users).is_some();
+        chmod(0o700);
+        assert!(trusted(&[me]));
+        assert!(!trusted(&[me + 1]), "another user's server");
+        assert!(!trusted(&[]));
+        chmod(0o777);
+        assert!(!trusted(&[me]), "anyone could have put the socket there");
+        chmod(0o700);
+        assert!(App::tmux_socket_owner(dir.join("missing").to_str().unwrap(), &[me]).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn strip_ansi_leaves_nothing_a_terminal_would_act_on() {
+        assert_eq!(App::strip_ansi("\x1b[0;31mfail\x1b[0m ok\n\tnext"), "fail ok\n\tnext");
+        // OSC 52 would replace the clipboard just copied; BEL- and ST-terminated.
+        assert_eq!(App::strip_ansi("a\x1b]52;c;cm0gLXJmIH4=\x07b"), "ab");
+        assert_eq!(App::strip_ansi("a\x1b]0;title\x1b\\b"), "ab");
+        // Not colors: the old "skip to the next m" swallowed text or kept the tail.
+        assert_eq!(App::strip_ansi("up\x1b[2Ahome\x1b[Hmore"), "uphomemore");
+        // 8-bit CSI and OSC, a lone ESC, CR, backspace.
+        assert_eq!(App::strip_ansi("a\u{9b}31mb\u{9d}52;c;eA==\u{9c}c\x1bcd\re\x08f"), "abcdef");
+        // Never closed: only the rest of that line goes.
+        assert_eq!(App::strip_ansi("a\x1b]52;c;eA==\nnext line"), "a\nnext line");
+        assert_eq!(App::strip_ansi("é\x1b"), "é");
+    }
+
+    #[test]
     fn filters_take_regex_terms() {
         assert!(App::matches_filter("state.highstate", r"/^state\.(apply|highstate)$/"));
         assert!(!App::matches_filter("state.single", r"/^state\.(apply|highstate)$/"));
@@ -3863,7 +4145,7 @@ mod tests {
 
     #[test]
     fn event_search_finds_lines_as_shown() {
-        let evt = SaltEvent { tag: "salt/job/1/ret/web1".into(), ts: 0.0, data: serde_json::json!({"id": "web1", "fun": "test.ping", "jid": "1", "return": true}) };
+        let evt = SaltEvent { tag: "salt/job/1/ret/web1".into(), ts: 0.0, data: serde_json::json!({"id": "web1", "fun": "test.ping", "jid": "20260101000000000001", "return": true}) };
         let raw = event_body_as_shown(&evt, false, &crate::types::PrettyFetch::Idle);
         assert_eq!(search_lines(&raw, "WEB1"), vec![raw.lines().position(|l| l.contains("web1")).unwrap()]);
         // Still fetching the pretty view of a job return: the raw JSON is what's shown.
@@ -4013,8 +4295,139 @@ mod tests {
         assert_eq!(l.entry_count(), 3);
         assert_eq!((l.entry_id(0), l.entry_id(1), l.entry_id(2), l.entry_id(3)), (Some("web01"), Some("db01"), Some("web02"), None));
         let mut sel = Some(0);
-        snap_to_matching_return(&l, &mut sel, "web02");
+        snap_to_matching_return(&l, &mut sel, "web02", OutcomeFilter::default());
         assert_eq!(sel, Some(2), "the filter can land on a missing minion");
+    }
+
+    #[test]
+    fn ticking_a_column_leaves_it_where_it_is() {
+        let all = ["id", "os", "salt", "arch", "seen"];
+        let (mut order, _) = column_editor_items("id,salt", &all);
+        assert_eq!(order, ["id", "salt", "os", "arch", "seen"]);
+        let mut value = "id,salt".to_string();
+        let at = column_editor_key(KeyCode::Char(' '), &mut order, &mut value, 4);
+        assert_eq!((at, value.as_str()), (4, "id,salt,seen"));
+        let at = column_editor_key(KeyCode::Char(' '), &mut order, &mut value, 3);
+        assert_eq!((at, value.as_str()), (3, "id,salt,arch,seen"), "shown in list order, not in the order ticked");
+        assert_eq!(order, ["id", "salt", "os", "arch", "seen"]);
+        let at = column_editor_key(KeyCode::Char('+'), &mut order, &mut value, 2);
+        assert_eq!((at, value.as_str()), (1, "id,salt,arch,seen"), "a hidden column moves too");
+        assert_eq!(order, ["id", "os", "salt", "arch", "seen"]);
+        column_editor_key(KeyCode::Char(' '), &mut order, &mut value, 1);
+        assert_eq!(value, "id,os,salt,arch,seen");
+        let mut one = "id".to_string();
+        column_editor_key(KeyCode::Char(' '), &mut order, &mut one, 0);
+        assert_eq!(one, "id", "the last shown column stays");
+    }
+
+    #[test]
+    fn each_minions_row_has_one_state_from_its_key_and_the_last_scan() {
+        let key = |id: &str, status| KeyInfo { id: id.to_string(), status, mtime_epoch: 0 };
+        let minion = |id: &str, timed_out| MinionInfo { id: id.to_string(), timed_out, ..Default::default() };
+        let (up, down, unseen) = (minion("web01", false), minion("web02", true), minion("web03", false));
+        let keys = [key("db01", KeyStatus::Accepted), key("new01", KeyStatus::Pending), key("old01", KeyStatus::Rejected), key("web01", KeyStatus::Denied)];
+        let responded: HashSet<&str> = ["web01"].into();
+        let state = |r: MinionRow| minion_state(&r, &responded);
+        assert_eq!(state(MinionRow::Minion(&up)), Some(MinionState::Responsive));
+        assert_eq!(state(MinionRow::Minion(&down)), Some(MinionState::TimedOut));
+        assert_eq!(state(MinionRow::Minion(&unseen)), Some(MinionState::NotScanned), "not in the last scan");
+        assert_eq!(state(MinionRow::Key(&keys[0])), Some(MinionState::NotScanned), "accepted, never seen");
+        assert_eq!(state(MinionRow::Key(&keys[1])), Some(MinionState::Pending));
+        assert_eq!(state(MinionRow::Key(&keys[2])), Some(MinionState::Rejected));
+        assert_eq!(state(MinionRow::Key(&keys[3])), Some(MinionState::Denied), "a denied key next to an accepted one");
+        assert_eq!(state(MinionRow::TimedOutHeader), None);
+    }
+
+    #[test]
+    fn a_live_job_is_failed_first_then_uncounted_done_stuck_or_running() {
+        let job = |target_count, returned, failed, age_seconds| JobEntry {
+            jid: String::new(), fun: String::new(), tgt: String::new(), target_count, returned,
+            succeeded: returned - failed, failed, age_seconds, created_epoch: 0.0,
+            local: false, finalized: false, args: String::new(), test_run: false, lag: JobLag::Settled(None),
+        };
+        assert_eq!(job_state(&job(3, 3, 0, 5), 60), JobState::Ok);
+        assert_eq!(job_state(&job(3, 1, 1, 5), 60), JobState::Failed, "a failure shows while others still run");
+        assert_eq!(job_state(&job(3, 1, 0, 5), 60), JobState::Running);
+        assert_eq!(job_state(&job(3, 1, 0, 61), 60), JobState::Stuck);
+        assert_eq!(job_state(&job(0, 1, 0, 5), 60), JobState::Uncounted, "a runner job");
+    }
+
+    #[test]
+    fn picker_keys_tick_rows_by_number_and_close_on_x() {
+        let mut cursor = 0;
+        assert!(matches!(picker_key(KeyCode::Char('3'), &mut cursor, 3), PickerKey::Toggle(2)));
+        assert!(matches!(picker_key(KeyCode::Char('4'), &mut cursor, 3), PickerKey::Stay), "no fourth row");
+        assert!(matches!(picker_key(KeyCode::Down, &mut cursor, 3), PickerKey::Stay));
+        assert!(matches!(picker_key(KeyCode::Char(' '), &mut cursor, 3), PickerKey::Toggle(1)));
+        assert!(matches!(picker_key(KeyCode::PageDown, &mut cursor, 3), PickerKey::Stay));
+        assert_eq!(cursor, 2, "PgDn goes to the last row");
+        picker_key(KeyCode::PageUp, &mut cursor, 3);
+        assert_eq!(cursor, 0, "PgUp to the first");
+        assert!(matches!(picker_key(KeyCode::Char('x'), &mut cursor, 3), PickerKey::Close));
+        let mut states = MinionFilter::default();
+        states.toggle(MinionState::Responsive);
+        assert_eq!(view_file_tag("", states), "view-timed-out-not-scanned-pending-rejected-denied");
+    }
+
+    fn mixed_lookup() -> JidLookup {
+        parse_jid_lookup(&json!({
+            "found": true,
+            "returns": [
+                {"minion_id": "web01", "success": true, "retcode": 0, "full_return": true},
+                {"minion_id": "web02", "success": false, "retcode": 1, "full_return": "boom"},
+                {"minion_id": "db01", "success": false, "retcode": 1, "full_return": "boom"},
+            ],
+            "missing": ["web03", "db02"],
+        }))
+    }
+
+    #[test]
+    fn outcome_filter_lists_only_the_ticked_outcomes() {
+        let l = mixed_lookup();
+        let mut problems = OutcomeFilter::default();
+        problems.toggle(Outcome::Ok);
+        assert_eq!(shown_entries(&l, "", OutcomeFilter::default()), [0, 1, 2, 3, 4]);
+        assert_eq!(shown_entries(&l, "", problems), [1, 2, 3, 4]);
+        assert_eq!(shown_entries(&l, "web*", problems), [1, 3], "the outcomes and the `/` filter both apply");
+        let mut none = problems;
+        none.toggle(Outcome::Failed);
+        none.toggle(Outcome::Missing);
+        assert!(shown_entries(&l, "", none).is_empty());
+    }
+
+    #[test]
+    fn unticking_the_selected_outcome_moves_the_selection_to_a_listed_minion() {
+        let l = mixed_lookup();
+        let mut missing_only = OutcomeFilter::default();
+        missing_only.toggle(Outcome::Ok);
+        missing_only.toggle(Outcome::Failed);
+        let mut sel = Some(1);
+        snap_to_matching_return(&l, &mut sel, "", missing_only);
+        assert_eq!(sel, Some(3));
+    }
+
+    #[test]
+    fn minion_list_and_file_names_follow_what_is_listed() {
+        let l = mixed_lookup();
+        let mut problems = OutcomeFilter::default();
+        problems.toggle(Outcome::Ok);
+        assert_eq!(shown_minion_list(&l, &shown_entries(&l, "", problems)), "web02\ndb01\nweb03\ndb02\n");
+        assert_eq!(view_file_tag("", problems), "view-failed-not-returned");
+        assert_eq!(view_file_tag("web*", OutcomeFilter::default()), "view-filtered");
+        assert_eq!(view_file_tag("", OutcomeFilter::default()), "all");
+    }
+
+    #[test]
+    fn save_view_writes_the_listed_returns_then_the_listed_missing_minions() {
+        let l = mixed_lookup();
+        let mut problems = OutcomeFilter::default();
+        problems.toggle(Outcome::Ok);
+        let shown = shown_entries(&l, "", problems);
+        let text = App::format_all_returns_console("123", &l, &shown);
+        assert!(text.contains("2 returns") && !text.contains("web01"));
+        assert!(text.ends_with("No return from 2 minions:\nweb03\ndb02\n"));
+        let json: serde_json::Value = serde_json::from_str(&App::format_all_returns_json(&l, &shown)).unwrap();
+        assert_eq!(json.as_object().unwrap().keys().collect::<Vec<_>>(), ["db01", "web02"]);
     }
 
     #[test]
@@ -4054,12 +4467,12 @@ mod tests {
     fn live_jobs_counts_a_minion_targeted_twice_once() {
         let evt = |tag: &str, data: serde_json::Value| SaltEvent { tag: tag.into(), data, ts: 0.0 };
         let (mut jobs, mut index) = (Vec::new(), HashMap::new());
-        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/new", json!({
-            "jid": "1", "fun": "test.ping", "tgt": "web01,db01,web01", "tgt_type": "list",
+        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/20260101000000000001/new", json!({
+            "jid": "20260101000000000001", "fun": "test.ping", "tgt": "web01,db01,web01", "tgt_type": "list",
             "minions": ["web01", "db01", "web01"],
         })));
         for mid in ["web01", "db01"] {
-            track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/1/ret/{mid}"),
+            track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/20260101000000000001/ret/{mid}"),
                 json!({"id": mid, "fun": "test.ping", "return": true, "retcode": 0, "success": true})));
         }
         assert_eq!((jobs[0].target_count, jobs[0].returned), (2, 2), "nothing left waiting");
@@ -4074,13 +4487,15 @@ mod tests {
         ];
         for (ret, ok, what) in cases {
             let evt = SaltEvent {
-                tag: "salt/job/1/ret/web01".into(),
+                tag: "salt/job/20260101000000000001/ret/web01".into(),
                 data: json!({"id": "web01", "fun": "config.get", "return": ret, "retcode": 0, "success": true}),
                 ts: 0.0,
             };
             let (mut jobs, mut index) = (Vec::new(), HashMap::new());
             track_job_from_event(&mut jobs, &mut index, &evt);
-            let detail = build_jid_lookup_from_events("1", &VecDeque::from([evt])).unwrap();
+            let detail = parse_jid_lookup(&json!({"returns": [{
+                "minion_id": "web01", "success": true, "retcode": 0, "full_return": evt.data["return"],
+            }]}));
             assert_eq!((jobs[0].failed == 0, detail.returns[0].success), (ok, ok), "{what}");
         }
     }
@@ -4102,12 +4517,12 @@ mod tests {
     #[test]
     fn a_minion_is_rated_against_its_peers_in_the_same_job() {
         let evt = |tag: &str, ts: f64| SaltEvent { tag: tag.into(), ts, data: json!({
-            "jid": "1", "fun": "state.apply", "tgt": "*", "minions": ["a", "b", "c", "d"],
+            "jid": "20260101000000000001", "fun": "state.apply", "tgt": "*", "minions": ["a", "b", "c", "d"],
         }) };
         let (mut jobs, mut index) = (Vec::new(), HashMap::new());
-        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/new", 100.0));
+        track_job_from_event(&mut jobs, &mut index, &evt("salt/job/20260101000000000001/new", 100.0));
         for (mid, ts) in [("a", 110.0), ("b", 112.0), ("c", 140.0)] {
-            let t = track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/1/ret/{mid}"), ts)).unwrap();
+            let t = track_job_from_event(&mut jobs, &mut index, &evt(&format!("salt/job/20260101000000000001/ret/{mid}"), ts)).unwrap();
             assert_eq!((t.secs, t.late_median), (ts - 100.0, None), "collected until settled");
         }
         assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "not complete and not a straggler yet");
@@ -4117,7 +4532,7 @@ mod tests {
         let mut c = MinionHealth::default();
         c.record_lag(40.0, median);
         assert_eq!(c.lag_at(0.5), Some(40.0 / 12.0));
-        let late = track_job_from_event(&mut jobs, &mut index, &evt("salt/job/1/ret/d", 190.0)).unwrap();
+        let late = track_job_from_event(&mut jobs, &mut index, &evt("salt/job/20260101000000000001/ret/d", 190.0)).unwrap();
         assert_eq!(late.late_median, Some(12.0), "a late return is rated against the settled median");
         assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "settled once");
     }
@@ -4130,16 +4545,63 @@ mod tests {
         h.record_lag(2.0, 0.03);
         h.record_lag(0.3, 0.9);
         assert_eq!(Vec::from(h.lag.clone()), [4.0, 0.5 / 0.9], "a 2 s answer to a fast job is slow");
-        let new = SaltEvent { tag: "salt/job/2/new".into(), ts: 0.0, data: json!({"jid": "2", "fun": "test.ping", "minions": ["a", "b"]}) };
-        let ret = SaltEvent { tag: "salt/job/2/ret/a".into(), ts: 1.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+        let new = SaltEvent { tag: "salt/job/20260101000000000002/new".into(), ts: 0.0, data: json!({"jid": "20260101000000000002", "fun": "test.ping", "minions": ["a", "b"]}) };
+        let ret = SaltEvent { tag: "salt/job/20260101000000000002/ret/a".into(), ts: 1.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
         let (mut jobs, mut index) = (Vec::new(), HashMap::new());
         track_job_from_event(&mut jobs, &mut index, &new);
         track_job_from_event(&mut jobs, &mut index, &ret);
         jobs[0].age_seconds = 999;
         assert_eq!(settle_job_lag(&mut jobs[0], 300), None, "one return has no peers");
         assert_eq!(jobs[0].lag, JobLag::Settled(None));
-        let local = SaltEvent { tag: "salt/job/3/ret/a".into(), ts: 5.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+        let local = SaltEvent { tag: "salt/job/20260101000000000003/ret/a".into(), ts: 5.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
         assert_eq!(track_job_from_event(&mut jobs, &mut index, &local), None, "no publish seen, no timing");
+    }
+
+    #[test]
+    fn a_return_without_a_publish_is_local_until_a_second_minion_returns() {
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        let ret = |mid: &str| SaltEvent { tag: format!("salt/job/20260101000000000007/ret/{mid}"), ts: 5.0, data: json!({"id": mid, "fun": "test.sleep", "return": true}) };
+        track_job_from_event(&mut jobs, &mut index, &ret("a"));
+        assert!(jobs[0].local && jobs[0].tgt == "a", "looks like a salt-call so far");
+        track_job_from_event(&mut jobs, &mut index, &ret("b"));
+        assert!(!jobs[0].local, "a salt-call doesn't get two returns");
+        assert_eq!((jobs[0].returned, jobs[0].target_count), (2, 2));
+    }
+
+    #[test]
+    fn events_with_a_made_up_jid_are_not_jobs() {
+        // The JID ends up on a `salt-run` command line: a tag can't smuggle an option in.
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        for jid in ["--out-file=/etc/x", "--config-dir=/tmp/x/y", "-c", "1", "2026110521401900000a"] {
+            let ret = SaltEvent { tag: format!("salt/job/{jid}/ret/a"), ts: 5.0, data: json!({"id": "a", "fun": "test.ping", "return": true}) };
+            let new = SaltEvent { tag: "salt/job/x/new".into(), ts: 5.0, data: json!({"jid": jid, "fun": "test.ping", "tgt": "*"}) };
+            track_job_from_event(&mut jobs, &mut index, &ret);
+            track_job_from_event(&mut jobs, &mut index, &new);
+            assert_eq!(return_event_jid(&ret), None, "{jid}");
+        }
+        assert!(jobs.is_empty() && index.is_empty());
+        assert!(is_jid("20261105214019000000") && is_jid("20261105214019000000_4711"), "plain and unique_jid forms");
+        assert!(!is_jid("20261105214019000000_") && !is_jid("20261105214019000000_4711 -c") && !is_jid(""));
+    }
+
+    #[test]
+    fn job_load_fills_in_a_job_published_before_salt_radar_started() {
+        let (mut jobs, mut index) = (Vec::new(), HashMap::new());
+        let ret = SaltEvent { tag: "salt/job/20261105214019000000/ret/a".into(), ts: 5.0, data: json!({"id": "a", "fun": "test.sleep", "return": true}) };
+        track_job_from_event(&mut jobs, &mut index, &ret);
+        let mut salt_call = jobs[0].clone();
+        apply_job_load(&mut jobs[0], &json!({
+            "found": true, "salt_call": false, "fun": "test.sleep", "arg": [131], "tgt": ["a", "b", "c"],
+            "minions": ["a", "b", "c"], "outcomes": {"a": true, "b": false}, "start_epoch": 1793914819.0,
+        }));
+        let job = &jobs[0];
+        assert!(!job.local);
+        assert_eq!((job.tgt.as_str(), job.args.as_str()), ("a,b,c", "131"));
+        assert_eq!((job.target_count, job.returned, job.succeeded, job.failed), (3, 2, 1, 1), "b returned before salt-radar started");
+        assert_eq!(job.created_epoch, 1793914819.0);
+        assert_eq!(job_state(job, 120), JobState::Failed);
+        apply_job_load(&mut salt_call, &json!({"found": true, "salt_call": true, "fun": "test.version", "tgt": "a", "minions": ["a"]}));
+        assert!(salt_call.local, "a salt-call stays local");
     }
 
     #[test]
@@ -4166,9 +4628,9 @@ mod tests {
 
     #[test]
     fn return_events_report_jid_and_outcome() {
-        let evt = SaltEvent { tag: "salt/job/2026/ret/web01".into(), data: json!({}), ts: 0.0 };
-        assert_eq!(return_event_jid(&evt), Some("2026"));
-        let new = SaltEvent { tag: "salt/job/2026/new".into(), data: json!({}), ts: 0.0 };
+        let evt = SaltEvent { tag: "salt/job/20261105214019000000/ret/web01".into(), data: json!({}), ts: 0.0 };
+        assert_eq!(return_event_jid(&evt), Some("20261105214019000000"));
+        let new = SaltEvent { tag: "salt/job/20261105214019000000/new".into(), data: json!({}), ts: 0.0 };
         assert_eq!(return_event_jid(&new), None);
 
         let ok = return_event_result(&json!({"return": true, "retcode": 0, "success": true}));
@@ -4223,6 +4685,12 @@ mod tests {
         assert!(name.starts_with("job-123-web-1-"), "{}", name);
         assert!(name.ends_with(".json"), "{}", name);
         assert!(App::propose_save_filename("///", "txt").starts_with("salt-radar-"));
+    }
+
+    #[test]
+    fn osc52_sequence_encodes_text_and_wraps_for_tmux_passthrough() {
+        assert_eq!(App::osc52_sequence("hi", false), "\x1b]52;c;aGk=\x07");
+        assert_eq!(App::osc52_sequence("hi", true), "\x1bPtmux;\x1b\x1b]52;c;aGk=\x07\x1b\\");
     }
 
     #[test]

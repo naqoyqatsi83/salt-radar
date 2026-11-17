@@ -160,21 +160,6 @@ pub enum SaltProcessRole {
     Unknown,
 }
 
-impl SaltProcessRole {
-    pub fn label(&self) -> &str {
-        match self {
-            Self::Master => "salt-master",
-            Self::Worker => "worker",
-            Self::Api => "salt-api",
-            Self::Syndic => "salt-syndic",
-            Self::Minion => "salt-minion",
-            Self::EventPublisher => "EventPublisher",
-            Self::ReqServer => "ReqServer",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
 // ─── Service health ────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -183,7 +168,6 @@ pub struct ServiceHealth {
     pub active: bool,
     pub state: String,
     pub uptime_seconds: u64,
-    pub active_enter_timestamp: String,
     pub memory_kb: u64,
 }
 
@@ -206,8 +190,6 @@ pub struct ServiceTrendSnapshot {
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct ZmqConn {
     pub local_port: u16,
-    pub remote_addr: String,
-    pub remote_port: u16,
     pub state: String,
 }
 
@@ -253,10 +235,8 @@ pub struct ApiStats {
     pub error: String,
     pub current_requests: u64,
     pub total_requests: u64,
-    pub requests_per_sec: f64,
     pub bytes_read_per_sec: f64,
     pub bytes_written_per_sec: f64,
-    pub uptime_secs: f64,
     /// One entry per CherryPy worker thread: that thread's current (or most
     /// recently completed) request. Not a request log — a live snapshot of
     /// in-flight/recent activity, capped at however many worker threads
@@ -313,23 +293,10 @@ pub struct ConfigSnapshot {
     /// The lowest auth protocol the master accepts; 0 when it predates the
     /// setting (before 3006.17 / 3007.9) and accepts any.
     pub minimum_auth_version: u64,
-    pub python_version: String,
     pub worker_threads: Option<i64>,
-    pub transport: String,
-    pub sock_dir: String,
-    pub reactor_count: usize,
-    pub fileserver_backends: Vec<String>,
-    pub gitfs_remote_count: usize,
-    pub ext_pillar_names: Vec<String>,
-    pub master_job_cache: String,
-    pub pillar_cache: bool,
-    pub presence_events: bool,
-    pub interface: String,
     pub publish_port: u16,
     pub ret_port: u16,
     pub api_port: u16,
-    pub pki_dir: String,
-    pub cachedir: String,
     pub cpu_count: u32,
     pub hostname: String,
 }
@@ -406,7 +373,6 @@ pub struct SnifferState {
     /// in what's shown.
     pub terms: Vec<crate::sniff::SniffTerm>,
     pub buffer: VecDeque<SaltEvent>,
-    pub max_size: usize,
     pub paused: bool,
     pub selected: usize,
     /// Events display oldest-at-top, newest-at-bottom. While following,
@@ -795,6 +761,15 @@ pub struct CacheJobEntry {
 
 const STATE_APPLY_FUNS: &[&str] = &["state.apply", "state.sls", "state.highstate", "state.top"];
 
+/// Whether `s` is a Salt job ID: 20 digits, followed with `unique_jid` by `_`
+/// and the master's process ID. A job's ID is read from event tags and data,
+/// which a minion can write, and is passed to `salt-run`.
+pub fn is_jid(s: &str) -> bool {
+    let (stamp, pid) = s.split_once('_').map_or((s, None), |(stamp, pid)| (stamp, Some(pid)));
+    let word = |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    stamp.len() == 20 && stamp.bytes().all(|b| b.is_ascii_digit()) && pid.is_none_or(word)
+}
+
 /// Renders a job's raw Salt `arg` list (positional values plus an optional
 /// `{"__kwarg__": true, ...}` dict) for the Args column. For state runs this
 /// is the requested SLS list, or "highstate" when none was named; `test=True`
@@ -859,7 +834,7 @@ impl TableId {
         match self {
             Self::LiveJobs => &["jid", "fun", "args", "target", "source", "tgt", "ok", "fail", "wait", "started"],
             Self::JobCache => &["jid", "user", "started", "target", "fun", "args"],
-            Self::Minions => &["id", "key", "os", "salt", "proto", "arch", "seen", "fail_pct", "lag", "ping"],
+            Self::Minions => &["id", "key", "os", "salt", "proto", "seen", "fail_pct", "lag", "ping", "arch"],
             Self::Events => &["local", "utc", "tag", "minion"],
             Self::Alerts => &["severity", "rule", "description", "since", "count"],
             Self::ApiLog => &["age", "method", "client", "path", "status", "time"],
@@ -870,7 +845,7 @@ impl TableId {
         match self {
             Self::LiveJobs => "jid,fun,args,target,source,tgt,ok,fail,wait",
             Self::JobCache => "jid,user,target,fun,args",
-            Self::Minions => "id,key,os,salt",
+            Self::Minions => "id,key,os,salt,ping,arch",
             Self::Events => "local,utc,tag",
             Self::Alerts => "severity,rule,description",
             Self::ApiLog => "age,method,client,path,status,time",
@@ -1106,16 +1081,147 @@ pub struct JobDetailHits {
     pub list: ratatui::layout::Rect,
     pub rows: Vec<(u16, usize)>,
     pub preview: ratatui::layout::Rect,
+    /// The outcome picker's box and rows, while open.
+    pub picker: PickerHits,
+}
+
+/// Where a status picker's last frame put its box and each row (screen y,
+/// index into the status's `ALL`), for mouse clicks.
+#[derive(Clone, Debug, Default)]
+pub struct PickerHits {
+    pub area: ratatui::layout::Rect,
+    pub rows: Vec<(u16, usize)>,
+}
+
+/// What a status picker's row stands for: Job Detail's outcomes, the Minions
+/// list's states.
+pub trait Status: Copy + PartialEq + 'static {
+    const ALL: &'static [Self];
+    fn label(self) -> &'static str;
+}
+
+/// How one minion did in a job, as Job Detail's returns list shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Ok,
+    Failed,
+    Missing,
+}
+
+impl Status for Outcome {
+    const ALL: &'static [Outcome] = &[Outcome::Ok, Outcome::Failed, Outcome::Missing];
+
+    fn label(self) -> &'static str {
+        match self {
+            Outcome::Ok => "OK",
+            Outcome::Failed => "FAILED",
+            Outcome::Missing => "NOT RETURNED",
+        }
+    }
+}
+
+/// Where a Minions list row stands: whether an accepted minion answered the
+/// last fleet scan, or the key's status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MinionState {
+    Responsive,
+    TimedOut,
+    NotScanned,
+    Pending,
+    Rejected,
+    Denied,
+}
+
+impl Status for MinionState {
+    const ALL: &'static [MinionState] = &[
+        MinionState::Responsive, MinionState::TimedOut, MinionState::NotScanned,
+        MinionState::Pending, MinionState::Rejected, MinionState::Denied,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            MinionState::Responsive => "RESPONSIVE",
+            MinionState::TimedOut => "TIMED OUT",
+            MinionState::NotScanned => "NOT SCANNED",
+            MinionState::Pending => "PENDING",
+            MinionState::Rejected => "REJECTED",
+            MinionState::Denied => "DENIED",
+        }
+    }
+}
+
+/// The statuses a list shows, ticked in its `x` picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatusFilter<T> {
+    ticked: u16,
+    of: std::marker::PhantomData<T>,
+}
+
+pub type OutcomeFilter = StatusFilter<Outcome>;
+pub type MinionFilter = StatusFilter<MinionState>;
+pub type JobFilter = StatusFilter<JobState>;
+
+/// Where a Live Jobs job stands, its first match in this order: a minion
+/// failed; no target count (runner and wheel jobs, unresolved targets);
+/// every target returned; still waiting after `job_straggler_secs`; still
+/// waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobState {
+    Ok,
+    Failed,
+    Running,
+    Stuck,
+    Uncounted,
+}
+
+impl Status for JobState {
+    const ALL: &'static [JobState] = &[JobState::Ok, JobState::Failed, JobState::Running, JobState::Stuck, JobState::Uncounted];
+
+    fn label(self) -> &'static str {
+        match self {
+            JobState::Ok => "OK",
+            JobState::Failed => "FAILED",
+            JobState::Running => "RUNNING",
+            JobState::Stuck => "STUCK",
+            JobState::Uncounted => "UNCOUNTED",
+        }
+    }
+}
+
+impl<T: Status> Default for StatusFilter<T> {
+    fn default() -> Self {
+        Self { ticked: (1 << T::ALL.len()) - 1, of: std::marker::PhantomData }
+    }
+}
+
+impl<T: Status> StatusFilter<T> {
+    fn bit(o: T) -> u16 {
+        1 << T::ALL.iter().position(|&x| x == o).unwrap_or(0)
+    }
+
+    pub fn shows(self, o: T) -> bool {
+        self.ticked & Self::bit(o) != 0
+    }
+
+    pub fn toggle(&mut self, o: T) {
+        self.ticked ^= Self::bit(o);
+    }
+
+    pub fn is_all(self) -> bool {
+        self == Self::default()
+    }
+
+    pub fn shown(self) -> impl Iterator<Item = T> {
+        T::ALL.iter().copied().filter(move |&o| self.shows(o))
+    }
 }
 
 // ─── JID lookup result ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default)]
 pub struct JidLookup {
-    pub found: bool,
     pub fun: String,
     pub tgt: String,
-    pub start_time: String,
     pub returns: Vec<JidReturn>,
     /// Targeted minions that haven't returned. Job Detail lists them after
     /// the returns, so entry `i` past `returns.len()` is one of these.
@@ -1134,10 +1240,8 @@ pub struct JidLookup {
 impl JidLookup {
     pub fn failed(error: String) -> Self {
         Self {
-            found: false,
             fun: String::new(),
             tgt: String::new(),
-            start_time: String::new(),
             returns: Vec::new(),
             missing: Vec::new(),
             subprocess_secs: 0.0,
@@ -1155,6 +1259,14 @@ impl JidLookup {
         match self.returns.get(i) {
             Some(r) => Some(&r.minion_id),
             None => self.missing.get(i - self.returns.len()).map(String::as_str),
+        }
+    }
+
+    pub fn entry_outcome(&self, i: usize) -> Outcome {
+        match self.returns.get(i) {
+            Some(r) if r.success => Outcome::Ok,
+            Some(_) => Outcome::Failed,
+            None => Outcome::Missing,
         }
     }
 }
@@ -1184,7 +1296,6 @@ pub struct AlertEntry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlertSeverity {
-    Info,
     Warn,
     Crit,
 }
@@ -1192,7 +1303,6 @@ pub enum AlertSeverity {
 impl AlertSeverity {
     pub fn label(&self) -> &str {
         match self {
-            Self::Info => "info",
             Self::Warn => "warn",
             Self::Crit => "crit",
         }
@@ -1214,7 +1324,6 @@ pub struct FleetMinion {
 #[derive(Clone, Debug)]
 pub struct FleetScan {
     pub minions: Vec<FleetMinion>,
-    pub scanned_at: std::time::Instant,
 }
 
 // ─── Agent state ───────────────────────────────────────────────────────────
@@ -1224,4 +1333,6 @@ pub struct AgentState {
     pub connected: bool,
     pub version: Option<ConfigSnapshot>,
     pub last_error: Option<String>,
+    /// Why no events are coming in, while the agent's listener is down.
+    pub event_bus_error: Option<String>,
 }

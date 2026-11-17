@@ -14,8 +14,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Determine version
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
@@ -41,7 +40,7 @@ jobs:
           rustup target add x86_64-unknown-linux-musl
           sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools > /dev/null
           for i in 1 2 3; do
-            cargo build --release --target x86_64-unknown-linux-musl && break
+            cargo build --release --locked --target x86_64-unknown-linux-musl && break
             echo "Build attempt $i failed, retrying..."
             sleep 5
             if [ "$i" = 3 ]; then
@@ -163,11 +162,23 @@ jobs:
           cp $HOME/rpmbuild/RPMS/x86_64/salt-radar-*.rpm "${{ runner.temp }}/upload/"
 
       - name: Stage .deb for upload
-        run: cp ${{ runner.temp }}/deb/salt-radar_*.deb ${{ runner.temp }}/upload/
+        # GitHub replaces the "~" of a release candidate's .deb with "." in the
+        # asset's name: name it that way here, so SHA256SUMS lists the file
+        # as it's downloaded.
+        run: |
+          for deb in ${{ runner.temp }}/deb/salt-radar_*.deb; do
+            cp "$deb" "${{ runner.temp }}/upload/$(basename "$deb" | tr '~' '.')"
+          done
+
+      - name: Checksums
+        run: |
+          cd ${{ runner.temp }}/upload
+          sha256sum salt-radar* > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Upload build outputs (manual run, no release)
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: salt-radar-all-artifacts
           path: ${{ runner.temp }}/upload/
@@ -175,7 +186,7 @@ jobs:
 
       - name: Create release (tag push only)
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           name: salt-radar v${{ env.VERSION_STRIPPED }}
           # Release candidates are pre-releases, so the last final release stays "Latest".
@@ -196,6 +207,11 @@ jobs:
 
             **Other distros**: Download the `.tar.gz` for your arch, extract, and run `./salt-radar`.
 
+            **Checksums**: `SHA256SUMS` lists the SHA-256 of each file; check a download with
+            ```bash
+            sha256sum -c --ignore-missing SHA256SUMS
+            ```
+
             **Build from source**:
             ```bash
             cargo install --git https://github.com/naqoyqatsi83/salt-radar.git
@@ -204,3 +220,4 @@ jobs:
             ${{ runner.temp }}/upload/salt-radar_*.deb
             ${{ runner.temp }}/upload/salt-radar-*.tar.gz
             ${{ runner.temp }}/upload/salt-radar-*.rpm
+            ${{ runner.temp }}/upload/SHA256SUMS

@@ -10,6 +10,10 @@
 #   "#RRGGBB"   a 24-bit color
 #   "#RR"       a gray level (#80 == #808080)
 #   "R G B"     decimal 0-255 components
+#   "red"       one of the terminal's 16 palette colors: black, red, green,
+#               yellow, blue, magenta, cyan, white, and bright_black ...
+#               bright_white (shown in the terminal's own palette; gradients
+#               between them step instead of blending)
 #   ""          the terminal's own default color
 # Keys left out (or with an unparseable value) keep their Default color,
 # so a theme only needs the keys it changes. Unknown keys are ignored.

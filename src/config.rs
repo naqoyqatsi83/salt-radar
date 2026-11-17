@@ -1,4 +1,6 @@
-use std::os::unix::ffi::OsStrExt;
+use std::cell::Cell;
+use std::io::{Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -11,16 +13,64 @@ use crate::ui::color::Theme;
 pub const TICK_MS_MIN: u64 = 500;
 pub const TICK_MS_MAX: u64 = 30_000;
 
+/// The range each buffer size is kept in, when loaded and when edited: at
+/// least enough to be of use, at most what still fits in memory (events can
+/// be several KB each). `(min, max)`.
+pub const EVENT_BUFFER_RANGE: (usize, usize) = (100, 200_000);
+pub const SNIFFER_BUFFER_RANGE: (usize, usize) = (10, 100_000);
+pub const API_STATS_WINDOW_RANGE: (usize, usize) = (10, 100_000);
+pub const API_LOG_CAP_RANGE: (usize, usize) = (10, 100_000);
+
+/// The config file decides what salt-radar executes (`python_bin`,
+/// `agent_path`) and which master config Salt loads, usually as root, so
+/// those are only taken from a file nobody else could have written.
+pub const SYSTEM_CONFIG: &str = "/etc/salt-radar/salt-radar.toml";
+
+pub fn euid() -> u32 {
+    // SAFETY: geteuid can't fail.
+    unsafe { libc::geteuid() }
+}
+
+/// Whether only `uid` (and root) can write to what `meta` describes: `uid`
+/// owns it and others can't write to it — nor its group, for root's.
+fn only_writable_by(meta: &std::fs::Metadata, uid: u32) -> bool {
+    let others = if uid == 0 { 0o022 } else { 0o002 };
+    meta.uid() == uid && meta.mode() & others == 0
+}
+
+/// Whether only `uid` (and root) can have written `path`: a regular file,
+/// not a symlink, that passes `only_writable_by`.
+fn written_only_by(path: &Path, uid: u32) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && only_writable_by(&m, uid))
+}
+
+/// Opens `path` if root alone decides what is read from it: the file and
+/// every directory on the way to it are root's and nobody else can write
+/// to them, so nobody else can change the file or put another in its
+/// place. The answer is about the file that was opened, which is the one
+/// then read: looked up again by name, it could be a different one.
+fn open_roots_own(path: &Path) -> Option<std::fs::File> {
+    let real = std::fs::canonicalize(path).ok()?;
+    let roots = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && only_writable_by(&m, 0));
+    if !real.ancestors().skip(1).all(roots) {
+        return None;
+    }
+    let file = std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&real).ok()?;
+    file.metadata().is_ok_and(|m| m.is_file() && only_writable_by(&m, 0)).then_some(file)
+}
+
 /// Where `salt-radar.toml` lives: a `salt-radar.toml` in the current
-/// directory wins if present (lets you keep a per-directory config, and
-/// preserves behavior for anyone already relying on the old cwd-only
-/// lookup); otherwise it resolves to the XDG config dir
+/// directory wins if it's the running user's own (a per-directory config;
+/// someone else's, in a shared directory salt-radar happens to be started
+/// from, is left alone); otherwise it resolves to the XDG config dir
 /// (`$XDG_CONFIG_HOME/salt-radar/salt-radar.toml`, falling back to
 /// `~/.config/salt-radar/salt-radar.toml`) instead of silently writing
 /// into whatever directory the binary happened to be launched from.
 pub fn resolve_config_path() -> PathBuf {
     let cwd_path = PathBuf::from("salt-radar.toml");
-    if cwd_path.is_file() {
+    if written_only_by(&cwd_path, euid()) {
         return cwd_path;
     }
 
@@ -30,44 +80,123 @@ pub fn resolve_config_path() -> PathBuf {
     }
 }
 
-/// The user who started salt-radar through `sudo`, when it runs as root that
-/// way: their config, themes and files are used instead of root's, which
-/// every sudo user would otherwise share (sudo resets `HOME` to root's and
-/// drops `XDG_*`). Only `SUDO_USER` is followed; no sudo, `sudo -i` or a
-/// real root login leave this `None`.
-pub struct SudoUser {
-    pub home: PathBuf,
-    pub uid: u32,
-    pub gid: u32,
+/// The uid and gid of the user who started salt-radar through `sudo`, when
+/// it runs as root that way, from the `SUDO_UID`/`SUDO_GID` sudo sets. No
+/// sudo and a real root login leave this `None`.
+pub fn sudo_ids() -> Option<(u32, u32)> {
+    if euid() != 0 {
+        return None;
+    }
+    let id = |name: &str| std::env::var(name).ok()?.parse::<u32>().ok();
+    let (uid, gid) = (id("SUDO_UID")?, id("SUDO_GID")?);
+    (uid != 0).then_some((uid, gid))
 }
 
-pub fn sudo_user() -> Option<&'static SudoUser> {
-    static USER: OnceLock<Option<SudoUser>> = OnceLock::new();
-    USER.get_or_init(|| {
-        // SAFETY: geteuid can't fail; getpwnam runs once, here, before any
-        // other thread could call it, and its result is copied out at once.
-        if unsafe { libc::geteuid() } != 0 {
-            return None;
-        }
-        let name = std::env::var("SUDO_USER").ok().filter(|n| !n.is_empty() && n != "root")?;
-        let name = std::ffi::CString::new(name).ok()?;
-        let pw = unsafe { libc::getpwnam(name.as_ptr()) };
-        if pw.is_null() {
-            return None;
-        }
-        let (dir, uid, gid) = unsafe { ((*pw).pw_dir, (*pw).pw_uid, (*pw).pw_gid) };
-        if dir.is_null() {
-            return None;
-        }
-        let home = PathBuf::from(unsafe { std::ffi::CStr::from_ptr(dir) }.to_string_lossy().into_owned());
-        (home.is_absolute() && home != Path::new("/")).then_some(SudoUser { home, uid, gid })
+/// The home of the user who started salt-radar through `sudo`: their config,
+/// themes and files are used instead of root's, which every sudo user would
+/// otherwise share (sudo resets `HOME` to root's and drops `XDG_*`).
+pub fn sudo_home() -> Option<&'static PathBuf> {
+    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    HOME.get_or_init(|| {
+        let (uid, _) = sudo_ids()?;
+        let home = PathBuf::from(passwd_home(uid)?);
+        (home.is_absolute() && home != Path::new("/")).then_some(home)
     }).as_ref()
+}
+
+/// A user's home directory from the passwd database. The static binary only
+/// reads `/etc/passwd` itself, so an account from a directory service (LDAP,
+/// SSSD) is asked of `getent`, which goes through the system's NSS.
+fn passwd_home(uid: u32) -> Option<String> {
+    // SAFETY: getpwuid runs once (see `sudo_home`), before any other thread
+    // could call it, and its result is copied out at once.
+    let local = unsafe {
+        let pw = libc::getpwuid(uid);
+        (!pw.is_null() && !(*pw).pw_dir.is_null())
+            .then(|| std::ffi::CStr::from_ptr((*pw).pw_dir).to_string_lossy().into_owned())
+    };
+    local.or_else(|| {
+        let out = std::process::Command::new("getent").args(["passwd", &uid.to_string()]).output().ok()?;
+        String::from_utf8(out.stdout).ok()?.lines().next()?.split(':').nth(5).map(str::to_string)
+    }).filter(|home| !home.is_empty())
+}
+
+thread_local! {
+    static ACTING_AS_USER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Puts the thread's filesystem identity back to root's when dropped.
+struct RootFsIdentity {
+    groups: Vec<libc::gid_t>,
+}
+
+impl RootFsIdentity {
+    /// Switches the calling thread's filesystem uid, gid and groups to the
+    /// user's (no supplementary groups), keeping root's to restore. Only
+    /// this thread and only file access change: the agent, the other
+    /// threads and everything else salt-radar does stay root.
+    fn switch_to(uid: u32, gid: u32) -> Self {
+        // SAFETY: plain syscalls on this thread's own credentials; the
+        // buffer is as long as the count getgroups was given.
+        unsafe {
+            let n = libc::getgroups(0, std::ptr::null_mut()).max(0);
+            let mut groups = vec![0; n as usize];
+            let got = libc::getgroups(n, groups.as_mut_ptr()).max(0);
+            groups.truncate(got as usize);
+            set_thread_groups(&[]);
+            libc::setfsgid(gid);
+            libc::setfsuid(uid);
+            // setfsuid reports the previous value, never an error: ask again.
+            assert_eq!(libc::setfsuid(uid) as u32, uid, "can't act as user {uid} for file access");
+            Self { groups }
+        }
+    }
+}
+
+impl Drop for RootFsIdentity {
+    fn drop(&mut self) {
+        // SAFETY: as in `switch_to`.
+        unsafe {
+            libc::setfsuid(0);
+            libc::setfsgid(0);
+            set_thread_groups(&self.groups);
+        }
+        ACTING_AS_USER.set(false);
+    }
+}
+
+/// The supplementary groups of the calling thread alone: the raw syscall,
+/// as libc's `setgroups` changes every thread. Where that syscall takes
+/// 16-bit IDs (32-bit targets) the groups are left as they are.
+unsafe fn set_thread_groups(groups: &[libc::gid_t]) {
+    #[cfg(target_pointer_width = "64")]
+    libc::syscall(libc::SYS_setgroups, groups.len(), groups.as_ptr());
+    #[cfg(not(target_pointer_width = "64"))]
+    let _ = groups;
+}
+
+/// Runs `f` with the file access of the user who started salt-radar through
+/// sudo, for everything read, written or listed on their behalf: saved
+/// files, their config, the clipboard files, the Config Editor's file
+/// browser. A user allowed to run salt-radar through sudo, and nothing
+/// else, can then reach only what they could reach anyway, and what's
+/// written is theirs. Without sudo, `f` just runs.
+///
+/// `f` must not start a process: it would inherit the user's identity for
+/// file access only.
+pub fn as_invoking_user<T>(f: impl FnOnce() -> T) -> T {
+    let Some((uid, gid)) = sudo_ids() else { return f() };
+    if ACTING_AS_USER.replace(true) {
+        return f();
+    }
+    let _root = RootFsIdentity::switch_to(uid, gid);
+    f()
 }
 
 /// The invoking user's home: the sudo user's, or `$HOME`.
 fn home_dir() -> Option<PathBuf> {
-    match sudo_user() {
-        Some(u) => Some(u.home.clone()),
+    match sudo_home() {
+        Some(home) => Some(home.clone()),
         None => std::env::var_os("HOME").map(PathBuf::from),
     }
 }
@@ -75,8 +204,8 @@ fn home_dir() -> Option<PathBuf> {
 /// `$XDG_CONFIG_HOME/salt-radar`, falling back to `~/.config/salt-radar` —
 /// the sudo user's under sudo (their environment's `XDG_*` is gone).
 fn user_config_dir() -> Option<PathBuf> {
-    match sudo_user() {
-        Some(u) => Some(u.home.join(".config/salt-radar")),
+    match sudo_home() {
+        Some(home) => Some(home.join(".config/salt-radar")),
         None => own_config_dir(),
     }
 }
@@ -92,38 +221,13 @@ fn own_config_dir() -> Option<PathBuf> {
 /// `$XDG_STATE_HOME/salt-radar/last-version`, falling back to
 /// `~/.local/state/salt-radar/last-version` (the sudo user's under sudo).
 fn last_version_path() -> Option<PathBuf> {
-    let state = match sudo_user() {
-        Some(u) => Some(u.home.join(".local/state")),
+    let state = match sudo_home() {
+        Some(home) => Some(home.join(".local/state")),
         None => std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state"))),
     };
     state.map(|dir| dir.join("salt-radar").join("last-version"))
-}
-
-/// Hands a file or directory salt-radar created over to the user who ran it
-/// through sudo, when it's in their home — so their home doesn't fill up
-/// with root-owned files they can't edit.
-pub fn give_to_sudo_user(path: &Path) {
-    let Some(u) = sudo_user() else { return };
-    if !path.starts_with(&u.home) {
-        return;
-    }
-    if let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
-        // SAFETY: a valid NUL-terminated path; a failure just leaves root as owner.
-        unsafe { libc::chown(c.as_ptr(), u.uid, u.gid) };
-    }
-}
-
-/// `create_dir_all`, giving the directories it creates to the sudo user
-/// (see `give_to_sudo_user`).
-pub fn create_dir_all_owned(dir: &Path) -> std::io::Result<()> {
-    let missing: Vec<PathBuf> = dir.ancestors().take_while(|a| !a.as_os_str().is_empty() && !a.exists()).map(Path::to_path_buf).collect();
-    std::fs::create_dir_all(dir)?;
-    for d in missing.iter().rev() {
-        give_to_sudo_user(d);
-    }
-    Ok(())
 }
 
 /// Records the running version as the last one seen and returns the version
@@ -132,17 +236,17 @@ pub fn create_dir_all_owned(dir: &Path) -> std::io::Result<()> {
 pub fn note_version_seen() -> Option<String> {
     let path = last_version_path()?;
     let current = env!("CARGO_PKG_VERSION");
-    let previous = std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string());
-    if previous.as_deref() == Some(current) {
-        return None;
-    }
-    if let Some(dir) = path.parent() {
-        let _ = create_dir_all_owned(dir);
-    }
-    if std::fs::write(&path, format!("{current}\n")).is_ok() {
-        give_to_sudo_user(&path);
-    }
-    previous.filter(|p| !p.is_empty())
+    as_invoking_user(|| {
+        let previous = std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string());
+        if previous.as_deref() == Some(current) {
+            return None;
+        }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, format!("{current}\n"));
+        previous.filter(|p| !p.is_empty())
+    })
 }
 
 /// Expands a leading `~` / `~/` against the invoking user's home, as the
@@ -227,11 +331,25 @@ fn parse_theme_line(line: &str) -> Option<(&str, &str)> {
     Some((key.trim(), value.trim_matches('"')))
 }
 
-/// `#RRGGBB`, `#RR` (a gray level), or decimal `R G B`; empty means the
-/// terminal's own default color.
+/// The terminal's 16 palette colors by name, for themes like TTY that take
+/// their colors from the terminal's own palette.
+const ANSI_COLORS: [(&str, Color); 16] = [
+    ("black", Color::Black), ("red", Color::Red), ("green", Color::Green), ("yellow", Color::Yellow),
+    ("blue", Color::Blue), ("magenta", Color::Magenta), ("cyan", Color::Cyan), ("white", Color::Gray),
+    ("bright_black", Color::DarkGray), ("bright_red", Color::LightRed), ("bright_green", Color::LightGreen),
+    ("bright_yellow", Color::LightYellow), ("bright_blue", Color::LightBlue), ("bright_magenta", Color::LightMagenta),
+    ("bright_cyan", Color::LightCyan), ("bright_white", Color::White),
+];
+
+/// `#RRGGBB`, `#RR` (a gray level), decimal `R G B`, or one of the
+/// terminal's 16 palette colors by name (`red`, `bright_red`, …); empty
+/// means the terminal's own default color.
 fn parse_theme_color(value: &str) -> Option<Color> {
     let value = value.trim();
     if value.is_empty() { return Some(Color::Reset); }
+    if let Some(&(_, c)) = ANSI_COLORS.iter().find(|(name, _)| *name == value) {
+        return Some(c);
+    }
     if let Some(hex) = value.strip_prefix('#') {
         if !hex.is_ascii() { return None; }
         let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
@@ -441,6 +559,15 @@ pub const SPLIT_PCT_MIN: u64 = 20;
 pub const SPLIT_PCT_MAX: u64 = 80;
 
 impl AppConfig {
+    /// Every buffer size moved into its range (see `EVENT_BUFFER_RANGE`).
+    pub fn clamp_buffer_sizes(&mut self) {
+        let clamp = |v: &mut usize, (min, max): (usize, usize)| *v = (*v).clamp(min, max);
+        clamp(&mut self.event_buffer_size, EVENT_BUFFER_RANGE);
+        clamp(&mut self.sniffer_buffer_size, SNIFFER_BUFFER_RANGE);
+        clamp(&mut self.api_stats_window, API_STATS_WINDOW_RANGE);
+        clamp(&mut self.api_log_cap, API_LOG_CAP_RANGE);
+    }
+
     /// The left panel's width setting of a tab split in two side by side.
     pub fn split_pct_mut(&mut self, tab: Tab) -> Option<&mut u64> {
         match tab {
@@ -827,11 +954,15 @@ fn config_entries(c: &AppConfig) -> Vec<(&'static str, &'static str, toml::Value
 /// every setting; saving once slims them down to the real changes.)
 /// Writes the settings that differ from the defaults, atomically (a temp
 /// file renamed over the old one), so two instances saving at once can't
-/// leave a torn file. Under sudo, a config in the user's home stays theirs.
+/// leave a torn file. Under sudo it's written as the invoking user.
 pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
+    as_invoking_user(|| write_config_file(path, config))
+}
+
+fn write_config_file(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            create_dir_all_owned(parent)?;
+            std::fs::create_dir_all(parent)?;
         }
     }
     let mut out = toml::Table::new();
@@ -847,137 +978,287 @@ pub fn write_config(path: &Path, config: &AppConfig) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, format!(
+    let _ = std::fs::remove_file(&tmp);
+    // Only its owner may read a file holding the salt-api password.
+    let mode = if config.api_stats_auth_password.is_empty() { 0o644 } else { 0o600 };
+    std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?.write_all(format!(
         "# salt-radar settings: only values that differ from the defaults are stored.\n\
          # See salt-radar.toml.example for every setting.\n\n{}",
         body,
-    ))?;
+    ).as_bytes())?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    give_to_sudo_user(path);
     Ok(())
+}
+
+/// `err` from reading or writing the config at `path`, as text. Under sudo
+/// the file is handled as the invoking user: when it's refused because the
+/// file or its directory belongs to someone else (root, from a salt-radar
+/// run without sudo or an old version), the text says how to hand it over.
+pub fn config_io_error(path: &Path, err: &std::io::Error) -> String {
+    let hint = || {
+        if err.kind() != std::io::ErrorKind::PermissionDenied {
+            return None;
+        }
+        let (uid, _) = sudo_ids()?;
+        let foreign = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.uid() != uid);
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+        let target = dir.filter(|d| foreign(d)).or_else(|| foreign(path).then_some(path))?;
+        let user = std::env::var("SUDO_USER").unwrap_or_else(|_| uid.to_string());
+        Some(format!("{} isn't {user}'s; as root: chown -R {user}: {}", target.display(), target.display()))
+    };
+    match hint() {
+        Some(hint) => format!("{err}: {hint}"),
+        None => err.to_string(),
+    }
+}
+
+/// Whether `python_bin`, `agent_path` and `master_config` saved to `path`
+/// would be used at the next start (see `load_startup_config`). Under sudo
+/// the file is saved as the invoking user, so never; as root otherwise,
+/// when root alone decides what it holds, or will once it's created.
+pub fn exec_settings_saveable(path: &Path) -> bool {
+    if euid() != 0 {
+        return true;
+    }
+    if sudo_ids().is_some() {
+        return false;
+    }
+    if std::fs::symlink_metadata(path).is_ok() {
+        return open_roots_own(path).is_some();
+    }
+    let Ok(abs) = std::path::absolute(path) else { return false };
+    abs.ancestors().skip(1)
+        .filter_map(|p| std::fs::symlink_metadata(p).ok())
+        .all(|m| m.is_dir() && only_writable_by(&m, 0))
+}
+
+/// The file `load_config_or_fallback` reads for `path`.
+fn config_source(path: &Path) -> PathBuf {
+    if !path.exists() && sudo_home().is_some() {
+        if let Some(own) = own_config_dir().map(|d| d.join("salt-radar.toml")).filter(|p| p.is_file()) {
+            return own;
+        }
+    }
+    path.to_path_buf()
 }
 
 /// `load_config`, but under sudo a user without a config of their own yet
 /// starts from root's — their first save then writes their own file.
 pub fn load_config_or_fallback(path: &Path) -> AppConfig {
-    if !path.exists() && sudo_user().is_some() {
-        if let Some(own) = own_config_dir().map(|d| d.join("salt-radar.toml")).filter(|p| p.is_file()) {
-            return load_config(&own);
+    load_config(&config_source(path))
+}
+
+/// Replaces the settings that decide what gets executed with `trusted`'s,
+/// returning the names of those that differed.
+fn take_exec_settings(cfg: &mut AppConfig, trusted: &AppConfig) -> Vec<&'static str> {
+    let mut replaced = Vec::new();
+    for (name, value, trusted) in [
+        ("python_bin", &mut cfg.python_bin, &trusted.python_bin),
+        ("agent_path", &mut cfg.agent_path, &trusted.agent_path),
+        ("master_config", &mut cfg.master_config, &trusted.master_config),
+    ] {
+        if value != trusted {
+            value.clone_from(trusted);
+            replaced.push(name);
         }
     }
-    load_config(path)
+    replaced
+}
+
+/// The config salt-radar starts with, and a warning when part of the file
+/// was left out: as root, `python_bin`, `agent_path` and `master_config`
+/// only count from a file root alone decides the content of (see
+/// `open_roots_own`) — the one loaded, else root's own config, else
+/// `/etc/salt-radar/salt-radar.toml`, else the defaults. Under sudo the file
+/// loaded is the invoking user's, and what it names would otherwise run as
+/// root.
+pub fn load_startup_config(path: &Path) -> (AppConfig, Option<String>) {
+    let source = config_source(path);
+    // Read once: what's used and what's judged are the same bytes.
+    let (read, trusted) = read_config(&source);
+    let broken = read.as_ref().err().map(|e| format!(
+        " {} not loaded, {}: using the defaults, and settings won't be saved until it's fixed ", source.display(), e,
+    ));
+    let mut cfg = config_from(read.ok().flatten());
+    if trusted {
+        return (cfg, broken);
+    }
+    let roots = [own_config_dir().map(|d| d.join("salt-radar.toml")), Some(PathBuf::from(SYSTEM_CONFIG))]
+        .into_iter()
+        .flatten()
+        .find_map(|p| match read_config(&p) {
+            (Ok(Some(settings)), true) => Some(config_from(Some(settings))),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let defaults = AppConfig::default();
+    let set_in_file = [
+        ("python_bin", cfg.python_bin != defaults.python_bin),
+        ("agent_path", cfg.agent_path != defaults.agent_path),
+        ("master_config", cfg.master_config != defaults.master_config),
+    ];
+    // Only what the file itself set is reported as ignored.
+    let ignored: Vec<&str> = take_exec_settings(&mut cfg, &roots).into_iter()
+        .filter(|name| set_in_file.contains(&(name, true)))
+        .collect();
+    let warning = (!ignored.is_empty()).then(|| format!(
+        " {} in {} ignored (the file isn't root's alone): set in {} ",
+        ignored.join(", "), source.display(), SYSTEM_CONFIG,
+    ));
+    (cfg, broken.or(warning))
+}
+
+/// The settings in the file at `path` (`None` without a file, or why the
+/// file can't be used: it can't be read, or isn't valid — a typo, a value of
+/// the wrong type — with the line), and whether what they say to execute
+/// may be: always for a user's own salt-radar; as root only when root alone
+/// decides what the file holds.
+fn read_config(path: &Path) -> (Result<Option<TomlConfig>, String>, bool) {
+    let roots_own = if euid() == 0 { open_roots_own(path) } else { None };
+    let trusted = euid() != 0 || roots_own.is_some();
+    // Root's own files are read as root, anything else as the invoking user.
+    let data = match roots_own {
+        Some(mut file) => {
+            let mut data = String::new();
+            file.read_to_string(&mut data).map(|_| data)
+        }
+        None => as_invoking_user(|| std::fs::read_to_string(path)),
+    };
+    let data = match data {
+        Ok(data) => data,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Ok(None), trusted),
+        Err(e) => return (Err(config_io_error(path, &e)), trusted),
+    };
+    let settings = toml::from_str::<TomlConfig>(&data).map(Some).map_err(|e| match e.span() {
+        Some(span) => format!("line {}: {}", data[..span.start.min(data.len())].matches('\n').count() + 1, e.message()),
+        None => e.message().to_string(),
+    });
+    (settings, trusted)
+}
+
+/// Why the config file for `path` can't be used, when it can't. The
+/// settings are then the defaults, which must not be saved over it.
+pub fn config_error(path: &Path) -> Option<String> {
+    read_config(&config_source(path)).0.err()
 }
 
 pub fn load_config(path: &Path) -> AppConfig {
+    config_from(read_config(path).0.ok().flatten())
+}
+
+/// The defaults with a file's settings over them.
+fn config_from(settings: Option<TomlConfig>) -> AppConfig {
     let mut cfg = AppConfig::default();
-    let data = std::fs::read_to_string(path).ok();
-    if let Some(data) = data {
-        if let Ok(toml_cfg) = toml::from_str::<TomlConfig>(&data) {
-            if let Some(s) = toml_cfg.salt {
-                if let Some(v) = s.master_config { cfg.master_config = v; }
-                if let Some(v) = s.running_config_digests { cfg.running_config_digests = v; }
-                if let Some(v) = s.python_bin { cfg.python_bin = v; }
-                if let Some(v) = s.agent_path { cfg.agent_path = v; }
-            }
-            if let Some(r) = toml_cfg.refresh {
-                if let Some(v) = r.dashboard_secs { cfg.dashboard_secs = v; }
-                if let Some(v) = r.minions_secs { cfg.minions_secs = v; }
-                if let Some(v) = r.config_secs { cfg.config_secs = v; }
-                if let Some(v) = r.tick_ms { cfg.tick_ms = v.clamp(TICK_MS_MIN, TICK_MS_MAX); }
-                if let Some(v) = r.max_output_kbs { cfg.max_output_kbs = v; }
-            }
-            if let Some(e) = toml_cfg.events {
-                if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
-                if let Some(v) = e.sniffer_buffer_size { cfg.sniffer_buffer_size = v; }
-                if let Some(v) = e.time_format.filter(|v| crate::app::EVENT_TIME_FORMATS.contains(&v.as_str())) { cfg.event_time_format = v; }
-                if let Some(v) = e.event_columns { cfg.event_columns = v; }
-            }
-            if let Some(a) = toml_cfg.alerts {
-                if let Some(v) = a.stale_minion_secs { cfg.stale_minion_secs = v; }
-                if let Some(v) = a.pending_key_secs { cfg.pending_key_secs = v; }
-                if let Some(v) = a.job_straggler_secs { cfg.job_straggler_secs = v; }
-                if let Some(v) = a.disk_usage_pct { cfg.disk_usage_pct = v; }
-                if let Some(v) = a.auth_storm_rate_per_sec { cfg.auth_storm_rate_per_sec = v; }
-                if let Some(v) = a.worker_saturation_pct { cfg.worker_saturation_pct = v; }
-                if let Some(v) = a.pending_key_churn_per_min { cfg.pending_key_churn_per_min = v; }
-                if let Some(v) = a.service_flap_threshold_24h { cfg.service_flap_threshold_24h = v; }
-                if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
-                if let Some(v) = a.service_mem_abs_threshold_mb { cfg.service_mem_abs_threshold_mb = v; }
-                if let Some(v) = a.service_mem_pct_threshold { cfg.service_mem_pct_threshold = v; }
-                if let Some(v) = a.api_auth_latency_warn_secs { cfg.api_auth_latency_warn_secs = v; }
-                if let Some(v) = a.service_mem_abs_threshold_master_mb { cfg.service_mem_abs_threshold_master_mb = v; }
-                if let Some(v) = a.service_mem_pct_threshold_master { cfg.service_mem_pct_threshold_master = v; }
-                if let Some(v) = a.service_mem_abs_threshold_minion_mb { cfg.service_mem_abs_threshold_minion_mb = v; }
-                if let Some(v) = a.service_mem_pct_threshold_minion { cfg.service_mem_pct_threshold_minion = v; }
-                if let Some(v) = a.service_mem_abs_threshold_api_mb { cfg.service_mem_abs_threshold_api_mb = v; }
-                if let Some(v) = a.service_mem_pct_threshold_api { cfg.service_mem_pct_threshold_api = v; }
-                if let Some(v) = a.service_mem_abs_threshold_syndic_mb { cfg.service_mem_abs_threshold_syndic_mb = v; }
-                if let Some(v) = a.service_mem_pct_threshold_syndic { cfg.service_mem_pct_threshold_syndic = v; }
-                if let Some(v) = a.alert_columns { cfg.alert_columns = v; }
-            }
-            if let Some(a) = toml_cfg.api {
-                if let Some(v) = a.stats_window { cfg.api_stats_window = v; }
-                if let Some(v) = a.log_cap { cfg.api_log_cap = v; }
-                if let Some(v) = a.log_max_age_secs { cfg.api_log_max_age_secs = v; }
-                if let Some(v) = a.hide_stats_polls { cfg.api_hide_stats_polls = v; }
-                if let Some(v) = a.stats_auth_mode { cfg.api_stats_auth_mode = v; }
-                if let Some(v) = a.stats_auth_eauth { cfg.api_stats_auth_eauth = v; }
-                if let Some(v) = a.stats_auth_username { cfg.api_stats_auth_username = v; }
-                if let Some(v) = a.stats_auth_password { cfg.api_stats_auth_password = v; }
-                if let Some(v) = a.stats_auth_username_pillar_path { cfg.api_stats_auth_username_pillar_path = v; }
-                if let Some(v) = a.stats_auth_password_pillar_path { cfg.api_stats_auth_password_pillar_path = v; }
-                if let Some(v) = a.request_columns { cfg.api_request_columns = v; }
-            }
-            if let Some(d) = toml_cfg.dashboard {
-                if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
-                if let Some(v) = d.zmq_latency_ceiling_ms { cfg.zmq_latency_ceiling_ms = v.max(0.0); }
-                if let Some(v) = d.show_zmq_graph { cfg.show_zmq_graph = v; }
-                if let Some(v) = d.show_events_graph { cfg.show_events_graph = v; }
-                if let Some(v) = d.show_activity_graph { cfg.show_activity_graph = v; }
-                if let Some(v) = d.show_cpu_graph { cfg.show_cpu_graph = v; }
-                if let Some(v) = d.show_mem_graph { cfg.show_mem_graph = v; }
-                if let Some(v) = d.graph_order { cfg.graph_order = v; }
-                if let Some(v) = d.graph_style { cfg.graph_style = v; }
-                if let Some(v) = d.show_host_resources { cfg.show_host_resources = v; }
-                if let Some(v) = d.show_services { cfg.show_services = v; }
-                if let Some(v) = d.show_key_status { cfg.show_key_status = v; }
-                if let Some(v) = d.show_event_types { cfg.show_event_types = v; }
-                if let Some(v) = d.show_job_pulse { cfg.show_job_pulse = v; }
-                if let Some(v) = d.show_salt_api { cfg.show_salt_api = v; }
-            }
-            if let Some(m) = toml_cfg.minions {
-                if let Some(v) = m.follow_filter { cfg.minions_follow_filter = v; }
-                if let Some(v) = m.minion_columns { cfg.minion_columns = v; }
-            }
-            if let Some(e) = toml_cfg.export {
-                if let Some(v) = e.save_dir { cfg.save_dir = v; }
-            }
-            if let Some(j) = toml_cfg.jobs {
-                if let Some(v) = j.lookup_timeout_secs { cfg.lookup_timeout_secs = v.max(1); }
-                if let Some(v) = j.live_columns { cfg.jobs_live_columns = v; }
-                if let Some(v) = j.cache_columns { cfg.jobs_cache_columns = v; }
-            }
-            if let Some(u) = toml_cfg.ui {
-                if let Some(v) = u.color_theme { cfg.color_theme = v; }
-                if let Some(v) = u.theme_background { cfg.theme_background = v; }
-                if let Some(v) = u.popup_dim_pct { cfg.popup_dim_pct = v.min(100); }
-                if let Some(v) = u.confirm_quit { cfg.confirm_quit = v; }
-                if let Some(v) = u.mouse { cfg.mouse = v; }
-                let split = |v: u64| v.clamp(SPLIT_PCT_MIN, SPLIT_PCT_MAX);
-                if let Some(v) = u.minions_split_pct { cfg.minions_split_pct = split(v); }
-                if let Some(v) = u.events_split_pct { cfg.events_split_pct = split(v); }
-                if let Some(v) = u.jobs_split_pct { cfg.jobs_split_pct = split(v); }
-                if let Some(v) = u.api_split_pct { cfg.api_split_pct = split(v); }
-                if let Some(v) = u.pulse_split_pct { cfg.pulse_split_pct = split(v); }
-                if let Some(v) = u.master_split_pct { cfg.master_split_pct = split(v); }
-                if let Some(v) = u.master_wrap { cfg.master_wrap = v; }
-            }
-        }
+    if let Some(settings) = settings {
+        load_settings(&mut cfg, settings);
     }
+    cfg.clamp_buffer_sizes();
     cfg
+}
+
+fn load_settings(cfg: &mut AppConfig, toml_cfg: TomlConfig) {
+    if let Some(s) = toml_cfg.salt {
+        if let Some(v) = s.master_config { cfg.master_config = v; }
+        if let Some(v) = s.running_config_digests { cfg.running_config_digests = v; }
+        if let Some(v) = s.python_bin { cfg.python_bin = v; }
+        if let Some(v) = s.agent_path { cfg.agent_path = v; }
+    }
+    if let Some(r) = toml_cfg.refresh {
+        if let Some(v) = r.dashboard_secs { cfg.dashboard_secs = v; }
+        if let Some(v) = r.minions_secs { cfg.minions_secs = v; }
+        if let Some(v) = r.config_secs { cfg.config_secs = v; }
+        if let Some(v) = r.tick_ms { cfg.tick_ms = v.clamp(TICK_MS_MIN, TICK_MS_MAX); }
+        if let Some(v) = r.max_output_kbs { cfg.max_output_kbs = v; }
+    }
+    if let Some(e) = toml_cfg.events {
+        if let Some(v) = e.buffer_size { cfg.event_buffer_size = v; }
+        if let Some(v) = e.sniffer_buffer_size { cfg.sniffer_buffer_size = v; }
+        if let Some(v) = e.time_format.filter(|v| crate::app::EVENT_TIME_FORMATS.contains(&v.as_str())) { cfg.event_time_format = v; }
+        if let Some(v) = e.event_columns { cfg.event_columns = v; }
+    }
+    if let Some(a) = toml_cfg.alerts {
+        if let Some(v) = a.stale_minion_secs { cfg.stale_minion_secs = v; }
+        if let Some(v) = a.pending_key_secs { cfg.pending_key_secs = v; }
+        if let Some(v) = a.job_straggler_secs { cfg.job_straggler_secs = v; }
+        if let Some(v) = a.disk_usage_pct { cfg.disk_usage_pct = v; }
+        if let Some(v) = a.auth_storm_rate_per_sec { cfg.auth_storm_rate_per_sec = v; }
+        if let Some(v) = a.worker_saturation_pct { cfg.worker_saturation_pct = v; }
+        if let Some(v) = a.pending_key_churn_per_min { cfg.pending_key_churn_per_min = v; }
+        if let Some(v) = a.service_flap_threshold_24h { cfg.service_flap_threshold_24h = v; }
+        if let Some(v) = a.service_mem_growth_mb_per_hour { cfg.service_mem_growth_mb_per_hour = v; }
+        if let Some(v) = a.service_mem_abs_threshold_mb { cfg.service_mem_abs_threshold_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold { cfg.service_mem_pct_threshold = v; }
+        if let Some(v) = a.api_auth_latency_warn_secs { cfg.api_auth_latency_warn_secs = v; }
+        if let Some(v) = a.service_mem_abs_threshold_master_mb { cfg.service_mem_abs_threshold_master_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold_master { cfg.service_mem_pct_threshold_master = v; }
+        if let Some(v) = a.service_mem_abs_threshold_minion_mb { cfg.service_mem_abs_threshold_minion_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold_minion { cfg.service_mem_pct_threshold_minion = v; }
+        if let Some(v) = a.service_mem_abs_threshold_api_mb { cfg.service_mem_abs_threshold_api_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold_api { cfg.service_mem_pct_threshold_api = v; }
+        if let Some(v) = a.service_mem_abs_threshold_syndic_mb { cfg.service_mem_abs_threshold_syndic_mb = v; }
+        if let Some(v) = a.service_mem_pct_threshold_syndic { cfg.service_mem_pct_threshold_syndic = v; }
+        if let Some(v) = a.alert_columns { cfg.alert_columns = v; }
+    }
+    if let Some(a) = toml_cfg.api {
+        if let Some(v) = a.stats_window { cfg.api_stats_window = v; }
+        if let Some(v) = a.log_cap { cfg.api_log_cap = v; }
+        if let Some(v) = a.log_max_age_secs { cfg.api_log_max_age_secs = v; }
+        if let Some(v) = a.hide_stats_polls { cfg.api_hide_stats_polls = v; }
+        if let Some(v) = a.stats_auth_mode { cfg.api_stats_auth_mode = v; }
+        if let Some(v) = a.stats_auth_eauth { cfg.api_stats_auth_eauth = v; }
+        if let Some(v) = a.stats_auth_username { cfg.api_stats_auth_username = v; }
+        if let Some(v) = a.stats_auth_password { cfg.api_stats_auth_password = v; }
+        if let Some(v) = a.stats_auth_username_pillar_path { cfg.api_stats_auth_username_pillar_path = v; }
+        if let Some(v) = a.stats_auth_password_pillar_path { cfg.api_stats_auth_password_pillar_path = v; }
+        if let Some(v) = a.request_columns { cfg.api_request_columns = v; }
+    }
+    if let Some(d) = toml_cfg.dashboard {
+        if let Some(v) = d.zmq_latency_source { cfg.zmq_latency_source = v; }
+        if let Some(v) = d.zmq_latency_ceiling_ms { cfg.zmq_latency_ceiling_ms = v.max(0.0); }
+        if let Some(v) = d.show_zmq_graph { cfg.show_zmq_graph = v; }
+        if let Some(v) = d.show_events_graph { cfg.show_events_graph = v; }
+        if let Some(v) = d.show_activity_graph { cfg.show_activity_graph = v; }
+        if let Some(v) = d.show_cpu_graph { cfg.show_cpu_graph = v; }
+        if let Some(v) = d.show_mem_graph { cfg.show_mem_graph = v; }
+        if let Some(v) = d.graph_order { cfg.graph_order = v; }
+        if let Some(v) = d.graph_style { cfg.graph_style = v; }
+        if let Some(v) = d.show_host_resources { cfg.show_host_resources = v; }
+        if let Some(v) = d.show_services { cfg.show_services = v; }
+        if let Some(v) = d.show_key_status { cfg.show_key_status = v; }
+        if let Some(v) = d.show_event_types { cfg.show_event_types = v; }
+        if let Some(v) = d.show_job_pulse { cfg.show_job_pulse = v; }
+        if let Some(v) = d.show_salt_api { cfg.show_salt_api = v; }
+    }
+    if let Some(m) = toml_cfg.minions {
+        if let Some(v) = m.follow_filter { cfg.minions_follow_filter = v; }
+        if let Some(v) = m.minion_columns { cfg.minion_columns = v; }
+    }
+    if let Some(e) = toml_cfg.export {
+        if let Some(v) = e.save_dir { cfg.save_dir = v; }
+    }
+    if let Some(j) = toml_cfg.jobs {
+        if let Some(v) = j.lookup_timeout_secs { cfg.lookup_timeout_secs = v.max(1); }
+        if let Some(v) = j.live_columns { cfg.jobs_live_columns = v; }
+        if let Some(v) = j.cache_columns { cfg.jobs_cache_columns = v; }
+    }
+    if let Some(u) = toml_cfg.ui {
+        if let Some(v) = u.color_theme { cfg.color_theme = v; }
+        if let Some(v) = u.theme_background { cfg.theme_background = v; }
+        if let Some(v) = u.popup_dim_pct { cfg.popup_dim_pct = v.min(100); }
+        if let Some(v) = u.confirm_quit { cfg.confirm_quit = v; }
+        if let Some(v) = u.mouse { cfg.mouse = v; }
+        let split = |v: u64| v.clamp(SPLIT_PCT_MIN, SPLIT_PCT_MAX);
+        if let Some(v) = u.minions_split_pct { cfg.minions_split_pct = split(v); }
+        if let Some(v) = u.events_split_pct { cfg.events_split_pct = split(v); }
+        if let Some(v) = u.jobs_split_pct { cfg.jobs_split_pct = split(v); }
+        if let Some(v) = u.api_split_pct { cfg.api_split_pct = split(v); }
+        if let Some(v) = u.pulse_split_pct { cfg.pulse_split_pct = split(v); }
+        if let Some(v) = u.master_split_pct { cfg.master_split_pct = split(v); }
+        if let Some(v) = u.master_wrap { cfg.master_wrap = v; }
+    }
 }
 
 #[cfg(test)]
@@ -996,6 +1277,111 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap()
             .filter_map(|e| e.ok()).map(|e| e.file_name()).filter(|n| n != "salt-radar.toml").collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn exec_settings_only_count_from_a_file_nobody_else_could_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("trust");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, "[salt]\npython_bin = \"/tmp/evil\"\n").unwrap();
+        let me = std::fs::metadata(&path).unwrap().uid();
+        let chmod = |mode| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        chmod(0o644);
+        assert!(written_only_by(&path, me));
+        assert!(!written_only_by(&path, me + 1), "someone else's file");
+        chmod(0o666);
+        assert!(!written_only_by(&path, me), "anyone can write it");
+        chmod(0o664);
+        assert_eq!(written_only_by(&path, me), me != 0, "group-writable is fine for a user, not for root");
+        chmod(0o644);
+        let link = dir.join("link.toml");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(!written_only_by(&link, me), "a symlink could point anywhere");
+        assert!(!written_only_by(&dir.join("missing.toml"), me));
+
+        let mut cfg = AppConfig { popup_dim_pct: 40, ..load_config(&path) };
+        assert_eq!(take_exec_settings(&mut cfg, &AppConfig::default()), ["python_bin"]);
+        assert_eq!(cfg.python_bin, AppConfig::default().python_bin);
+        assert_eq!(cfg.popup_dim_pct, 40, "everything else is kept");
+        assert!(take_exec_settings(&mut cfg, &AppConfig::default()).is_empty());
+
+        // Only root is held to it; what a user's own file names runs as that
+        // user. For root, a file under the world-writable temp dir is never
+        // root's alone, whatever its own mode: it could be swapped.
+        for mode in [0o666, 0o644] {
+            chmod(mode);
+            let (cfg, warning) = load_startup_config(&path);
+            assert_eq!((cfg.python_bin == "/tmp/evil", warning.is_none()), (euid() != 0, euid() != 0), "{mode:o} {warning:?}");
+            assert_eq!(read_config(&path).1, euid() != 0);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn roots_own_files_are_in_directories_only_root_can_change() {
+        let dir = scratch("roots-own");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, "").unwrap();
+        assert!(open_roots_own(&path).is_none(), "anyone can rename things in the temp dir");
+        assert!(open_roots_own(&dir).is_none(), "not a file");
+        assert!(open_roots_own(&dir.join("missing.toml")).is_none());
+        let link = dir.join("passwd");
+        std::os::unix::fs::symlink("/etc/passwd", &link).unwrap();
+        let system = ["/", "/etc", "/etc/passwd"].iter().all(|p| std::fs::metadata(p).is_ok_and(|m| only_writable_by(&m, 0)));
+        assert_eq!(open_roots_own(Path::new("/etc/passwd")).is_some(), system);
+        assert_eq!(open_roots_own(&link).is_some(), system, "judged by where it leads, which is what gets read");
+
+        // What the Config Editor lets be saved: as root, only what would count.
+        let user = euid() != 0;
+        assert_eq!(exec_settings_saveable(&path), user, "a file in the temp dir");
+        assert_eq!(exec_settings_saveable(&dir.join("missing.toml")), user, "one to be created there");
+        assert_eq!(exec_settings_saveable(Path::new("/etc/salt-radar-missing/salt-radar.toml")), user || system, "one to be created under /etc");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_config_holding_the_api_password_is_private() {
+        let dir = scratch("mode");
+        let path = dir.join("salt-radar.toml");
+        let mode = || std::fs::metadata(&path).unwrap().mode() & 0o777;
+        write_config(&path, &AppConfig { api_stats_auth_password: "pw".into(), ..AppConfig::default() }).unwrap();
+        assert_eq!(mode(), 0o600);
+        assert_eq!(load_config(&path).api_stats_auth_password, "pw");
+        write_config(&path, &AppConfig { popup_dim_pct: 40, ..AppConfig::default() }).unwrap();
+        assert_ne!(mode(), 0o600, "no password: the umask decides, as before");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn buffer_sizes_stay_in_their_ranges() {
+        let dir = scratch("sizes");
+        let path = dir.join("salt-radar.toml");
+        std::fs::write(&path, "[events]\nbuffer_size = 0\nsniffer_buffer_size = 999999999\n[api]\nlog_cap = 500\n").unwrap();
+        let cfg = load_config(&path);
+        assert_eq!(cfg.event_buffer_size, EVENT_BUFFER_RANGE.0, "0 kept only the newest event");
+        assert_eq!(cfg.sniffer_buffer_size, SNIFFER_BUFFER_RANGE.1);
+        assert_eq!(cfg.api_log_cap, 500, "in range: kept");
+        assert_eq!(load_config(&dir.join("missing.toml")).event_buffer_size, AppConfig::default().event_buffer_size);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_reported_with_its_line() {
+        let dir = scratch("broken");
+        let path = dir.join("salt-radar.toml");
+        assert_eq!(config_error(&path), None, "no file is not an error");
+        std::fs::write(&path, "[ui]\npopup_dim_pct = 40\n").unwrap();
+        assert_eq!(config_error(&path), None);
+        std::fs::write(&path, "[ui]\npopup_dim_pct = 40\n[refresh]\ntick_ms = -5\n").unwrap();
+        let err = config_error(&path).unwrap();
+        assert!(err.starts_with("line 4: "), "{err}");
+        assert_eq!(load_config(&path).popup_dim_pct, AppConfig::default().popup_dim_pct, "nothing of it is used");
+        let (_, warning) = load_startup_config(&path);
+        assert!(warning.unwrap().contains("not loaded, line 4"));
+        std::fs::write(&path, "[ui\n").unwrap();
+        assert!(config_error(&path).unwrap().starts_with("line 1: "));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1020,12 +1406,14 @@ mod tests {
         assert_eq!(parse_theme_color("#ff8000"), Some(Color::Rgb(255, 128, 0)));
         assert_eq!(parse_theme_color("#80"), Some(Color::Rgb(128, 128, 128)));
         assert_eq!(parse_theme_color("10 20 30"), Some(Color::Rgb(10, 20, 30)));
+        assert_eq!(parse_theme_color("red"), Some(Color::Red));
+        assert_eq!(parse_theme_color("bright_white"), Some(Color::White));
+        assert_eq!(parse_theme_color("purple"), None, "only the 16 ANSI names");
         assert_eq!(parse_theme_color(""), Some(Color::Reset));
         assert_eq!(parse_theme_color("#12345"), None);
         assert_eq!(parse_theme_color("#gggggg"), None);
         assert_eq!(parse_theme_color("10 20"), None);
         assert_eq!(parse_theme_color("300 0 0"), None);
-        assert_eq!(parse_theme_color("red"), None);
     }
 
     #[test]
@@ -1051,9 +1439,26 @@ mod tests {
     /// and its colored text and search highlights readable.
     #[test]
     fn bundled_themes_keep_status_colors_apart_and_text_readable() {
-        // A transparent background is the terminal's own; assume a dark one.
+        // A transparent background is the terminal's own; assume a dark one,
+        // and palette colors (TTY) as xterm's defaults.
         let rgb = |c: Color| match c {
             Color::Rgb(r, g, b) => (r as f64, g as f64, b as f64),
+            Color::Black => (0.0, 0.0, 0.0),
+            Color::Red => (205.0, 0.0, 0.0),
+            Color::Green => (0.0, 205.0, 0.0),
+            Color::Yellow => (205.0, 205.0, 0.0),
+            Color::Blue => (0.0, 0.0, 238.0),
+            Color::Magenta => (205.0, 0.0, 205.0),
+            Color::Cyan => (0.0, 205.0, 205.0),
+            Color::Gray => (229.0, 229.0, 229.0),
+            Color::DarkGray => (127.0, 127.0, 127.0),
+            Color::LightRed => (255.0, 0.0, 0.0),
+            Color::LightGreen => (0.0, 255.0, 0.0),
+            Color::LightYellow => (255.0, 255.0, 0.0),
+            Color::LightBlue => (92.0, 92.0, 255.0),
+            Color::LightMagenta => (255.0, 0.0, 255.0),
+            Color::LightCyan => (0.0, 255.0, 255.0),
+            Color::White => (255.0, 255.0, 255.0),
             _ => (24.0, 24.0, 24.0),
         };
         // "redmean" weighted RGB distance, a cheap perceptual approximation
@@ -1103,7 +1508,7 @@ mod tests {
             assert!(contrast(t.hi_fg, t.badge_bg) >= 3.0, "{name}: search matches are hard to read");
             checked += 1;
         }
-        assert!(checked > 40, "only {checked} themes found");
+        assert!(checked > 43, "only {checked} themes found");
     }
 
     #[test]

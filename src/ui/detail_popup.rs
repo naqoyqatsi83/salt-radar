@@ -4,8 +4,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, DetailPopup, PingState};
-use crate::types::{KeyStatus, SnifferState};
+use crate::app::{App, DetailPopup, MinionGrains, MinionHealth, PingState};
+use crate::types::{Column, KeyStatus, MinionInfo, Outcome, OutcomeFilter, SnifferState, Status};
 
 use super::color;
 
@@ -31,13 +31,13 @@ pub fn draw_detail_popup(f: &mut Frame, app: &mut App) {
             let search = PopupSearch { query: search, typing: *searching, focus: *search_focus, cursor: app.input_cursor };
             draw_event_detail(f, area, evt, *scroll, *pretty, pretty_fetch, &mut app.event_detail_scroll_max, &mut app.event_search_matches, search, clipboard_at, save_at, clipboard_msg, highlight);
         }
-        DetailPopup::JobDetail { jid, lookup, selected_return, job, return_filter, return_is_filtering, panel_focus, content_scroll, content_scroll_mode, .. } => {
+        DetailPopup::JobDetail { jid, lookup, selected_return, job, return_filter, return_is_filtering, outcomes, outcome_picker, panel_focus, content_scroll, content_scroll_mode, .. } => {
             let area = centered_rect(85, 85, f.area());
             f.render_widget(Clear, area);
             let clipboard_at = app.clipboard_at;
             let save_at = app.save_at;
             let clipboard_msg = app.clipboard_msg.as_ref().map(|(m, _)| m.as_str());
-            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &mut app.job_detail_hits, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
+            draw_job_detail(f, area, jid, lookup, *selected_return, job, return_filter, *return_is_filtering, *outcomes, *outcome_picker, *panel_focus, *content_scroll, *content_scroll_mode, &mut app.job_detail_scroll_max, &mut app.job_detail_hits, &app.job_search, app.job_searching, &mut app.job_search_matches, app.job_search_focus, &mut app.job_fail_lines, app.job_focus_line, app.input_cursor, clipboard_at, save_at, clipboard_msg);
         }
         DetailPopup::Alert { alert, scroll, search, searching, search_focus } => {
             let area = centered_rect(70, if alert.details.is_empty() { 40 } else { 70 }, f.area());
@@ -261,17 +261,23 @@ impl PopupSearch<'_> {
 /// rows — instead of scrolling away with the rest; `0` means the whole
 /// body scrolls together as before. `scroll` applies only to the
 /// non-pinned remainder.
-fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&str, String)], status: Option<Line<'static>>, more: (bool, bool), scroll: u16, pinned_header: usize) {
+fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&str, String)], status: Option<Line<'static>>, more: (bool, bool), scroll: usize, pinned_header: usize) {
     // Clear the area first — prevents underlying content from bleeding through
     f.render_widget(Clear, area);
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::border_focus()))
         .style(Style::default().bg(color::popup_bg()));
-    if more.0 {
-        block = block.title_top(Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::border_focus()))).right_aligned());
+    let (nav, hints) = super::split_nav_hints(hints);
+    let nav_line = super::border_hints(&nav, color::border_focus());
+    let more_above = Line::from(Span::styled(" \u{25B2} more above ", Style::default().fg(color::border_focus())));
+    if more.0 && super::fits_beside(nav_line.width(), &more_above, area.width) {
+        block = block.title_top(more_above.right_aligned());
     }
-    let hint_line = super::border_hints(hints, color::border_focus());
+    if !nav.is_empty() {
+        block = block.title_top(nav_line.right_aligned());
+    }
+    let hint_line = super::border_hints(&hints, color::border_focus());
     if more.1 && super::fits_beside(hint_line.width(), &super::more_below(color::border_focus()), area.width) {
         block = block.title_bottom(super::more_below(color::border_focus()));
     }
@@ -298,7 +304,7 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
     let pinned_header = pinned_header.min(lines.len());
     if pinned_header == 0 {
         f.render_widget(
-            Paragraph::new(lines.to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::popup_bg())),
+            Paragraph::new(lines.get(scroll..).unwrap_or_default().to_vec()).style(Style::default().bg(color::popup_bg())),
             body_area,
         );
     } else {
@@ -311,7 +317,7 @@ fn render_popup(f: &mut Frame, area: Rect, lines: &[Line<'static>], hints: &[(&s
             split[0],
         );
         f.render_widget(
-            Paragraph::new(lines[pinned_header..].to_vec()).scroll((scroll, 0)).style(Style::default().bg(color::popup_bg())),
+            Paragraph::new(lines.get(pinned_header + scroll..).unwrap_or_default().to_vec()).style(Style::default().bg(color::popup_bg())),
             split[1],
         );
     }
@@ -349,35 +355,6 @@ fn clipboard_status(clipboard_at: Option<std::time::Instant>, save_at: Option<st
         )));
     }
     None
-}
-
-/// Lightweight, allocation-cheap coloring for a single line of a grain
-/// value — the agent pretty-prints nested lists/dicts as JSON, so a plain
-/// per-token parse isn't needed, just enough of a heuristic (quoted
-/// strings, booleans/null, numbers, bare structural punctuation) to make
-/// a wall of grains scannable at a glance.
-fn grain_value_style(line: &str) -> Style {
-    let trimmed = line.trim().trim_end_matches(',');
-    if trimmed == "true" {
-        Style::default().fg(color::green())
-    } else if trimmed == "false" {
-        Style::default().fg(color::red())
-    } else if matches!(trimmed, "null" | "[" | "]" | "{" | "}" | "[]" | "{}") {
-        Style::default().fg(color::inactive_fg())
-    } else if trimmed.starts_with('"') {
-        Style::default().fg(color::main_fg())
-    } else if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
-        Style::default().fg(color::yellow())
-    } else {
-        Style::default().fg(color::main_fg())
-    }
-}
-
-/// Rendered line count for one grain: 1 for a scalar (`key: value` on one
-/// line), or 1 + the value's own line count for a pretty-printed nested
-/// list/dict (a `key:` line followed by each indented value line).
-fn grain_height(val: &str) -> usize {
-    if val.contains('\n') { 1 + val.lines().count() } else { 1 }
 }
 
 /// Coloring for one line of `App::format_return_as_console`'s output —
@@ -477,24 +454,104 @@ fn nested_display(value: &serde_json::Value, indent: usize, prefix: &str, retcod
     }
 }
 
-fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionInfo, ping_state: &PingState, grains: &Option<Vec<(String, String)>>, grains_scroll: usize, app: &App) -> usize {
-    let mut lines = header_lines(" Minion Detail ", area.width);
-    lines.push(row("ID", minion.id.clone(), color::cyan()));
+/// A Minions column's value and color, as the table shows it.
+fn column_value(minion: &MinionInfo, col: Column, now: f64, health: Option<&MinionHealth>) -> (String, Color) {
+    let (text, style) = super::minions::minion_text(minion, minion.key_status, col, now as u64, health);
+    (text, style.fg.unwrap_or_else(color::main_fg))
+}
 
-    let key_status_text = match minion.key_status {
-        Some(KeyStatus::Accepted) => "accepted".to_string(),
-        Some(KeyStatus::Pending) => "pending".to_string(),
-        Some(KeyStatus::Rejected) => "rejected".to_string(),
-        Some(KeyStatus::Denied) => "denied".to_string(),
-        None => "unknown".to_string(),
-    };
+/// The Minions table's health columns, with what the table has no room for.
+fn health_rows(minion: &MinionInfo, health: Option<&MinionHealth>, now: f64) -> Vec<Line<'static>> {
+    let (mut fail, fail_color) = column_value(minion, Column::FailPct, now, health);
+    let (mut lag, lag_color) = column_value(minion, Column::Lag, now, health);
+    let (ping, ping_color) = column_value(minion, Column::Ping, now, health);
+    let mut last_failure = None;
+    if let Some(h) = health {
+        if !h.recent.is_empty() {
+            fail.push_str(&format!(" ({} of last {} returns)", h.failed(), h.recent.len()));
+        }
+        if h.failed() > 0 {
+            last_failure = h.last_failure.as_ref().map(|(ts, what)| format!("{} ago: {}", super::minion_events::ago(now - ts), what));
+        }
+        if let Some(p95) = h.lag_at(0.95) {
+            let jobs = if h.lag.len() == 1 { "1 job".to_string() } else { format!("{} jobs", h.lag.len()) };
+            lag.push_str(&format!(" over {}, p95 {}", jobs, super::format_lag(p95)));
+        }
+    }
+    let mut rows = vec![field("Fail%", fail, fail_color)];
+    rows.extend(last_failure.map(|text| field("Last Failure", text, color::yellow())));
+    rows.push(field("Lag", lag, lag_color));
+    rows.push(field("Ping", ping, ping_color));
+    rows
+}
+
+/// A Minion Detail row: the labels are shorter than `row` leaves room for,
+/// and the width matters here, since it decides how many columns fit.
+fn field(label: &'static str, value: String, value_color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {:<15}", label), Style::default().fg(color::label_fg())),
+        Span::styled(value, Style::default().fg(value_color).add_modifier(Modifier::BOLD)),
+    ])
+}
+
+/// Lays out groups of rows side by side, as many columns as `width` holds:
+/// one per group, then the first two stacked beside the last, then a single
+/// column. The last column is measured up to `LAST_COLUMN_MAX`, so one long
+/// value (a failed job's arguments) is clipped at the edge instead of costing
+/// a column. Spare width widens the gaps, up to `MAX_EXTRA_GAP` so a value stays
+/// near its label and the columns near each other on a very wide screen.
+fn arrange_columns(groups: [Vec<Line<'static>>; 3], width: usize) -> Vec<Line<'static>> {
+    const GAP: usize = 2;
+    const LAST_COLUMN_MAX: usize = 44;
+    const MAX_EXTRA_GAP: usize = 8;
+    let layouts: [&[&[usize]]; 2] = [&[&[0], &[1], &[2]], &[&[0, 1], &[2]]];
+    for layout in layouts {
+        let columns: Vec<Vec<&Line<'static>>> = layout.iter()
+            .map(|col| col.iter().flat_map(|&g| &groups[g]).collect())
+            .collect();
+        let widest = |c: &Vec<&Line<'static>>| c.iter().map(|l| l.width()).max().unwrap_or(0);
+        let last = columns.len() - 1;
+        let widths: Vec<usize> = columns.iter().map(widest).collect();
+        let needed: usize = widths[..last].iter().map(|w| w + GAP).sum::<usize>() + widths[last].min(LAST_COLUMN_MAX);
+        if needed > width { continue; }
+        let gap = GAP + ((width - needed) / columns.len()).min(MAX_EXTRA_GAP);
+        let height = columns.iter().map(Vec::len).max().unwrap_or(0);
+        return (0..height).map(|i| {
+            let mut spans = Vec::new();
+            for (j, column) in columns.iter().enumerate() {
+                let line = column.get(i);
+                if let Some(line) = line { spans.extend(line.spans.iter().cloned()); }
+                if j < last {
+                    spans.push(Span::raw(" ".repeat(widths[j] + gap - line.map_or(0, |l| l.width()))));
+                }
+            }
+            Line::from(spans)
+        }).collect();
+    }
+    groups.into_iter().flatten().collect()
+}
+
+fn key_label(status: Option<KeyStatus>) -> &'static str {
+    match status {
+        Some(KeyStatus::Accepted) => "accepted",
+        Some(KeyStatus::Pending) => "pending",
+        Some(KeyStatus::Rejected) => "rejected",
+        Some(KeyStatus::Denied) => "denied",
+        None => "unknown",
+    }
+}
+
+/// Minion Detail's fields: who it is, what it runs, how it's doing.
+fn minion_detail_groups(minion: &MinionInfo, ping_state: &PingState, health: Option<&MinionHealth>, now: f64) -> [Vec<Line<'static>>; 3] {
+    let mut identity = vec![field("ID", minion.id.clone(), color::cyan())];
+
     let key_status_color = match minion.key_status {
         Some(KeyStatus::Accepted) => color::green(),
         Some(KeyStatus::Pending) => color::yellow(),
         Some(KeyStatus::Rejected) | Some(KeyStatus::Denied) => color::red(),
         None => color::inactive_fg(),
     };
-    lines.push(row("Key Status", key_status_text, key_status_color));
+    identity.push(field("Key Status", key_label(minion.key_status).to_string(), key_status_color));
 
     // Connection status — depends on PingState
     let (connected_text, connected_color) = match *ping_state {
@@ -512,7 +569,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
         PingState::Result(true) => ("connected".to_string(), color::green()),
         PingState::Result(false) => ("disconnected".to_string(), color::red()),
     };
-    lines.push(row("Connection", connected_text, connected_color));
+    identity.push(field("Connection", connected_text, connected_color));
 
     // OS information
     let os_display = if !minion.osfinger.is_empty() {
@@ -522,17 +579,83 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     } else {
         minion.os.clone()
     };
-    lines.push(row("OS", os_display, color::green()));
+    let mut system = vec![field("OS", os_display, color::green())];
     if !minion.osfinger.is_empty() && !minion.osrelease.is_empty() {
-        lines.push(row("OS Release", minion.osrelease.clone(), color::main_fg()));
+        system.push(field("OS Release", minion.osrelease.clone(), color::main_fg()));
     }
 
     // Grains information
-    lines.push(row("Salt Version", minion.salt_version.clone(), color::yellow()));
-    lines.push(row("CPU Arch", minion.cpuarch.clone(), color::main_fg()));
+    let (proto, proto_color) = column_value(minion, Column::Proto, now, health);
+    system.push(field("Salt Version", minion.salt_version.clone(), color::yellow()));
+    system.push(field("Auth Protocol", proto, proto_color));
+    system.push(field("CPU Arch", minion.cpuarch.clone(), color::main_fg()));
 
     // Last seen information
-    lines.push(row("Last Seen", format_epoch(minion.last_seen_epoch), color::inactive_fg()));
+    let mut activity = vec![field("Last Seen", format_epoch(minion.last_seen_epoch), color::inactive_fg())];
+    activity.extend(health_rows(minion, health, now));
+    [identity, system, activity]
+}
+
+/// What `y`/`s` copy and save: the fields, then the grains as Salt prints them.
+fn minion_detail_text(minion: &MinionInfo, ping_state: &PingState, health: Option<&MinionHealth>, grains: Option<&MinionGrains>, now: f64) -> String {
+    let mut groups = minion_detail_groups(minion, ping_state, health, now);
+    // Connection comes third; unchecked, it only says how to check it.
+    if matches!(ping_state, PingState::Idle) { groups[0].truncate(2); }
+    let plain = |line: &Line<'_>| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+    let mut text: Vec<String> = groups.iter().flatten().map(|l| plain(l).trim_start().to_string()).collect();
+    if let Some(grains) = grains.filter(|g| !g.lines.is_empty()) {
+        text.push(String::new());
+        text.extend(grains.lines.iter().map(plain));
+    }
+    text.join("\n") + "\n"
+}
+
+/// What `Y`/`S` copy and save: the same as `minion_detail_text` as JSON, with
+/// null for what isn't known (`grains` until they're fetched).
+fn minion_detail_json(minion: &MinionInfo, ping_state: &PingState, health: Option<&MinionHealth>, grains: Option<&MinionGrains>) -> serde_json::Value {
+    serde_json::json!({
+        "id": minion.id,
+        "key_status": key_label(minion.key_status),
+        "connected": if let PingState::Result(connected) = ping_state { Some(*connected) } else { None },
+        "timed_out": minion.timed_out,
+        "os": minion.os,
+        "osrelease": minion.osrelease,
+        "osfinger": minion.osfinger,
+        "salt_version": minion.salt_version,
+        "auth_protocol": crate::types::auth_protocol(&minion.salt_version),
+        "cpuarch": minion.cpuarch,
+        "last_seen_epoch": minion.last_seen_epoch,
+        "health": health.map(|h| serde_json::json!({
+            "returns": h.recent.len(),
+            "failed": h.failed(),
+            "last_failure": h.last_failure.as_ref().map(|(at, job)| serde_json::json!({"at": at, "job": job})),
+            "lag_median": h.lag_at(0.5),
+            "lag_p95": h.lag_at(0.95),
+            "lag_jobs": h.lag.len(),
+            "last_ping_secs": h.last_ping_secs,
+        })),
+        "grains": grains.map_or(serde_json::Value::Null, |g| g.json.clone()),
+    })
+}
+
+/// The open Minion Detail popup's minion ID and its text or JSON export.
+pub(crate) fn minion_detail_export(app: &App, json: bool) -> Option<(String, String)> {
+    let Some(DetailPopup::Minion(id, ping_state, grains, _)) = &app.detail_popup else { return None };
+    let minion = app.minion_info.iter().find(|m| m.id == *id)?;
+    let health = app.minion_health(id);
+    let text = if json {
+        serde_json::to_string_pretty(&minion_detail_json(minion, ping_state, health, grains.as_ref())).ok()? + "\n"
+    } else {
+        minion_detail_text(minion, ping_state, health, grains.as_ref(), chrono::Utc::now().timestamp().max(0) as f64)
+    };
+    Some((id.clone(), text))
+}
+
+fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &MinionInfo, ping_state: &PingState, grains: &Option<MinionGrains>, grains_scroll: usize, app: &App) -> usize {
+    let mut lines = header_lines(" Minion Detail ", area.width);
+    let now = chrono::Utc::now().timestamp().max(0) as f64;
+    let groups = minion_detail_groups(minion, ping_state, app.minion_health(&minion.id), now);
+    lines.extend(arrange_columns(groups, area.width.saturating_sub(2) as usize));
 
     // ── Grains section ────────────────────────────────────────────────────
     lines.push(Line::from(""));
@@ -559,62 +682,24 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
                 )));
             }
         }
-        Some(pairs) => {
-            if pairs.is_empty() {
+        Some(grains) => {
+            let output = &grains.lines;
+            if output.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "  Loading grains...",
                     Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
                 )));
             } else {
-                // Compute available height for grains. Scroll is by grain
-                // (key), not by rendered line, since a nested value (a list
-                // or dict, pretty-printed by the agent) can span many lines.
-                // max_scroll is found by walking backward from the last
-                // grain accumulating line-heights, so scrolling to the end
-                // lands the last rendered line at the bottom of the frame
-                // instead of pinning the last grain to the top with blank
-                // space below it (and further scrolling has nowhere to go).
-                let used = lines.len();
-                let avail = (area.height as usize).saturating_sub(used).saturating_sub(2); // borders(2)
-                let mut budget = avail;
-                for (i, (_, val)) in pairs.iter().enumerate().rev() {
-                    let h = grain_height(val);
-                    if h > budget {
-                        max_scroll = i + 1;
-                        break;
-                    }
-                    budget -= h;
-                }
+                let avail = (area.height as usize).saturating_sub(lines.len()).saturating_sub(2); // borders(2)
+                max_scroll = output.len().saturating_sub(avail);
                 let scroll = grains_scroll.min(max_scroll);
-
-                let mut rendered = 0usize;
-                let mut shown = 0usize;
-                for (key, val) in pairs.iter().skip(scroll) {
-                    if rendered >= avail { break; }
-                    let mut val_lines = val.lines();
-                    let first = val_lines.next().unwrap_or("");
-                    if val.contains('\n') {
-                        lines.push(Line::from(Span::styled(
-                            format!("  {}:", key),
-                            Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD),
-                        )));
-                        rendered += 1;
-                        for l in std::iter::once(first).chain(val_lines) {
-                            if rendered >= avail { break; }
-                            lines.push(Line::from(Span::styled(format!("    {}", l), grain_value_style(l))));
-                            rendered += 1;
-                        }
-                    } else {
-                        lines.push(Line::from(vec![
-                            Span::styled(format!("  {}: ", key), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
-                            Span::styled(first.to_string(), grain_value_style(first)),
-                        ]));
-                        rendered += 1;
-                    }
-                    shown += 1;
-                }
+                lines.extend(output.iter().skip(scroll).take(avail).map(|line| {
+                    let mut spans = vec![Span::raw("  ")];
+                    spans.extend(line.spans.iter().cloned());
+                    Line::from(spans)
+                }));
                 more_above = scroll > 0;
-                more_below = scroll + shown < pairs.len();
+                more_below = scroll < max_scroll;
             }
         }
     }
@@ -622,8 +707,8 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
     let hints: Vec<(&str, String)> = if app.admin_mode {
         vec![
             ("Esc/q", "close".to_string()),
-            ("y", "copy".to_string()),
-            ("s", "save".to_string()),
+            ("y/Y", "copy/json".to_string()),
+            ("s/S", "save/json".to_string()),
             ("g", "fetch grains".to_string()),
             ("\u{2191}\u{2193}", "scroll grains".to_string()),
             ("PgUp/PgDn", "page".to_string()),
@@ -631,7 +716,7 @@ fn draw_minion_detail(f: &mut Frame, area: Rect, minion: &crate::types::MinionIn
             ("a", "admin off".to_string()),
         ]
     } else {
-        vec![("Esc/q", "close".to_string()), ("y", "copy".to_string()), ("s", "save".to_string()), ("a", "admin mode for grains".to_string())]
+        vec![("Esc/q", "close".to_string()), ("y/Y", "copy/json".to_string()), ("s/S", "save/json".to_string()), ("a", "admin mode for grains".to_string())]
     };
     render_popup(f, area, &lines, &hints, None, (more_above, more_below), 0, 0);
     max_scroll
@@ -948,6 +1033,8 @@ fn draw_job_detail(
     job: &crate::app::JobHeader,
     return_filter: &str,
     return_is_filtering: bool,
+    outcomes: OutcomeFilter,
+    outcome_picker: Option<usize>,
     panel_focus: bool,
     content_scroll: usize,
     content_scroll_mode: bool,
@@ -1022,15 +1109,11 @@ fn draw_job_detail(
         }
     }
     // A long target (a list of minions, a compound match) is shortened so the
-    // return counts after it stay on screen.
+    // return counts after it stay on screen; the args get rows of their own.
     let mut job_spans = vec![
         Span::styled("  Fun: ".to_string(), Style::default().fg(color::label_fg())),
         Span::styled(job.fun.clone(), Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
     ];
-    if !job.args.is_empty() {
-        job_spans.push(Span::styled("  Args: ".to_string(), Style::default().fg(color::label_fg())));
-        job_spans.push(Span::styled(job.args.clone(), Style::default().fg(color::main_fg())));
-    }
     if job.test_run {
         job_spans.push(Span::raw("  "));
         job_spans.push(Span::styled(" TEST RUN ".to_string(), Style::default().fg(color::popup_bg()).bg(color::outcome_pending()).add_modifier(Modifier::BOLD)));
@@ -1038,13 +1121,22 @@ fn draw_job_detail(
     let fixed_w = job_spans.iter().map(|s| s.content.chars().count()).sum::<usize>() + "  Tgt: ".len()
         + epoch_str.chars().count() + returns_str.chars().count()
         + outcome_spans.iter().map(|s| s.content.chars().count()).sum::<usize>();
-    let tgt_w = (outer_inner.width as usize).saturating_sub(fixed_w).max(12);
+    // The header keeps the same two columns free on the right as on the left.
+    let header_w = (outer_inner.width as usize).saturating_sub(HEADER_MARGIN);
+    let tgt_w = header_w.saturating_sub(fixed_w).max(12);
     header_lines.push(Line::from(job_spans.into_iter().chain([
         Span::styled("  Tgt: ".to_string(), Style::default().fg(color::label_fg())),
         Span::styled(shorten_middle(&job.tgt, tgt_w), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
         Span::styled(epoch_str, Style::default().fg(color::inactive_fg())),
         Span::styled(returns_str, Style::default().fg(color::label_fg())),
     ]).chain(outcome_spans).collect::<Vec<_>>()));
+    let args_w = header_w.saturating_sub(ARGS_LABEL.len());
+    for (i, row) in args_rows(&job.args, args_w, ARGS_ROWS).into_iter().enumerate() {
+        header_lines.push(Line::from(vec![
+            Span::styled(if i == 0 { ARGS_LABEL.to_string() } else { " ".repeat(ARGS_LABEL.len()) }, Style::default().fg(color::label_fg())),
+            Span::styled(row, Style::default().fg(color::main_fg())),
+        ]));
+    }
     let header_h = (header_lines.len() + 1) as u16; // +1 for spacing after header
 
     // ── Layout: header / body / status (only when there's something transient to show) ──
@@ -1077,21 +1169,26 @@ fn draw_job_detail(
     // ── Build LEFT panel: returns table ──
     let left_border_color = if !panel_focus { color::border_focus() } else { color::border() };
     let total_returns = lookup.as_ref().map_or(0, |l| l.entry_count());
-    let shown_returns = lookup.as_ref().map_or(0, |l| {
-        (0..l.entry_count()).filter(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter))).count()
-    });
-    let returns_title = if return_filter.is_empty() {
+    let shown = lookup.as_ref().map_or_else(Vec::new, |l| crate::app::shown_entries(l, return_filter, outcomes));
+    let shown_returns = shown.len();
+    let returns_title = if return_filter.is_empty() && outcomes.is_all() {
         format!("Returns ({})", total_returns)
     } else {
         format!("Returns ({}/{})", shown_returns, total_returns)
     };
+    let mut title = super::bracket_title(vec![Span::styled(
+        returns_title,
+        Style::default().fg(color::title()).add_modifier(Modifier::BOLD),
+    )], left_border_color);
+    let picker_rows = lookup.as_ref().map_or_else(Vec::new, |l| outcome_picker_rows(l, outcomes));
+    if let Some(ticked) = super::ticked_spans(&picker_rows) {
+        title.push(Span::styled("\u{2500}", Style::default().fg(left_border_color)));
+        title.extend(super::bracket_title(ticked, left_border_color));
+    }
     let mut left_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(left_border_color))
-        .title(Line::from(super::bracket_title(vec![Span::styled(
-            returns_title,
-            Style::default().fg(color::title()).add_modifier(Modifier::BOLD),
-        )], left_border_color)))
+        .title(Line::from(title))
         .style(Style::default().bg(color::popup_bg()));
     if !return_filter.is_empty() && !return_is_filtering {
         left_block = left_block.title_bottom(Line::from(Span::styled(
@@ -1108,7 +1205,6 @@ fn draw_job_detail(
         // them flush with the panel's right edge.
         let id_w = (left_inner.width as usize).saturating_sub(t.width() - t.id_w);
         let mut sel_shown = false;
-        let mut shown: Vec<usize> = Vec::new();
         let sel = selected_return.unwrap_or(0).min(l.entry_count().saturating_sub(1));
         let (header_area, list_area) = if l.entry_count() > 0 {
             let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(left_inner);
@@ -1137,20 +1233,13 @@ fn draw_job_detail(
                 Style::default().fg(color::inactive_fg()),
             )));
         } else {
-            for i in 0..l.entry_count() {
-                let Some(id) = l.entry_id(i) else { continue };
-                if !crate::app::return_matches(id, return_filter) {
-                    continue;
-                }
+            for &i in &shown {
                 let line = t.row(l, i, i == sel, id_w, return_filter);
                 sel_shown |= i == sel;
-                shown.push(i);
                 left_lines.push(if i == sel { color::selected_row(line) } else { line });
             }
         }
-        let sel_vis_idx = (0..=sel)
-            .filter(|&i| l.entry_id(i).is_some_and(|id| crate::app::return_matches(id, return_filter)))
-            .count().saturating_sub(1);
+        let sel_vis_idx = shown.iter().filter(|&&i| i <= sel).count().saturating_sub(1);
         if left_lines.is_empty() {
             left_lines.push(Line::from(Span::styled(
                 "  No matching hosts.",
@@ -1165,8 +1254,7 @@ fn draw_job_detail(
             .map(|(row, &i)| (list_area.y + row as u16, i))
             .collect();
         f.render_widget(
-            Paragraph::new(left_lines)
-                .scroll((left_scroll as u16, 0))
+            Paragraph::new(left_lines.split_off(left_scroll.min(left_lines.len())))
                 .style(Style::default().bg(color::popup_bg())),
             list_area,
         );
@@ -1201,6 +1289,9 @@ fn draw_job_detail(
         let filter_area = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
             .split(left_inner)[1];
         f.render_widget(filter_bar, filter_area);
+    }
+    if let Some(cursor) = outcome_picker.filter(|_| !picker_rows.is_empty()) {
+        hits.picker = super::draw_status_picker(f, horiz[0], &picker_rows, cursor);
     }
 
     // ── Build RIGHT panel: return content preview ──
@@ -1290,8 +1381,7 @@ fn draw_job_detail(
     f.render_widget(&right_block, horiz[1]);
 
     f.render_widget(
-        Paragraph::new(right_lines)
-            .scroll((effective_scroll as u16, 0))
+        Paragraph::new(right_lines.split_off(effective_scroll.min(right_lines.len())))
             .style(Style::default().bg(color::popup_bg())),
         right_inner,
     );
@@ -1319,14 +1409,18 @@ fn draw_job_detail(
             right_focus: panel_focus,
             scroll_mode: content_scroll_mode,
             filter_set: !return_filter.is_empty(),
+            outcomes_set: !outcomes.is_all(),
+            picker_open: outcome_picker.is_some(),
             search_ready: !search_matches.is_empty(),
             fail_ready: !fail_lines.is_empty(),
         })
     };
+    let (nav, hints) = super::split_nav_hints(&hints);
     f.render_widget(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(color::border_focus()))
+            .title_top(super::border_hints(&nav, color::border_focus()).right_aligned())
             .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned()),
         area,
     );
@@ -1338,6 +1432,43 @@ fn draw_job_detail(
             vert[2],
         );
     }
+}
+
+const ARGS_LABEL: &str = "  Args: ";
+/// Columns Job Detail's header leaves free at its right edge, as its rows'
+/// two-space indent does at the left.
+const HEADER_MARGIN: usize = 2;
+/// Rows Job Detail's header gives a job's arguments at most.
+const ARGS_ROWS: usize = 4;
+
+/// A job's arguments in rows of up to `width` characters, broken at a
+/// space where one fits (a word longer than a row is cut), at most `max`
+/// rows, the last ending in `…` when that leaves some out; line breaks in a
+/// command read as spaces.
+fn args_rows(args: &str, width: usize, max: usize) -> Vec<String> {
+    let width = width.max(10);
+    let mut rest: &[char] = &args.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<Vec<_>>();
+    let mut rows: Vec<String> = Vec::new();
+    while !rest.is_empty() {
+        if rest.len() <= width {
+            rows.push(rest.iter().collect());
+            break;
+        }
+        let (row, next) = match rest[..=width].iter().rposition(|&c| c == ' ').filter(|&at| at > 0) {
+            Some(at) => (&rest[..at], &rest[at + 1..]),
+            None => (&rest[..width], &rest[width..]),
+        };
+        rows.push(row.iter().collect());
+        rest = next;
+    }
+    if rows.len() > max {
+        rows.truncate(max);
+        if let Some(last) = rows.last_mut() {
+            last.pop();
+            last.push('\u{2026}');
+        }
+    }
+    rows
 }
 
 /// Fits `s` into `w` characters by cutting out its middle: long hostnames
@@ -1356,6 +1487,25 @@ fn shorten_middle(s: &str, w: usize) -> String {
 }
 
 const NO_RETURN: &str = "NO RETURN";
+
+fn outcome_color(o: Outcome) -> Color {
+    match o {
+        Outcome::Ok => color::outcome_ok(),
+        Outcome::Failed => color::outcome_failed(),
+        Outcome::Missing => color::outcome_missing(),
+    }
+}
+
+/// Job Detail's `x` picker rows: every outcome and how many of the job's
+/// minions have it.
+fn outcome_picker_rows(l: &crate::types::JidLookup, outcomes: OutcomeFilter) -> Vec<super::PickerRow> {
+    Outcome::ALL.iter().map(|&o| super::PickerRow {
+        label: o.label(),
+        color: outcome_color(o),
+        count: (0..l.entry_count()).filter(|&i| l.entry_outcome(i) == o).count(),
+        ticked: outcomes.shows(o),
+    }).collect()
+}
 
 /// Column layout of Job Detail's returns list. State runs get right-aligned
 /// `ok`/`chg`/`fail` count columns, each as wide as this job's largest number
@@ -1516,6 +1666,9 @@ pub(super) fn style_ranges(line: Line<'static>, ranges: &[(usize, usize)], style
 /// `f/F` only show when there's a search match or failed state to jump to.
 struct JobDetailHintState {
     filter_active: bool,
+    picker_open: bool,
+    /// Something is unticked in the `o` picker.
+    outcomes_set: bool,
     right_focus: bool,
     scroll_mode: bool,
     filter_set: bool,
@@ -1524,53 +1677,48 @@ struct JobDetailHintState {
 }
 
 fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
+    let h = |k: &'static str, v: &str| (k, v.to_string());
     if st.filter_active {
-        return vec![("Esc", "cancel filter".to_string()), ("Enter", "confirm".to_string())];
+        return vec![h("Esc", "cancel filter"), h("Enter", "confirm")];
     }
-    let mut hints: Vec<(&'static str, String)> = if st.right_focus {
+    if st.picker_open {
+        return vec![h("\u{2191}\u{2193}", "move"), h("PgUp/PgDn", "first/last"), h("Space", "tick"), h("1-3", "tick OK/FAILED/NOT RETURNED"), h("x/Enter/Esc", "close")];
+    }
+    let mut hints = if st.right_focus {
         if st.scroll_mode {
-            vec![("Esc/q", "exit scroll".to_string())]
+            vec![h("Esc/q", "exit scroll")]
         } else {
-            vec![("Esc/q", "back to list".to_string()), ("Enter", "scroll".to_string())]
+            vec![h("Esc/q", "back to list"), h("Enter", "scroll")]
         }
     } else if st.filter_set {
-        vec![("Esc", "clear filter".to_string()), ("q", "close".to_string())]
+        vec![h("Esc", "clear filter"), h("q", "close")]
     } else {
-        vec![("q/Esc", "close".to_string())]
+        vec![h("q/Esc", "close")]
     };
     if st.right_focus {
-        hints.push(("/", "search output".to_string()));
-    }
-    if st.search_ready {
-        hints.push(("n/N", "next/prev match".to_string()));
-    }
-    if st.fail_ready {
-        hints.push(("f/F", "next/prev fail".to_string()));
-    }
-    if st.right_focus {
-        hints.extend([
-            ("\u{2191}\u{2193}", "scroll".to_string()),
-            ("PgUp/PgDn", "page".to_string()),
-            ("Home/End", "top/bottom".to_string()),
-        ]);
+        hints.extend([h("\u{2191}\u{2193}", "scroll"), h("PgUp/PgDn", "page"), h("Home/End", "top/bottom"), h("/", "search")]);
     } else {
         hints.extend([
-            ("\u{2191}\u{2193}", "navigate".to_string()),
-            ("PgUp/PgDn", "page".to_string()),
-            ("Home/End", "top/bottom".to_string()),
-            ("Enter", "view".to_string()),
-            ("/", "filter hosts".to_string()),
+            h("\u{2191}\u{2193}", "navigate"), h("PgUp/PgDn", "page"), h("Home/End", "top/bottom"),
+            h("Enter", "view"), h("/", "filter"), h("x", "outcomes"),
         ]);
     }
-    hints.extend([
-        ("y", "copy".to_string()),
-        ("Y", "json".to_string()),
-        ("s", "save".to_string()),
-        ("S", "save json".to_string()),
-    ]);
-    if !st.right_focus {
-        hints.extend([("a", "save all".to_string()), ("A", "save all json".to_string())]);
+    if st.search_ready {
+        hints.push(h("n/N", "match"));
     }
+    if st.fail_ready {
+        hints.push(h("f/F", "fail"));
+    }
+    hints.extend([h("y/Y", "copy/json"), h("s/S", "save/json")]);
+    if !st.right_focus {
+        hints.push(h("a/A", "save all"));
+        // Only worth a hint when the view leaves something out.
+        if st.filter_set || st.outcomes_set {
+            hints.push(h("v/V", "save view"));
+        }
+        hints.push(h("i/I", "minion list"));
+    }
+    hints.push(h("?", "all keys"));
     hints
 }
 
@@ -1579,7 +1727,6 @@ fn job_detail_hints(st: JobDetailHintState) -> Vec<(&'static str, String)> {
 /// them.
 fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::AlertEntry, scroll: usize, scroll_max: &mut usize, search_matches: &mut Vec<usize>, search: PopupSearch, clipboard: (Option<std::time::Instant>, Option<std::time::Instant>, Option<&str>)) {
     let sev_color = match alert.severity {
-        crate::types::AlertSeverity::Info => color::cyan(),
         crate::types::AlertSeverity::Warn => color::yellow(),
         crate::types::AlertSeverity::Crit => color::red(),
     };
@@ -2028,11 +2175,7 @@ fn draw_event_sniffer(
                 })
                 .unwrap_or("");
 
-            let tag_disp = if evt.tag.len() > jid_w {
-                format!("{}..", &evt.tag[..jid_w.saturating_sub(2)])
-            } else {
-                evt.tag.clone()
-            };
+            let tag_disp = super::truncate(&evt.tag, jid_w);
 
             // Header row: # | Time | JID | Type — tag column highlighted the
             // same way the Events tab list does: only when a color term
@@ -2102,12 +2245,12 @@ fn draw_event_sniffer(
         let scroll = if sel < event_line_starts.len() {
             let sel_line = event_line_starts[sel].saturating_sub(pinned_header);
             let max_scroll = event_only_len.saturating_sub(scrollable_height);
-            sel_line.saturating_sub(scrollable_height / 3).min(max_scroll) as u16
+            sel_line.saturating_sub(scrollable_height / 3).min(max_scroll)
         } else {
             0
         };
         let more_above = scroll > 0;
-        let more_below = (scroll as usize) + scrollable_height < event_only_len;
+        let more_below = scroll + scrollable_height < event_only_len;
 
         let hints = sniffer_hints(state);
         let status = sniffer_status(input_cursor, clipboard_at, save_at, state, clipboard_warning);
@@ -2199,6 +2342,81 @@ fn format_ts(ts: f64) -> String {
 mod tests {
     use super::*;
 
+    fn row_texts(rows: Vec<Line<'static>>) -> Vec<String> {
+        rows.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")).collect()
+    }
+
+    #[test]
+    fn minion_detail_shows_the_health_columns_and_more() {
+        let h = MinionHealth {
+            recent: [true, true, true, false].into(),
+            last_failure: Some((100.0, "state.apply".to_string())),
+            lag: [1.2, 1.2].into(),
+            last_ping_secs: Some(0.195),
+        };
+        assert_eq!(row_texts(health_rows(&MinionInfo::default(), Some(&h), 220.0)), [
+            "Fail% 25% (1 of last 4 returns)",
+            "Last Failure 2m ago: state.apply",
+            "Lag 1.2x over 2 jobs, p95 1.2x",
+            "Ping 195ms",
+        ]);
+    }
+
+    #[test]
+    fn minion_detail_uses_the_columns_that_fit() {
+        let groups = || [
+            vec![Line::from("a".repeat(10)), Line::from("b".repeat(4))],
+            vec![Line::from("c".repeat(6))],
+            vec![Line::from("d".repeat(8)), Line::from("e".repeat(90))],
+        ];
+        let texts = |width| row_texts(arrange_columns(groups(), width));
+        let (a, b, c, d, e) = ("a".repeat(10), "b".repeat(4), "c".repeat(6), "d".repeat(8), "e".repeat(90));
+        // 12 + 8 + 44: the long last value is clipped, not given a column of its own.
+        assert_eq!(texts(64), [format!("{a} {c} {d}"), format!("{b} {e}")]);
+        // Too narrow for three: the first two stack beside the last.
+        assert_eq!(texts(63), [format!("{a} {d}"), format!("{b} {e}"), c.clone()]);
+        // Too narrow for two.
+        assert_eq!(texts(55), [a, b, c, d, e]);
+        // Spare width widens the gaps, up to a limit: 10 + gap + 6 + gap + 8.
+        let first_row_width = |width| arrange_columns(groups(), width)[0].width();
+        assert_eq!(first_row_width(64), 28);
+        assert_eq!(first_row_width(67), 30);
+        assert_eq!(first_row_width(300), 44);
+    }
+
+    #[test]
+    fn minion_detail_exports_fields_and_grains() {
+        let minion = MinionInfo { id: "web1".to_string(), key_status: Some(KeyStatus::Accepted), salt_version: "3006.16".to_string(), ..Default::default() };
+        let grains = MinionGrains { lines: vec![Line::from("web1:"), Line::from("    os:")], json: serde_json::json!({"os": "Debian"}) };
+
+        let text = minion_detail_text(&minion, &PingState::Idle, None, Some(&grains), 0.0);
+        assert!(text.starts_with("ID             web1\nKey Status     accepted\nOS"), "{text}");
+        assert!(text.ends_with("\n\nweb1:\n    os:\n"), "{text}");
+        let connected = minion_detail_text(&minion, &PingState::Result(true), None, None, 0.0);
+        assert!(connected.contains("Connection     connected\n"), "{connected}");
+
+        let json = minion_detail_json(&minion, &PingState::Result(true), None, Some(&grains));
+        assert_eq!((&json["id"], &json["connected"], &json["auth_protocol"]), (&serde_json::json!("web1"), &serde_json::json!(true), &serde_json::json!(3)));
+        assert_eq!(json["grains"]["os"], "Debian");
+        assert!(minion_detail_json(&minion, &PingState::Idle, None, None)["grains"].is_null());
+    }
+
+    #[test]
+    fn minion_detail_without_returns_shows_dashes() {
+        assert_eq!(row_texts(health_rows(&MinionInfo::default(), None, 220.0)), ["Fail% \u{2014}", "Lag \u{2014}", "Ping \u{2014}"]);
+    }
+
+    #[test]
+    fn long_args_wrap_into_rows_and_end_in_an_ellipsis_when_cut() {
+        assert_eq!(args_rows("", 20, 4), Vec::<String>::new());
+        assert_eq!(args_rows("uptime", 20, 4), ["uptime"]);
+        assert_eq!(args_rows("abcdefghijklmnopqrstuvwxy", 10, 4), ["abcdefghij", "klmnopqrst", "uvwxy"]);
+        let cut = args_rows(&"x".repeat(50), 10, 2);
+        assert_eq!(cut.len(), 2);
+        assert!(cut[1].ends_with('\u{2026}') && cut[1].chars().count() == 10);
+        assert_eq!(args_rows("a\nb", 10, 4), ["a b"], "a multi-line command stays on its rows");
+        assert_eq!(args_rows("echo missing; done; df -h /", 12, 4), ["echo", "missing;", "done; df -h", "/"], "broken at spaces");
+    }
     #[test]
     fn descriptions_wrap_at_spaces_and_cut_long_words() {
         assert_eq!(wrap_words("one two three four", 10), ["one two", "three four"]);

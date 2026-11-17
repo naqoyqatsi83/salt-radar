@@ -15,7 +15,6 @@ fn alert_cells(alert: &AlertEntry, col: Column, w: usize) -> Vec<Span<'static>> 
     let span = match col {
         Column::Severity => {
             let sev_color = match alert.severity {
-                crate::types::AlertSeverity::Info => color::cyan(),
                 crate::types::AlertSeverity::Warn => color::yellow(),
                 crate::types::AlertSeverity::Crit => color::red(),
             };

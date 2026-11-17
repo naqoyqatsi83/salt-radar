@@ -29,6 +29,9 @@ pub enum ConfigFieldKind {
     /// (`PathBrowser`) instead of typed, so it can't be mistyped; `e` in the
     /// browser still allows typing one (e.g. a directory to be created).
     Path(PathKind),
+    /// Shown but not editable: a setting that saving here wouldn't apply
+    /// (what runs as root, from a file that isn't root's alone).
+    Fixed,
     SaveButton,
 }
 
@@ -50,10 +53,10 @@ impl PathKind {
     /// of this kind.
     pub fn exists(self, raw: &str) -> bool {
         let p = crate::config::expand_home(raw.trim());
-        match self {
+        crate::config::as_invoking_user(|| match self {
             PathKind::File => p.is_file(),
             PathKind::Dir => p.is_dir(),
-        }
+        })
     }
 }
 
@@ -82,7 +85,12 @@ pub struct PathBrowser {
 impl PathBrowser {
     /// Opens at the field's current value — its directory, with the file
     /// itself selected — or the nearest existing ancestor if it's missing.
+    /// Under sudo it shows what the invoking user may see, not root.
     pub fn open(kind: PathKind, value: &str) -> Self {
+        crate::config::as_invoking_user(|| Self::open_at(kind, value))
+    }
+
+    fn open_at(kind: PathKind, value: &str) -> Self {
         let target = crate::config::expand_home(value.trim());
         let (dir, select) = if target.is_dir() {
             (target.clone(), None)
@@ -104,13 +112,15 @@ impl PathBrowser {
     pub fn load(&mut self, select: Option<&str>) {
         let mut dirs = Vec::new();
         let mut files = Vec::new();
-        if let Ok(rd) = std::fs::read_dir(&self.dir) {
-            for e in rd.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if !self.show_hidden && name.starts_with('.') { continue; }
-                if e.path().is_dir() { dirs.push(name); } else { files.push(name); }
+        crate::config::as_invoking_user(|| {
+            if let Ok(rd) = std::fs::read_dir(&self.dir) {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if !self.show_hidden && name.starts_with('.') { continue; }
+                    if e.path().is_dir() { dirs.push(name); } else { files.push(name); }
+                }
             }
-        }
+        });
         dirs.sort();
         files.sort();
         self.entries.clear();
@@ -181,6 +191,9 @@ pub struct ConfigEditorState {
     pub themes: Vec<String>,
     /// Open file browser for the selected `Path` field.
     pub browser: Option<PathBrowser>,
+    /// While a Columns field is edited: every column in the order its list
+    /// shows them, ticked or not.
+    pub column_order: Vec<&'static str>,
 }
 
 impl ConfigEditorState {
@@ -200,7 +213,7 @@ impl ConfigEditorState {
 
 /// Rows PageUp/PageDown move in the Config Editor's pickers, the same step
 /// as in its settings list.
-const PICKER_PAGE: usize = 5;
+pub(crate) const PICKER_PAGE: usize = 5;
 
 impl App {
     /// Installs the theme to draw with: the configured one, or while the
@@ -249,6 +262,9 @@ impl App {
             if let Some(idx) = s.fields.iter().position(|f| f.label == table.config_key()) {
                 s.selected = idx;
                 s.input = s.fields[idx].label_value.clone();
+                if let ConfigFieldKind::Columns(all) = s.fields[idx].kind {
+                    s.column_order = crate::app::column_editor_items(&s.input, all).0;
+                }
                 s.choice_idx = 0;
                 s.editing = true;
                 self.input_cursor = None;
@@ -268,12 +284,17 @@ impl App {
     pub(crate) fn open_config_editor(&mut self) {
         // Clone the current config into an editable state
         let cfg = &self.config;
+        let exec_kind = if crate::config::exec_settings_saveable(&self.config_path) {
+            ConfigFieldKind::Path(PathKind::File)
+        } else {
+            ConfigFieldKind::Fixed
+        };
         self.config_editor = Some(ConfigEditorState {
             fields: vec![
                 ConfigField { label: "[salt]", label_value: String::new(), kind: ConfigFieldKind::Section },
-                ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
-                ConfigField { label: "python_bin", label_value: cfg.python_bin.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
-                ConfigField { label: "master_config", label_value: cfg.master_config.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
+                ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: exec_kind },
+                ConfigField { label: "python_bin", label_value: cfg.python_bin.clone(), kind: exec_kind },
+                ConfigField { label: "master_config", label_value: cfg.master_config.clone(), kind: exec_kind },
                 ConfigField { label: "running_config_digests", label_value: on_off(cfg.running_config_digests), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[refresh]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "dashboard_secs", label_value: cfg.dashboard_secs.to_string(), kind: ConfigFieldKind::U64 },
@@ -370,30 +391,36 @@ impl App {
             confirm_discard: false,
             themes: crate::config::theme_names(),
             browser: None,
+            column_order: Vec::new(),
         });
         if let Some(ref mut s) = self.config_editor {
             s.original = s.fields.iter().map(|f| f.label_value.clone()).collect();
         }
     }
 
-    pub(crate) fn save_config_from_editor(&mut self) -> Result<(), String> {
+    /// Saves the editor's settings and applies them. `Ok` holds what the
+    /// status bar says: the settings that only apply at the next start.
+    pub(crate) fn save_config_from_editor(&mut self) -> Result<String, String> {
         let fields = match self.config_editor {
             Some(ref state) => &state.fields,
             _ => return Err("No editor state".into()),
         };
+        let exec_fixed = fields.iter().any(|f| matches!(f.kind, ConfigFieldKind::Fixed));
         // Extract values by label
         let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         for f in fields {
             match f.kind {
-                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order | ConfigFieldKind::Columns(_) | ConfigFieldKind::Theme | ConfigFieldKind::Path(_) => {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order | ConfigFieldKind::Columns(_) | ConfigFieldKind::Theme | ConfigFieldKind::Path(_) | ConfigFieldKind::Fixed => {
                     vals.insert(f.label, f.label_value.as_str());
                 }
                 _ => {}
             }
         }
         // Parse and build new config
-        let parse_u64 = |key| vals.get(key).and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
-        let parse_usize = |key| vals.get(key).and_then(|v| v.parse::<usize>().ok()).ok_or_else(|| format!("Invalid {}: expected integer", key));
+        // TOML integers are 64-bit signed: anything above wouldn't load again.
+        let parse_u64 = |key| vals.get(key).and_then(|v| v.parse::<u64>().ok()).filter(|v| *v <= i64::MAX as u64)
+            .ok_or_else(|| format!("Invalid {}: expected an integer up to {}", key, i64::MAX));
+        let parse_usize = |key| parse_u64(key).map(|v| v as usize);
         let parse_f64 = |key| vals.get(key).and_then(|v| v.parse::<f64>().ok()).ok_or_else(|| format!("Invalid {}: expected number", key));
         let parse_bool = |key| vals.get(key) == Some(&"on");
         let columns = |key, table: TableId| vals.get(key).copied().unwrap_or(table.default_columns()).to_string();
@@ -483,12 +510,39 @@ impl App {
             master_wrap: parse_bool("master_wrap"),
         };
 
-        crate::config::write_config(&self.config_path, &new_config)
-            .map_err(|e| format!("Write failed: {}", e))?;
+        // The editor's fields started from the defaults when the file
+        // couldn't be parsed: saving them would wipe what's in it.
+        let file = self.config_path.display();
+        if let Some(e) = crate::config::config_error(&self.config_path) {
+            return Err(format!("Not saved: {} has an error ({}). Fix it and restart salt-radar", file, e));
+        }
+        if self.config_broken {
+            return Err(format!("Not saved: {} had an error at startup. Restart salt-radar to load it", file));
+        }
+        let mut new_config = new_config;
+        new_config.clamp_buffer_sizes();
+        // Fixed settings come from elsewhere; a copy in this file would only
+        // be reported as ignored at the next start.
+        let mut to_file = new_config.clone();
+        if exec_fixed {
+            let defaults = AppConfig::default();
+            to_file.python_bin = defaults.python_bin;
+            to_file.agent_path = defaults.agent_path;
+            to_file.master_config = defaults.master_config;
+        }
+        crate::config::write_config(&self.config_path, &to_file)
+            .map_err(|e| format!("Write failed: {}", crate::config::config_io_error(&self.config_path, &e)))?;
         let latency_source_changed = new_config.zmq_latency_source != self.config.zmq_latency_source;
+        // The running agent was started with these; a new one would be needed.
+        let at_next_start: Vec<&str> = [
+            ("python_bin", &new_config.python_bin, &self.config.python_bin),
+            ("agent_path", &new_config.agent_path, &self.config.agent_path),
+            ("master_config", &new_config.master_config, &self.config.master_config),
+        ].into_iter().filter(|(_, new, old)| new != old).map(|(name, _, _)| name).collect();
         self.needs_mouse_toggle |= new_config.mouse != self.config.mouse;
         self.persisted_config = new_config.clone();
         self.config = new_config;
+        self.fit_buffers();
         // A sort on a column that was just hidden would keep reordering the
         // table with no header showing why.
         let stale: Vec<TableId> = self.table_sorts.iter()
@@ -509,7 +563,11 @@ impl App {
             self.zmq_ping_sent_at = None;
             self.job_ping_pending = None;
         }
-        Ok(())
+        Ok(if at_next_start.is_empty() {
+            " Config saved ".to_string()
+        } else {
+            format!(" Config saved: {} take effect when salt-radar is started again ", at_next_start.join(", "))
+        })
     }
 
     pub(crate) fn handle_config_editor_key(&mut self, code: KeyCode) -> bool {
@@ -597,52 +655,23 @@ impl App {
                 }
                 if let Some(ConfigFieldKind::Columns(all)) = s.fields.get(s.selected).map(|f| f.kind) {
                     let mut finish: Option<bool> = None;
+                    if s.column_order.len() != all.len() {
+                        s.column_order = column_editor_items(&s.fields[s.selected].label_value, all).0;
+                    }
                     if let Some(field) = s.fields.get_mut(s.selected) {
-                        let (mut items, shown) = column_editor_items(&field.label_value, all);
-                        let i = s.choice_idx.min(items.len().saturating_sub(1));
                         match code {
-                            KeyCode::Up | KeyCode::Char('k') => s.choice_idx = i.saturating_sub(1),
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                if i + 1 < items.len() { s.choice_idx = i + 1; }
-                            }
-                            KeyCode::PageUp => s.choice_idx = i.saturating_sub(PICKER_PAGE),
-                            KeyCode::PageDown => s.choice_idx = (i + PICKER_PAGE).min(items.len().saturating_sub(1)),
-                            KeyCode::Home => s.choice_idx = 0,
-                            KeyCode::End => s.choice_idx = items.len().saturating_sub(1),
-                            KeyCode::Char('+') | KeyCode::Char('=') if i > 0 && i < shown => {
-                                items.swap(i, i - 1);
-                                field.label_value = items[..shown].join(",");
-                                s.choice_idx = i - 1;
-                            }
-                            KeyCode::Char('-') | KeyCode::Char('_') if i + 1 < shown => {
-                                items.swap(i, i + 1);
-                                field.label_value = items[..shown].join(",");
-                                s.choice_idx = i + 1;
-                            }
-                            KeyCode::Char(' ') => {
-                                let key = items[i];
-                                let mut visible = items[..shown].to_vec();
-                                if i < shown {
-                                    if shown > 1 { visible.remove(i); }
-                                } else {
-                                    visible.push(key);
-                                }
-                                field.label_value = visible.join(",");
-                                let (items, _) = column_editor_items(&field.label_value, all);
-                                s.choice_idx = items.iter().position(|k| *k == key).unwrap_or(0);
-                            }
                             KeyCode::Enter => finish = Some(true),
                             KeyCode::Esc => {
                                 field.label_value = s.input.clone();
                                 finish = Some(false);
                             }
-                            _ => {}
+                            _ => s.choice_idx = crate::app::column_editor_key(code, &mut s.column_order, &mut field.label_value, s.choice_idx),
                         }
                     }
                     let quick = s.quick;
                     match finish {
                         Some(true) if quick => match self.save_config_from_editor() {
-                            Ok(()) => {
+                            Ok(_) => {
                                 self.config_editor = None;
                                 self.clipboard_msg = Some((" Columns saved ".into(), std::time::Instant::now()));
                             }
@@ -844,6 +873,9 @@ impl App {
                                     // s.input snapshots the pre-edit order so Esc can restore it —
                                     // +/- mutate field.label_value live so the list re-renders in
                                     // its new order immediately, not just on confirm.
+                                    if let ConfigFieldKind::Columns(all) = kind {
+                                        s.column_order = crate::app::column_editor_items(&val, all).0;
+                                    }
                                     s.input = val;
                                     s.choice_idx = 0;
                                 } else {
@@ -881,9 +913,9 @@ impl App {
 
     pub(crate) fn save_editor_and_close(&mut self) {
         match self.save_config_from_editor() {
-            Ok(()) => {
+            Ok(saved) => {
                 self.config_editor = None;
-                self.clipboard_msg = Some((" Config saved ".into(), std::time::Instant::now()));
+                self.clipboard_msg = Some((saved, std::time::Instant::now()));
             }
             Err(e) => {
                 if let Some(ref mut s) = self.config_editor {

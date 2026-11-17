@@ -22,9 +22,7 @@ fn format_time_local(ts: f64) -> String {
 /// Classify an event tag into a short type label and return color + JID if applicable.
 fn classify_tag(tag: &str, data: &serde_json::Value) -> (&'static str, Color, Option<String>) {
     if tag.contains("/ret/") {
-        let jid = tag.split('/').nth(2).map(|s| {
-            if s.len() > 18 { format!("{}..", &s[..16]) } else { s.to_string() }
-        });
+        let jid = tag.split('/').nth(2).map(|s| super::truncate(s, 18));
         let fun = data["fun"].as_str().unwrap_or("return");
         return ("return", color::green(), Some(format!("{}/{}", fun, jid.unwrap_or_default())));
     }
@@ -48,7 +46,6 @@ fn alert_color(severity: AlertSeverity) -> Color {
     match severity {
         AlertSeverity::Crit => color::red(),
         AlertSeverity::Warn => color::orange(),
-        AlertSeverity::Info => color::cyan(),
     }
 }
 
@@ -63,7 +60,7 @@ fn fit(s: &str, w: usize) -> String {
     }
 }
 
-fn ago(secs: f64) -> String {
+pub(super) fn ago(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     match s {
         0..=59 => format!("{}s", s),
@@ -163,12 +160,16 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
     } else {
         format!("filter {}: {} items", app.minion_events_filter, total)
     };
+    let (nav, hints) = super::split_nav_hints(&hints);
     let hint_line = super::border_hints(&hints, color::border_focus());
     let info = super::border_info(format!("{} \u{b7} dim = older than 5m", count), color::border_focus());
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color::border_focus()))
         .style(Style::default().bg(color::popup_bg()));
+    if !nav.is_empty() {
+        block = block.title_top(super::border_hints(&nav, color::border_focus()).right_aligned());
+    }
     if super::fits_beside(hint_line.width(), &info, area.width) {
         block = block.title_bottom(info.right_aligned());
     }
@@ -261,7 +262,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         let mut spans = vec![cell(&time, time_w, color::main_fg())];
 
         let job = match item {
-            MinionActivityItem::Event(_, evt) => return_event_jid(evt).map(|jid| {
+            MinionActivityItem::Event(evt) => return_event_jid(evt).map(|jid| {
                 let fun = evt.data["fun"].as_str().unwrap_or("?").to_string();
                 let (args, test_run) = format_job_args(&fun, &evt.data["fun_args"]);
                 ("return", color::green(), fun, args, test_run, Some(return_event_result(&evt.data)), jid.to_string())
@@ -290,7 +291,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
                 spans.push(Span::styled(format!("  {:<fun_w$}", alert.severity.label()), Style::default().fg(acolor)));
                 spans.push(cell(&alert.description, wide_w, color::main_fg()));
             }
-            (None, MinionActivityItem::Event(_, evt)) => {
+            (None, MinionActivityItem::Event(evt)) => {
                 let (etype, ecolor, extra) = classify_tag(&evt.tag, &evt.data);
                 spans.push(Span::styled(format!("  {:<type_w$}", etype), Style::default().fg(dim(ecolor)).add_modifier(Modifier::BOLD)));
                 spans.push(cell(extra.as_deref().unwrap_or(""), fun_w, color::main_fg()));

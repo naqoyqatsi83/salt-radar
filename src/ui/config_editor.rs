@@ -53,9 +53,14 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
         ]
     };
     let title = if state.dirty() { " Config Editor \u{25CF} unsaved changes " } else { " Config Editor " };
+    let (nav, hints) = super::split_nav_hints(&hints);
     let hint_line = super::border_hints(&hints, color::border_focus());
     let saved_to = super::border_info(format!("saved to: {}", config_path), color::border_focus());
     let mut block = super::titled_block(title, Style::default().fg(color::border_focus()), color::main_bg());
+    let nav_line = super::border_hints(&nav, color::border_focus());
+    if !nav.is_empty() && super::fits_beside(title.chars().count() + 2, &nav_line, area.width) {
+        block = block.title_top(nav_line.right_aligned());
+    }
     if super::fits_beside(hint_line.width(), &saved_to, area.width) {
         block = block.title_bottom(saved_to.right_aligned());
     }
@@ -152,13 +157,20 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     ),
                 ]));
                 if editing {
-                    let (items, shown) = crate::app::column_editor_items(&field.label_value, all);
+                    let fallback;
+                    let items: &[&str] = if state.column_order.len() == all.len() {
+                        &state.column_order
+                    } else {
+                        fallback = crate::app::column_editor_items(&field.label_value, all).0;
+                        &fallback
+                    };
                     for (i, item) in items.iter().enumerate() {
                         let item_sel = i == state.choice_idx;
                         let item_style = if item_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
                         let marker = if item_sel { "\u{25B8} " } else { "  " };
-                        let check = if i < shown { "[x]" } else { "[ ]" };
-                        let fg = if item_sel { color::yellow() } else if i < shown { color::main_fg() } else { color::inactive_fg() };
+                        let shown = crate::app::column_shown(&field.label_value, item);
+                        let check = if shown { "[x]" } else { "[ ]" };
+                        let fg = if item_sel { color::yellow() } else if shown { color::main_fg() } else { color::inactive_fg() };
                         if item_sel { sel_line = lines.len(); }
                         lines.push(Line::from(Span::styled(
                             format!("      {}{} {}", marker, check, item),
@@ -200,9 +212,22 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 let editing = is_sel && state.editing;
                 let sel_style = if is_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
 
-                let value_style = sel_style.fg(if editing { color::yellow() } else { color::main_fg() });
+                let fixed = matches!(field.kind, ConfigFieldKind::Fixed);
+                let value_style = sel_style.fg(if editing { color::yellow() } else if fixed { color::inactive_fg() } else { color::main_fg() });
+                // The salt-api password is never drawn: one bullet per
+                // character while typed, so the cursor still lines up.
+                let secret = field.label == "stats_auth_password";
                 let value_spans = if editing {
-                    super::input_spans("", &state.input, app.input_cursor, value_style)
+                    let masked;
+                    let input = if secret {
+                        masked = "\u{2022}".repeat(state.input.chars().count());
+                        &masked
+                    } else {
+                        &state.input
+                    };
+                    super::input_spans("", input, app.input_cursor, value_style)
+                } else if secret && !field.label_value.is_empty() {
+                    vec![Span::styled("\u{2022}".repeat(8), value_style)]
                 } else {
                     vec![Span::styled(field.label_value.clone(), value_style)]
                 };
@@ -222,6 +247,14 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     sel_style.fg(color::red()).add_modifier(Modifier::BOLD),
                 ));
                 lines.push(Line::from(spans));
+                if fixed && is_sel {
+                    for note in [
+                        "    Runs as root, so it's taken only from a file root alone can change:".to_string(),
+                        format!("    to change it, set it as root in {}", crate::config::SYSTEM_CONFIG),
+                    ] {
+                        lines.push(Line::from(Span::styled(note, Style::default().fg(color::inactive_fg()))));
+                    }
+                }
             }
         }
     }
@@ -269,13 +302,20 @@ fn draw_path_browser(f: &mut Frame, b: &PathBrowser, label: &str) {
     ];
     let title = format!(" {}: select a {} ", label, what);
     let title_width = title.chars().count() + 2;
+    let (nav, hints) = super::split_nav_hints(&hints);
+    let nav_line = super::border_hints(&nav, color::border_focus());
     let mut block = super::titled_block(title, Style::default().fg(color::border_focus()), color::popup_bg())
         .title_bottom(super::border_hints(&hints, color::border_focus()).left_aligned());
+    let nav_shown = !nav.is_empty() && super::fits_beside(title_width, &nav_line, area.width);
+    let title_width = if nav_shown { title_width + nav_line.width() + 1 } else { title_width };
     if b.typing(std::time::Instant::now()) {
         let jump = super::border_info(format!("jump: {}", b.typed), color::border_focus());
         if super::fits_beside(title_width, &jump, area.width) {
             block = block.title_top(jump.right_aligned());
         }
+    }
+    if nav_shown {
+        block = block.title_top(nav_line.right_aligned());
     }
     let inner = block.inner(area);
     f.render_widget(block, area);

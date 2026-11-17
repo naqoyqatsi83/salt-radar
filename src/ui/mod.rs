@@ -41,6 +41,7 @@ pub mod color {
 
             impl Theme {
                 pub const DEFAULT: Theme = Theme { $($key: Color::Rgb($r, $g, $b),)* };
+                #[cfg(test)]
                 pub const KEYS: &'static [&'static str] = &[$(stringify!($key),)*];
 
                 pub fn slot(&mut self, key: &str) -> Option<&mut Color> {
@@ -370,6 +371,17 @@ pub fn titled_block(title: impl Into<String>, border_style: Style, bg: Color) ->
         .style(Style::default().bg(bg))
 }
 
+/// `s` cut to at most `max` characters, the last two `..` when it was cut.
+/// Counted in characters, never bytes: the text is often a minion's or an
+/// HTTP client's, and a byte cut inside a multi-byte character panics.
+pub fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}..", s.chars().take(max.saturating_sub(2)).collect::<String>())
+    }
+}
+
 /// Windowed-list scroll math shared by every scrollable list panel: given
 /// the selected index, the number of visible rows, and the total row
 /// count, returns `(scroll_offset, has_more_above, has_more_below)` so
@@ -399,9 +411,15 @@ pub fn more_below(border_color: Color) -> Line<'static> {
 /// Like `titled_block`, but for scrollable list panels: appends a "more
 /// above" hint to the top title and adds a "more below" hint on the
 /// bottom border when the list is windowed in that direction.
-pub fn list_block(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool) -> Block<'static> {
+/// What a status picker left ticked (`ticked_spans`) goes in its own
+/// bracket after the title.
+fn list_block(title: impl Into<String>, ticked: Option<Vec<Span<'static>>>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool) -> Block<'static> {
     let border_color = border_style.fg.unwrap_or(color::border());
     let mut top_spans = bracket_title(vec![Span::styled(title.into(), Style::default().fg(color::title()))], border_color);
+    if let Some(ticked) = ticked {
+        top_spans.push(Span::styled("\u{2500}", Style::default().fg(border_color)));
+        top_spans.extend(bracket_title(ticked, border_color));
+    }
     if has_more_above {
         top_spans.push(Span::styled(" \u{25B2} more above ", Style::default().fg(border_color)));
     }
@@ -431,6 +449,85 @@ pub fn border_hints(hints: &[(&str, String)], border_color: Color) -> Line<'stat
         spans.push(Span::styled("\u{251C}", Style::default().fg(border_color)));
     }
     Line::from(spans)
+}
+
+pub type Hints<'a> = Vec<(&'a str, String)>;
+
+/// Keys that only move around, which popups show on their top edge so the
+/// bottom one keeps the actions.
+const NAV_KEYS: &[&str] = &[
+    "\u{2191}\u{2193}", "\u{2190}\u{2192}", "\u{2190}", "\u{2192}", "PgUp/PgDn", "Home/End", ", .",
+    "\u{2191}\u{2193}/PgUp/PgDn", "Tab/\u{2190}\u{2192}",
+];
+
+/// A popup's hints split into the movement keys (for the top edge) and the
+/// rest (for the bottom edge), each in its original order.
+pub fn split_nav_hints<'a>(hints: &[(&'a str, String)]) -> (Hints<'a>, Hints<'a>) {
+    hints.iter().cloned().partition(|(k, _)| NAV_KEYS.contains(k))
+}
+
+/// One row of a status picker.
+pub struct PickerRow {
+    pub label: &'static str,
+    pub color: Color,
+    pub count: usize,
+    pub ticked: bool,
+}
+
+/// A status picker (`x`): a box rising from `panel`'s bottom edge with a
+/// checkbox per status and how many rows have it.
+pub fn draw_status_picker(f: &mut Frame, panel: Rect, rows: &[PickerRow], cursor: usize) -> crate::types::PickerHits {
+    let label_w = rows.iter().map(|r| r.label.len()).max().unwrap_or(0);
+    let count_w = rows.iter().map(|r| r.count.to_string().len()).max().unwrap_or(1);
+    let inner_w = 3 + 4 + label_w + 2 + count_w + 1;
+    let w = ((inner_w + 2) as u16).min(panel.width.saturating_sub(2));
+    let h = (rows.len() as u16 + 2).min(panel.height);
+    let area = Rect { x: panel.x + 1, y: panel.bottom().saturating_sub(h), width: w, height: h };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::border_focus()))
+        .title(Line::from(bracket_title(vec![Span::styled("Show", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))], color::border_focus())))
+        .style(Style::default().bg(color::popup_bg()));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let lines: Vec<Line<'static>> = rows.iter().enumerate().map(|(i, r)| {
+        let at = i == cursor;
+        let line = Line::from(vec![
+            Span::styled(format!(" {} ", if at { "\u{25b6}" } else { " " }), Style::default().fg(color::cyan())),
+            Span::styled(if r.ticked { "[x] " } else { "[ ] " }, Style::default().fg(color::main_fg()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<label_w$}", r.label), Style::default().fg(r.color).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {:>count_w$} ", r.count), Style::default().fg(if r.count == 0 { color::inactive_fg() } else { color::main_fg() })),
+        ]);
+        if at { color::selected_row(line) } else { line }
+    }).collect();
+    if cursor < inner.height as usize {
+        f.buffer_mut().set_style(Rect { y: inner.y + cursor as u16, height: 1, ..inner }, color::select_bg());
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+    crate::types::PickerHits {
+        area,
+        rows: (0..rows.len().min(inner.height as usize)).map(|i| (inner.y + i as u16, i)).collect(),
+    }
+}
+
+/// What a picker left ticked, each in its own color, for the list's top
+/// border; `None` while everything is ticked.
+pub fn ticked_spans(rows: &[PickerRow]) -> Option<Vec<Span<'static>>> {
+    if rows.iter().all(|r| r.ticked) {
+        return None;
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for r in rows.iter().filter(|r| r.ticked) {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" \u{b7} ", Style::default().fg(color::label_fg())));
+        }
+        spans.push(Span::styled(r.label, Style::default().fg(r.color).add_modifier(Modifier::BOLD)));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled("nothing ticked", Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
+    }
+    Some(spans)
 }
 
 /// Plain `┤ text ├` border segment for read-only info (no key to
@@ -503,21 +600,43 @@ pub fn value_hint(dec_key: &str, value: impl Into<String>, inc_key: &str, border
     ]
 }
 
-/// Like `titled_block`, with btop-style hints embedded in the bottom border.
-pub fn titled_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, hints: &[(&str, String)]) -> Block<'static> {
+/// Like `titled_block`, with btop-style hints embedded in the border: the
+/// movement keys at the top right (when they fit beside the title in a
+/// panel `width` columns wide), the rest at the bottom.
+pub fn titled_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, hints: &[(&str, String)], width: u16) -> Block<'static> {
     let border_color = border_style.fg.unwrap_or(color::border());
-    let block = titled_block(title, border_style, bg);
-    if hints.is_empty() { block } else { block.title_bottom(border_hints(hints, border_color).left_aligned()) }
+    let title = title.into();
+    let title_w = title.trim().chars().count() + 4;
+    let (nav, hints) = split_nav_hints(hints);
+    let block = with_nav_hints(titled_block(title, border_style, bg), &nav, border_color, title_w, width);
+    if hints.is_empty() { block } else { block.title_bottom(border_hints(&hints, border_color).left_aligned()) }
+}
+
+/// Adds as many of `nav` (movement keys) to the top right of `block` as fit
+/// beside the `used` columns its top-left title takes.
+fn with_nav_hints(block: Block<'static>, nav: &[(&str, String)], border_color: Color, used: usize, width: u16) -> Block<'static> {
+    let fit = (0..=nav.len()).rev().find(|&n| fits_beside(used, &border_hints(&nav[..n], border_color), width)).unwrap_or(0);
+    if fit == 0 { block } else { block.title_top(border_hints(&nav[..fit], border_color).right_aligned()) }
 }
 
 /// Like `list_block`, with btop-style hints embedded in the bottom border
 /// (left-aligned, alongside the right-aligned "more below" indicator, which
 /// gives way when the panel is `width` columns too narrow for both).
 pub fn list_block_hinted(title: impl Into<String>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool, hints: &[(&str, String)], width: u16) -> Block<'static> {
+    list_block_hinted_ticked(title, None, border_style, bg, has_more_above, has_more_below, hints, width)
+}
+
+/// `list_block_hinted` with what a status picker left ticked after the title.
+pub fn list_block_hinted_ticked(title: impl Into<String>, ticked: Option<Vec<Span<'static>>>, border_style: Style, bg: Color, has_more_above: bool, has_more_below: bool, hints: &[(&str, String)], width: u16) -> Block<'static> {
     let border_color = border_style.fg.unwrap_or(color::border());
-    let hint_line = border_hints(hints, border_color);
+    let ticked_w = ticked.as_ref().map_or(0, |t| 1 + 4 + t.iter().map(|s| s.content.chars().count()).sum::<usize>());
+    let (nav, hints) = split_nav_hints(hints);
+    let hint_line = border_hints(&hints, border_color);
     let has_more_below = has_more_below && fits_beside(hint_line.width(), &more_below(border_color), width);
-    let block = list_block(title, border_style, bg, has_more_above, has_more_below);
+    let title = title.into();
+    let title_w = title.trim().chars().count() + 4 + ticked_w + if has_more_above { " \u{25B2} more above ".chars().count() } else { 0 };
+    let block = list_block(title, ticked, border_style, bg, has_more_above, has_more_below);
+    let block = with_nav_hints(block, &nav, border_color, title_w, width);
     if hints.is_empty() { block } else { block.title_bottom(hint_line.left_aligned()) }
 }
 
@@ -576,9 +695,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let mut hits = Vec::new();
     match app.current_tab {
         Tab::Dashboard => dashboard::draw_dashboard(f, main_layout[1], app),
-        Tab::Minions => minions::draw_minions(f, main_layout[1], app, tab_focused, &mut hits),
+        Tab::Minions => app.minion_picker_hits = minions::draw_minions(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Events => events::draw_events(f, main_layout[1], app, tab_focused, &mut hits),
-        Tab::Jobs => jobs::draw_jobs(f, main_layout[1], app, tab_focused, &mut hits),
+        Tab::Jobs => app.job_picker_hits = jobs::draw_jobs(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
         Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused, &mut hits),
@@ -849,10 +968,18 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     let mut spans: Vec<Span<'static>> = Vec::new();
 
     // Agent status
+    let because = |why: &Option<String>| why.as_deref().map(|w| format!(" ({})", truncate(w, 90))).unwrap_or_default();
     if app.agent.connected {
         spans.push(Span::styled(" agent: ok ", Style::default().fg(color::green())));
     } else {
-        spans.push(Span::styled(" agent: down ", Style::default().fg(color::red())));
+        spans.push(Span::styled(format!(" agent: down{} ", because(&app.agent.last_error)), Style::default().fg(color::red())));
+    }
+    if app.agent.event_bus_error.is_some() {
+        spans.push(Span::styled(" \u{2502} ", Style::default().fg(color::tab_separator())));
+        spans.push(Span::styled(
+            format!(" no events, reconnecting{} ", because(&app.agent.event_bus_error)),
+            Style::default().fg(color::red()).add_modifier(Modifier::BOLD),
+        ));
     }
 
     // Transient clipboard message (auto-clears after 8 seconds)
@@ -938,33 +1065,6 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(paragraph, area);
 }
 
-// ─── Reusable table helper ─────────────────────────────────────────────────
-
-pub fn render_table_header(f: &mut Frame, area: Rect, columns: &[(&str, u16)], bg: Color) {
-    let mut spans = Vec::new();
-    for (i, (label, width)) in columns.iter().enumerate() {
-        let w = *width as usize;
-        if i > 0 {
-            spans.push(Span::raw(" "));
-        }
-        let padded = if label.len() > w {
-            format!("{:.width$}", label, width = w)
-        } else {
-            format!("{:width$}", label, width = w)
-        };
-        spans.push(Span::styled(
-            padded,
-            Style::default()
-                .fg(color::header_fg())
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-    f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
-        area,
-    );
-}
-
 // ─── Help overlay ──────────────────────────────────────────────────────────
 
 /// One keyboard shortcut, spelled exactly as in the README's tables (keys in
@@ -1003,12 +1103,13 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Events", key: "`s` / `S`", action: "Save the filtered event list to a file (text / NDJSON)" },
         Shortcut { tab: "Minions", key: "`r`", action: "Minion event/return history popup" },
         Shortcut { tab: "Minions", key: "`s`", action: "Fleet scan (admin mode only)" },
-        Shortcut { tab: "Minions", key: "`x`", action: "Hide/show non-responsive minions" },
-        Shortcut { tab: "Minions", key: "`z`", action: "Collapse/expand timed-out minions into one row (when not hidden)" },
+        Shortcut { tab: "Minions", key: "`x`", action: "Pick the states the list shows: RESPONSIVE / TIMED OUT (answered the last fleet scan or not), NOT SCANNED, PENDING, REJECTED, DENIED; ticked ones are named in its top border" },
+        Shortcut { tab: "Minions", key: "`z`", action: "Collapse/expand timed-out minions into one row" },
+        Shortcut { tab: "Minions", key: "`i` / `I`", action: "Copy / save the IDs of the minions the list shows, one per line" },
         Shortcut { tab: "Minions", key: "`f`", action: "Toggle whether the Fleet Overview breakdown follows the active list filter" },
         Shortcut { tab: "Minions, Jobs, Alerts, API", key: "`o` / `O`", action: "Sort by the next column / reverse the sort (also: click a column header)" },
         Shortcut { tab: "Minions, Events, Jobs, Alerts, API", key: "`v`", action: "Choose which columns the focused table shows, and their order" },
-        Shortcut { tab: "Jobs (Live)", key: "`x`", action: "Show only failed jobs / all jobs" },
+        Shortcut { tab: "Jobs (Live)", key: "`x`", action: "Pick the states the list shows: OK, FAILED, RUNNING, STUCK (still waiting after `job_straggler_secs`), UNCOUNTED (no target count: runner and wheel jobs); ticked ones are named in its top border" },
         Shortcut { tab: "Jobs (Cache)", key: "`/`", action: "Filter cache entries (server-side)" },
         Shortcut { tab: "Jobs (Cache)", key: "`[`/`]`", action: "Decrease/increase page limit by 500" },
         Shortcut { tab: "Jobs (Cache)", key: "`,`/`.`", action: "Previous/next page" },
@@ -1035,11 +1136,16 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ]),
     ("Popups", &[
         Shortcut { tab: "", key: "`y`", action: "Copy to clipboard" },
-        Shortcut { tab: "", key: "`Y`", action: "Copy raw JSON (job detail)" },
+        Shortcut { tab: "", key: "`Y`", action: "Copy raw JSON (job and minion detail)" },
         Shortcut { tab: "", key: "`s`", action: "Save to file" },
-        Shortcut { tab: "", key: "`S`", action: "Save raw JSON to file (job detail; NDJSON in the sniffer)" },
-        Shortcut { tab: "", key: "`a`", action: "Save every return in the job to one file (job detail)" },
+        Shortcut { tab: "", key: "`S`", action: "Save raw JSON to file (job and minion detail; NDJSON in the sniffer)" },
+        Shortcut { tab: "", key: "`a`", action: "Save every return in the job to one file, then the minions that didn't return (job detail)" },
         Shortcut { tab: "", key: "`A`", action: "Save every return as one JSON object (job detail)" },
+        Shortcut { tab: "", key: "`v`", action: "Save the returns the list shows (the `o` outcomes and `/` filter applied) to one file named `job-<jid>-view-…`, then the shown minions that didn't return (job detail)" },
+        Shortcut { tab: "", key: "`V`", action: "Save the returns the list shows as one JSON object (job detail)" },
+        Shortcut { tab: "", key: "`x`", action: "Pick the outcomes the returns list shows: OK, FAILED, NOT RETURNED; ticked ones are named in the list's top border (job detail)" },
+        Shortcut { tab: "", key: "`i`", action: "Copy the listed minions' IDs, one per line (job detail)" },
+        Shortcut { tab: "", key: "`I`", action: "Save the listed minions' IDs to a file, one per line (job detail)" },
         Shortcut { tab: "", key: "`j`/`k`", action: "Next/previous return (job detail)" },
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Jump 10 returns" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last return (job detail)" },
@@ -1116,9 +1222,13 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         h.push(("Esc", if app.help_search.is_empty() { "close" } else { "clear search" }.to_string()));
         h
     };
+    let (nav, hints) = split_nav_hints(&hints);
     let hint_line = border_hints(&hints, color::border_focus());
     let hint_width = hint_line.width();
     block = block.title_bottom(hint_line.left_aligned());
+    let nav_line = border_hints(&nav, color::border_focus());
+    let nav_shown = !nav.is_empty() && fits_beside(pages_width, &nav_line, area.width);
+    let pages_width = if nav_shown { pages_width + nav_line.width() + 1 } else { pages_width };
     if !app.help_search.is_empty() && !app.help_searching {
         let status = match (focus, matches.len()) {
             (_, 0) => "no matches".to_string(),
@@ -1133,6 +1243,9 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         if fits_beside(pages_width, &status, area.width) {
             block = block.title_top(status.right_aligned());
         }
+    }
+    if nav_shown {
+        block = block.title_top(nav_line.right_aligned());
     }
     let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
     app.help_scroll = app.help_scroll.min(max_scroll);
@@ -1467,7 +1580,11 @@ fn guide_help_lines() -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("  ones too, and the password or token in any URL, blanked by the agent", Style::default().fg(color::main_fg())),
+            Span::styled("  and commented-out ones too, and the password or token in any URL, blanked", Style::default().fg(color::main_fg())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("  by the agent; file paths and sdb:// references are shown", Style::default().fg(color::main_fg())),
         ]),
         Line::from(""),
         Line::from(Span::styled("  Events Preview", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
@@ -1495,11 +1612,41 @@ mod tests {
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
 
+    #[test]
+    fn truncate_cuts_by_characters() {
+        assert_eq!(truncate("state.apply", 35), "state.apply");
+        assert_eq!(truncate("abcdefgh", 6), "abcd..");
+        // Byte 33 is inside a two-byte character here.
+        let fun = format!("GET /{}", "é".repeat(40));
+        assert_eq!(truncate(&fun, 35).chars().count(), 35);
+        assert_eq!(truncate("ééé", 1), "..");
+    }
+
     fn bottom_border(block: Block<'static>, width: u16) -> String {
         let area = Rect::new(0, 0, width, 3);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         ratatui::widgets::Widget::render(block, area, &mut buf);
         (0..width).map(|x| buf[(x, 2)].symbol().to_string()).collect()
+    }
+
+    fn top_border(block: Block<'static>, width: u16) -> String {
+        let area = Rect::new(0, 0, width, 3);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(block, area, &mut buf);
+        (0..width).map(|x| buf[(x, 0)].symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn movement_hints_go_to_the_top_edge_when_they_fit_beside_the_title() {
+        let hints = [("/", "filter".to_string()), ("PgUp/PgDn", "page".to_string())];
+        let wide = list_block_hinted(" Jobs ", Style::default(), Color::Reset, false, false, &hints, 60);
+        assert!(top_border(wide.clone(), 60).contains("PgUp/PgDn:page"));
+        assert!(!bottom_border(wide, 60).contains("PgUp"));
+        let narrow = top_border(list_block_hinted(" Jobs ", Style::default(), Color::Reset, false, false, &hints, 24), 24);
+        assert!(narrow.contains("Jobs") && !narrow.contains("PgUp"), "{narrow}");
+        let two = [("PgUp/PgDn", "page".to_string()), ("Home/End", "top/bottom".to_string())];
+        let partly = top_border(list_block_hinted(" Jobs ", Style::default(), Color::Reset, false, false, &two, 40), 40);
+        assert!(partly.contains("PgUp/PgDn:page") && !partly.contains("Home"), "the first keys that fit stay: {partly}");
     }
 
     #[test]
@@ -1548,6 +1695,14 @@ mod tests {
         assert!(c("ubuntu22") != c("ubuntu24") && c("ubuntu24") != c("ubuntu26") && c("ubuntu22") != c("ubuntu26"));
         let many = color::term_colors(["a", "b", "c", "d", "e", "f", "g"]);
         assert_eq!(color::term_color_in(&many, "g"), color::term_color_in(&many, "a"));
+    }
+
+    #[test]
+    fn movement_hints_split_off_in_order() {
+        let h = |k: &'static str| (k, String::new());
+        let (nav, rest) = split_nav_hints(&[h("q"), h("\u{2191}\u{2193}"), h("Enter"), h("Home/End"), h("/")]);
+        assert_eq!(nav.iter().map(|x| x.0).collect::<Vec<_>>(), ["\u{2191}\u{2193}", "Home/End"]);
+        assert_eq!(rest.iter().map(|x| x.0).collect::<Vec<_>>(), ["q", "Enter", "/"]);
     }
 
     #[test]

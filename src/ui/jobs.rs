@@ -5,16 +5,37 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::types::{CacheJobEntry, Column, HeaderHit, JobEntry, Tab, TableId};
+use crate::types::{CacheJobEntry, Column, HeaderHit, JobEntry, JobState, PickerHits, Status, Tab, TableId};
 
 use super::color;
 use super::table::{cell, cell_with_suffix, fitted_widths, header_line};
 
-pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) {
+/// Draws the tab; returns where Live Jobs' `x` picker went, if open.
+pub fn draw_jobs(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) -> PickerHits {
     let layout = super::split_panes(area, app);
 
-    draw_live_jobs_panel(f, layout[0], app, tab_focused, hits);
+    let picker = draw_live_jobs_panel(f, layout[0], app, tab_focused, hits);
     draw_cache_panel(f, layout[1], app, tab_focused, hits);
+    picker
+}
+
+fn job_state_color(s: JobState) -> ratatui::style::Color {
+    match s {
+        JobState::Ok => color::outcome_ok(),
+        JobState::Failed => color::outcome_failed(),
+        JobState::Running => color::cyan(),
+        JobState::Stuck => color::outcome_missing(),
+        JobState::Uncounted => color::inactive_fg(),
+    }
+}
+
+fn job_picker_rows(app: &App) -> Vec<super::PickerRow> {
+    JobState::ALL.iter().zip(app.job_state_counts()).map(|(&s, count)| super::PickerRow {
+        label: s.label(),
+        color: job_state_color(s),
+        count,
+        ticked: app.job_states.shows(s),
+    }).collect()
 }
 
 fn args_cell(args: &str, test_run: bool, w: usize) -> Vec<Span<'static>> {
@@ -131,7 +152,7 @@ fn panel_hints(table: TableId, focused: bool, extra: &[(&'static str, &'static s
     hints
 }
 
-fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) {
+fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) -> PickerHits {
     let focused = tab_focused && !app.cache_focus;
     let border_style = if focused {
         Style::default().fg(color::border_focus())
@@ -148,12 +169,14 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
 
     let hints = panel_hints(TableId::LiveJobs, focused, &[
         ("/", "filter"),
-        ("x", if app.jobs_failed_only { "all" } else { "failed only" }),
+        ("x", "states"),
         ("Enter", "detail"),
         ("PgUp/PgDn", "page"),
         ("Home/End", "top/bottom"),
     ], ("\u{2192}", "cache"));
-    let block = super::list_block_hinted(if app.jobs_failed_only { format!(" Live Jobs (failed only: {}/{}) ", total, app.jobs.len()) } else { format!(" Live Jobs ({}) ", app.jobs.len()) }, border_style, color::main_bg(), has_more_above, has_more_below, &hints, area.width);
+    let picker_rows = job_picker_rows(app);
+    let title = if total == app.jobs.len() { format!(" Live Jobs ({}) ", total) } else { format!(" Live Jobs ({}/{}) ", total, app.jobs.len()) };
+    let block = super::list_block_hinted_ticked(title, super::ticked_spans(&picker_rows), border_style, color::main_bg(), has_more_above, has_more_below, &hints, area.width);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -201,6 +224,10 @@ fn draw_live_jobs_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool,
         Paragraph::new(lines).style(Style::default().bg(color::main_bg())),
         inner,
     );
+    match app.job_picker {
+        Some(cursor) => super::draw_status_picker(f, area, &picker_rows, cursor),
+        None => PickerHits::default(),
+    }
 }
 
 fn draw_cache_panel(f: &mut Frame, area: Rect, app: &App, tab_focused: bool, hits: &mut Vec<HeaderHit>) {

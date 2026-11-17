@@ -16,10 +16,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -28,7 +27,18 @@ jobs:
           key: ${{ runner.os }}-ci-${{ hashFiles('Cargo.lock') }}
 
       - name: Clippy (warnings are errors)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Tests
-        run: cargo test
+        run: cargo test --locked
+
+      # The agent's own tests: what it blanks in master config files, and
+      # its event listener. Python 3.10 is what Salt's packages ship.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.10"
+
+      - name: Agent tests
+        run: |
+          python -m pip install --quiet pyyaml
+          python -m unittest discover -s agent/tests -v

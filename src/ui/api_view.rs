@@ -7,20 +7,8 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::types::{ApiLogEntry, Column, HeaderHit, Tab, TableId};
 
-use super::color;
+use super::{color, truncate};
 use super::table::{cell, column_widths, header_line};
-
-/// Truncates to at most `max` chars, appending ".." when it does (so the
-/// returned string is always <= max chars) -- every fixed-width column
-/// below relies on this to guarantee it never overflows into the next one.
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let keep = max.saturating_sub(2);
-        format!("{}..", s.chars().take(keep).collect::<String>())
-    }
-}
 
 /// salt-api request log + per-endpoint breakdown. Only meaningful once
 /// rest_cherrypy's `collect_stats`/`stats_disable_auth` are set on the
