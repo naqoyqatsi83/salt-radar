@@ -212,7 +212,8 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                 let editing = is_sel && state.editing;
                 let sel_style = if is_sel { color::select_bg() } else { Style::default().bg(color::main_bg()) };
 
-                let value_style = sel_style.fg(if editing { color::yellow() } else { color::main_fg() });
+                let fixed = matches!(field.kind, ConfigFieldKind::Fixed);
+                let value_style = sel_style.fg(if editing { color::yellow() } else if fixed { color::inactive_fg() } else { color::main_fg() });
                 // The salt-api password is never drawn: one bullet per
                 // character while typed, so the cursor still lines up.
                 let secret = field.label == "stats_auth_password";
@@ -246,6 +247,14 @@ pub fn draw_config_editor(f: &mut Frame, app: &App) {
                     sel_style.fg(color::red()).add_modifier(Modifier::BOLD),
                 ));
                 lines.push(Line::from(spans));
+                if fixed && is_sel {
+                    for note in [
+                        "    Runs as root, so it's taken only from a file root alone can change:".to_string(),
+                        format!("    to change it, set it as root in {}", crate::config::SYSTEM_CONFIG),
+                    ] {
+                        lines.push(Line::from(Span::styled(note, Style::default().fg(color::inactive_fg()))));
+                    }
+                }
             }
         }
     }

@@ -29,6 +29,9 @@ pub enum ConfigFieldKind {
     /// (`PathBrowser`) instead of typed, so it can't be mistyped; `e` in the
     /// browser still allows typing one (e.g. a directory to be created).
     Path(PathKind),
+    /// Shown but not editable: a setting that saving here wouldn't apply
+    /// (what runs as root, from a file that isn't root's alone).
+    Fixed,
     SaveButton,
 }
 
@@ -281,12 +284,17 @@ impl App {
     pub(crate) fn open_config_editor(&mut self) {
         // Clone the current config into an editable state
         let cfg = &self.config;
+        let exec_kind = if crate::config::exec_settings_saveable(&self.config_path) {
+            ConfigFieldKind::Path(PathKind::File)
+        } else {
+            ConfigFieldKind::Fixed
+        };
         self.config_editor = Some(ConfigEditorState {
             fields: vec![
                 ConfigField { label: "[salt]", label_value: String::new(), kind: ConfigFieldKind::Section },
-                ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
-                ConfigField { label: "python_bin", label_value: cfg.python_bin.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
-                ConfigField { label: "master_config", label_value: cfg.master_config.clone(), kind: ConfigFieldKind::Path(PathKind::File) },
+                ConfigField { label: "agent_path", label_value: cfg.agent_path.clone(), kind: exec_kind },
+                ConfigField { label: "python_bin", label_value: cfg.python_bin.clone(), kind: exec_kind },
+                ConfigField { label: "master_config", label_value: cfg.master_config.clone(), kind: exec_kind },
                 ConfigField { label: "running_config_digests", label_value: on_off(cfg.running_config_digests), kind: ConfigFieldKind::Choice(ON_OFF) },
                 ConfigField { label: "[refresh]", label_value: String::new(), kind: ConfigFieldKind::Section },
                 ConfigField { label: "dashboard_secs", label_value: cfg.dashboard_secs.to_string(), kind: ConfigFieldKind::U64 },
@@ -397,11 +405,12 @@ impl App {
             Some(ref state) => &state.fields,
             _ => return Err("No editor state".into()),
         };
+        let exec_fixed = fields.iter().any(|f| matches!(f.kind, ConfigFieldKind::Fixed));
         // Extract values by label
         let mut vals: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         for f in fields {
             match f.kind {
-                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order | ConfigFieldKind::Columns(_) | ConfigFieldKind::Theme | ConfigFieldKind::Path(_) => {
+                ConfigFieldKind::Str | ConfigFieldKind::U64 | ConfigFieldKind::F64 | ConfigFieldKind::Choice(_) | ConfigFieldKind::Order | ConfigFieldKind::Columns(_) | ConfigFieldKind::Theme | ConfigFieldKind::Path(_) | ConfigFieldKind::Fixed => {
                     vals.insert(f.label, f.label_value.as_str());
                 }
                 _ => {}
@@ -512,7 +521,16 @@ impl App {
         }
         let mut new_config = new_config;
         new_config.clamp_buffer_sizes();
-        crate::config::write_config(&self.config_path, &new_config)
+        // Fixed settings come from elsewhere; a copy in this file would only
+        // be reported as ignored at the next start.
+        let mut to_file = new_config.clone();
+        if exec_fixed {
+            let defaults = AppConfig::default();
+            to_file.python_bin = defaults.python_bin;
+            to_file.agent_path = defaults.agent_path;
+            to_file.master_config = defaults.master_config;
+        }
+        crate::config::write_config(&self.config_path, &to_file)
             .map_err(|e| format!("Write failed: {}", crate::config::config_io_error(&self.config_path, &e)))?;
         let latency_source_changed = new_config.zmq_latency_source != self.config.zmq_latency_source;
         // The running agent was started with these; a new one would be needed.

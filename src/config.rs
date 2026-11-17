@@ -24,7 +24,7 @@ pub const API_LOG_CAP_RANGE: (usize, usize) = (10, 100_000);
 /// The config file decides what salt-radar executes (`python_bin`,
 /// `agent_path`) and which master config Salt loads, usually as root, so
 /// those are only taken from a file nobody else could have written.
-const SYSTEM_CONFIG: &str = "/etc/salt-radar/salt-radar.toml";
+pub const SYSTEM_CONFIG: &str = "/etc/salt-radar/salt-radar.toml";
 
 pub fn euid() -> u32 {
     // SAFETY: geteuid can't fail.
@@ -1015,6 +1015,26 @@ pub fn config_io_error(path: &Path, err: &std::io::Error) -> String {
     }
 }
 
+/// Whether `python_bin`, `agent_path` and `master_config` saved to `path`
+/// would be used at the next start (see `load_startup_config`). Under sudo
+/// the file is saved as the invoking user, so never; as root otherwise,
+/// when root alone decides what it holds, or will once it's created.
+pub fn exec_settings_saveable(path: &Path) -> bool {
+    if euid() != 0 {
+        return true;
+    }
+    if sudo_ids().is_some() {
+        return false;
+    }
+    if std::fs::symlink_metadata(path).is_ok() {
+        return open_roots_own(path).is_some();
+    }
+    let Ok(abs) = std::path::absolute(path) else { return false };
+    abs.ancestors().skip(1)
+        .filter_map(|p| std::fs::symlink_metadata(p).ok())
+        .all(|m| m.is_dir() && only_writable_by(&m, 0))
+}
+
 /// The file `load_config_or_fallback` reads for `path`.
 fn config_source(path: &Path) -> PathBuf {
     if !path.exists() && sudo_home().is_some() {
@@ -1312,6 +1332,12 @@ mod tests {
         let system = ["/", "/etc", "/etc/passwd"].iter().all(|p| std::fs::metadata(p).is_ok_and(|m| only_writable_by(&m, 0)));
         assert_eq!(open_roots_own(Path::new("/etc/passwd")).is_some(), system);
         assert_eq!(open_roots_own(&link).is_some(), system, "judged by where it leads, which is what gets read");
+
+        // What the Config Editor lets be saved: as root, only what would count.
+        let user = euid() != 0;
+        assert_eq!(exec_settings_saveable(&path), user, "a file in the temp dir");
+        assert_eq!(exec_settings_saveable(&dir.join("missing.toml")), user, "one to be created there");
+        assert_eq!(exec_settings_saveable(Path::new("/etc/salt-radar-missing/salt-radar.toml")), user || system, "one to be created under /etc");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
