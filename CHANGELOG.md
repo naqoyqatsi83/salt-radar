@@ -7,119 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.11.0-rc10] - 2026-11-15
-
-### Added
-
-- Publish a `SHA256SUMS` file with each release, to check the downloaded `.deb`, `.rpm` or `.tar.gz` with `sha256sum -c --ignore-missing SHA256SUMS`. Releases are now also built only from the exact dependency versions in `Cargo.lock`, with the GitHub Actions used pinned to fixed commits (#210)
-
-### Changed
-
-- Show the job salt-radar runs to ask the master for its running options (`runner.test.get_opts`, or `runner.salt.cmd` with `running_config_digests`) in Events, Live Jobs and the Job Cache like any other job. It was kept out of them, and while it ran, so was any other job of those two runners. The return of a `test.get_opts` runner job, which is the master's whole configuration, is shown with its credentials redacted, in its event and in Job Detail, whoever ran it
-
-### Fixed
-
-- List a release candidate's `.deb` in `SHA256SUMS` under the name it's downloaded with: GitHub replaces the `~` in the file's name with `.`, so `sha256sum -c` didn't find it
-- Notice when the master's event publisher is gone and say `no events, reconnecting` in the status bar until it's back: Salt's listener reconnects by itself and reports being connected all along, so the status never showed. The publisher's socket is now asked directly (#204)
-- Say what to do when the config can't be read or saved under sudo because the file or its directory isn't the invoking user's (left by a run as root): the message names the `chown` that hands it over
-- Decide whether `python_bin`, `agent_path` and `master_config` may be taken from a config file on the file as it was opened and read, not by looking it up by name again afterwards, and only for a file whose directories are root's alone too: a root-owned file in a user's home or under `/tmp` no longer counts. Without a config of their own, a sudo user now also gets these three from `/etc/salt-radar/salt-radar.toml`
-- Run `tmux` as the user its socket was checked to belong to instead of looking at the socket again, and read the X11 cookie file for the clipboard log as the invoking user, whose environment can name it
-- Redact more in the Master Config tab: in a file that isn't valid YAML, the lines after a credential key that belong to its value (a quoted text running on, a list, a nested mapping, a block with blank lines); a value written under another name with a YAML anchor and referred to from a credential key, and any credential of six characters or more wherever else the same text turns up, in the files and in the settings list; and the keys `sk`, `psk`, `keyid`, `hook`, `webhook`, `authorization` and `bearer` (`nacl.config: {sk: ...}`, `mattermost.hook`, `slack_webhook.webhook`)
-- Count only Salt's own processes on the Dashboard: a command that only named a daemon, such as `journalctl -u salt-master`, counted as a master process. Process memory now uses the system's page size instead of assuming 4 KB (#209)
-- Keep the service list when systemd reports a service without a main process, which emptied it; read a service's uptime correctly when its process name contains `)` (#209)
-- Log in to salt-api again when its password changed instead of reusing the token cached for the old one, and read the key list through Salt when the PKI directory can't be read, which always fell back to running `salt-key` (#209)
-- Say in the status bar when a saved `python_bin`, `agent_path` or `master_config` only takes effect at the next start, and drop the commands sent while the agent can't be started instead of keeping them all; scroll Job Detail and the Event Sniffer past 65,535 lines, where they jumped back to the top (#209)
-- Keep the buffer sizes (`[events] buffer_size`, `sniffer_buffer_size`, `[api] stats_window`, `log_cap`) in a sensible range, and apply a smaller size from the Config Editor at once: the buffer kept its old length, as each new item only replaced one old one. `buffer_size = 0` kept only the newest event, and a very large size made salt-radar abort at startup, as the whole event buffer was allocated up front (#208)
-- Find each minion's part of a Job Detail lookup in Salt's colored output directly, without a copy of it and a map of every character back to it, which took about 25 times the size of the output: around a GB for a job on thousands of minions (#207)
-- Count the `[refresh]` intervals in seconds: `dashboard_secs`, `config_secs` and the polls without a setting counted ticks, so with the default 2 s tick everything ran at half the configured rate, and `-`/`+` changed it. `minions_secs`, which nothing used, now sets how often the minion list and which minions have checked in are refreshed; Live Jobs keeps jobs for an hour, which followed `config_secs` (60 × it, so `config_secs = 0` emptied the list) (#206)
-
-## [0.11.0-rc9] - 2026-11-15
-
-### Fixed
-
-- Redact every credential in the Master Config tab's file view: values in an inline mapping (`rest_cherrypy: {password: ...}`), every line of a multi-line value, every item of a list or mapping under a credential key (`tokens:`, `credentials:`), and commented-out ones, which were all shown. A value starting with `/` is now only taken for a file path, and shown, when the file or its directory exists, as a secret can start with `/` too; `sdb://` references stay readable. Lines keep their numbers, so each setting still points at the right place in its file
-- Write `salt-radar.toml` readable by its owner only while it holds the salt-api password (`stats_auth_password`), and show that password as `••••••••` in the Config Editor, also while typing it
-- Start the event listener again when it fails, every few seconds, and say so in the status bar (`no events, reconnecting`, with the reason) for as long as it's down. It was started once and never again, so after one failure Events, Live Jobs, Pulse and the sniffer stayed frozen for the rest of the session, with nothing on screen saying why (#204)
-- Keep the agent's error output off the screen: a traceback or a Salt warning from the agent was printed over the TUI. Its last line now shows in the status bar when the agent goes down (`agent: down (agent exited, restarting: ...)`), which also shows errors such as a wrong `python_bin` that were not shown anywhere (#203)
-- Say when `salt-radar.toml` can't be loaded (a typo, a value of the wrong type), with the line, instead of silently starting with the defaults, and don't save over it: a hotkey toggle or a Config Editor save then replaced the file with those defaults. Numbers too large for the file are refused in the Config Editor; one saved before made the file unloadable (#205)
-- Show a setting's running value in the Master Config tab when the running master holds it as `None`: after the first setting Salt doesn't know, such values were taken for missing from the running master (#202)
-
-## [0.11.0-rc8] - 2026-11-15
-
-### Fixed
-
-- Take `python_bin`, `agent_path` and `master_config` only from a config file that root alone can write when salt-radar runs as root, and `./salt-radar.toml` only when it belongs to the user running salt-radar. These settings decide what salt-radar executes, so a `salt-radar.toml` left in a shared directory, or the config of a user allowed to run only salt-radar through sudo, could run any program as root. Under sudo, set them in root's config or in `/etc/salt-radar/salt-radar.toml`; the status bar says when a user's file tried to
-- Under sudo, read, write and list files as the user who ran salt-radar, not as root: what they save (`s`/`S`), their config, the clipboard files and the Config Editor's file browser. Saved files and settings were written as root and handed over afterwards, so someone allowed to run only salt-radar through sudo could have root write into a directory of their choosing, or follow a symlink they had planted, and the file browser listed directories they can't read. A file can now only go where that user could have put it, and it is theirs. The user is taken from `SUDO_UID`, and their home is also found for accounts from a directory service (LDAP, SSSD), which previously fell back to root's config and home
-- Only look up real job IDs, and pass job and minion IDs to `salt` and `salt-run` after `--`. A job ID was read from the event's tag as it came, so a minion could send one that `salt-run` read as an option when the job was opened
-- Don't crash on a job function, event tag or salt-api request line with non-ASCII characters where the Dashboard, the Event Sniffer or a minion's activity list shortens it; one minion's return or one HTTP request to salt-api could end every salt-radar showing it. A crash now also gives the terminal back and shows its message, instead of leaving the shell in raw mode
-- Copy only plain text: escape sequences and other control characters are taken out of what `y`/`Y` copy, print to the terminal and save. Text from a minion's return or a salt-api request could carry sequences the terminal acted on when the copy was printed, such as one replacing the clipboard just set; colors other than Salt's were also left half-stripped in copied output
-- Use only the tmux servers of the user salt-radar was started by (and root's) for copying, as that user, and keep the copied text and the clipboard logs in a private directory (`/tmp/salt-radar-XXXXXX/`, mode 0700, the invoking user's under sudo). As root, salt-radar talked to every `/tmp/tmux-*/default` socket, which any local user can create and whose server a tmux client obeys, and wrote the copied text to world-readable files with predictable names
-
-## [0.11.0-rc7] - 2026-11-09
-
-### Fixed
-
-- Find the X11 display to copy to when salt-radar runs under `sudo -i`, `su -` or in a tmux session that was started without X11 and re-attached from an SSH login with X11 forwarding: it is now taken from the tmux session (updated on every attach) or from the login shell above `sudo`, with that user's cookie. Copying only looked at its own environment and the tmux server's, so these setups copied nothing to X11 (#201)
-
-## [0.11.0-rc6] - 2026-11-09
-
-### Fixed
-
-- Copy to the clipboard (`y`/`Y`) with OSC 52, which lets the terminal itself (Windows Terminal, iTerm2, kitty and others, but not MobaXterm) set its clipboard over plain SSH without X11 or `xclip`; inside tmux it goes through `tmux load-buffer -w`, also when salt-radar runs under `sudo`. It was only put into tmux's paste buffer, so outside tmux X11 was the only way to copy (#201)
-- Report an X11 copy that fails, with xclip's error (e.g. `Can't open display`) in the status bar, instead of "Copied via X11", and retry it as the user who owns the X11 session, which was never tried; "✓ Copied" no longer shows when nothing was copied (#201)
-
-## [0.11.0-rc5] - 2026-11-09
-
-### Added
-
-- Show the auth protocol, failure rate with the latest failure, lag and ping in Minion Detail, which had less than the Minions columns can show, with the fields in up to three columns as the width allows, leaving more height for the grains
-- Copy or save a minion's details and grains from Minion Detail, as text (`y`/`s`) or JSON (`Y`/`S`); these only took its ID before
-
-### Changed
-
-- Show a minion's grains in Minion Detail exactly as `salt <id> grains.items` prints them, in the theme's colors and without cutting long values; a minion that doesn't answer shows Salt's message instead of loading forever
-- Show the Minions Ping and Arch columns by default, and list the columns in the `v` picker and the Config Editor in the order ID, Key, OS, Salt, Proto, Seen, Fail%, Lag, Ping, Arch; a saved `minion_columns` keeps its own choice and order
-
-### Fixed
-
-- Make the `TTY` theme's Dashboard gauges readable: black instead of gray behind them, which hid the Net gauge's text below 1 MB/s, and bright blue instead of dark blue for memory at mid usage
-- Make red text readable on the `TTY` theme's cursor row, active tab and selected Pulse cell: blue instead of red behind them
-
-## [0.11.0-rc4] - 2026-11-06
-
-### Fixed
-
-- Give a job's arguments rows of their own in Job Detail's header, wrapped two columns short of the popup's edge, as they're indented from the left (up to 4 rows, then `…`), instead of one line that pushed the target, start time and return counts off screen for a long command
-
-## [0.11.0-rc3] - 2026-11-05
-
-### Fixed
-
-- Show a job published before salt-radar started as the master job it is in Live Jobs, instead of a `local` (salt-call) job of the minion that returned first, which then counted every other minion's return: its function, target, targeted minions and the returns that came in earlier are read from the job cache, and a second minion's return alone already rules out a salt-call
-
-## [0.11.0-rc2] - 2026-11-05
-
-### Changed
-
-- Replace Live Jobs' `x` (failed only) with a picker like Job Detail's and the Minions tab's: tick OK, FAILED (a minion failed, even while others still run), RUNNING, STUCK (still waiting after `job_straggler_secs`, as the Dashboard counts them) and UNCOUNTED (no target count, like runner and wheel jobs), each with its count; the list's top border names what is shown
-- Move to the first or last row of an `x` picker with `PgUp`/`PgDn` (or `Home`/`End`)
-
-## [0.11.0-rc1] - 2026-11-05
+## [0.11.0] - 2026-11-17
 
 ### Added
 
 - Show only some outcomes in Job Detail's returns list: `x` opens a picker on the list's bottom edge to tick OK, FAILED and NOT RETURNED (`Space` or `1`–`3`, or a click), each with its count. While something is unticked, the list's top border names what is shown, each outcome in its own color, next to the `/` filter's count
 - Save what Job Detail's list shows with `v` (text) or `V` (JSON), the `x` outcomes and `/` filter applied: the file is named `job-<jid>-view-…` after them (`job-<jid>-view-failed-not-returned.txt`), so it says it may not hold the whole job. `a`/`A` still save every return
-- Copy (`i`) or save (`I`) the IDs of the minions Job Detail lists, one per line, to work through the failed or unreachable ones elsewhere
-- Copy (`i`) or save (`I`) the IDs of the minions the Minions list shows, one per line, its filter and states applied
+- Copy (`i`) or save (`I`) the IDs of the minions Job Detail or the Minions list shows, one per line, their filters applied, to work through the failed or unreachable ones elsewhere
+- Show the auth protocol, failure rate with the latest failure, lag and ping in Minion Detail, with the fields in up to three columns as the width allows, and copy or save a minion's details and grains from it, as text (`y`/`s`) or JSON (`Y`/`S`); these only took its ID before
 - Add the `TTY` theme, a port of btop's built-in one: only the terminal's 16 colors, so salt-radar takes on the terminal's own palette, with the graphs' level colors in solid bands. Theme files can name those 16 colors (`red`, `bright_red`, …) besides `#RRGGBB`
+- Copy to the clipboard (`y`/`Y`) with OSC 52, which lets the terminal itself (Windows Terminal, iTerm2, kitty and others, but not MobaXterm) set its clipboard over plain SSH without X11 or `xclip`; inside tmux it goes through `tmux load-buffer -w`, also when salt-radar runs under `sudo`. Before, outside tmux X11 was the only way to copy (#201)
+- Publish a `SHA256SUMS` file with each release, to check the downloaded `.deb`, `.rpm` or `.tar.gz` with `sha256sum -c --ignore-missing SHA256SUMS`. Releases are now also built only from the exact dependency versions in `Cargo.lock`, with the GitHub Actions used pinned to fixed commits (#210)
 
 ### Changed
 
-- Replace the Minions tab's `x` (hide timed-out minions) with a picker like Job Detail's: tick RESPONSIVE and TIMED OUT (whether a minion answered the last fleet scan), NOT SCANNED, PENDING, REJECTED and DENIED, each with its count; the list's top border names what is shown, and Fleet Overview follows it with `f`. `z` still collapses the timed-out ones
+- Replace the `x` toggles of the Minions tab (hide timed-out minions) and Live Jobs (failed only) with pickers like Job Detail's, each state with its count, and the list's top border naming what is shown. Minions: RESPONSIVE and TIMED OUT (whether a minion answered the last fleet scan), NOT SCANNED, PENDING, REJECTED and DENIED; Fleet Overview follows it with `f`, and `z` still collapses the timed-out ones. Live Jobs: OK, FAILED (a minion failed, even while others still run), RUNNING, STUCK (still waiting after `job_straggler_secs`, as the Dashboard counts them) and UNCOUNTED (no target count, like runner and wheel jobs). `PgUp`/`PgDn` (or `Home`/`End`) move to a picker's first or last row
 - Show the movement keys (`↑↓`, `PgUp/PgDn`, `Home/End`, `←→`, the Jobs tab's panel switch and Job Cache's `,`/`.` pages) at the top right of every popup's and tab panel's frame instead of at the bottom, as many as fit beside the title, and pair Job Detail's others (`y/Y`, `s/S`, `a/A`, `i/I`), so the bottom edge no longer runs off the screen; `?` lists every key
 - List the minions that didn't return at the end of the file `a` saves in Job Detail
 - Keep a column in its place in the column picker (`v`) when you tick or untick it, instead of moving it to the end of the ticked ones: the table shows the ticked columns in the list's order, and `+`/`-` move any column, shown or not
+- Show the Minions Ping and Arch columns by default, and list the columns in the `v` picker and the Config Editor in the order ID, Key, OS, Salt, Proto, Seen, Fail%, Lag, Ping, Arch; a saved `minion_columns` keeps its own choice and order
+- Show a minion's grains in Minion Detail exactly as `salt <id> grains.items` prints them, in the theme's colors and without cutting long values; a minion that doesn't answer shows Salt's message instead of loading forever
+- Show the job salt-radar runs to ask the master for its running options (`runner.test.get_opts`, or `runner.salt.cmd` with `running_config_digests`) in Events, Live Jobs and the Job Cache like any other job. It was kept out of them, and while it ran, so was any other job of those two runners. The return of a `test.get_opts` runner job, which is the master's whole configuration, is shown with its credentials redacted, in its event and in Job Detail, whoever ran it
+
+### Fixed
+
+- Take `python_bin`, `agent_path` and `master_config` only from a config file that root alone can write when salt-radar runs as root: owned by root, writable by nobody else, in directories of which the same is true, judged on the file as it was opened and read. These settings decide what salt-radar executes, so a `salt-radar.toml` left in a shared directory, or the config of a user allowed to run only salt-radar through sudo, could run any program as root. From any other file they are ignored, the status bar says so, and they come from root's config, else `/etc/salt-radar/salt-radar.toml`, else the defaults; the Config Editor shows them read-only then, with where to set them. `./salt-radar.toml` is only used when it belongs to the user running salt-radar
+- Under sudo, read, write and list files as the user who ran salt-radar, not as root: what they save (`s`/`S`), their config, the clipboard files and the Config Editor's file browser. Saved files and settings were written as root and handed over afterwards, so someone allowed to run only salt-radar through sudo could have root write into a directory of their choosing, or follow a symlink they had planted. A file can now only go where that user could have put it, and it is theirs; when their config or its directory is root's (left by a run as root), the message names the `chown` that hands it over. The user is taken from `SUDO_UID`, and their home is also found for accounts from a directory service (LDAP, SSSD), which previously fell back to root's config and home
+- Use only the tmux servers of the user salt-radar was started by (and root's) for copying, run as that user, and keep the copied text and the clipboard logs in a private directory (`/tmp/salt-radar-XXXXXX/`, mode 0700, the invoking user's under sudo). As root, salt-radar talked to every `/tmp/tmux-*/default` socket, which any local user can create and whose server a tmux client obeys, and wrote the copied text to world-readable files with predictable names
+- Copy only plain text: escape sequences and other control characters are taken out of what `y`/`Y` copy, print to the terminal and save. Text from a minion's return or a salt-api request could carry sequences the terminal acted on, such as one replacing the clipboard just set
+- Copy to X11 in more setups and say when it fails: the display is also found under `sudo -i`, `su -` or in a tmux session started without X11 and re-attached from an SSH login with X11 forwarding (from the tmux session or the login shell above `sudo`, with that user's cookie); a failed copy shows xclip's error instead of "Copied via X11", and is retried as the user who owns the X11 session (#201)
+- Only look up real job IDs, and pass job and minion IDs to `salt` and `salt-run` after `--`. A job ID was read from the event's tag as it came, so a minion could send one that `salt-run` read as an option when the job was opened
+- Don't crash on a job function, event tag or salt-api request line with non-ASCII characters where the Dashboard, the Event Sniffer or a minion's activity list shortens it; one minion's return or one HTTP request to salt-api could end every salt-radar showing it. A crash now also gives the terminal back and shows its message, instead of leaving the shell in raw mode
+- Redact every credential in the Master Config tab: values in an inline mapping (`rest_cherrypy: {password: ...}`), every line of a multi-line value, every item of a list or mapping under a credential key, commented-out ones, the lines that belong to a credential's value in a file that isn't valid YAML, a value given under another name with a YAML anchor, and any credential of six characters or more wherever else the same text turns up; also the keys `sk`, `psk`, `keyid`, `hook`, `webhook`, `authorization` and `bearer`. A value starting with `/` is only taken for a file path, and shown, when the file or its directory exists; `sdb://` references stay readable, and lines keep their numbers
+- Write `salt-radar.toml` readable by its owner only while it holds the salt-api password (`stats_auth_password`), and show that password as `••••••••` in the Config Editor, also while typing it
+- Start the event listener again when it fails or the master's event publisher goes away, every few seconds, and say `no events, reconnecting` in the status bar for as long as it's down. It was started once and never again, so after one failure Events, Live Jobs, Pulse and the sniffer stayed frozen with nothing on screen saying why (#204)
+- Keep the agent's error output off the screen: a traceback or a Salt warning from the agent was printed over the TUI. Its last line now shows in the status bar when the agent goes down, which also shows errors such as a wrong `python_bin`. Commands sent while the agent can't be started are dropped instead of piling up (#203, #209)
+- Say when `salt-radar.toml` can't be loaded (a typo, a value of the wrong type), with the line, instead of silently starting with the defaults, and don't save over it: a hotkey toggle or a Config Editor save then replaced the file with those defaults. Numbers too large for the file are refused in the Config Editor (#205)
+- Say in the status bar when a saved `python_bin`, `agent_path` or `master_config` only takes effect at the next start (#209)
+- Count the `[refresh]` intervals in seconds: `dashboard_secs`, `config_secs` and the polls without a setting counted ticks, so with the default 2 s tick everything ran at half the configured rate. `minions_secs`, which nothing used, now sets how often the minion list and which minions have checked in are refreshed; Live Jobs keeps jobs for an hour, which followed `config_secs` (#206)
+- Keep the buffer sizes (`[events] buffer_size`, `sniffer_buffer_size`, `[api] stats_window`, `log_cap`) in a sensible range, and apply a smaller size from the Config Editor at once. `buffer_size = 0` kept only the newest event, and a very large size made salt-radar abort at startup (#208)
+- Find each minion's part of a Job Detail lookup without a copy of Salt's output and a map of every character back to it, which took around a GB for a job on thousands of minions (#207); scroll Job Detail and the Event Sniffer past 65,535 lines, where they jumped back to the top (#209)
+- Show a job published before salt-radar started as the master job it is in Live Jobs, instead of a `local` (salt-call) job of the minion that returned first: its function, target, targeted minions and earlier returns are read from the job cache
+- Give a job's arguments rows of their own in Job Detail's header (up to 4, then `…`), instead of one line that pushed the target, start time and return counts off screen for a long command
+- Show a setting's running value in the Master Config tab when the running master holds it as `None`, which was taken for missing (#202)
+- Count only Salt's own processes on the Dashboard, where a command that only named a daemon, such as `journalctl -u salt-master`, counted as a master process, and use the system's page size for process memory; keep the service list when systemd reports a service without a main process, and read a service's uptime when its process name contains `)` (#209)
+- Log in to salt-api again when its password changed instead of reusing the token cached for the old one, and read the key list through Salt when the PKI directory can't be read (#209)
 
 ## [0.10.1] - 2026-10-30
 
