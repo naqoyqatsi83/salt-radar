@@ -14,7 +14,7 @@ use super::table::pad;
 
 /// Below this many columns inside the families panel, the last-15-minutes
 /// columns are left out.
-const RECENT_MIN_WIDTH: usize = 80;
+const RECENT_MIN_WIDTH: usize = 84;
 
 pub fn fmt_count(n: u64) -> String {
     match n {
@@ -144,14 +144,14 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Vec<(u1
 
     let width = inner.width as usize;
     let recent = width >= RECENT_MIN_WIDTH;
-    let fixed = 2 + 8 + 9 + 8 + if recent { 9 + 8 } else { 0 } + 9 + 7;
+    let fixed = 2 + 8 + 9 + 10 + if recent { 9 + 10 } else { 0 } + 9 + 7;
     let longest = rows.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
     let name_w = width.saturating_sub(fixed).min(longest.max(20) + 2).max(8);
     let per_minion = |per_hour: f64| if minions > 0 { fmt_rate(per_hour / minions as f64) } else { "\u{2014}".to_string() };
 
-    let mut group_line = vec![Span::raw(" ".repeat(2 + name_w)), Span::styled(pad("since start", 25, false), dim())];
+    let mut group_line = vec![Span::raw(" ".repeat(2 + name_w)), Span::styled(pad("since start", 27, false), dim())];
     if recent {
-        group_line.push(Span::styled(pad(&format!("last {}m", RECENT_MINUTES), 17, false), dim()));
+        group_line.push(Span::styled(pad(&format!("last {}m", RECENT_MINUTES), 19, false), dim()));
     }
     group_line.push(Span::styled("interval", dim()));
     let mut head = vec![
@@ -159,11 +159,11 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Vec<(u1
         Span::styled(pad("family", name_w, false), header()),
         Span::styled(pad("count", 8, true), header()),
         Span::styled(pad("/h", 9, true), header()),
-        Span::styled(pad("/h/min", 8, true), header()),
+        Span::styled(pad("/h/minion", 10, true), header()),
     ];
     if recent {
         head.push(Span::styled(pad("/h", 9, true), header()));
-        head.push(Span::styled(pad("/h/min", 8, true), header()));
+        head.push(Span::styled(pad("/h/minion", 10, true), header()));
     }
     head.push(Span::styled(pad("median", 9, true), header()));
     let mut lines = vec![Line::from(group_line), Line::from(head)];
@@ -178,12 +178,12 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Vec<(u1
             Span::styled(pad(name, name_w, false), Style::default().fg(if quiet { color::inactive_fg() } else { color::cyan() })),
             Span::styled(pad(&fmt_count(fam.count), 8, true), num),
             Span::styled(pad(&fmt_rate(per_hour), 9, true), num),
-            Span::styled(pad(&per_minion(per_hour), 8, true), num),
+            Span::styled(pad(&per_minion(per_hour), 10, true), num),
         ];
         if recent {
             let recent_hour = stats.recent_per_hour(fam, now);
             row.push(Span::styled(pad(&fmt_rate(recent_hour), 9, true), num));
-            row.push(Span::styled(pad(&per_minion(recent_hour), 8, true), num));
+            row.push(Span::styled(pad(&per_minion(recent_hour), 10, true), num));
         }
         let median = fam.median_interval();
         row.push(Span::styled(pad(&median.map_or("\u{2014}".to_string(), fmt_interval), 9, true), num));
@@ -215,7 +215,7 @@ fn draw_breakdown(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::
     let by_minion = app.stats_grouping == Grouping::Minion;
     let width = inner.width as usize;
     let bar_w = width.saturating_sub(70).min(20);
-    let fixed = 2 + if by_minion { 0 } else { 9 } + 9 + if by_minion { 0 } else { 8 } + 8 + bar_w;
+    let fixed = 2 + if by_minion { 0 } else { 9 } + 9 + if by_minion { 0 } else { 10 } + 8 + bar_w;
     let label_w = groups.iter().map(|g| g.label.chars().count()).max().unwrap_or(0);
     let longest = groups.iter().map(|g| label_w + 1 + g.detail.chars().count()).max().unwrap_or(0);
     let name_w = width.saturating_sub(fixed).min(longest.max(20) + 2).max(8);
@@ -227,7 +227,7 @@ fn draw_breakdown(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::
     }
     head.push(Span::styled(pad("/h", 9, true), header()));
     if !by_minion {
-        head.push(Span::styled(pad("/h/min", 8, true), header()));
+        head.push(Span::styled(pad("/h/minion", 10, true), header()));
     }
     head.push(Span::styled(pad("share", 8, true), header()));
     let mut lines = vec![Line::from(head)];
@@ -246,7 +246,7 @@ fn draw_breakdown(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::
         row.push(Span::styled(pad(&fmt_rate(per_hour), 9, true), num));
         if !by_minion {
             let per_minion = if g.minions > 0 { fmt_rate(per_hour / g.minions as f64) } else { "\u{2014}".to_string() };
-            row.push(Span::styled(pad(&per_minion, 8, true), num));
+            row.push(Span::styled(pad(&per_minion, 10, true), num));
         }
         row.push(Span::styled(pad(&format!("{:.1}%", share * 100.0), 8, true), num));
         if bar_w > 0 && g.events > 0 {
