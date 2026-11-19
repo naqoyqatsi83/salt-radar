@@ -1387,6 +1387,29 @@ fn keys_help_lines() -> Vec<Line<'static>> {
 
 /// The help Guide page: the syntax of filters, searches and the sniffer,
 /// then notes on what some panels show.
+fn stats_help_lines() -> Vec<Line<'static>> {
+    let row = |term: &'static str, text: &'static str| Line::from(vec![
+        Span::styled(format!("  {}", term), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  {}", text), Style::default().fg(color::main_fg())),
+    ]);
+    vec![
+        Line::from(""),
+        Line::from(Span::styled("  Stats tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        row("window", "rates since salt-radar started or the last X reset; the header says how long"),
+        row("/h/min", "events per hour per minion (accepted keys), to compare masters of any size"),
+        row("last 15m", "the same rates over the last 15 minutes, what's happening now (from 80 columns)"),
+        row("median", "time between two events of the family from the same minion"),
+        row("\u{27F3}", "the events come at regular intervals: most within 10% of the median"),
+        row("\u{25CC} low", "the window is shorter than twice the interval: the rate can still move a lot"),
+        row("<jid>", "the event Salt fires with a new job's bare JID as its tag"),
+        row("minion/refresh/*", "one per pillar render a minion asked for (start, refresh, state run)"),
+        row("MWorkers busy", "running, or waiting for a process they started (gpg decrypting pillar),"),
+        row("", "  which takes no CPU of their own; the Dashboard and alerts average it over a minute"),
+        row("Subprocess CPU", "CPU of the processes the workers ran and waited for, counted when they end"),
+        row("X", "starts a new window after asking; only y confirms"),
+    ]
+}
+
 fn guide_help_lines() -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled("  Guide", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
@@ -1420,6 +1443,9 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  Timed out", Style::default().fg(color::red()).add_modifier(Modifier::BOLD)),
             Span::styled("  flagged unresponsive by fleet-scan/staleness tracking", Style::default().fg(color::main_fg())),
         ]),
+    ]);
+    lines.extend(stats_help_lines());
+    lines.extend([
         Line::from(""),
         Line::from(Span::styled("  API tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![
