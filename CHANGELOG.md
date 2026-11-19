@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc1] - 2026-11-19
+
 ### Added
 
 - Add a Stats tab (`8`) to see which minions make the master work and how hard, and to compare two masters side by side however long salt-radar has run on each: event families (`salt/job/*/ret/*`, `minion_start`, `salt/auth`, …) with their count, rate per hour and per hour per minion since the window started and over the last 15 minutes, and the median interval between two events from the same minion, `⟳` marking a family that arrives at regular intervals; the selected family broken down by Salt version × OS, OS, version or minion (`g`); and the master's load (how many MWorkers are busy, counting those waiting on gpg though they use no CPU, their CPU and memory with its trend, the CPU of the processes they run such as gpg for encrypted pillar, the gpg processes and the ZMQ latency), now, on average and at peak. `X` starts a new window after asking (#211)
