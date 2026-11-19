@@ -13,6 +13,7 @@ pub enum Tab {
     Pulse,
     Api,
     Master,
+    Stats,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,41 +26,32 @@ pub enum SparklineStyle {
 
 
 impl Tab {
-    /// The tab bar, left to right; `1`–`8` follow it.
-    pub const ORDER: [Tab; 8] = [
-        Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Master, Tab::Pulse,
+    /// The tab bar, left to right; `1`–`9` follow it. Pulse stays last.
+    pub const ORDER: [Tab; 9] = [
+        Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Master, Tab::Stats, Tab::Pulse,
     ];
+
+    fn position(self) -> usize {
+        Self::ORDER.iter().position(|&t| t == self).unwrap_or(0)
+    }
 
     /// Its label in the tab bar, number included (` 7 Master Config `).
     pub fn bar_label(self) -> String {
-        let n = Self::ORDER.iter().position(|&t| t == self).unwrap_or(0) + 1;
-        format!(" {} {} ", n, self.label())
+        format!(" {} {} ", self.position() + 1, self.label())
+    }
+
+    /// The tab a digit key jumps to.
+    pub fn from_digit(c: char) -> Option<Self> {
+        let n = c.to_digit(10)? as usize;
+        Self::ORDER.get(n.checked_sub(1)?).copied()
     }
 
     pub fn next(&self) -> Self {
-        match self {
-            Self::Dashboard => Self::Minions,
-            Self::Minions => Self::Events,
-            Self::Events => Self::Jobs,
-            Self::Jobs => Self::Alerts,
-            Self::Alerts => Self::Api,
-            Self::Api => Self::Master,
-            Self::Master => Self::Pulse,
-            Self::Pulse => Self::Dashboard,
-        }
+        Self::ORDER[(self.position() + 1) % Self::ORDER.len()]
     }
 
     pub fn prev(&self) -> Self {
-        match self {
-            Self::Dashboard => Self::Pulse,
-            Self::Pulse => Self::Master,
-            Self::Minions => Self::Dashboard,
-            Self::Events => Self::Minions,
-            Self::Jobs => Self::Events,
-            Self::Alerts => Self::Jobs,
-            Self::Api => Self::Alerts,
-            Self::Master => Self::Api,
-        }
+        Self::ORDER[(self.position() + Self::ORDER.len() - 1) % Self::ORDER.len()]
     }
 
     pub fn label(&self) -> &str {
@@ -72,6 +64,7 @@ impl Tab {
             Self::Pulse => "Pulse",
             Self::Api => "API",
             Self::Master => "Master Config",
+            Self::Stats => "Stats",
         }
     }
 }
@@ -143,6 +136,17 @@ pub struct SaltProcess {
     /// Rust-side from the delta between consecutive polls (see App::prev_proc_cpu).
     #[serde(default)]
     pub cpu_ticks: u64,
+    /// CPU ticks of the children it ran and waited for (cutime+cstime).
+    #[serde(default)]
+    pub child_cpu_ticks: u64,
+    /// Its state letter from /proc (`R` running, `S` sleeping, `D` waiting on I/O).
+    #[serde(default)]
+    pub state: String,
+    /// How many processes it has started that still exist, Salt's own aside.
+    #[serde(default)]
+    pub children: u32,
+    #[serde(default)]
+    pub ppid: u32,
     #[serde(default)]
     pub cpu_percent: f32,
 }

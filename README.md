@@ -51,7 +51,7 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Alerts** — 17 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
+**Alerts** — 18 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
 <img src="docs/screenshots/alerts.png" alt="Alerts tab">
 
 </td>
@@ -155,7 +155,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Always shows full per-state detail (`--state-output=full --state-verbose=True`), regardless of the master's own `state_output`/`state_verbose` defaults — opening the popup is an explicit request to see everything about that one job, even a "terse"/"changes" master would otherwise hide unchanged/no-op states here
 
 ### Alerts
-17 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries). `Enter` opens an alert's detail: severity, rule and the description (wrapped) stay at the top, the affected items (minions, units, jobs) scroll below them, and `/` searches them:
+18 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries). `Enter` opens an alert's detail: severity, rule and the description (wrapped) stay at the top, the affected items (minions, units, jobs) scroll below them, and `/` searches them:
 
 - **Stale minion** — not seen within `stale_minion_secs`
 - **Pending key** — pending longer than `pending_key_secs`
@@ -170,6 +170,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Auth failure** — failed authentication on the ZMQ bus
 - **Stuck job** — dispatched but not fully returned within `job_straggler_secs`
 - **Reauth storm** — auth rate and worker-pool saturation elevated together (`auth_storm_rate_per_sec`, `worker_saturation_pct`)
+- **Workers saturated** — the MWorkers were at least `worker_saturation_pct` busy over the last minute, so minions' requests queue for a free one; critical when all of them were busy the whole minute. A worker counts as busy while it runs or waits for a process it started (gpg decrypting GPG-encrypted pillar), not by its CPU, which stays low while it waits
 - **Pending key churn** — new pending keys arriving faster than `pending_key_churn_per_min`
 - **Service flapping** — a unit restarted more than `service_flap_threshold_24h` times in 24h
 - **Service memory growth** — sustained upward memory slope past `service_mem_growth_mb_per_hour`, independent of flapping
@@ -202,6 +203,16 @@ The master's configuration, as its files set it:
 - **↻ may change on restart** — the setting's value in the files differs from the one the running master holds, so a restart will change it; the title counts them (`↻ 10 on restart`) and `/restart` lists them. The running master's own options are asked of it (the `test.get_opts` runner, sent to the master so it runs in a process forked from its worker, once per master start and salt-radar instance). That's an ordinary runner job: its return, the master's options as loaded, credentials included, goes over the event bus and into the job cache like any other job's return (pillar data in state returns, for one), so whoever can read those -- the job cache's files, salt-api's `/events` stream, an `event_return` or external job cache -- can read it too. salt-radar shows this job of its own in Events, Live Jobs and the Job Cache like any other, as `runner.test.get_opts`; on screen, the return of that runner (whoever ran it) has its credentials redacted like the Master Config tab's values, in the event and in Job Detail, so they don't show up while browsing or sharing the screen. To harden this, set `running_config_digests = true` under `[salt]` (or in the Config Editor): the master is then asked only for a SHA-256 digest of each option (the `salt.cmd` runner rendering a template in its own process), compared with digests of the files' options, so no option value leaves it; ↻ marks the same settings, but the panel can't show what the running master holds. Otherwise the options are compared value by value with the files as Salt loads them, and the panel and the popup show the running value next to why: **changed** after the master started, **restored** (it differs although its files are older than the master: put back with their old time, or edited keeping it), or **removed** from the files while the master still has it. The right panel lists the changed lines themselves, the running master's `−` in red and what a restart would load `+` in green, a `⋯` between changes that aren't next to each other, in up to half the panel (past that, how many more there are); `Enter` opens the whole difference in context: the lines only the running master has marked `−` in red, the ones a restart would load `+` in green, the part of a changed line that differs highlighted, long lines wrapped, and unchanged runs folded to three lines of context around each change (`z` shows them, `n`/`N` jump between changes). A file only touched, or rewritten with the same values, isn't marked. When the master can't be asked (not running, the request refused), ↻ falls back to settings in files changed after the master started, and the title says `(file times only)`. The master's start is taken from the salt-master processes themselves, not from anything mentioning salt-master (a `journalctl -u salt-master -f` left running made the master look older than it was)
 - Credentials are redacted by the agent before they reach the TUI, in the list, the files, the popup and copies: values of keys like `*pass*`, `*password*`, `*secret*`, `*token`, `*_key` — nested ones too (as in `ext_pillar`), every item of a list or mapping under such a key, values in an inline `{...}` mapping, every line of a multi-line or block (`|`) value, and commented-out ones — except flags and what only says where the secret is (a path to an existing file or directory, an `sdb://` reference), and the password or token in any URL, wherever it is (`https://deploy:<redacted>@github.com/...` in `gitfs_remotes`, `ext_pillar` or a comment). The file's lines keep their numbers
 - Read from the files at start, with the config refresh (`config_secs`) and on `r`
+
+### Stats
+Event rates and the master's load, to see which minions make it work and how hard, and to compare two masters side by side (two SSH sessions, one salt-radar on each):
+
+- Everything is a **rate**: events per hour, and per hour per minion, over the window salt-radar has been watching (the header says how long), so a master watched for 4 hours compares with one watched for 30 minutes. The same rates over the last 15 minutes show what's happening now (left out below 80 columns)
+- **Event families** — tags with job IDs, minion IDs and numbers collapsed (`salt/job/*/ret/*`, `salt/minion/*/start`, `minion_start`, `salt/auth`, `minion/refresh/*`, …). The common ones come first in a fixed order, even with no events yet, so two screens line up row by row; `s` sorts by count instead. Each row has the median interval between two events of the family from the same minion: `⟳` marks a family whose events come at regular intervals (a minion restarting every 5 minutes, a schedule), `◌ low` one whose interval is over half the window, so its rate can still move a lot
+- **Breakdown** of the selected family by Salt version × OS, OS, version or single minions (`g`): how many minions the master has in each group, the rate per minion and the group's share. Groups that send none of it are listed too, so a version that stays quiet is part of the comparison
+- **Master load**, now, average and peak over the window: how many MWorkers are tied up out of `worker_threads` (running, or waiting for a process they started, like gpg: a worker waiting on gpg uses no CPU, so it's counted here rather than read from CPU; `⚠ all busy` when none is free), their CPU, their memory and how fast it grows, the CPU of the processes they run and wait for (gpg decrypting GPG-encrypted pillar, `cmd` renderers), how many gpg processes work for the master, and the ZMQ latency the Dashboard shows
+- `X` resets the statistics and starts a new window, after a dialog saying what it discards; only `y` confirms
+- The statistics cover the time this salt-radar has been running; nothing is kept across sessions
 
 ### Pulse
 - Per-minion return activity at a glance: every minion as a dot in a wrapped grid, color- *and* shape-tiered by recency (`●` bright green flash → `•` green → `·` orange → `·` grey → `·` red for timed out) so adjacent tiers stay distinguishable even at a glance
@@ -324,7 +335,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 |-----|--------|
 | `q` | Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once) |
 | `Tab` / `Shift+Tab` | Next / previous tab |
-| `1`–`8` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Pulse) |
+| `1`–`9` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Stats/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Home`/`End` | First/last row |
@@ -367,6 +378,10 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Master Config (popup) | `d` / `n`/`N` / `z` | Full values or the difference / next or previous change / show the unchanged lines |
 | Master Config | `r` | Read the configuration files again |
 | Master Config | `w` | Wrap the long lines of the file and of a ↻ setting's changed lines in the right panel, or cut them at its edge (`master_wrap`) |
+| Stats | `↑`/`↓` | Select an event family; the breakdown below follows it |
+| Stats | `s` | Sort the families by count, or back to the fixed order (the common families first, then by name) |
+| Stats | `g` | Break the selected family down by Salt version × OS, OS, version or single minions |
+| Stats | `X` | Reset the statistics and start a new window (asks first; only `y` confirms) |
 | API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |
 
 ### Config Editor
@@ -418,9 +433,9 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                       salt-radar (Rust TUI)                        │
-├──────────┬────────┬───────┬─────┬───────┬────┬──────────────┬──────┤
-│ Dashboard│ Minions│ Events│ Jobs│ Alerts│ API│ Master Config│ Pulse│
-├──────────┴────────┴───────┴─────┴───────┴────┴──────────────┴──────┤
+├──────────┬────────┬──────┬────┬──────┬───┬─────────────┬─────┬─────┤
+│ Dashboard│ Minions│Events│Jobs│Alerts│API│Master Config│Stats│Pulse│
+├──────────┴────────┴──────┴────┴──────┴───┴─────────────┴─────┴─────┤
 │ detail popups · Config Editor · themes · alert engine              │
 │ collectors: /proc · systemctl · /proc/net/tcp · PKI key dir        │
 └───────────────┬─────────────────────────────────┴──────────────────┘
@@ -495,7 +510,8 @@ src/
 ├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management
 ├── sniff.rs             # Filter and search terms: minion IDs, globs, keywords, /regex/
-├── alerts/              # Alert engine (17 rules: staleness, keys, services, memory, disk, jobs, auth, api)
+├── stats.rs             # Stats tab numbers: event families, rates, master load
+├── alerts/              # Alert engine (18 rules: staleness, keys, services, memory, disk, jobs, auth, api)
 ├── collectors/          # OS-level data collection
 │   ├── keys.rs          # PKI key file parsing
 │   ├── processes.rs     # /proc scanning for salt processes
@@ -511,6 +527,7 @@ src/
     ├── alerts_view.rs   # Alerts tab
     ├── api_view.rs      # API tab
     ├── master_config.rs # Master Config tab
+    ├── stats.rs         # Stats tab
     ├── pulse.rs         # Pulse tab
     ├── table.rs         # Shared table layout: column widths, headers, sort markers
     ├── minion_events.rs # Per-minion event/return history popup

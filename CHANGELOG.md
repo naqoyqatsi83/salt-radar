@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a Stats tab (`8`) to see which minions make the master work and how hard, and to compare two masters side by side however long salt-radar has run on each: event families (`salt/job/*/ret/*`, `minion_start`, `salt/auth`, …) with their count, rate per hour and per hour per minion since the window started and over the last 15 minutes, and the median interval between two events from the same minion, `⟳` marking a family that arrives at regular intervals; the selected family broken down by Salt version × OS, OS, version or minion (`g`); and the master's load (how many MWorkers are busy, counting those waiting on gpg though they use no CPU, their CPU and memory with its trend, the CPU of the processes they run such as gpg for encrypted pillar, the gpg processes and the ZMQ latency), now, on average and at peak. `X` starts a new window after asking (#211)
+
+- Add the "Workers saturated" alert: the MWorkers were at least `worker_saturation_pct` busy over the last minute, critical when all of them were. A load that ties them up needn't come with an auth storm, which the reauth-storm alert also needs
+
+### Changed
+
+- Move Pulse to `9`, so it stays the last tab
+- Count how busy the MWorkers are (the Dashboard's "Workers % busy", `worker_saturation_pct` for the reauth-storm alert) from how many of them are tied up over the last minute instead of from their CPU: a worker waiting for gpg to decrypt pillar uses no CPU, so all of them could be stuck while the figure stayed low. `worker_saturation_pct` now means that share, and also sets when "Workers saturated" fires: if it was lowered with CPU in mind, or a master normally runs that busy, the new alert may show up after upgrading; the Stats tab's "MWorkers busy" row shows the usual level to set it by
+
 ## [0.11.0] - 2026-11-17
 
 ### Added

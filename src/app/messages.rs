@@ -126,6 +126,9 @@ impl App {
                                     self.prev_proc_cpu.insert(p.pid, (p.cpu_ticks, now));
                                 }
                                 self.prev_proc_cpu.retain(|pid, _| seen_pids.contains(pid));
+                                let gpg = data["gpg_processes"].as_u64().unwrap_or(0);
+                                self.stats.load.record_processes(&self.processes, gpg, self.clk_tck, now);
+                                self.record_worker_busy(now);
                             }
                         }
                         "list_services" => {
@@ -416,6 +419,7 @@ impl App {
                 AgentMessage::Event { tag, data, ts, received } => {
                     // Track event breakdown
                     self.event_breakdown.record(&tag);
+                    self.stats.record_event(&tag, data["id"].as_str(), ts, &self.accepted_id_set, Instant::now());
                     if tag.starts_with("salt/auth") {
                         self.auth_events_this_sec += 1;
                     }

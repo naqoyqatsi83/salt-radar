@@ -28,6 +28,9 @@ use crate::types::*;
 const JOB_STATS_WINDOW: usize = 500;
 /// How long a job stays in Live Jobs after it was published.
 const LIVE_JOB_RETENTION_SECS: u64 = 3600;
+/// What `worker_busy_pct` averages over: one poll is a snapshot, and a gpg
+/// call is over in a moment.
+const WORKER_BUSY_WINDOW: Duration = Duration::from_secs(60);
 /// How often the `job_ping` latency source sends its `test.ping`.
 const JOB_PING_EVERY: Duration = Duration::from_secs(15);
 
@@ -171,6 +174,17 @@ pub struct App {
     /// overlay rather than a `detail_popup`, which may hold a popup parked on
     /// another tab.
     pub quit_confirm: bool,
+
+    /// The Stats tab: its numbers, the family selected (by name, so the
+    /// cursor stays on it when sorted by count), the sort and the breakdown.
+    pub stats: crate::stats::Stats,
+    pub stats_family: String,
+    pub stats_by_count: bool,
+    pub stats_grouping: crate::stats::Grouping,
+    /// The "Reset statistics?" prompt `X` opens on the Stats tab.
+    pub stats_reset_confirm: bool,
+    /// Where the last frame drew each family row (screen y, family), for clicks.
+    pub stats_row_hits: Vec<(u16, String)>,
 
     // Admin mode
     pub admin_mode: bool,
@@ -354,6 +368,9 @@ pub struct App {
     /// Where each change starts in the setting popup's difference, for `n`/`N`.
     pub master_popup_changes: Vec<usize>,
 
+    /// Busy MWorkers out of `worker_threads` at each `list_processes` poll of
+    /// the last `WORKER_BUSY_WINDOW` (see `worker_busy_pct`).
+    worker_busy_samples: VecDeque<(Instant, f64)>,
     /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
     /// used to compute cpu_percent from the delta between polls.
     prev_proc_cpu: HashMap<u32, (u64, Instant)>,
@@ -1061,6 +1078,12 @@ impl App {
 
             admin_mode: false,
             quit_confirm: false,
+            stats: crate::stats::Stats::default(),
+            stats_family: crate::stats::CORE_FAMILIES[0].to_string(),
+            stats_by_count: false,
+            stats_grouping: crate::stats::Grouping::default(),
+            stats_reset_confirm: false,
+            stats_row_hits: Vec::new(),
             admin_mode_pending: false,
             fleet_scanning: false,
             fleet_scan_completed: false,
@@ -1137,6 +1160,7 @@ impl App {
             master_popup_scroll_max: 0,
             master_popup_changes: Vec::new(),
             job_outcome_window: VecDeque::new(),
+            worker_busy_samples: VecDeque::new(),
             prev_proc_cpu: HashMap::new(),
             clk_tck: 100.0,
             auth_events_this_sec: 0,
@@ -1827,14 +1851,50 @@ impl App {
     /// Worker pool saturation: sum of Worker-role process CPU%, normalized
     /// against the configured worker_threads count. None until both the
     /// worker_threads config and at least one CPU sample are available.
+    /// Minions the master has: accepted keys, or while those aren't known,
+    /// the minions in its cache. The Stats tab's per-minion rates divide by it.
+    pub fn minion_count(&self) -> usize {
+        if self.accepted_id_set.is_empty() { self.minion_info.len() } else { self.accepted_id_set.len() }
+    }
+
+    /// The Stats tab's families in display order.
+    pub fn stats_rows(&self) -> Vec<(&str, &crate::stats::Family)> {
+        self.stats.rows(self.stats_by_count)
+    }
+
+    /// The selected family broken down as `g` chose.
+    pub fn stats_groups(&self) -> Vec<crate::stats::GroupRow> {
+        self.stats.family(&self.stats_family)
+            .map(|f| crate::stats::group_rows(f, self.stats_grouping, &self.minion_info, &self.minion_index))
+            .unwrap_or_default()
+    }
+
+    /// Moves the Stats cursor `by` rows, clamped to the list.
+    pub(crate) fn move_stats_family(&mut self, by: isize) {
+        let rows = self.stats_rows();
+        let Some(last) = rows.len().checked_sub(1) else { return };
+        let at = rows.iter().position(|(n, _)| *n == self.stats_family).unwrap_or(0);
+        let to = at.saturating_add_signed(by).min(last);
+        self.stats_family = rows[to].0.to_string();
+    }
+
+    /// How busy the MWorkers were over the last minute: the share of
+    /// `worker_threads` tied up, averaged over the polls. Counted from the
+    /// workers' state rather than their CPU, which stays low while they wait
+    /// for gpg to decrypt pillar.
     pub fn worker_busy_pct(&self) -> Option<f64> {
-        let worker_threads = self.config_snapshot.as_ref()?.worker_threads?;
-        if worker_threads <= 0 { return None; }
-        let total_cpu: f64 = self.processes.iter()
-            .filter(|p| p.role == SaltProcessRole::Worker)
-            .map(|p| p.cpu_percent as f64)
-            .sum();
-        Some((total_cpu / (worker_threads as f64 * 100.0) * 100.0).clamp(0.0, 100.0))
+        if self.worker_busy_samples.is_empty() { return None; }
+        let sum: f64 = self.worker_busy_samples.iter().map(|(_, f)| f).sum();
+        Some((sum / self.worker_busy_samples.len() as f64 * 100.0).clamp(0.0, 100.0))
+    }
+
+    pub(crate) fn record_worker_busy(&mut self, now: Instant) {
+        let Some(threads) = self.config_snapshot.as_ref().and_then(|c| c.worker_threads).filter(|&t| t > 0) else { return };
+        let busy = crate::stats::busy_workers(&self.processes);
+        self.worker_busy_samples.push_back((now, busy as f64 / threads as f64));
+        while self.worker_busy_samples.front().is_some_and(|(t, _)| now.saturating_duration_since(*t) > WORKER_BUSY_WINDOW) {
+            self.worker_busy_samples.pop_front();
+        }
     }
 
     /// Count of pending keys whose PKI file mtime is within the last minute.
@@ -1995,7 +2055,7 @@ impl App {
             Tab::Events => Some(TableId::Events),
             Tab::Alerts => Some(TableId::Alerts),
             Tab::Api => Some(TableId::ApiLog),
-            Tab::Dashboard | Tab::Pulse | Tab::Master => None,
+            Tab::Dashboard | Tab::Pulse | Tab::Master | Tab::Stats => None,
         }
     }
 
@@ -2855,6 +2915,10 @@ impl App {
                 self.cpu_mem_samples = self.cpu_mem_samples.saturating_add(1);
             }
 
+            if self.zmq_latency_seen {
+                self.stats.load.record_latency(self.zmq_latency_ms);
+            }
+
             // Header radar animation cycle
             self.header_radar_frame = (self.header_radar_frame + 1) % 4;
         }
@@ -3264,7 +3328,7 @@ fn update_service_trends(trends: &mut HashMap<String, ServiceTrend>, services: &
 
 /// Least-squares slope (units of y per unit of x) over a set of points.
 /// Returns 0.0 for fewer than 2 points or a degenerate (zero-variance) x range.
-fn linreg_slope_per_sec(points: &[(f64, f64)]) -> f64 {
+pub(crate) fn linreg_slope_per_sec(points: &[(f64, f64)]) -> f64 {
     let n = points.len() as f64;
     if n < 2.0 { return 0.0; }
     let sum_x: f64 = points.iter().map(|(x, _)| *x).sum();
@@ -4019,11 +4083,20 @@ mod tests {
     #[test]
     fn tab_bar_clicks_land_on_the_drawn_labels() {
         // As drawn at 160 columns: " 1 Dashboard " at 1..=13, " 6 API " at
-        // 68..=74, " 7 Master Config " at 78..=94, " 8 Pulse " at 98..=106.
+        // 68..=74, " 7 Master Config " at 78..=94, " 8 Stats " at 98..=106,
+        // " 9 Pulse " at 110..=118.
         let at = App::tab_at_col;
         assert_eq!([at(0), at(1), at(13), at(14)], [None, Some(Tab::Dashboard), Some(Tab::Dashboard), None]);
         assert_eq!([at(68), at(74), at(78), at(94), at(98), at(106), at(107)],
-            [Some(Tab::Api), Some(Tab::Api), Some(Tab::Master), Some(Tab::Master), Some(Tab::Pulse), Some(Tab::Pulse), None]);
+            [Some(Tab::Api), Some(Tab::Api), Some(Tab::Master), Some(Tab::Master), Some(Tab::Stats), Some(Tab::Stats), None]);
+        assert_eq!([at(110), at(118), at(119)], [Some(Tab::Pulse), Some(Tab::Pulse), None]);
+    }
+
+    #[test]
+    fn digits_and_tab_follow_the_tab_bar() {
+        assert_eq!([Tab::from_digit('7'), Tab::from_digit('8'), Tab::from_digit('9'), Tab::from_digit('0')],
+            [Some(Tab::Master), Some(Tab::Stats), Some(Tab::Pulse), None]);
+        assert_eq!([Tab::Stats.next(), Tab::Pulse.next(), Tab::Dashboard.prev()], [Tab::Pulse, Tab::Dashboard, Tab::Pulse]);
     }
 
     #[test]

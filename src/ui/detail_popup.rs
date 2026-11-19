@@ -140,6 +140,26 @@ pub fn draw_quit_confirm(f: &mut Frame) {
     render_popup(f, area, &lines, &hints, None, (false, false), 0, 0);
 }
 
+/// The Stats tab's `X`: what a reset discards, and only `y` confirms it.
+pub fn draw_stats_reset_confirm(f: &mut Frame, observed: &str, events: &str) {
+    let screen = f.area();
+    let (width, height) = (50.min(screen.width), 7.min(screen.height));
+    let area = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("  Reset statistics?", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(format!("  Discards {} of data ({} events).", observed, events), Style::default().fg(color::main_fg()))),
+        Line::from(Span::styled("  Any other key cancels.", Style::default().fg(color::inactive_fg()))),
+    ];
+    let hints = [("y", "reset".to_string()), ("Esc/n", "cancel".to_string())];
+    render_popup(f, area, &lines, &hints, None, (false, false), 0, 0);
+}
+
 /// The sniffer isn't a `detail_popup` variant (see its field doc in
 /// `app.rs`) so it gets its own draw entry point instead of a match arm here.
 pub fn draw_sniffer_overlay(f: &mut Frame, app: &App) {

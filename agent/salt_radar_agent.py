@@ -220,8 +220,35 @@ def _salt_program(words):
     return names[0] if names and names[0] in _SALT_DAEMONS else None
 
 
+_GPG_PROGRAMS = ("gpg", "gpg2", "gpg-agent", "keyboxd")
+
+
+def _gpg_keydir(opts):
+    return opts.get("gpg_keydir") or os.path.join(os.path.dirname(opts.get("conf_file") or "/etc/salt/master"), "gpgkeys")
+
+
+def _count_master_gpg(parents, gpg, masters, keydir):
+    """How many gpg processes work for the master: run by one of its
+    processes, or a gpg-agent/keyboxd (which detach from whoever started
+    them) on its key directory. Rendering GPG-encrypted pillar runs one per
+    encrypted value."""
+    count = 0
+    for pid, cmdline in gpg:
+        seen = set()
+        ancestor = parents.get(pid)
+        while ancestor and ancestor not in masters and ancestor not in seen:
+            seen.add(ancestor)
+            ancestor = parents.get(ancestor)
+        if ancestor in masters or keydir in cmdline:
+            count += 1
+    return count
+
+
 def cmd_list_processes(opts, req):
     processes = []
+    parents = {}
+    gpg = []
+    masters = set()
     page_kb = os.sysconf("SC_PAGE_SIZE") // 1024
     # Simple /proc scanner to match Rust implementation
     try:
@@ -247,15 +274,25 @@ def cmd_list_processes(opts, req):
                         rss_kb = int(rest[21]) * page_kb
                         # utime (field 14) + stime (field 15) -> indices 11, 12
                         cpu_ticks = int(rest[11]) + int(rest[12])
+                        # cutime + cstime (fields 16, 17): children it waited for
+                        child_cpu_ticks = int(rest[13]) + int(rest[14])
+                        parents[pid] = int(rest[1])
+                        state = rest[0]
 
+                    words = cmdline.split()
+                    if words and os.path.basename(words[0]) in _GPG_PROGRAMS:
+                        gpg.append((pid, cmdline))
+                        continue
                     # Only Salt's own daemons and their sub-processes (which
                     # keep the daemon in their title: `salt-master
                     # MWorker-0`), not whatever merely names one, such as
                     # `systemctl status salt-master` (this scan walks all of
                     # /proc, not just Salt's PIDs).
-                    program = _salt_program(cmdline.split())
+                    program = _salt_program(words)
                     if program is None:
                         continue
+                    if program == "salt-master":
+                        masters.add(pid)
                     if program == "salt-master" and "MWorker-" in cmdline: role = "Worker"
                     elif program == "salt-master" and "EventPublisher" in cmdline: role = "EventPublisher"
                     elif program == "salt-master" and "ReqServer" in cmdline: role = "ReqServer"
@@ -266,12 +303,29 @@ def cmd_list_processes(opts, req):
                         "role": role,
                         "rss_kb": rss_kb,
                         "cpu_ticks": cpu_ticks,
+                        "child_cpu_ticks": child_cpu_ticks,
+                        "state": state,
+                        "ppid": parents[pid],
                     })
                 except (OSError, IndexError, ValueError):
                     continue
     except OSError:
         pass
-    result(req["id"], "list_processes", data={"processes": processes, "clk_tck": os.sysconf("SC_CLK_TCK")})
+    # A worker waiting for a child (gpg decrypting pillar) is tied up though
+    # it uses no CPU itself. Salt's own forks (a runner a worker started and
+    # doesn't wait for) don't count.
+    salt_pids = {proc["pid"] for proc in processes}
+    children = {}
+    for pid, parent in parents.items():
+        if pid not in salt_pids:
+            children[parent] = children.get(parent, 0) + 1
+    for proc in processes:
+        proc["children"] = children.get(proc["pid"], 0)
+    result(req["id"], "list_processes", data={
+        "processes": processes,
+        "clk_tck": os.sysconf("SC_CLK_TCK"),
+        "gpg_processes": _count_master_gpg(parents, gpg, masters, _gpg_keydir(opts)),
+    })
 
 
 def cmd_list_services(opts, req):

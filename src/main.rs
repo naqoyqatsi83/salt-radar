@@ -3,6 +3,7 @@ mod alerts;
 mod app;
 mod config;
 mod sniff;
+mod stats;
 mod types;
 mod ui;
 

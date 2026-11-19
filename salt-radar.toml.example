@@ -94,7 +94,9 @@
 # combined with worker_saturation_pct also being exceeded)
 # auth_storm_rate_per_sec = 5.0
 
-# Worker pool CPU busy percentage threshold for the "Reauth storm" alert
+# Share of the MWorkers busy over the last minute (running, or waiting for a
+# process they started such as gpg) for the "Workers saturated" alert, and,
+# with the auth rate above, for the "Reauth storm" alert
 # worker_saturation_pct = 85.0
 
 # New pending keys per minute that triggers a "Pending key churn" alert

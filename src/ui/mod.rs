@@ -7,6 +7,7 @@ mod pulse;
 mod master_config;
 mod minion_events;
 mod api_view;
+mod stats;
 mod table;
 mod whats_new;
 
@@ -690,7 +691,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // still overlays/steals focus from the Events tab whenever it's the
     // thing on screen there (i.e. no other Events-tab popup on top of it).
     let sniffer_active = !popup_active && app.current_tab == Tab::Events && app.sniffer.is_some();
-    let tab_focused = !popup_active && !sniffer_active && !app.show_help && app.config_editor.is_none();
+    let tab_focused = !popup_active && !sniffer_active && !app.show_help && app.config_editor.is_none() && !app.stats_reset_confirm;
 
     let mut hits = Vec::new();
     match app.current_tab {
@@ -702,6 +703,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
         Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Master => master_config::draw_master(f, main_layout[1], app, tab_focused),
+        Tab::Stats => app.stats_row_hits = stats::draw_stats(f, main_layout[1], app, tab_focused),
     }
     app.header_hits = hits;
 
@@ -736,6 +738,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.quit_confirm {
         dim_background(f, dim);
         detail_popup::draw_quit_confirm(f);
+    }
+
+    if app.stats_reset_confirm {
+        dim_background(f, dim);
+        let observed = stats::fmt_window(app.stats.observed(std::time::Instant::now()));
+        detail_popup::draw_stats_reset_confirm(f, &observed, &stats::fmt_count(app.stats.total_events()));
     }
 }
 
@@ -1044,6 +1052,10 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 Tab::Pulse => (app.pulse_selected + 1, app.pulse_minions_count()),
                 Tab::Api => (app.api_log_selected + 1, app.filtered_api_log_len()),
                 Tab::Master => (app.master_selected + 1, app.filtered_master_settings().len()),
+                Tab::Stats => {
+                    let rows = app.stats_rows();
+                    (rows.iter().position(|(n, _)| *n == app.stats_family).unwrap_or(0) + 1, rows.len())
+                }
                 _ => (0, 0),
             };
             if total > 0 {
@@ -1082,7 +1094,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ("General", &[
         Shortcut { tab: "", key: "`q`", action: "Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once)" },
         Shortcut { tab: "", key: "`Tab` / `Shift+Tab`", action: "Next / previous tab" },
-        Shortcut { tab: "", key: "`1`–`8`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Pulse)" },
+        Shortcut { tab: "", key: "`1`–`9`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Stats/Pulse)" },
         Shortcut { tab: "", key: "`↑`/`↓`", action: "Scroll / navigate" },
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Page scroll" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last row" },
@@ -1120,6 +1132,10 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Master Config (popup)", key: "`d` / `n`/`N` / `z`", action: "Full values or the difference / next or previous change / show the unchanged lines" },
         Shortcut { tab: "Master Config", key: "`r`", action: "Read the configuration files again" },
         Shortcut { tab: "Master Config", key: "`w`", action: "Wrap the long lines of the file and of a ↻ setting's changed lines in the right panel, or cut them at its edge (`master_wrap`)" },
+        Shortcut { tab: "Stats", key: "`↑`/`↓`", action: "Select an event family; the breakdown below follows it" },
+        Shortcut { tab: "Stats", key: "`s`", action: "Sort the families by count, or back to the fixed order (the common families first, then by name)" },
+        Shortcut { tab: "Stats", key: "`g`", action: "Break the selected family down by Salt version × OS, OS, version or single minions" },
+        Shortcut { tab: "Stats", key: "`X`", action: "Reset the statistics and start a new window (asks first; only `y` confirms)" },
         Shortcut { tab: "API", key: "`x`", action: "Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`)" },
     ]),
     ("Config Editor", &[
