@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc3] - 2026-11-19
+
 ### Changed
 
 - Head the Stats tab's per-minion columns `/h/minion` instead of `/h/min`, which read like per minute
