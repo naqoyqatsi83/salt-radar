@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc2] - 2026-11-19
+
 ### Added
 
 - Explain the Stats tab's columns and markers in the help's Guide page (`?`, then `Tab`): the window, per-minion rates, the median interval, `⟳` and `◌ low`, which events count pillar renders, and how busy MWorkers are counted
