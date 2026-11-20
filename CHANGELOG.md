@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc5] - 2026-11-20
+
+### Added
+
+- Open the Stats tab's breakdown full-screen with `Enter` on a family, to go through all of its groups however many minions the master has: move with `↑`/`↓`, `PgUp`/`PgDn`, `Home`/`End` or the mouse, filter with `/`, narrow it to a group's minions with `Enter` (e.g. which Windows minions on 3006.9 send the start events) and open a minion's detail from there; `Esc` steps back. Its title says how many minions sent the family at all
+
+### Changed
+
+- End the Stats tab's breakdown preview with a row summing up the groups it has no room for (how many, their rate and share) instead of a "more below" marker that nothing could scroll to
+
 ## [0.12.0-rc4] - 2026-11-20
 
 ### Fixed
