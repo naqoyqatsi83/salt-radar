@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc4] - 2026-11-20
+
 ### Fixed
 
 - Mark the Stats tab's periodic families with `↻` instead of `⟳`, which Windows terminals such as MobaXterm showed as a box: neither Consolas nor the fonts Windows falls back to for it have the character
