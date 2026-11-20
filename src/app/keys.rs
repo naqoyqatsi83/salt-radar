@@ -1344,7 +1344,9 @@ impl App {
             }
             KeyCode::Char('g') | KeyCode::Char('G') if self.current_tab == Tab::Stats => {
                 self.stats_grouping = self.stats_grouping.next();
+                self.stats_group = None;
             }
+            KeyCode::Esc if self.current_tab == Tab::Stats => self.stats_back(),
             KeyCode::Char('z') | KeyCode::Char('Z') => {
                 if self.current_tab == Tab::Minions {
                     self.timed_out_collapsed = !self.timed_out_collapsed;
@@ -1456,7 +1458,7 @@ impl App {
                 self.save_toggles();
             }
             KeyCode::Char('/') => {
-                if matches!(self.current_tab, Tab::Dashboard | Tab::Pulse | Tab::Stats) {
+                if matches!(self.current_tab, Tab::Dashboard | Tab::Pulse) || (self.current_tab == Tab::Stats && !self.stats_drill) {
                     // Nothing to filter on these tabs
                 } else if self.current_tab == Tab::Jobs {
                     if self.cache_focus {
@@ -1680,6 +1682,7 @@ impl App {
         // Content area height = h-4 (title/tab frame + status bar).
         // Inner panel height = (h-4) - 2 (block top/bottom borders) = h-6.
         let inner_h = h.saturating_sub(6);
+        let mut clicked_row = true;
 
         match self.current_tab {
             Tab::Minions => {
@@ -1864,14 +1867,22 @@ impl App {
                 }
             }
             Tab::Stats => {
-                if let Some(name) = self.stats_row_hits.iter().find(|(y, _)| *y == row).map(|(_, n)| n.clone()) {
-                    self.stats_family = name;
+                if self.stats_drill {
+                    match self.stats_group_hits.iter().find(|(y, _)| *y == row) {
+                        Some(&(_, i)) => self.select_stats_group(i),
+                        None => clicked_row = false,
+                    }
+                } else {
+                    match self.stats_row_hits.iter().find(|(y, _)| *y == row).map(|(_, n)| n.clone()) {
+                        Some(name) => self.stats_family = name,
+                        None => clicked_row = false,
+                    }
                 }
             }
             Tab::Dashboard => {}
         }
 
-        if !matches!(self.current_tab, Tab::Dashboard | Tab::Pulse | Tab::Stats) {
+        if !matches!(self.current_tab, Tab::Dashboard | Tab::Pulse) && clicked_row {
             if self.register_click(col, row) {
                 self.open_detail();
             }
@@ -2112,7 +2123,7 @@ impl App {
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
             Tab::Api => self.api_log_selected = self.api_log_selected.saturating_sub(1),
             Tab::Master => self.master_selected = self.master_selected.saturating_sub(1),
-            Tab::Stats => self.move_stats_family(-1),
+            Tab::Stats => self.move_stats(-1),
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_sub(1).min(max);
@@ -2142,7 +2153,7 @@ impl App {
                 let max = self.filtered_master_settings().len().saturating_sub(1);
                 self.master_selected = (self.master_selected + 1).min(max);
             }
-            Tab::Stats => self.move_stats_family(1),
+            Tab::Stats => self.move_stats(1),
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_add(1).min(max);
@@ -2169,7 +2180,7 @@ impl App {
             Tab::Alerts => self.alert_selected = 0,
             Tab::Api => self.api_log_selected = 0,
             Tab::Master => self.master_selected = 0,
-            Tab::Stats => self.move_stats_family(isize::MIN),
+            Tab::Stats => self.move_stats(isize::MIN),
             Tab::Pulse => self.pulse_selected = 0,
             _ => {}
         }
@@ -2194,13 +2205,22 @@ impl App {
             Tab::Api => self.api_log_selected = self.filtered_api_log_len().saturating_sub(1),
             Tab::Master => self.master_selected = self.filtered_master_settings().len().saturating_sub(1),
             Tab::Pulse => self.pulse_selected = self.pulse_minions_count().saturating_sub(1),
-            Tab::Stats => self.move_stats_family(isize::MAX),
+            Tab::Stats => self.move_stats(isize::MAX),
             _ => {}
+        }
+    }
+
+    fn move_stats(&mut self, by: isize) {
+        if self.stats_drill {
+            self.move_stats_group(by);
+        } else {
+            self.move_stats_family(by);
         }
     }
 
     pub(crate) fn open_detail(&mut self) {
         match self.current_tab {
+            Tab::Stats => self.stats_enter(),
             Tab::Events => {
                 self.return_to_minion_events = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {

@@ -400,22 +400,49 @@ fn or_unknown(s: &str) -> &str {
     if s.is_empty() { "?" } else { s }
 }
 
-/// The selected family broken down by `grouping`, busiest first. Groups
-/// whose minions sent none of its events are listed too: a version that
-/// stays quiet is half of the comparison.
-pub fn group_rows(family: &Family, grouping: Grouping, minions: &[MinionInfo], index: &HashMap<String, usize>) -> Vec<GroupRow> {
-    let key = |m: &MinionInfo| -> (String, String) {
-        match grouping {
-            Grouping::VersionOs => (or_unknown(&m.salt_version).to_string(), or_unknown(&m.os_label()).to_string()),
-            Grouping::Os => (or_unknown(&m.os_label()).to_string(), String::new()),
-            Grouping::Version => (or_unknown(&m.salt_version).to_string(), String::new()),
-            Grouping::Minion => (m.id.clone(), format!("{} {}", or_unknown(&m.salt_version), m.os_label()).trim_end().to_string()),
-        }
-    };
+/// The minions one breakdown group stands for: the breakdown narrowed to
+/// them after `Enter` on their row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scope {
+    pub grouping: Grouping,
+    pub label: String,
+    pub detail: String,
+}
+
+impl Scope {
+    pub fn of(grouping: Grouping, row: &GroupRow) -> Self {
+        Self { grouping, label: row.label.clone(), detail: row.detail.clone() }
+    }
+
+    pub fn title(&self) -> String {
+        if self.detail.is_empty() { self.label.clone() } else { format!("{} {}", self.label, self.detail) }
+    }
+}
+
+fn group_key(m: &MinionInfo, grouping: Grouping) -> (String, String) {
+    match grouping {
+        Grouping::VersionOs => (or_unknown(&m.salt_version).to_string(), or_unknown(&m.os_label()).to_string()),
+        Grouping::Os => (or_unknown(&m.os_label()).to_string(), String::new()),
+        Grouping::Version => (or_unknown(&m.salt_version).to_string(), String::new()),
+        Grouping::Minion => (m.id.clone(), format!("{} {}", or_unknown(&m.salt_version), m.os_label()).trim_end().to_string()),
+    }
+}
+
+/// The selected family broken down by `grouping`, busiest first, over the
+/// minions in every one of `scopes`. Groups whose minions sent
+/// none of its events are listed too: a version that stays quiet is half of
+/// the comparison.
+pub fn group_rows(family: &Family, grouping: Grouping, scopes: &[Scope], minions: &[MinionInfo], index: &HashMap<String, usize>) -> Vec<GroupRow> {
+    let unknown = || (UNKNOWN_MINION.to_string(), String::new());
+    let in_scope = |m: Option<&MinionInfo>| scopes.iter().all(|s| {
+        let key = m.map_or_else(unknown, |m| group_key(m, s.grouping));
+        key.0 == s.label && key.1 == s.detail
+    });
+    let cached = |id: &str| index.get(id).and_then(|&i| minions.get(i));
     let mut rows: Vec<GroupRow> = Vec::new();
     if grouping == Grouping::Minion {
-        rows = family.minions.iter().map(|(id, pm)| {
-            let detail = index.get(id).and_then(|&i| minions.get(i)).map(|m| key(m).1).unwrap_or_else(|| UNKNOWN_MINION.to_string());
+        rows = family.minions.iter().filter(|(id, _)| in_scope(cached(id))).map(|(id, pm)| {
+            let detail = cached(id).map(|m| group_key(m, grouping).1).unwrap_or_else(|| UNKNOWN_MINION.to_string());
             GroupRow { label: id.clone(), detail, minions: 1, events: pm.count }
         }).collect();
     } else {
@@ -426,17 +453,16 @@ pub fn group_rows(family: &Family, grouping: Grouping, minions: &[MinionInfo], i
                 rows.len() - 1
             })
         };
-        for m in minions {
-            let i = slot(&mut rows, key(m));
+        for m in minions.iter().filter(|m| in_scope(Some(m))) {
+            let i = slot(&mut rows, group_key(m, grouping));
             rows[i].minions += 1;
         }
-        for (id, pm) in &family.minions {
-            let k = index.get(id).and_then(|&i| minions.get(i)).map(key).unwrap_or_else(|| (UNKNOWN_MINION.to_string(), String::new()));
-            let i = slot(&mut rows, k);
+        for (id, pm) in family.minions.iter().filter(|(id, _)| in_scope(cached(id))) {
+            let i = slot(&mut rows, cached(id).map_or_else(unknown, |m| group_key(m, grouping)));
             rows[i].events += pm.count;
         }
     }
-    if family.unattributed > 0 {
+    if family.unattributed > 0 && scopes.is_empty() {
         rows.push(GroupRow { label: NO_MINION.to_string(), detail: String::new(), minions: 0, events: family.unattributed });
     }
     rows.sort_by(|a, b| b.events.cmp(&a.events).then(b.minions.cmp(&a.minions)).then_with(|| a.label.cmp(&b.label)));
@@ -524,7 +550,7 @@ mod tests {
             }
         }
         f.record(None, 1.0, 0);
-        let rows = group_rows(&f, Grouping::VersionOs, &minions, &index);
+        let rows = group_rows(&f, Grouping::VersionOs, &[], &minions, &index);
         let row = |label: &str, detail: &str, minions, events| GroupRow { label: label.into(), detail: detail.into(), minions, events };
         assert_eq!(rows, vec![
             row("3006.9", "Windows-2022", 2, 5),
@@ -532,8 +558,15 @@ mod tests {
             row(UNKNOWN_MINION, "", 0, 1),
             row("3007.1", "Rocky-9", 1, 0),
         ]);
-        let by_minion = group_rows(&f, Grouping::Minion, &minions, &index);
+        let by_minion = group_rows(&f, Grouping::Minion, &[], &minions, &index);
         assert_eq!(by_minion[0], row("a", "3006.9 Windows-2022", 1, 3));
+        let windows = Scope::of(Grouping::VersionOs, &rows[0]);
+        let scoped: Vec<String> = group_rows(&f, Grouping::Minion, std::slice::from_ref(&windows), &minions, &index).into_iter().map(|r| r.label).collect();
+        assert_eq!(scoped.len(), 2);
+        assert!(scoped.contains(&"a".to_string()) && scoped.contains(&"b".to_string()));
+        assert_eq!(group_rows(&f, Grouping::Os, std::slice::from_ref(&windows), &minions, &index), vec![row("Windows-2022", "", 2, 5)]);
+        let ghosts = Scope::of(Grouping::VersionOs, &rows[2]);
+        assert_eq!(group_rows(&f, Grouping::Minion, &[ghosts], &minions, &index), vec![row("ghost", UNKNOWN_MINION, 1, 1)]);
     }
 
     #[test]

@@ -185,6 +185,16 @@ pub struct App {
     pub stats_reset_confirm: bool,
     /// Where the last frame drew each family row (screen y, family), for clicks.
     pub stats_row_hits: Vec<(u16, String)>,
+    /// The breakdown opened full-screen (`Enter` on a family): the group
+    /// under its cursor (by label and detail, so it stays on it as the rates
+    /// reorder the rows; the first one when unset), the groups it was
+    /// narrowed to (`Enter` on a group, `Esc` steps back), its filter and
+    /// where the last frame drew its rows.
+    pub stats_drill: bool,
+    pub stats_group: Option<(String, String)>,
+    pub stats_scopes: Vec<crate::stats::Scope>,
+    pub stats_filter: String,
+    pub stats_group_hits: Vec<(u16, usize)>,
 
     // Admin mode
     pub admin_mode: bool,
@@ -1084,6 +1094,11 @@ impl App {
             stats_grouping: crate::stats::Grouping::default(),
             stats_reset_confirm: false,
             stats_row_hits: Vec::new(),
+            stats_drill: false,
+            stats_group: None,
+            stats_scopes: Vec::new(),
+            stats_filter: String::new(),
+            stats_group_hits: Vec::new(),
             admin_mode_pending: false,
             fleet_scanning: false,
             fleet_scan_completed: false,
@@ -1555,6 +1570,7 @@ impl App {
             Tab::Alerts => &self.alerts_filter,
             Tab::Api => &self.api_filter,
             Tab::Master => &self.master_filter,
+            Tab::Stats => &self.stats_filter,
             _ => &self.filter_text,
         }
     }
@@ -1570,6 +1586,7 @@ impl App {
             Tab::Alerts => self.alerts_filter = text.to_string(),
             Tab::Api => self.api_filter = text.to_string(),
             Tab::Master => self.master_filter = text.to_string(),
+            Tab::Stats => self.stats_filter = text.to_string(),
             _ => {}
         }
     }
@@ -1862,11 +1879,71 @@ impl App {
         self.stats.rows(self.stats_by_count)
     }
 
-    /// The selected family broken down as `g` chose.
+    /// The selected family broken down as `g` chose, narrowed to the
+    /// breakdown's groups and filter.
     pub fn stats_groups(&self) -> Vec<crate::stats::GroupRow> {
-        self.stats.family(&self.stats_family)
-            .map(|f| crate::stats::group_rows(f, self.stats_grouping, &self.minion_info, &self.minion_index))
-            .unwrap_or_default()
+        let Some(family) = self.stats.family(&self.stats_family) else { return Vec::new() };
+        let mut rows = crate::stats::group_rows(family, self.stats_grouping, &self.stats_scopes, &self.minion_info, &self.minion_index);
+        let terms = Self::filter_terms(self.filter_text_for(Tab::Stats));
+        if !terms.is_empty() {
+            rows.retain(|g| terms.iter().any(|t| Self::matches_filter(&g.label, t) || Self::matches_filter(&g.detail, t)));
+        }
+        rows
+    }
+
+    /// Where the breakdown's cursor is among `groups`.
+    pub fn stats_group_index(&self, groups: &[crate::stats::GroupRow]) -> usize {
+        self.stats_group.as_ref()
+            .and_then(|(label, detail)| groups.iter().position(|g| &g.label == label && &g.detail == detail))
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn select_stats_group(&mut self, row: usize) {
+        self.stats_group = self.stats_groups().get(row).map(|g| (g.label.clone(), g.detail.clone()));
+    }
+
+    pub(crate) fn move_stats_group(&mut self, by: isize) {
+        let groups = self.stats_groups();
+        let Some(last) = groups.len().checked_sub(1) else { return };
+        let to = self.stats_group_index(&groups).saturating_add_signed(by).min(last);
+        self.stats_group = Some((groups[to].label.clone(), groups[to].detail.clone()));
+    }
+
+    /// `Enter` on the Stats tab: a family opens its breakdown, a group of
+    /// minions narrows the breakdown to them, a minion opens its detail.
+    pub(crate) fn stats_enter(&mut self) {
+        if !self.stats_drill {
+            self.stats_drill = true;
+            self.stats_group = None;
+            return;
+        }
+        let groups = self.stats_groups();
+        let at = self.stats_group_index(&groups);
+        let Some(row) = groups.into_iter().nth(at) else { return };
+        if self.stats_grouping == crate::stats::Grouping::Minion {
+            if self.minion_index.contains_key(&row.label) {
+                self.detail_popup = Some(DetailPopup::Minion(row.label, PingState::Idle, None, 0));
+                self.popup_tab = Some(Tab::Stats);
+            }
+        } else if row.label != crate::stats::NO_MINION {
+            self.stats_scopes.push(crate::stats::Scope::of(self.stats_grouping, &row));
+            self.stats_grouping = crate::stats::Grouping::Minion;
+            self.stats_filter.clear();
+            self.stats_group = None;
+        }
+    }
+
+    /// `Esc` on the Stats tab: clears the breakdown's filter, then goes back
+    /// to the group it was narrowed from, then to the families.
+    pub(crate) fn stats_back(&mut self) {
+        if !self.stats_filter.is_empty() {
+            self.stats_filter.clear();
+        } else if let Some(scope) = self.stats_scopes.pop() {
+            self.stats_grouping = scope.grouping;
+            self.stats_group = Some((scope.label, scope.detail));
+        } else {
+            self.stats_drill = false;
+        }
     }
 
     /// Moves the Stats cursor `by` rows, clamped to the list.

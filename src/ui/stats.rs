@@ -92,10 +92,20 @@ fn border(focused: bool) -> Style {
     Style::default().fg(if focused { color::border_focus() } else { color::border() })
 }
 
+/// Where the Stats tab drew its rows, for clicks: the families, or the
+/// breakdown's groups while it's open full-screen.
+pub struct StatsHits {
+    pub families: Vec<(u16, String)>,
+    pub groups: Vec<(u16, usize)>,
+}
+
 /// The Stats tab: event families, the selected one's breakdown, the
-/// master's load. Returns where each family row was drawn, for clicks.
-pub fn draw_stats(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Vec<(u16, String)> {
+/// master's load; or the breakdown alone once `Enter` opened it.
+pub fn draw_stats(f: &mut Frame, area: Rect, app: &App, focused: bool) -> StatsHits {
     let groups = app.stats_groups();
+    if app.stats_drill {
+        return StatsHits { families: Vec::new(), groups: draw_groups(f, area, app, &groups, true, focused) };
+    }
     // The families keep at least 8 rows; the breakdown gets what they don't
     // need, at least 8 rows of its own when there's room.
     let spare = area.height.saturating_sub(8);
@@ -107,12 +117,12 @@ pub fn draw_stats(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Vec<(u
     let [families, breakdown, load] = Layout::vertical([Constraint::Min(0), Constraint::Length(group_h), Constraint::Length(load_h)]).areas(area);
     let hits = draw_families(f, families, app, focused);
     if group_h > 0 {
-        draw_breakdown(f, breakdown, app, &groups);
+        draw_groups(f, breakdown, app, &groups, false, false);
     }
     if load_h > 0 {
         draw_load(f, load, app);
     }
-    hits
+    StatsHits { families: hits, groups: Vec::new() }
 }
 
 fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Vec<(u16, String)> {
@@ -134,6 +144,7 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Vec<(u1
     let (scroll, more_above, more_below) = super::scroll_window(selected, visible, rows.len());
     let hints = [
         ("\u{2191}\u{2193}", "family".to_string()),
+        ("Enter", "breakdown".to_string()),
         ("s", if app.stats_by_count { "fixed order" } else { "sort by count" }.to_string()),
         ("g", "group".to_string()),
         ("X", "reset".to_string()),
@@ -201,18 +212,54 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Vec<(u1
     hits
 }
 
-fn draw_breakdown(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::GroupRow]) {
+/// The selected family's breakdown: a preview below the families, cut
+/// short with a row summing up the rest, or (`drill`) the whole tab with a
+/// cursor, a filter and the groups it was narrowed to in the title.
+/// Returns where each group row was drawn.
+fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::GroupRow], drill: bool, focused: bool) -> Vec<(u16, usize)> {
     let now = Instant::now();
     let stats = &app.stats;
-    let total = stats.family(&app.stats_family).map_or(0, |fam| fam.count);
-    let visible = (area.height as usize).saturating_sub(3);
-    let title = format!(" By {} \u{00B7} {} ", app.stats_grouping.label(), app.stats_family);
-    let hints = [("g", "group".to_string())];
-    let block = super::list_block_hinted(title, border(false), color::main_bg(), false, groups.len() > visible, &hints, area.width);
+    let family = stats.family(&app.stats_family);
+    let total = family.map_or(0, |fam| fam.count);
+    let by_minion = app.stats_grouping == Grouping::Minion;
+    let filter = app.filter_text_for(crate::types::Tab::Stats);
+    let filter_bar = if drill { super::filter_bar(filter, app.is_filtering, app.input_cursor, format!("{} rows", groups.len()), true) } else { None };
+    let note = if total == 0 {
+        Some("  No events of this family yet.")
+    } else if groups.is_empty() {
+        Some("  Nothing matches the filter.")
+    } else {
+        None
+    };
+    let overhead = 3 + usize::from(filter_bar.is_some()) + usize::from(note.is_some());
+    let visible = (area.height as usize).saturating_sub(overhead);
+    let selected = app.stats_group_index(groups);
+    let (scroll, more_above, more_below) = if drill { super::scroll_window(selected, visible, groups.len()) } else { (0, false, false) };
+
+    let mut path = vec![app.stats_family.clone()];
+    if drill {
+        path.extend(app.stats_scopes.iter().map(|s| s.title()));
+    }
+    let mut title = format!(" {} \u{203A} by {} ", path.join(" \u{203A} "), app.stats_grouping.label());
+    if drill && app.stats_scopes.is_empty() {
+        let sent = family.map_or(0, |fam| fam.minions.len());
+        title.push_str(&format!("\u{00B7} {} of {} minions sent it ", sent, app.minion_count()));
+    }
+    let hints: Vec<(&str, String)> = if drill {
+        vec![
+            ("\u{2191}\u{2193}", "row".to_string()),
+            ("Enter", if by_minion { "detail" } else { "its minions" }.to_string()),
+            ("g", "group".to_string()),
+            ("/", "filter".to_string()),
+            ("Esc", "back".to_string()),
+        ]
+    } else {
+        vec![("g", "group".to_string())]
+    };
+    let block = super::list_block_hinted(title, border(drill && focused), color::main_bg(), more_above, more_below, &hints, area.width);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let by_minion = app.stats_grouping == Grouping::Minion;
     let width = inner.width as usize;
     let bar_w = width.saturating_sub(70).min(20);
     let fixed = 2 + if by_minion { 0 } else { 9 } + 9 + if by_minion { 0 } else { 10 } + 8 + bar_w;
@@ -220,6 +267,7 @@ fn draw_breakdown(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::
     let longest = groups.iter().map(|g| label_w + 1 + g.detail.chars().count()).max().unwrap_or(0);
     let name_w = width.saturating_sub(fixed).min(longest.max(20) + 2).max(8);
     let label_w = label_w.min(name_w / 2);
+    let share_of = |events: u64| if total > 0 { events as f64 / total as f64 } else { 0.0 };
 
     let mut head = vec![Span::raw("  "), Span::styled(pad(app.stats_grouping.label(), name_w, false), header())];
     if !by_minion {
@@ -230,13 +278,17 @@ fn draw_breakdown(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::
         head.push(Span::styled(pad("/h/minion", 10, true), header()));
     }
     head.push(Span::styled(pad("share", 8, true), header()));
-    let mut lines = vec![Line::from(head)];
-    if total == 0 {
-        lines.push(Line::from(Span::styled("  No events of this family yet.", dim())));
-    }
-    for g in groups.iter().take(visible) {
+    let mut lines: Vec<Line> = filter_bar.into_iter().collect();
+    lines.push(Line::from(head));
+    lines.extend(note.map(|n| Line::from(Span::styled(n, dim()))));
+
+    // The preview gives its last row to the groups it has no room for.
+    let cut = !drill && groups.len() > visible;
+    let shown = if cut { visible.saturating_sub(1) } else { visible };
+    let mut hits = Vec::new();
+    for (i, g) in groups.iter().enumerate().skip(scroll).take(shown) {
         let per_hour = stats.per_hour(g.events, now);
-        let share = if total > 0 { g.events as f64 / total as f64 } else { 0.0 };
+        let share = share_of(g.events);
         let num = if g.events == 0 { dim() } else { text() };
         let name = if g.detail.is_empty() { g.label.clone() } else { format!("{:<label_w$} {}", g.label, g.detail) };
         let mut row = vec![Span::raw("  "), Span::styled(pad(&name, name_w, false), Style::default().fg(color::cyan()))];
@@ -253,9 +305,28 @@ fn draw_breakdown(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::
             let cells = ((share * bar_w as f64).round() as usize).max(1);
             row.push(Span::styled(format!(" {}", "\u{2588}".repeat(cells)), Style::default().fg(color::gradient(share))));
         }
+        let line = Line::from(row);
+        hits.push((inner.y + lines.len() as u16, i));
+        lines.push(if drill && i == selected { color::selected_row(line) } else { line });
+    }
+    if cut {
+        let rest = &groups[shown..];
+        let events: u64 = rest.iter().map(|g| g.events).sum();
+        let what = if by_minion { "minions" } else { "groups" };
+        let label = format!("\u{2026} {} more {}", rest.len(), what);
+        let mut row = vec![Span::raw("  "), Span::styled(pad(&label, name_w, false), dim())];
+        if !by_minion {
+            row.push(Span::styled(pad(&rest.iter().map(|g| g.minions).sum::<usize>().to_string(), 9, true), dim()));
+        }
+        row.push(Span::styled(pad(&fmt_rate(stats.per_hour(events, now)), 9, true), dim()));
+        if !by_minion {
+            row.push(Span::raw(" ".repeat(10)));
+        }
+        row.push(Span::styled(pad(&format!("{:.1}%", share_of(events) * 100.0), 8, true), dim()));
         lines.push(Line::from(row));
     }
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::main_bg())), inner);
+    hits
 }
 
 fn draw_load(f: &mut Frame, area: Rect, app: &App) {

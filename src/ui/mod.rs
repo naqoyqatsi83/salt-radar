@@ -703,7 +703,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
         Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Master => master_config::draw_master(f, main_layout[1], app, tab_focused),
-        Tab::Stats => app.stats_row_hits = stats::draw_stats(f, main_layout[1], app, tab_focused),
+        Tab::Stats => {
+            let hits = stats::draw_stats(f, main_layout[1], app, tab_focused);
+            app.stats_row_hits = hits.families;
+            app.stats_group_hits = hits.groups;
+        }
     }
     app.header_hits = hits;
 
@@ -1052,6 +1056,10 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 Tab::Pulse => (app.pulse_selected + 1, app.pulse_minions_count()),
                 Tab::Api => (app.api_log_selected + 1, app.filtered_api_log_len()),
                 Tab::Master => (app.master_selected + 1, app.filtered_master_settings().len()),
+                Tab::Stats if app.stats_drill => {
+                    let groups = app.stats_groups();
+                    (app.stats_group_index(&groups) + 1, groups.len())
+                }
                 Tab::Stats => {
                     let rows = app.stats_rows();
                     (rows.iter().position(|(n, _)| *n == app.stats_family).unwrap_or(0) + 1, rows.len())
@@ -1063,7 +1071,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             }
             let active_filter = match app.current_tab {
                 Tab::Events => app.applied_filter.as_str(),
-                Tab::Minions | Tab::Alerts | Tab::Api | Tab::Master => app.filter_text_for(app.current_tab),
+                Tab::Minions | Tab::Alerts | Tab::Api | Tab::Master | Tab::Stats => app.filter_text_for(app.current_tab),
                 _ => "",
             };
             if !active_filter.is_empty() {
@@ -1133,6 +1141,9 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Master Config", key: "`r`", action: "Read the configuration files again" },
         Shortcut { tab: "Master Config", key: "`w`", action: "Wrap the long lines of the file and of a ↻ setting's changed lines in the right panel, or cut them at its edge (`master_wrap`)" },
         Shortcut { tab: "Stats", key: "`↑`/`↓`", action: "Select an event family; the breakdown below follows it" },
+        Shortcut { tab: "Stats", key: "`Enter`", action: "Open the selected family's breakdown full-screen; there, narrow it to a group's minions, or open a minion's detail" },
+        Shortcut { tab: "Stats", key: "`/`", action: "Filter the open breakdown by minion, version or OS" },
+        Shortcut { tab: "Stats", key: "`Esc`", action: "In the breakdown: clear the filter, step back to the group it was narrowed from, then back to the families" },
         Shortcut { tab: "Stats", key: "`s`", action: "Sort the families by count, or back to the fixed order (the common families first, then by name)" },
         Shortcut { tab: "Stats", key: "`g`", action: "Break the selected family down by Salt version × OS, OS, version or single minions" },
         Shortcut { tab: "Stats", key: "`X`", action: "Reset the statistics and start a new window (asks first; only `y` confirms)" },
