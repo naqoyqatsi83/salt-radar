@@ -426,7 +426,13 @@ impl HealthRows {
         self.rows.push((prio, line));
     }
 
+    /// An empty line, the first thing to go when the panel is short.
+    fn gap(&mut self) {
+        self.push(7, Line::default());
+    }
+
     fn section(&mut self, title: &str) {
+        self.gap();
         self.push(6, Line::from(Span::styled(format!("  {}", title), header_style())));
     }
 
@@ -513,6 +519,12 @@ fn draw_health(f: &mut Frame, area: Rect, app: &App) {
     }
     h.metric(2, "I/O wait", &sat.iowait_pct, &pct, Some((Resource::Disk, 10.0, 30.0, false)), None);
     h.metric(4, "Blocked on I/O", &sat.blocked, &int, None, None);
+    if let Some(dev) = &sat.disk {
+        let ms = |v: f64| if v < 10.0 { format!("{:.1}ms", v) } else { format!("{:.0}ms", v) };
+        h.metric(2, &format!("Disk latency ({})", dev), &sat.disk_latency_ms, &ms, Some((Resource::Disk, 20.0, 100.0, false)), None);
+        h.metric(3, "Disk busy", &sat.disk_busy_pct, &pct, Some((Resource::Disk, 70.0, 95.0, false)), None);
+        h.metric(4, "Disk MB/s", &sat.disk_mb_per_sec, &|v| format!("{:.1}", v), None, None);
+    }
     if sat.has_psi() {
         h.metric(2, "Pressure: CPU", &sat.psi_cpu_pct, &pct, Some((Resource::Cpu, 20.0, 50.0, false)), None);
         h.metric(2, "Pressure: memory", &sat.psi_memory_pct, &pct, Some((Resource::Memory, 5.0, 20.0, false)), None);
@@ -524,6 +536,7 @@ fn draw_health(f: &mut Frame, area: Rect, app: &App) {
         let rated = Rating::of(drops as f64, 1.0, 100.0, false);
         h.values(3, "Connections dropped", [drops.to_string(), none(), none()], Some((Resource::Network, rated)), Some(Span::styled("  in window", dim())));
     }
+    h.metric(3, "TCP retransmits", &sat.retransmit_pct, &pct, Some((Resource::Network, 1.0, 5.0, false)), None);
     if let Some((n, limit)) = sat.open_files {
         let m = &sat.open_files_pct;
         let rated = Rating::of(m.now, 70.0, 90.0, false);
@@ -594,6 +607,7 @@ fn draw_health(f: &mut Frame, area: Rect, app: &App) {
     h.values(3, "Event bus", tp(&flow.bytes, &fmt_bytes_per_hour), None, None);
 
     // Fleet
+    h.gap();
     let accepted = app.minion_count();
     let up = app.minion_info.iter().filter(|m| m.connected).count();
     let pending = app.keys.iter().filter(|k| k.status == crate::types::KeyStatus::Pending).count();
@@ -663,7 +677,7 @@ mod tests {
         assert_eq!([Rating::of(60.0, 20.0, 10.0, true), Rating::of(15.0, 20.0, 10.0, true), Rating::of(5.0, 20.0, 10.0, true)], [Rating::Ok, Rating::Busy, Rating::Starving]);
         let line = |s: &str| Line::from(s.to_string());
         let rows = HealthRows {
-            rows: vec![(0, line("verdict")), (6, line("section")), (1, line("cpu")), (4, line("gpg")), (6, line("section 2")), (2, line("zmq"))],
+            rows: vec![(0, line("verdict")), (7, line("")), (6, line("section")), (1, line("cpu")), (4, line("gpg")), (7, line("")), (6, line("section 2")), (2, line("zmq"))],
             ratings: Vec::new(),
         };
         let kept: Vec<String> = rows.fit(4).iter().map(|l| l.to_string()).collect();

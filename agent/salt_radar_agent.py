@@ -559,13 +559,79 @@ def _parse_netstat(text):
     return {}
 
 
-def _saturation():
+def _parse_snmp(text):
+    """TCP segments sent and retransmitted since boot (`Tcp:` header and
+    value lines of /proc/net/snmp)."""
+    lines = [l.split() for l in text.splitlines()]
+    for head, values in zip(lines, lines[1:]):
+        if head and head[0] == "Tcp:" and values and values[0] == "Tcp:":
+            row = dict(zip(head[1:], values[1:]))
+            if "OutSegs" in row and "RetransSegs" in row:
+                return {"tcp_out_segs": int(row["OutSegs"]), "tcp_retrans_segs": int(row["RetransSegs"])}
+    return {}
+
+
+def _mount_source(path, mountinfo):
+    """The device a path's filesystem is mounted from (/proc/self/mountinfo:
+    the mount point is field 5, the source follows the ` - fstype`), for the
+    longest mount point holding the path."""
+    best = None
+    for line in mountinfo.splitlines():
+        left, sep, right = line.partition(" - ")
+        fields = left.split()
+        if not sep or len(fields) < 5:
+            continue
+        point = fields[4].replace("\\040", " ")
+        inside = path == point or path.startswith(point.rstrip("/") + "/")
+        if inside and (best is None or len(point) > len(best[0])):
+            source = right.split()
+            best = (point, source[1] if len(source) > 1 else "")
+    return best[1] if best else None
+
+
+def _block_device(path):
+    """The (major, minor) of the block device holding a path. A filesystem
+    on an anonymous device (btrfs subvolumes) is looked up through the
+    mount table; one not on a block device (overlay, tmpfs) gives None."""
+    try:
+        dev = os.stat(path).st_dev
+        if os.major(dev) != 0:
+            return os.major(dev), os.minor(dev)
+        source = _mount_source(os.path.realpath(path), _read("/proc/self/mountinfo") or "")
+        if source and source.startswith("/dev/"):
+            rdev = os.stat(source).st_rdev
+            return os.major(rdev), os.minor(rdev)
+    except OSError:
+        pass
+    return None
+
+
+def _parse_diskstats(text, device):
+    """A block device's I/O counters since boot from /proc/diskstats:
+    requests completed, milliseconds they took, milliseconds the device was
+    busy, and sectors (512 bytes) moved."""
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) < 14 or (int(f[0]), int(f[1])) != device:
+            continue
+        return {
+            "device": f[2],
+            "ios": int(f[3]) + int(f[7]),
+            "io_ms": int(f[6]) + int(f[10]),
+            "busy_ms": int(f[12]),
+            "sectors": int(f[5]) + int(f[9]),
+        }
+    return None
+
+
+def _saturation(cachedir):
     """What tells a master starving for a resource from one just busy: CPU
     stolen by the hypervisor and waiting on I/O, the run queue, pressure
-    stall (where the kernel has it), swapping, OOM kills and dropped
-    connections. Readings it can't make are left out."""
+    stall (where the kernel has it), swapping, OOM kills, dropped
+    connections and TCP retransmits, and how the disk holding the job cache
+    keeps up. Readings it can't make are left out."""
     out = {}
-    for path, parse in (("/proc/stat", _parse_proc_stat), ("/proc/vmstat", _parse_vmstat), ("/proc/net/netstat", _parse_netstat)):
+    for path, parse in (("/proc/stat", _parse_proc_stat), ("/proc/vmstat", _parse_vmstat), ("/proc/net/netstat", _parse_netstat), ("/proc/net/snmp", _parse_snmp)):
         text = _read(path)
         if text is not None:
             try:
@@ -580,6 +646,15 @@ def _saturation():
             psi[resource] = total
     if psi:
         out["psi_us"] = psi
+    device = _block_device(cachedir)
+    text = _read("/proc/diskstats") if device else None
+    if text:
+        try:
+            disk = _parse_diskstats(text, device)
+        except ValueError:
+            disk = None
+        if disk:
+            out["disk"] = disk
     return out
 
 
@@ -646,7 +721,7 @@ def cmd_get_system_info(opts, req):
         "network_rx_rate": 0.0, "network_tx_rate": 0.0,
         "cpu_total_jiffies": 0, "cpu_idle_jiffies": 0,
     }
-    info.update(_saturation())
+    info.update(_saturation(opts.get("cachedir", "/var/cache/salt/master")))
     try:
         # Load
         with open("/proc/loadavg", "r") as f:

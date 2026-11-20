@@ -1422,6 +1422,9 @@ fn stats_help_lines() -> Vec<Line<'static>> {
         row("Pressure", "share of time some work waited for CPU, memory or I/O (Linux pressure stall)"),
         row("Worker time", "what the MWorkers spent their time on; needs master_stats: True on the master"),
         row("Event bus", "the events' size as salt-radar gets them (JSON), a little more than on the bus"),
+        row("Disk latency", "average time a request took on the disk holding the job cache; high at low"),
+        row("", "  throughput means a throttled volume (cloud disk IOPS or bandwidth cap)"),
+        row("TCP retransmits", "share of TCP segments sent again: packet loss or a capped link to the minions"),
         row("X", "starts a new window after asking; only y confirms"),
     ]
 }

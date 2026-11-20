@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::types::{is_jid, CpuThrottling, MinionInfo, SaltProcess, SaltProcessRole, SystemInfo};
+use crate::types::{is_jid, CpuThrottling, DiskCounters, MinionInfo, SaltProcess, SaltProcessRole, SystemInfo};
 
 /// Families every master shows, first and in this order, even with no
 /// events yet, so two salt-radar screens side by side line up row by row.
@@ -287,6 +287,15 @@ pub struct Saturation {
     pub mem_avail_pct: Metric,
     /// Pages swapped in and out per second.
     pub swap_per_sec: Metric,
+    /// The disk holding the job cache: how long a request took on average,
+    /// how much of the time it was busy, and megabytes moved per second.
+    /// A slow disk at low throughput is a throttled (cloud) volume.
+    pub disk: Option<String>,
+    pub disk_latency_ms: Metric,
+    pub disk_busy_pct: Metric,
+    pub disk_mb_per_sec: Metric,
+    /// Share of TCP segments sent again: loss between minions and master.
+    pub retransmit_pct: Metric,
     /// Since the window started.
     pub oom_kills: Option<u64>,
     pub listen_drops: Option<u64>,
@@ -350,6 +359,28 @@ impl Saturation {
         if let (Some(a), Some(b)) = (swapped(info), swapped(&prev)) {
             self.swap_per_sec.add(a.saturating_sub(b) as f64 / secs);
         }
+        self.disk = info.disk.as_ref().map(|d| d.device.clone());
+        if let (Some(d), Some(p)) = (&info.disk, &prev.disk) {
+            self.record_disk(d, p, secs);
+        }
+        if let (Some(out), Some(re), Some(prev_out), Some(prev_re)) = (info.tcp_out_segs, info.tcp_retrans_segs, prev.tcp_out_segs, prev.tcp_retrans_segs) {
+            let sent = out.saturating_sub(prev_out);
+            if sent > 0 {
+                self.retransmit_pct.add(re.saturating_sub(prev_re) as f64 * 100.0 / sent as f64);
+            }
+        }
+    }
+
+    fn record_disk(&mut self, d: &DiskCounters, prev: &DiskCounters, secs: f64) {
+        if d.device != prev.device {
+            return;
+        }
+        let ios = d.ios.saturating_sub(prev.ios);
+        if ios > 0 {
+            self.disk_latency_ms.add(d.io_ms.saturating_sub(prev.io_ms) as f64 / ios as f64);
+        }
+        self.disk_busy_pct.add((d.busy_ms.saturating_sub(prev.busy_ms) as f64 / (secs * 10.0)).min(100.0));
+        self.disk_mb_per_sec.add(d.sectors.saturating_sub(prev.sectors) as f64 * 512.0 / 1e6 / secs);
     }
 
     pub fn record_processes(&mut self, procs: &[SaltProcess], throttling: Option<CpuThrottling>) {
@@ -912,6 +943,25 @@ mod tests {
         assert!((shares[0].1 - 0.5).abs() < 1e-9 && (shares[1].1 - 0.1).abs() < 1e-9);
         assert_eq!(f.worker_time.mean("_pillar"), Some(10.0));
         assert_eq!(f.worker_time.mean("_auth"), None);
+    }
+
+    #[test]
+    fn disk_latency_busy_and_retransmits_come_from_deltas() {
+        let t0 = Instant::now();
+        let info = |ios, io_ms, busy_ms, sectors, out, retrans, device: &str| SystemInfo {
+            cpu_total_jiffies: 1000 + ios,
+            disk: Some(DiskCounters { device: device.into(), ios, io_ms, busy_ms, sectors }),
+            tcp_out_segs: Some(out), tcp_retrans_segs: Some(retrans),
+            ..SystemInfo::default()
+        };
+        let mut s = Saturation::default();
+        s.record_system(&info(100, 500, 1000, 0, 10_000, 10, "sda"), 1, t0);
+        s.record_system(&info(300, 4500, 2500, 2_000_000, 12_000, 70, "sda"), 1, t0 + Duration::from_secs(2));
+        assert_eq!(s.disk.as_deref(), Some("sda"));
+        assert_eq!((s.disk_latency_ms.now, s.disk_busy_pct.now, s.disk_mb_per_sec.now), (20.0, 75.0, 512.0));
+        assert_eq!(s.retransmit_pct.now, 3.0);
+        s.record_system(&info(400, 4600, 2600, 2_000_000, 12_000, 70, "sdb"), 1, t0 + Duration::from_secs(4));
+        assert_eq!((s.disk.as_deref(), s.disk_latency_ms.now), (Some("sdb"), 20.0));
     }
 
     #[test]

@@ -102,9 +102,48 @@ class CgroupThrottlingTest(unittest.TestCase):
         self.assertIsNone(agent._parse_cpu_stat("usage_usec 9000000\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\n", False))
 
 
+class DiskAndTcpTest(unittest.TestCase):
+    DISKSTATS = (
+        "   8       0 sda 1200 30 96000 2400 5400 120 432000 27000 0 9100 29400 0 0 0 0 0 0\n"
+        "   8       2 sda2 1100 30 88000 2200 5300 120 430000 26800 0 9000 29000 0 0 0 0 0 0\n"
+        " 253       0 dm-0 1050 0 86000 2300 5600 0 431000 31000 2 9050 33300 0 0 0 0 0 0\n"
+    )
+
+    def test_counters_of_one_device(self):
+        self.assertEqual(agent._parse_diskstats(self.DISKSTATS, (253, 0)), {
+            "device": "dm-0", "ios": 1050 + 5600, "io_ms": 2300 + 31000, "busy_ms": 9050, "sectors": 86000 + 431000,
+        })
+        self.assertIsNone(agent._parse_diskstats(self.DISKSTATS, (8, 1)))
+
+    def test_old_kernels_with_fewer_fields(self):
+        self.assertEqual(agent._parse_diskstats("   8       0 sda 1 0 8 4 2 0 16 6 0 9 10\n", (8, 0))["busy_ms"], 9)
+
+    def test_mount_source_of_the_longest_mount_point(self):
+        mountinfo = (
+            "22 1 0:21 / / rw,relatime shared:1 - btrfs /dev/sda2 rw,subvol=/@\n"
+            "40 22 0:35 / /var rw,relatime shared:2 - btrfs /dev/sda3 rw,subvol=/@/var\n"
+            "41 22 0:36 / /var/cache/salt\\040master rw shared:3 - xfs /dev/mapper/vg-salt rw\n"
+            "50 22 0:40 / /run rw - tmpfs tmpfs rw\n"
+        )
+        self.assertEqual(agent._mount_source("/var/cache/salt/master", mountinfo), "/dev/sda3")
+        self.assertEqual(agent._mount_source("/var/cache/salt master/jobs", mountinfo), "/dev/mapper/vg-salt")
+        self.assertEqual(agent._mount_source("/etc/salt", mountinfo), "/dev/sda2")
+        self.assertEqual(agent._mount_source("/run/salt", mountinfo), "tmpfs")
+
+    def test_tcp_retransmits(self):
+        text = (
+            "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts\n"
+            "Tcp: 1 200 120000 -1 7773 40053 1 1 96 758490 651376 290 0 4\n"
+            "Udp: InDatagrams NoPorts\n"
+            "Udp: 10 0\n"
+        )
+        self.assertEqual(agent._parse_snmp(text), {"tcp_out_segs": 651376, "tcp_retrans_segs": 290})
+        self.assertEqual(agent._parse_snmp("Udp: InDatagrams\nUdp: 1\n"), {})
+
+
 class SaturationTest(unittest.TestCase):
     def test_reads_what_this_host_has(self):
-        out = agent._saturation()
+        out = agent._saturation("/")
         if os.path.exists("/proc/stat"):
             self.assertIn("procs_running", out)
             self.assertIn("cpu_steal_jiffies", out)

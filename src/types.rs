@@ -166,6 +166,19 @@ pub struct CpuThrottling {
     pub throttled_usec: u64,
 }
 
+/// I/O counters since boot of the block device holding the job cache.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct DiskCounters {
+    pub device: String,
+    /// Reads and writes completed, and the milliseconds they took.
+    pub ios: u64,
+    pub io_ms: u64,
+    /// Milliseconds the device had requests in flight.
+    pub busy_ms: u64,
+    /// 512-byte sectors read and written.
+    pub sectors: u64,
+}
+
 /// Microseconds since boot that some task stalled waiting for the resource
 /// (`/proc/pressure`); a resource is missing where the kernel doesn't track
 /// pressure stall.
@@ -270,6 +283,12 @@ pub struct SystemInfo {
     pub listen_overflows: Option<u64>,
     #[serde(default)]
     pub listen_drops: Option<u64>,
+    #[serde(default)]
+    pub tcp_out_segs: Option<u64>,
+    #[serde(default)]
+    pub tcp_retrans_segs: Option<u64>,
+    #[serde(default)]
+    pub disk: Option<DiskCounters>,
 }
 
 // ─── salt-api stats (rest_cherrypy collect_stats, polled over /stats) ─────
