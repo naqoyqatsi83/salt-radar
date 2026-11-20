@@ -1399,7 +1399,7 @@ fn stats_help_lines() -> Vec<Line<'static>> {
         row("/h/minion", "events per hour per minion (accepted keys), to compare masters of any size"),
         row("last 15m", "the same rates over the last 15 minutes, what's happening now (when wide enough)"),
         row("median", "time between two events of the family from the same minion"),
-        row("\u{27F3}", "the events come at regular intervals: most within 10% of the median"),
+        row("\u{21BB}", "the events come at regular intervals: most within 10% of the median"),
         row("\u{25CC} low", "the window is shorter than twice the interval: the rate can still move a lot"),
         row("<jid>", "the event Salt fires with a new job's bare JID as its tag"),
         row("minion/refresh/*", "one per pillar render a minion asked for (start, refresh, state run)"),

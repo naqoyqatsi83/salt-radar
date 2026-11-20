@@ -188,7 +188,7 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Vec<(u1
         let median = fam.median_interval();
         row.push(Span::styled(pad(&median.map_or("\u{2014}".to_string(), fmt_interval), 9, true), num));
         if fam.periodic() {
-            row.push(Span::styled(" \u{27F3}", Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)));
+            row.push(Span::styled(" \u{21BB}", Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)));
         }
         if stats.low_confidence(fam, now) {
             row.push(Span::styled(" \u{25CC} low", Style::default().fg(color::yellow())));
