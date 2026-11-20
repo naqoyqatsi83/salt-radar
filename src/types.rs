@@ -1161,6 +1161,8 @@ pub enum ListCol {
     FailPct,
     Group,
     Minions,
+    /// How many of a group's minions sent the family.
+    Sent,
     Share,
     Key,
     Value,

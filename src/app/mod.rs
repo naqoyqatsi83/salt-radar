@@ -179,7 +179,9 @@ pub struct App {
     /// cursor stays on it when the list is sorted) and the breakdown.
     pub stats: crate::stats::Stats,
     pub stats_family: String,
-    pub stats_grouping: crate::stats::Grouping,
+    /// The grouping `g` last chose; `stats_grouping()` is the one the
+    /// selected family has.
+    pub stats_grouping_choice: crate::stats::Grouping,
     /// What the families list and the breakdown measure (`m`).
     pub stats_measure: crate::stats::Measure,
     /// The "Reset statistics?" prompt `X` opens on the Stats tab.
@@ -1095,7 +1097,7 @@ impl App {
             quit_confirm: false,
             stats: crate::stats::Stats::default(),
             stats_family: crate::stats::CORE_FAMILIES[0].to_string(),
-            stats_grouping: crate::stats::Grouping::default(),
+            stats_grouping_choice: crate::stats::Grouping::default(),
             stats_measure: crate::stats::Measure::default(),
             stats_reset_confirm: false,
             stats_row_hits: Vec::new(),
@@ -1915,11 +1917,22 @@ impl App {
         rows
     }
 
+    /// How the breakdown groups the selected family: as `g` chose, if the
+    /// family has that grouping.
+    pub fn stats_grouping(&self) -> crate::stats::Grouping {
+        self.stats_grouping_choice.within(&self.stats_family, !self.stats_scopes.is_empty())
+    }
+
+    pub(crate) fn next_stats_grouping(&mut self) {
+        self.stats_grouping_choice = self.stats_grouping().next_within(&self.stats_family, !self.stats_scopes.is_empty());
+        self.stats_group = None;
+    }
+
     /// The selected family broken down as `g` chose, narrowed to the
     /// breakdown's groups and filter.
     pub fn stats_groups(&self) -> Vec<crate::stats::GroupRow> {
         let Some(family) = self.stats.family(&self.stats_family) else { return Vec::new() };
-        let mut rows = crate::stats::group_rows(family, self.stats_grouping, &self.stats_scopes, &self.minion_info, &self.minion_index);
+        let mut rows = crate::stats::group_rows(family, self.stats_grouping(), &self.stats_scopes, &self.minion_info, &self.minion_index);
         let terms = Self::filter_terms(self.filter_text_for(Tab::Stats));
         if !terms.is_empty() {
             rows.retain(|g| terms.iter().any(|t| Self::matches_filter(&g.label, t) || Self::matches_filter(&g.detail, t)));
@@ -1933,6 +1946,7 @@ impl App {
                 let ord = match col {
                     ListCol::Group => a.label.cmp(&b.label).then_with(|| a.detail.cmp(&b.detail)),
                     ListCol::Minions => a.minions.cmp(&b.minions),
+                    ListCol::Sent => a.sent.cmp(&b.sent),
                     ListCol::RatePerMinion => per_minion(a).total_cmp(&per_minion(b)),
                     ListCol::Peak => a.peak_minute.cmp(&b.peak_minute),
                     ListCol::Failed => a.failed.cmp(&b.failed),
@@ -1970,7 +1984,8 @@ impl App {
         let groups = self.stats_groups();
         let mut path = vec!["stats".to_string(), self.stats_family.clone()];
         path.extend(self.stats_scopes.iter().map(|s| s.title()));
-        let ids: Vec<String> = if self.stats_grouping == crate::stats::Grouping::Minion {
+        let grouping = self.stats_grouping();
+        let ids: Vec<String> = if grouping == crate::stats::Grouping::Minion {
             groups.into_iter().map(|g| g.label).filter(|l| l != crate::stats::NO_MINION).collect()
         } else {
             let at = self.stats_group_index(&groups);
@@ -1979,7 +1994,7 @@ impl App {
             if row.label == crate::stats::NO_MINION {
                 return Default::default();
             }
-            let scope = crate::stats::Scope::of(self.stats_grouping, &row);
+            let scope = crate::stats::Scope::of(grouping, &row);
             path.push(scope.title());
             let mut scopes = self.stats_scopes.clone();
             scopes.push(scope);
@@ -2001,14 +2016,15 @@ impl App {
         let groups = self.stats_groups();
         let at = self.stats_group_index(&groups);
         let Some(row) = groups.into_iter().nth(at) else { return };
-        if self.stats_grouping == crate::stats::Grouping::Minion {
+        let grouping = self.stats_grouping();
+        if grouping == crate::stats::Grouping::Minion {
             if self.minion_index.contains_key(&row.label) {
                 self.detail_popup = Some(DetailPopup::Minion(row.label, PingState::Idle, None, 0));
                 self.popup_tab = Some(Tab::Stats);
             }
         } else if row.label != crate::stats::NO_MINION {
-            self.stats_scopes.push(crate::stats::Scope::of(self.stats_grouping, &row));
-            self.stats_grouping = crate::stats::Grouping::Minion;
+            self.stats_scopes.push(crate::stats::Scope::of(grouping, &row));
+            self.stats_grouping_choice = crate::stats::Grouping::Minion;
             self.stats_filter.clear();
             self.stats_group = None;
         }
@@ -2037,7 +2053,7 @@ impl App {
         }
         self.stats_filter.clear();
         if let Some(scope) = self.stats_scopes.pop() {
-            self.stats_grouping = scope.grouping;
+            self.stats_grouping_choice = scope.grouping;
             self.stats_group = Some((scope.label, scope.detail));
         } else {
             self.stats_drill = false;

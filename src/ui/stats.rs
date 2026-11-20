@@ -315,13 +315,21 @@ type GroupCols<'a> = (Vec<NumCol<'a, GroupRow>>, Box<dyn Fn(&GroupRow) -> f64 + 
 
 fn group_cols<'a>(app: &'a App, family: Option<&'a crate::stats::Family>, now: Instant) -> GroupCols<'a> {
     let stats = &app.stats;
-    let by_minion = app.stats_grouping == Grouping::Minion;
+    let grouping = app.stats_grouping();
+    let by_minion = grouping == Grouping::Minion;
     let (events, bytes) = family.map_or((0, 0), |f| (f.count, f.bytes));
     let share = move |part: u64, whole: u64| if whole > 0 { part as f64 / whole as f64 } else { 0.0 };
     let pct = |v: f64| format!("{:.1}%", v * 100.0);
+    // Groups of minions: how many the master has and how many sent the
+    // family; a field's values only have the minions that sent them.
+    let of_minions = !by_minion && grouping.field().is_none();
     let mut cols: Vec<NumCol<GroupRow>> = Vec::new();
-    if !by_minion {
+    if of_minions {
         cols.push(num_col("Minions", 9, ListCol::Minions, |g: &GroupRow| Some(g.minions.to_string())));
+    }
+    // Nothing to count where the master fires the events itself.
+    if !by_minion && family.is_some_and(|f| !f.minions.is_empty()) {
+        cols.push(num_col("Sent", 7, ListCol::Sent, |g: &GroupRow| Some(g.sent.to_string())));
     }
     let per_minion = move |v: f64, g: &GroupRow, fmt: fn(f64) -> String| (g.minions > 0).then(|| fmt(v / g.minions as f64));
     let bar: Box<dyn Fn(&GroupRow) -> f64> = match app.stats_measure {
@@ -330,7 +338,7 @@ fn group_cols<'a>(app: &'a App, family: Option<&'a crate::stats::Family>, now: I
             let fmt: fn(f64) -> String = if b { fmt_bytes } else { fmt_rate };
             let value = move |g: &GroupRow| if b { g.bytes } else { g.events };
             cols.push(num_col("/h", 9, ListCol::Rate, move |g: &GroupRow| Some(fmt(stats.per_hour(value(g), now)))));
-            if !by_minion {
+            if of_minions {
                 cols.push(num_col("/h/minion", 11, ListCol::RatePerMinion, move |g: &GroupRow| per_minion(stats.per_hour(value(g), now), g, fmt)));
             }
             let whole = if b { bytes } else { events };
@@ -363,7 +371,8 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[GroupRow], drill:
     let stats = &app.stats;
     let family = stats.family(&app.stats_family);
     let total = family.map_or(0, |fam| fam.count);
-    let by_minion = app.stats_grouping == Grouping::Minion;
+    let grouping = app.stats_grouping();
+    let by_minion = grouping == Grouping::Minion;
     let filter = app.filter_text_for(crate::types::Tab::Stats);
     let filter_bar = if drill { super::filter_bar(filter, app.is_filtering, app.input_cursor, format!("{} rows", groups.len()), true) } else { None };
     let failures_elsewhere = app.stats_measure == Measure::Failures && app.stats_family != crate::stats::RETURN_FAMILY;
@@ -389,7 +398,7 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[GroupRow], drill:
     if drill {
         path.extend(app.stats_scopes.iter().map(|s| s.title()));
     }
-    let mut title = format!(" {} \u{203A} by {} \u{00B7} {} ", path.join(" \u{203A} "), app.stats_grouping.label(), app.stats_measure.label());
+    let mut title = format!(" {} \u{203A} by {} \u{00B7} {} ", path.join(" \u{203A} "), grouping.label(), app.stats_measure.label());
     if drill && app.stats_scopes.is_empty() {
         let sent = family.map_or(0, |fam| fam.minions.len());
         title.push_str(&format!("\u{00B7} {} of {} minions sent it ", sent, app.minion_count()));
@@ -429,7 +438,7 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[GroupRow], drill:
     let mut lines: Vec<Line> = filter_bar.into_iter().collect();
     let mut head = HeaderRow::new(ListId::StatsGroups, app.list_sort(ListId::StatsGroups), inner.x, inner.y + lines.len() as u16);
     head.raw(Span::raw("  "));
-    head.col(app.stats_grouping.header(), name_w, false, ListCol::Group, header_hits);
+    head.col(grouping.header(), name_w, false, ListCol::Group, header_hits);
     for c in &cols {
         head.col(c.label, c.w, true, c.col, header_hits);
     }

@@ -18,6 +18,12 @@ const MAX_FAMILIES: usize = 300;
 pub const OTHER_FAMILY: &str = "(other tags)";
 pub const JID_FAMILY: &str = "<jid>";
 pub const RETURN_FAMILY: &str = "salt/job/*/ret/*";
+pub const JOB_NEW_FAMILY: &str = "salt/job/*/new";
+pub const RUN_NEW_FAMILY: &str = "salt/run/*/new";
+pub const AUTH_FAMILY: &str = "salt/auth";
+/// Distinct values a field is counted for per family; the rest share one.
+const MAX_VALUES: usize = 200;
+pub const OTHER_VALUE: &str = "(other)";
 /// One per pillar render a minion asked for (see #216).
 pub const RENDER_FAMILY: &str = "minion/refresh/*";
 const MAX_MINIONS_PER_FAMILY: usize = 50_000;
@@ -77,10 +83,12 @@ pub struct Family {
     /// Seconds between two events of the family from the same minion (or
     /// between two unattributed ones), the latest `MAX_INTERVALS`.
     intervals: VecDeque<f64>,
+    /// Its events by the values of the fields some groupings read.
+    pub values: HashMap<Grouping, HashMap<String, ValueCount>>,
 }
 
 impl Family {
-    fn record(&mut self, minion: Option<String>, ts: f64, minute: u64, bytes: u64, failed: bool) {
+    fn record(&mut self, minion: Option<String>, ts: f64, minute: u64, bytes: u64, failed: bool, values: Vec<(Grouping, String)>) {
         self.count += 1;
         self.bytes += bytes;
         self.failed += u64::from(failed);
@@ -96,9 +104,20 @@ impl Family {
             self.minutes.pop_front();
         }
         let full = self.minions.len() >= MAX_MINIONS_PER_FAMILY;
+        let minion = minion.filter(|id| self.minions.contains_key(id) || !full);
+        for (grouping, value) in values {
+            let per_value = self.values.entry(grouping).or_default();
+            let value = if per_value.len() >= MAX_VALUES && !per_value.contains_key(&value) { OTHER_VALUE.to_string() } else { value };
+            let count = per_value.entry(value).or_default();
+            count.total.record(ts, minute, bytes, failed);
+            match &minion {
+                Some(id) => count.minions.entry(id.clone()).or_default().record(ts, minute, bytes, failed),
+                None => count.unattributed.record(ts, minute, bytes, failed),
+            };
+        }
         let who = match minion {
-            Some(id) if self.minions.contains_key(&id) || !full => self.minions.entry(id).or_default(),
-            _ => &mut self.unattributed,
+            Some(id) => self.minions.entry(id).or_default(),
+            None => &mut self.unattributed,
         };
         if let Some(prev) = who.record(ts, minute, bytes, failed).filter(|&prev| ts > prev) {
             self.intervals.push_back(ts - prev);
@@ -141,13 +160,19 @@ impl Family {
         for (id, pm) in other.minions {
             self.minions.entry(id).or_default().merge(pm);
         }
-        match minion {
-            Some(id) => self.minions.entry(id).or_default().merge(other.unattributed),
+        match &minion {
+            Some(id) => self.minions.entry(id.clone()).or_default().merge(other.unattributed),
             None => self.unattributed.merge(other.unattributed),
         }
         self.intervals.extend(other.intervals);
         while self.intervals.len() > MAX_INTERVALS {
             self.intervals.pop_front();
+        }
+        for (grouping, values) in other.values {
+            let mine = self.values.entry(grouping).or_default();
+            for (value, count) in values {
+                mine.entry(value).or_default().merge(count, minion.as_deref());
+            }
         }
     }
 
@@ -716,7 +741,8 @@ impl Stats {
         } else {
             family
         };
-        self.families.entry(family).or_default().record(minion, ts, minute, bytes, failed);
+        let values = event_values(&family, data);
+        self.families.entry(family).or_default().record(minion, ts, minute, bytes, failed, values);
     }
 
     pub fn family(&self, name: &str) -> Option<&Family> {
@@ -792,9 +818,9 @@ impl Measure {
     pub fn columns(self) -> &'static [crate::types::ListCol] {
         use crate::types::ListCol::*;
         match self {
-            Self::Events | Self::Bytes => &[Family, Group, Minions, Count, Rate, RatePerMinion, RecentRate, RecentRatePerMinion, Median, Share],
-            Self::Bursts => &[Family, Group, Minions, Count, Rate, Peak, PeakRatio, PeakAt, Share],
-            Self::Failures => &[Family, Group, Minions, Count, Rate, Failed, FailPct],
+            Self::Events | Self::Bytes => &[Family, Group, Minions, Sent, Count, Rate, RatePerMinion, RecentRate, RecentRatePerMinion, Median, Share],
+            Self::Bursts => &[Family, Group, Minions, Sent, Count, Rate, Peak, PeakRatio, PeakAt, Share],
+            Self::Failures => &[Family, Group, Minions, Sent, Count, Rate, Failed, FailPct],
         }
     }
 
@@ -808,23 +834,57 @@ impl Measure {
     }
 }
 
-/// How the Stats tab breaks the selected family down (`g`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// How the Stats tab breaks the selected family down (`g`): by what the
+/// minions are (version, OS, the minion itself), or for some families by
+/// what their events say (the job's function, who sent it, what the master
+/// did with an auth request).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Grouping {
     #[default]
     VersionOs,
     Os,
     Version,
     Minion,
+    Function,
+    User,
+    Outcome,
 }
 
+const BY_MINIONS: &[Grouping] = &[Grouping::VersionOs, Grouping::Os, Grouping::Version, Grouping::Minion];
+
 impl Grouping {
-    pub fn next(self) -> Self {
+    /// The groupings `g` steps through for a family. A breakdown narrowed
+    /// to some minions or to one value only takes those by minions. Job and
+    /// runner publishes come from the master, so they only have theirs.
+    pub fn for_family(family: &str, narrowed: bool) -> &'static [Grouping] {
+        use Grouping::*;
+        match family {
+            _ if narrowed => BY_MINIONS,
+            JOB_NEW_FAMILY | RUN_NEW_FAMILY => &[Function, User],
+            RETURN_FAMILY => &[VersionOs, Os, Version, Minion, Function],
+            AUTH_FAMILY => &[VersionOs, Os, Version, Minion, Outcome],
+            _ => BY_MINIONS,
+        }
+    }
+
+    /// This grouping if the family has it, else the family's first.
+    pub fn within(self, family: &str, narrowed: bool) -> Self {
+        let all = Self::for_family(family, narrowed);
+        if all.contains(&self) { self } else { all[0] }
+    }
+
+    pub fn next_within(self, family: &str, narrowed: bool) -> Self {
+        let all = Self::for_family(family, narrowed);
+        all.iter().position(|g| *g == self).map_or(all[0], |i| all[(i + 1) % all.len()])
+    }
+
+    /// The event field a grouping by what the events say reads.
+    pub fn field(self) -> Option<&'static str> {
         match self {
-            Self::VersionOs => Self::Os,
-            Self::Os => Self::Version,
-            Self::Version => Self::Minion,
-            Self::Minion => Self::VersionOs,
+            Self::Function => Some("fun"),
+            Self::User => Some("user"),
+            Self::Outcome => Some("act"),
+            _ => None,
         }
     }
 
@@ -834,6 +894,9 @@ impl Grouping {
             Self::Os => "OS",
             Self::Version => "version",
             Self::Minion => "minion",
+            Self::Function => "function",
+            Self::User => "user",
+            Self::Outcome => "outcome",
         }
     }
 
@@ -843,18 +906,53 @@ impl Grouping {
             Self::Os => "OS",
             Self::Version => "Version",
             Self::Minion => "Minion",
+            Self::Function => "Function",
+            Self::User => "User",
+            Self::Outcome => "Outcome",
         }
     }
 }
 
-/// A row of the breakdown: a group of minions (or one minion), how many
-/// minions the master has in it and how many of the family's events they
-/// sent. `detail` is the OS next to a version, or a minion's version and OS.
+/// The values a family's events carry for the groupings by what they say,
+/// e.g. `[(Function, "state.apply"), (User, "root")]` for a job publish.
+fn event_values(family: &str, data: &serde_json::Value) -> Vec<(Grouping, String)> {
+    Grouping::for_family(family, false).iter()
+        .filter_map(|g| g.field().map(|field| (*g, data[field].as_str().filter(|v| !v.is_empty()).unwrap_or("?").to_string())))
+        .collect()
+}
+
+/// A family's events with one value of a field (one function, one user,
+/// one auth outcome): all of them, and per minion.
+#[derive(Debug, Default)]
+pub struct ValueCount {
+    pub total: PerMinion,
+    pub minions: HashMap<String, PerMinion>,
+    pub unattributed: PerMinion,
+}
+
+impl ValueCount {
+    fn merge(&mut self, other: ValueCount, minion: Option<&str>) {
+        self.total.merge(other.total);
+        for (id, pm) in other.minions {
+            self.minions.entry(id).or_default().merge(pm);
+        }
+        match minion {
+            Some(id) => self.minions.entry(id.to_string()).or_default().merge(other.unattributed),
+            None => self.unattributed.merge(other.unattributed),
+        }
+    }
+}
+
+/// A row of the breakdown: a group of minions (or one minion, or one value
+/// of a field), how many minions the master has in it, how many of them
+/// sent the family, and what they sent. `detail` is the OS next to a
+/// version, or a minion's version and OS.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupRow {
     pub label: String,
     pub detail: String,
     pub minions: usize,
+    pub sent: usize,
     pub events: u64,
     pub bytes: u64,
     pub failed: u64,
@@ -868,6 +966,7 @@ impl GroupRow {
         let mut sum = Self::new(String::new(), String::new(), 0);
         for r in rows {
             sum.minions += r.minions;
+            sum.sent += r.sent;
             sum.events += r.events;
             sum.bytes += r.bytes;
             sum.failed += r.failed;
@@ -877,7 +976,7 @@ impl GroupRow {
     }
 
     fn new(label: String, detail: String, minions: usize) -> Self {
-        Self { label, detail, minions, events: 0, bytes: 0, failed: 0, peak_minute: 0 }
+        Self { label, detail, minions, sent: 0, events: 0, bytes: 0, failed: 0, peak_minute: 0 }
     }
 
     fn add(&mut self, m: &PerMinion) {
@@ -895,8 +994,8 @@ fn or_unknown(s: &str) -> &str {
     if s.is_empty() { "?" } else { s }
 }
 
-/// The minions one breakdown group stands for: the breakdown narrowed to
-/// them after `Enter` on their row.
+/// What one breakdown row stands for: the breakdown narrowed to it after
+/// `Enter` on the row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scope {
     pub grouping: Grouping,
@@ -910,7 +1009,13 @@ impl Scope {
     }
 
     pub fn title(&self) -> String {
-        if self.detail.is_empty() { self.label.clone() } else { format!("{} {}", self.label, self.detail) }
+        if self.grouping.field().is_some() {
+            format!("{} {}", self.grouping.label(), self.label)
+        } else if self.detail.is_empty() {
+            self.label.clone()
+        } else {
+            format!("{} {}", self.label, self.detail)
+        }
     }
 }
 
@@ -919,15 +1024,40 @@ fn group_key(m: &MinionInfo, grouping: Grouping) -> (String, String) {
         Grouping::VersionOs => (or_unknown(&m.salt_version).to_string(), or_unknown(&m.os_label()).to_string()),
         Grouping::Os => (or_unknown(&m.os_label()).to_string(), String::new()),
         Grouping::Version => (or_unknown(&m.salt_version).to_string(), String::new()),
-        Grouping::Minion => (m.id.clone(), format!("{} {}", or_unknown(&m.salt_version), m.os_label()).trim_end().to_string()),
+        Grouping::Minion | Grouping::Function | Grouping::User | Grouping::Outcome => {
+            (m.id.clone(), format!("{} {}", or_unknown(&m.salt_version), m.os_label()).trim_end().to_string())
+        }
     }
 }
 
 /// The selected family broken down by `grouping`, busiest first, over the
-/// minions in every one of `scopes`. Groups whose minions sent
-/// none of its events are listed too: a version that stays quiet is half of
-/// the comparison.
+/// minions in every one of `scopes`. A first scope on a field's value
+/// (narrowed to `outcome reject`, say) counts only the events with it.
+/// Groups whose minions sent none of its events are listed too: a version
+/// that stays quiet is half of the comparison.
 pub fn group_rows(family: &Family, grouping: Grouping, scopes: &[Scope], minions: &[MinionInfo], index: &HashMap<String, usize>) -> Vec<GroupRow> {
+    let by_busiest = |rows: &mut Vec<GroupRow>| {
+        rows.sort_by(|a, b| b.events.cmp(&a.events).then(b.minions.cmp(&a.minions)).then_with(|| a.label.cmp(&b.label)));
+    };
+    if grouping.field().is_some() {
+        let mut rows: Vec<GroupRow> = family.values.get(&grouping).into_iter().flatten().map(|(value, count)| {
+            let mut row = GroupRow::new(value.clone(), String::new(), 0);
+            row.add(&count.total);
+            row.sent = count.minions.len();
+            row
+        }).collect();
+        by_busiest(&mut rows);
+        return rows;
+    }
+    let (sent_by, unattributed, scopes) = match scopes.split_first() {
+        Some((first, rest)) if first.grouping.field().is_some() => {
+            match family.values.get(&first.grouping).and_then(|values| values.get(&first.label)) {
+                Some(count) => (&count.minions, &count.unattributed, rest),
+                None => return Vec::new(),
+            }
+        }
+        _ => (&family.minions, &family.unattributed, scopes),
+    };
     let unknown = || (UNKNOWN_MINION.to_string(), String::new());
     let in_scope = |m: Option<&MinionInfo>| scopes.iter().all(|s| {
         let key = m.map_or_else(unknown, |m| group_key(m, s.grouping));
@@ -938,14 +1068,16 @@ pub fn group_rows(family: &Family, grouping: Grouping, scopes: &[Scope], minions
     if grouping == Grouping::Minion {
         rows = minions.iter().filter(|m| in_scope(Some(m))).map(|m| {
             let mut row = GroupRow::new(m.id.clone(), group_key(m, grouping).1, 1);
-            if let Some(pm) = family.minions.get(&m.id) {
+            if let Some(pm) = sent_by.get(&m.id) {
                 row.add(pm);
+                row.sent = 1;
             }
             row
         }).collect();
-        rows.extend(family.minions.iter().filter(|(id, _)| cached(id).is_none() && in_scope(None)).map(|(id, pm)| {
+        rows.extend(sent_by.iter().filter(|(id, _)| cached(id).is_none() && in_scope(None)).map(|(id, pm)| {
             let mut row = GroupRow::new(id.clone(), UNKNOWN_MINION.to_string(), 1);
             row.add(pm);
+            row.sent = 1;
             row
         }));
     } else {
@@ -960,17 +1092,18 @@ pub fn group_rows(family: &Family, grouping: Grouping, scopes: &[Scope], minions
             let i = slot(&mut rows, group_key(m, grouping));
             rows[i].minions += 1;
         }
-        for (id, pm) in family.minions.iter().filter(|(id, _)| in_scope(cached(id))) {
+        for (id, pm) in sent_by.iter().filter(|(id, _)| in_scope(cached(id))) {
             let i = slot(&mut rows, cached(id).map_or_else(unknown, |m| group_key(m, grouping)));
             rows[i].add(pm);
+            rows[i].sent += 1;
         }
     }
-    if family.unattributed.count > 0 && scopes.is_empty() {
+    if unattributed.count > 0 && scopes.is_empty() {
         let mut row = GroupRow::new(NO_MINION.to_string(), String::new(), 0);
-        row.add(&family.unattributed);
+        row.add(unattributed);
         rows.push(row);
     }
-    rows.sort_by(|a, b| b.events.cmp(&a.events).then(b.minions.cmp(&a.minions)).then_with(|| a.label.cmp(&b.label)));
+    by_busiest(&mut rows);
     rows
 }
 
@@ -1025,9 +1158,54 @@ mod tests {
         let mut ts = 0.0;
         for i in 0..40 {
             ts += [5.0, 50.0, 300.0, 17.0][i % 4];
-            f.record(Some("w".into()), ts, 0, 0, false);
+            f.record(Some("w".into()), ts, 0, 0, false, Vec::new());
         }
         assert!(!f.periodic());
+    }
+
+    #[test]
+    fn some_families_group_by_what_their_events_say() {
+        let t0 = Instant::now();
+        let mut s = Stats::new(t0);
+        let keys = accepted(&["web1", "web2", "db1"]);
+        let auth = |s: &mut Stats, id: &str, act: &str| s.record_event(AUTH_FAMILY, &serde_json::json!({"id": id, "act": act, "result": act == "accept"}), 80, 1.0, &keys, t0);
+        auth(&mut s, "web1", "accept");
+        auth(&mut s, "web1", "reject");
+        auth(&mut s, "web1", "reject");
+        auth(&mut s, "db1", "reject");
+        auth(&mut s, "web2", "accept");
+        let new_job = |s: &mut Stats, fun: &str, user: &str| s.record_event("salt/job/20261120000000000001/new", &serde_json::json!({"fun": fun, "user": user}), 300, 1.0, &keys, t0);
+        new_job(&mut s, "state.apply", "root");
+        new_job(&mut s, "test.ping", "saltapi");
+        new_job(&mut s, "test.ping", "root");
+
+        let m = |id: &str, v: &str| MinionInfo { id: id.into(), salt_version: v.into(), osfinger: "Rocky-9".into(), ..Default::default() };
+        let minions = vec![m("web1", "3006.9"), m("web2", "3006.9"), m("db1", "3007.1"), m("quiet", "3007.1")];
+        let index: HashMap<String, usize> = minions.iter().enumerate().map(|(i, m)| (m.id.clone(), i)).collect();
+        let brief = |rows: Vec<GroupRow>| -> Vec<(String, usize, usize, u64)> { rows.into_iter().map(|r| (r.label, r.minions, r.sent, r.events)).collect() };
+
+        let family = s.family(AUTH_FAMILY).unwrap();
+        let outcomes = group_rows(family, Grouping::Outcome, &[], &minions, &index);
+        assert_eq!(brief(outcomes.clone()), vec![("reject".into(), 0, 2, 3), ("accept".into(), 0, 2, 2)]);
+        let rejected = Scope::of(Grouping::Outcome, &outcomes[0]);
+        assert_eq!(rejected.title(), "outcome reject");
+        let who: Vec<(String, u64)> = group_rows(family, Grouping::Minion, std::slice::from_ref(&rejected), &minions, &index)
+            .into_iter().filter(|r| r.events > 0).map(|r| (r.label, r.events)).collect();
+        assert_eq!(who, vec![("web1".to_string(), 2), ("db1".to_string(), 1)]);
+        assert_eq!(brief(group_rows(family, Grouping::Version, &[rejected], &minions, &index)), vec![
+            ("3006.9".into(), 2, 1, 2), ("3007.1".into(), 2, 1, 1),
+        ]);
+        assert_eq!(brief(group_rows(family, Grouping::Version, &[], &minions, &index))[0], ("3006.9".into(), 2, 2, 4));
+
+        let jobs = s.family(JOB_NEW_FAMILY).unwrap();
+        assert_eq!(brief(group_rows(jobs, Grouping::Function, &[], &minions, &index)), vec![("test.ping".into(), 0, 0, 2), ("state.apply".into(), 0, 0, 1)]);
+        assert_eq!(brief(group_rows(jobs, Grouping::User, &[], &minions, &index))[0], ("root".into(), 0, 0, 2));
+
+        assert_eq!(Grouping::VersionOs.within(JOB_NEW_FAMILY, false), Grouping::Function);
+        assert_eq!(Grouping::Outcome.within("minion_start", false), Grouping::VersionOs);
+        assert_eq!(Grouping::Outcome.within(AUTH_FAMILY, true), Grouping::VersionOs);
+        assert_eq!(Grouping::Minion.next_within(AUTH_FAMILY, false), Grouping::Outcome);
+        assert_eq!(Grouping::Outcome.next_within(AUTH_FAMILY, false), Grouping::VersionOs);
     }
 
     #[test]
@@ -1072,10 +1250,10 @@ mod tests {
         let mut f = Family::default();
         for (id, n) in [("a", 3), ("b", 2), ("ghost", 1)] {
             for k in 0..n {
-                f.record(Some(id.into()), k as f64, k, 100, id == "b");
+                f.record(Some(id.into()), k as f64, k, 100, id == "b", Vec::new());
             }
         }
-        f.record(None, 1.0, 0, 10, false);
+        f.record(None, 1.0, 0, 10, false, Vec::new());
         let rows = group_rows(&f, Grouping::VersionOs, &[], &minions, &index);
         let row = |label: &str, detail: &str, minions, events| (label.to_string(), detail.to_string(), minions, events);
         let brief = |rows: Vec<GroupRow>| -> Vec<(String, String, usize, u64)> { rows.into_iter().map(|r| (r.label, r.detail, r.minions, r.events)).collect() };
