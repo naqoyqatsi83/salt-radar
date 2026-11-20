@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc7] - 2026-11-20
+
+### Fixed
+
+- Step back out of the Stats tab's breakdown with `q` as with `Esc`, the way `q` closes popups, instead of asking to quit; with a filter applied, `Esc` clears it first and `q` leaves at once, as in Job Detail. The reset prompt's hints now say `q` cancels it too
+
 ## [0.12.0-rc6] - 2026-11-20
 
 ### Changed
