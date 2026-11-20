@@ -1966,12 +1966,16 @@ impl App {
         }
     }
 
-    /// `Esc` on the Stats tab: clears the breakdown's filter, then goes back
-    /// to the group it was narrowed from, then to the families.
-    pub(crate) fn stats_back(&mut self) {
-        if !self.stats_filter.is_empty() {
+    /// `Esc` or `q` in the Stats tab's breakdown: back to the group it was
+    /// narrowed from, then to the families. `Esc` first clears a filter, as
+    /// in Job Detail; `q` leaves the level filter and all.
+    pub(crate) fn stats_back(&mut self, filter_first: bool) {
+        if filter_first && !self.stats_filter.is_empty() {
             self.stats_filter.clear();
-        } else if let Some(scope) = self.stats_scopes.pop() {
+            return;
+        }
+        self.stats_filter.clear();
+        if let Some(scope) = self.stats_scopes.pop() {
             self.stats_grouping = scope.grouping;
             self.stats_group = Some((scope.label, scope.detail));
         } else {

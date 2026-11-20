@@ -242,14 +242,19 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::Gro
         title.push_str(&format!("\u{00B7} {} of {} minions sent it ", sent, app.minion_count()));
     }
     let hints: Vec<(&str, String)> = if drill {
-        vec![
+        let mut h = vec![
             ("\u{2191}\u{2193}", "row".to_string()),
             ("Enter", if by_minion { "detail" } else { "its minions" }.to_string()),
             ("g", "group".to_string()),
             ("o/O", "sort".to_string()),
             ("/", "filter".to_string()),
-            ("Esc", "back".to_string()),
-        ]
+        ];
+        if filter.is_empty() {
+            h.push(("Esc/q", "back".to_string()));
+        } else {
+            h.extend([("Esc", "clear filter".to_string()), ("q", "back".to_string())]);
+        }
+        h
     } else {
         vec![("g", "group".to_string())]
     };

@@ -156,7 +156,7 @@ pub fn draw_stats_reset_confirm(f: &mut Frame, observed: &str, events: &str) {
         Line::from(Span::styled(format!("  Discards {} of data ({} events).", observed, events), Style::default().fg(color::main_fg()))),
         Line::from(Span::styled("  Any other key cancels.", Style::default().fg(color::inactive_fg()))),
     ];
-    let hints = [("y", "reset".to_string()), ("Esc/n", "cancel".to_string())];
+    let hints = [("y", "reset".to_string()), ("Esc/n/q", "cancel".to_string())];
     render_popup(f, area, &lines, &hints, None, (false, false), 0, 0);
 }
 

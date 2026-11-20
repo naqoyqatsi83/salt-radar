@@ -1278,6 +1278,7 @@ impl App {
         }
 
         match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') if self.current_tab == Tab::Stats && self.stats_drill => self.stats_back(false),
             KeyCode::Char('q') | KeyCode::Char('Q') => {
                 if !self.config.confirm_quit {
                     return true;
@@ -1343,7 +1344,7 @@ impl App {
                 self.stats_grouping = self.stats_grouping.next();
                 self.stats_group = None;
             }
-            KeyCode::Esc if self.current_tab == Tab::Stats => self.stats_back(),
+            KeyCode::Esc if self.current_tab == Tab::Stats => self.stats_back(true),
             KeyCode::Char('z') | KeyCode::Char('Z') => {
                 if self.current_tab == Tab::Minions {
                     self.timed_out_collapsed = !self.timed_out_collapsed;

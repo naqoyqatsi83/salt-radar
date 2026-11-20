@@ -381,7 +381,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Stats | `↑`/`↓` | Select an event family; the breakdown below follows it |
 | Stats | `Enter` | Open the selected family's breakdown full-screen; there, narrow it to a group's minions, or open a minion's detail |
 | Stats | `/` | Filter the open breakdown by minion, version or OS |
-| Stats | `Esc` | In the breakdown: clear the filter, step back to the group it was narrowed from, then back to the families |
+| Stats | `Esc` / `q` | In the breakdown: step back to the group it was narrowed from, then to the families; with a filter applied, `Esc` clears it first |
 | Stats | `g` | Break the selected family down by Salt version × OS, OS, version or single minions |
 | Stats | `X` | Reset the statistics and start a new window (asks first; only `y` confirms) |
 | API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |
