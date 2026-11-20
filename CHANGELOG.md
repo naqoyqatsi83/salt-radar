@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc6] - 2026-11-20
+
+### Changed
+
+- Sort the Stats tab's families and breakdown and the Master Config tab by any column the way the other tables sort: click a column header, or `o` to step through the columns and `O` to reverse. This replaces the Stats tab's `s`, which sorted the families by count; clicking `Count` twice does that now
+- Draw the Stats and Master Config tabs' column headers like every other table's, grey and in Title Case, instead of blue; the `header_fg` theme key nothing else used is gone from the bundled themes, and a custom theme that sets it is still read
+
 ## [0.12.0-rc5] - 2026-11-20
 
 ### Added
