@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc8] - 2026-11-20
+
+### Added
+
+- Copy (`i`) or save (`I`) the IDs of the minions the Stats tab's breakdown lists, or of the group under its cursor (all the Windows minions on 3006.9, say), one per line, as `i`/`I` do on the Minions tab
+
+### Fixed
+
+- List every minion in the Stats tab's breakdown by minion, those that sent none of the family with 0, as the other groupings list their quiet groups: narrowed to a group whose minions sent nothing it said "Nothing matches the filter." with no filter set. A family the master fires itself (`salt/job/*/new`, runner events) now says so above its breakdown
+
 ## [0.12.0-rc7] - 2026-11-20
 
 ### Fixed
