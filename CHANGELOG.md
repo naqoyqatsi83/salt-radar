@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc9] - 2026-11-20
+
+### Added
+
+- Add a Master health panel to the Stats tab, beside the families on a terminal 160 columns wide or more and below them otherwise, to see whether a master is starving for a resource and not just busy, and to compare masters. A verdict line names the resources (CPU, memory, disk, network, workers) that are busy or starving, from rows rated against fixed thresholds: CPU busy, stolen by the hypervisor and throttled by a CPU quota on `salt-master.service`; the run queue per core; memory available, swapping and OOM kills; I/O wait and processes blocked on it; pressure stall for CPU, memory and I/O where the kernel tracks it; connections dropped by a full listen queue; and how close the master is to its open files limit. It also shows the MWorkers (today's Master load, which it replaces), the share of their time each kind of request takes and the pillar render time with `master_stats: True`, the ZMQ latency and job completion time, the throughput per hour (events, job returns and the share that failed, jobs, pillar renders, auth requests by outcome, the event bus volume) now, on average and in the busiest minute, and how many minions sent nothing in the window (#218)
+
 ## [0.12.0-rc8] - 2026-11-20
 
 ### Added
