@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc12] - 2026-11-21
+
+### Added
+
+- Break some families down on the Stats tab by what their events say (`g`): job and runner publishes by function and by user, job returns by function, `salt/auth` by outcome (accept, pend, reject, denied). `Enter` on a value lists the minions that sent it, so the ones stuck in a rejected-key loop, or the minions whose `state.apply` returns fail, stand out (#219)
+- Show next to how many minions a breakdown group has how many of them sent the family (`Sent`), so the quiet ones show per group (#219)
+
 ## [0.12.0-rc11] - 2026-11-20
 
 ### Added
