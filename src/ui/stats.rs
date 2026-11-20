@@ -222,8 +222,12 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::Gro
     let filter_bar = if drill { super::filter_bar(filter, app.is_filtering, app.input_cursor, format!("{} rows", groups.len()), true) } else { None };
     let note = if total == 0 {
         Some("  No events of this family yet.")
-    } else if groups.is_empty() {
+    } else if groups.is_empty() && !filter.is_empty() {
         Some("  Nothing matches the filter.")
+    } else if groups.is_empty() {
+        Some("  No minions in this group.")
+    } else if family.is_some_and(|fam| fam.minions.is_empty()) {
+        Some("  The master fires these events itself: no minion sends them.")
     } else {
         None
     };
@@ -248,6 +252,7 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::Gro
             ("g", "group".to_string()),
             ("o/O", "sort".to_string()),
             ("/", "filter".to_string()),
+            ("i/I", "minion list".to_string()),
         ];
         if filter.is_empty() {
             h.push(("Esc/q", "back".to_string()));

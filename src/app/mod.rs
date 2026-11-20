@@ -1942,6 +1942,33 @@ impl App {
         self.stats_group = Some((groups[to].label.clone(), groups[to].detail.clone()));
     }
 
+    /// `i`/`I` in the Stats tab's breakdown: the IDs of the minions it shows
+    /// when broken down by minion, else those of the group under the cursor,
+    /// one per line, with a file name hint naming the family and the groups.
+    pub(crate) fn stats_minion_ids(&self) -> (String, String) {
+        let groups = self.stats_groups();
+        let mut path = vec!["stats".to_string(), self.stats_family.clone()];
+        path.extend(self.stats_scopes.iter().map(|s| s.title()));
+        let ids: Vec<String> = if self.stats_grouping == crate::stats::Grouping::Minion {
+            groups.into_iter().map(|g| g.label).filter(|l| l != crate::stats::NO_MINION).collect()
+        } else {
+            let at = self.stats_group_index(&groups);
+            let Some(row) = groups.into_iter().nth(at) else { return Default::default() };
+            let Some(family) = self.stats.family(&self.stats_family) else { return Default::default() };
+            if row.label == crate::stats::NO_MINION {
+                return Default::default();
+            }
+            let scope = crate::stats::Scope::of(self.stats_grouping, &row);
+            path.push(scope.title());
+            let mut scopes = self.stats_scopes.clone();
+            scopes.push(scope);
+            crate::stats::group_rows(family, crate::stats::Grouping::Minion, &scopes, &self.minion_info, &self.minion_index)
+                .into_iter().map(|g| g.label).collect()
+        };
+        let hint = path.join(" ").split(|c: char| !c.is_ascii_alphanumeric() && c != '.').filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-");
+        (ids.iter().map(|id| format!("{}\n", id)).collect(), hint)
+    }
+
     /// `Enter` on the Stats tab: a family opens its breakdown, a group of
     /// minions narrows the breakdown to them, a minion opens its detail.
     pub(crate) fn stats_enter(&mut self) {

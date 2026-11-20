@@ -1142,6 +1142,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Stats", key: "`↑`/`↓`", action: "Select an event family; the breakdown below follows it" },
         Shortcut { tab: "Stats", key: "`Enter`", action: "Open the selected family's breakdown full-screen; there, narrow it to a group's minions, or open a minion's detail" },
         Shortcut { tab: "Stats", key: "`/`", action: "Filter the open breakdown by minion, version or OS" },
+        Shortcut { tab: "Stats", key: "`i` / `I`", action: "In the breakdown: copy / save the IDs of the minions it lists, or of the group under the cursor, one per line" },
         Shortcut { tab: "Stats", key: "`Esc` / `q`", action: "In the breakdown: step back to the group it was narrowed from, then to the families; with a filter applied, `Esc` clears it first" },
         Shortcut { tab: "Stats", key: "`g`", action: "Break the selected family down by Salt version × OS, OS, version or single minions" },
         Shortcut { tab: "Stats", key: "`X`", action: "Reset the statistics and start a new window (asks first; only `y` confirms)" },

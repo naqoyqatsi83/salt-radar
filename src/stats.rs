@@ -446,10 +446,15 @@ pub fn group_rows(family: &Family, grouping: Grouping, scopes: &[Scope], minions
     let cached = |id: &str| index.get(id).and_then(|&i| minions.get(i));
     let mut rows: Vec<GroupRow> = Vec::new();
     if grouping == Grouping::Minion {
-        rows = family.minions.iter().filter(|(id, _)| in_scope(cached(id))).map(|(id, pm)| {
-            let detail = cached(id).map(|m| group_key(m, grouping).1).unwrap_or_else(|| UNKNOWN_MINION.to_string());
-            GroupRow { label: id.clone(), detail, minions: 1, events: pm.count }
+        rows = minions.iter().filter(|m| in_scope(Some(m))).map(|m| GroupRow {
+            label: m.id.clone(),
+            detail: group_key(m, grouping).1,
+            minions: 1,
+            events: family.minions.get(&m.id).map_or(0, |pm| pm.count),
         }).collect();
+        rows.extend(family.minions.iter().filter(|(id, _)| cached(id).is_none() && in_scope(None)).map(|(id, pm)| {
+            GroupRow { label: id.clone(), detail: UNKNOWN_MINION.to_string(), minions: 1, events: pm.count }
+        }));
     } else {
         let mut at: HashMap<(String, String), usize> = HashMap::new();
         let mut slot = |rows: &mut Vec<GroupRow>, k: (String, String)| -> usize {
@@ -571,6 +576,9 @@ mod tests {
         assert_eq!(group_rows(&f, Grouping::Os, std::slice::from_ref(&windows), &minions, &index), vec![row("Windows-2022", "", 2, 5)]);
         let ghosts = Scope::of(Grouping::VersionOs, &rows[2]);
         assert_eq!(group_rows(&f, Grouping::Minion, &[ghosts], &minions, &index), vec![row("ghost", UNKNOWN_MINION, 1, 1)]);
+        assert_eq!(by_minion.len(), 5);
+        let quiet = Scope::of(Grouping::VersionOs, &rows[3]);
+        assert_eq!(group_rows(&f, Grouping::Minion, &[quiet], &minions, &index), vec![row("c", "3007.1 Rocky-9", 1, 0)]);
     }
 
     #[test]

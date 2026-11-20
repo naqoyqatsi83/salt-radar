@@ -1351,6 +1351,14 @@ impl App {
                     self.clamp_selection();
                 }
             }
+            KeyCode::Char('i') | KeyCode::Char('I') if self.current_tab == Tab::Stats && self.stats_drill => {
+                let (ids, hint) = self.stats_minion_ids();
+                if !ids.is_empty() && code == KeyCode::Char('i') {
+                    self.copy_to_clipboard(&ids);
+                } else if !ids.is_empty() {
+                    self.open_save_prompt(ids, &hint, "txt");
+                }
+            }
             KeyCode::Char('i') | KeyCode::Char('I') if self.current_tab == Tab::Minions => {
                 let ids = self.shown_minion_ids();
                 if !ids.is_empty() && code == KeyCode::Char('i') {
