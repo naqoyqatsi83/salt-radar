@@ -320,14 +320,10 @@ impl Stats {
 
     /// The families in display order: the core ones, then the rest by name
     /// (`OTHER_FAMILY` last), or with `by_count`, the busiest first.
-    pub fn rows(&self, by_count: bool) -> Vec<(&str, &Family)> {
+    pub fn rows(&self) -> Vec<(&str, &Family)> {
         let rank = |name: &str| CORE_FAMILIES.iter().position(|c| *c == name).unwrap_or(CORE_FAMILIES.len() + usize::from(name == OTHER_FAMILY));
         let mut rows: Vec<(&str, &Family)> = self.families.iter().map(|(k, v)| (k.as_str(), v)).collect();
-        if by_count {
-            rows.sort_by(|a, b| b.1.count.cmp(&a.1.count).then_with(|| rank(a.0).cmp(&rank(b.0))).then_with(|| a.0.cmp(b.0)));
-        } else {
-            rows.sort_by(|a, b| rank(a.0).cmp(&rank(b.0)).then_with(|| a.0.cmp(b.0)));
-        }
+        rows.sort_by(|a, b| rank(a.0).cmp(&rank(b.0)).then_with(|| a.0.cmp(b.0)));
         rows
     }
 
@@ -378,6 +374,15 @@ impl Grouping {
             Self::Os => "OS",
             Self::Version => "version",
             Self::Minion => "minion",
+        }
+    }
+
+    pub fn header(self) -> &'static str {
+        match self {
+            Self::VersionOs => "Version \u{00D7} OS",
+            Self::Os => "OS",
+            Self::Version => "Version",
+            Self::Minion => "Minion",
         }
     }
 }
@@ -533,9 +538,8 @@ mod tests {
             s.record_event("aaa/custom", None, 1.0, &acc, t0);
         }
         s.record_event("zzz/custom", None, 1.0, &acc, t0);
-        let names: Vec<&str> = s.rows(false).into_iter().map(|(n, _)| n).collect();
+        let names: Vec<&str> = s.rows().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, [CORE_FAMILIES, &["aaa/custom", "zzz/custom"]].concat());
-        assert_eq!(s.rows(true)[0].0, "aaa/custom");
     }
 
     #[test]

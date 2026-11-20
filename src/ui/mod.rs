@@ -71,7 +71,6 @@ pub mod color {
         label_fg: 90, 105, 135;
         title: 200, 220, 255;
         hi_fg: 200, 210, 230;
-        header_fg: 100, 140, 180;
         subtitle_fg: 130, 150, 190;
         version_fg: 90, 150, 210;
         hint_fg: 95, 108, 135;
@@ -702,11 +701,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
         Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused, &mut hits),
-        Tab::Master => master_config::draw_master(f, main_layout[1], app, tab_focused),
+        Tab::Master => master_config::draw_master(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Stats => {
-            let hits = stats::draw_stats(f, main_layout[1], app, tab_focused);
-            app.stats_row_hits = hits.families;
-            app.stats_group_hits = hits.groups;
+            let rows = stats::draw_stats(f, main_layout[1], app, tab_focused, &mut hits);
+            app.stats_row_hits = rows.families;
+            app.stats_group_hits = rows.groups;
         }
     }
     app.header_hits = hits;
@@ -1127,7 +1126,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Minions", key: "`z`", action: "Collapse/expand timed-out minions into one row" },
         Shortcut { tab: "Minions", key: "`i` / `I`", action: "Copy / save the IDs of the minions the list shows, one per line" },
         Shortcut { tab: "Minions", key: "`f`", action: "Toggle whether the Fleet Overview breakdown follows the active list filter" },
-        Shortcut { tab: "Minions, Jobs, Alerts, API", key: "`o` / `O`", action: "Sort by the next column / reverse the sort (also: click a column header)" },
+        Shortcut { tab: "Minions, Jobs, Alerts, API, Master Config, Stats", key: "`o` / `O`", action: "Sort by the next column / reverse the sort (also: click a column header)" },
         Shortcut { tab: "Minions, Events, Jobs, Alerts, API", key: "`v`", action: "Choose which columns the focused table shows, and their order" },
         Shortcut { tab: "Jobs (Live)", key: "`x`", action: "Pick the states the list shows: OK, FAILED, RUNNING, STUCK (still waiting after `job_straggler_secs`), UNCOUNTED (no target count: runner and wheel jobs); ticked ones are named in its top border" },
         Shortcut { tab: "Jobs (Cache)", key: "`/`", action: "Filter cache entries (server-side)" },
@@ -1144,7 +1143,6 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Stats", key: "`Enter`", action: "Open the selected family's breakdown full-screen; there, narrow it to a group's minions, or open a minion's detail" },
         Shortcut { tab: "Stats", key: "`/`", action: "Filter the open breakdown by minion, version or OS" },
         Shortcut { tab: "Stats", key: "`Esc`", action: "In the breakdown: clear the filter, step back to the group it was narrowed from, then back to the families" },
-        Shortcut { tab: "Stats", key: "`s`", action: "Sort the families by count, or back to the fixed order (the common families first, then by name)" },
         Shortcut { tab: "Stats", key: "`g`", action: "Break the selected family down by Salt version × OS, OS, version or single minions" },
         Shortcut { tab: "Stats", key: "`X`", action: "Reset the statistics and start a new window (asks first; only `y` confirms)" },
         Shortcut { tab: "API", key: "`x`", action: "Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`)" },

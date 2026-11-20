@@ -176,10 +176,9 @@ pub struct App {
     pub quit_confirm: bool,
 
     /// The Stats tab: its numbers, the family selected (by name, so the
-    /// cursor stays on it when sorted by count), the sort and the breakdown.
+    /// cursor stays on it when the list is sorted) and the breakdown.
     pub stats: crate::stats::Stats,
     pub stats_family: String,
-    pub stats_by_count: bool,
     pub stats_grouping: crate::stats::Grouping,
     /// The "Reset statistics?" prompt `X` opens on the Stats tab.
     pub stats_reset_confirm: bool,
@@ -534,6 +533,8 @@ pub struct App {
     /// natural order. The Job Cache is sorted by the agent across the whole
     /// job cache, not just the page on screen.
     pub table_sorts: HashMap<TableId, SortSpec>,
+    /// The same for the hand-drawn lists (Stats, Master Config).
+    pub list_sorts: HashMap<ListId, ListSort>,
     pub header_hits: Vec<HeaderHit>,
     pub cache_loading: bool,
     pub cache_loaded: bool,
@@ -1075,6 +1076,7 @@ impl App {
             cache_is_filtering: false,
             cache_focus: false,
             table_sorts: HashMap::new(),
+            list_sorts: HashMap::new(),
             header_hits: Vec::new(),
             cache_loading: false,
             cache_loaded: false,
@@ -1090,7 +1092,6 @@ impl App {
             quit_confirm: false,
             stats: crate::stats::Stats::default(),
             stats_family: crate::stats::CORE_FAMILIES[0].to_string(),
-            stats_by_count: false,
             stats_grouping: crate::stats::Grouping::default(),
             stats_reset_confirm: false,
             stats_row_hits: Vec::new(),
@@ -1876,7 +1877,27 @@ impl App {
 
     /// The Stats tab's families in display order.
     pub fn stats_rows(&self) -> Vec<(&str, &crate::stats::Family)> {
-        self.stats.rows(self.stats_by_count)
+        let mut rows = self.stats.rows();
+        if let Some((col, desc)) = self.list_sort(ListId::StatsFamilies) {
+            let now = Instant::now();
+            let minions = self.minion_count().max(1) as f64;
+            let key = |f: &crate::stats::Family| -> f64 {
+                match col {
+                    ListCol::RecentRate => self.stats.recent_per_hour(f, now),
+                    ListCol::RecentRatePerMinion => self.stats.recent_per_hour(f, now) / minions,
+                    ListCol::Median => f.median_interval().unwrap_or(f64::INFINITY),
+                    _ => f.count as f64,
+                }
+            };
+            rows.sort_by(|a, b| {
+                let ord = match col {
+                    ListCol::Family => a.0.cmp(b.0),
+                    _ => key(a.1).total_cmp(&key(b.1)),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
+        }
+        rows
     }
 
     /// The selected family broken down as `g` chose, narrowed to the
@@ -1887,6 +1908,18 @@ impl App {
         let terms = Self::filter_terms(self.filter_text_for(Tab::Stats));
         if !terms.is_empty() {
             rows.retain(|g| terms.iter().any(|t| Self::matches_filter(&g.label, t) || Self::matches_filter(&g.detail, t)));
+        }
+        if let Some((col, desc)) = self.list_sort(ListId::StatsGroups) {
+            let per_minion = |g: &crate::stats::GroupRow| if g.minions > 0 { g.events as f64 / g.minions as f64 } else { -1.0 };
+            rows.sort_by(|a, b| {
+                let ord = match col {
+                    ListCol::Group => a.label.cmp(&b.label).then_with(|| a.detail.cmp(&b.detail)),
+                    ListCol::Minions => a.minions.cmp(&b.minions),
+                    ListCol::RatePerMinion => per_minion(a).total_cmp(&per_minion(b)),
+                    _ => a.events.cmp(&b.events),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
         }
         rows
     }
@@ -2136,8 +2169,41 @@ impl App {
         }
     }
 
+    pub fn list_sort(&self, list: ListId) -> Option<ListSort> {
+        self.list_sorts.get(&list).copied()
+    }
+
+    /// The hand-drawn list the keyboard is on, if any.
+    fn current_list(&self) -> Option<ListId> {
+        match self.current_tab {
+            Tab::Stats if self.stats_drill => Some(ListId::StatsGroups),
+            Tab::Stats => Some(ListId::StatsFamilies),
+            Tab::Master => Some(ListId::MasterConfig),
+            _ => None,
+        }
+    }
+
+    /// The columns `list` showed in the last frame, left to right: which
+    /// ones it has depends on the panel's width and the grouping.
+    fn list_columns(&self, list: ListId) -> Vec<ListCol> {
+        self.header_hits.iter().filter_map(|h| match h.target {
+            SortTarget::List(l, col) if l == list => Some(col),
+            _ => None,
+        }).collect()
+    }
+
+    fn set_list_sort(&mut self, list: ListId, sort: Option<ListSort>) {
+        match sort {
+            Some(s) => { self.list_sorts.insert(list, s); }
+            None => { self.list_sorts.remove(&list); }
+        }
+        if list == ListId::MasterConfig {
+            self.master_selected = 0;
+        }
+    }
+
     /// Header click: ascending, then descending, then back to natural order.
-    fn click_sort(sort: Option<SortSpec>, col: Column) -> Option<SortSpec> {
+    fn click_sort<C: PartialEq + Copy>(sort: Option<(C, bool)>, col: C) -> Option<(C, bool)> {
         match sort {
             Some((c, false)) if c == col => Some((col, true)),
             Some((c, true)) if c == col => None,
@@ -2147,7 +2213,7 @@ impl App {
 
     /// `o`: step the sort to the next shown column (ascending), and past the
     /// last one back to natural order.
-    fn next_sort(sort: Option<SortSpec>, cols: &[Column]) -> Option<SortSpec> {
+    fn next_sort<C: PartialEq + Copy>(sort: Option<(C, bool)>, cols: &[C]) -> Option<(C, bool)> {
         let next = match sort.and_then(|(c, _)| cols.iter().position(|x| *x == c)) {
             Some(i) => cols.get(i + 1),
             None => cols.first(),
@@ -2221,6 +2287,17 @@ impl App {
             let group = if s.sources.is_empty() { s.kind } else { SettingKind::Explicit };
             (group, set_in(i), s.key.clone())
         });
+        if let Some((col, desc)) = self.list_sort(ListId::MasterConfig) {
+            rows.sort_by(|&a, &b| {
+                let (sa, sb) = (&mc.settings[a], &mc.settings[b]);
+                let ord = match col {
+                    ListCol::Value => sa.line.cmp(&sb.line),
+                    ListCol::Source => set_in(a).cmp(&set_in(b)),
+                    _ => sa.key.cmp(&sb.key),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
+        }
         rows
     }
 

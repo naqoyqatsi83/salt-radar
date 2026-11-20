@@ -208,7 +208,7 @@ The master's configuration, as its files set it:
 Event rates and the master's load, to see which minions make it work and how hard, and to compare two masters side by side (two SSH sessions, one salt-radar on each):
 
 - Everything is a **rate**: events per hour, and per hour per minion, over the window salt-radar has been watching (the header says how long), so a master watched for 4 hours compares with one watched for 30 minutes. The same rates over the last 15 minutes show what's happening now (left out in a narrow terminal)
-- **Event families** — tags with job IDs, minion IDs and numbers collapsed (`salt/job/*/ret/*`, `salt/minion/*/start`, `minion_start`, `salt/auth`, `minion/refresh/*`, …). The common ones come first in a fixed order, even with no events yet, so two screens line up row by row; `s` sorts by count instead. Each row has the median interval between two events of the family from the same minion: `↻` marks a family whose events come at regular intervals (a minion restarting every 5 minutes, a schedule), `◌ low` one whose interval is over half the window, so its rate can still move a lot
+- **Event families** — tags with job IDs, minion IDs and numbers collapsed (`salt/job/*/ret/*`, `salt/minion/*/start`, `minion_start`, `salt/auth`, `minion/refresh/*`, …). The common ones come first in a fixed order, even with no events yet, so two screens line up row by row; sorting by a column (see [Columns and sorting](#columns-and-sorting)) shows the busiest instead. Each row has the median interval between two events of the family from the same minion: `↻` marks a family whose events come at regular intervals (a minion restarting every 5 minutes, a schedule), `◌ low` one whose interval is over half the window, so its rate can still move a lot
 - **Breakdown** of the selected family by Salt version × OS, OS, version or single minions (`g`): how many minions the master has in each group, the rate per minion and the group's share. Groups that send none of it are listed too, so a version that stays quiet is part of the comparison. Below the families it's a preview; `Enter` opens it full-screen to scroll through every group, filter it (`/`) and narrow it to a group's minions (`Enter` again, e.g. the Windows minions on 3006.9), and open a minion's detail from there; `Esc` steps back
 - **Master load**, now, average and peak over the window: how many MWorkers are tied up out of `worker_threads` (running, or waiting for a process they started, like gpg: a worker waiting on gpg uses no CPU, so it's counted here rather than read from CPU; `⚠ all busy` when none is free), their CPU, their memory and how fast it grows, the CPU of the processes they run and wait for (gpg decrypting GPG-encrypted pillar, `cmd` renderers), how many gpg processes work for the master, and the ZMQ latency the Dashboard shows
 - `X` resets the statistics and starts a new window, after a dialog saying what it discards; only `y` confirms
@@ -225,7 +225,7 @@ Event rates and the master's load, to see which minions make it work and how har
 
 ### Columns and sorting
 - The Minions, Events, Jobs (both tables), Alerts and API request log tables let you choose which columns are shown and in what order: `v` opens a picker for the focused table (`+`/`-` move a column, `Space` shows/hides it, `Enter` saves), also editable in the Config Editor — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their sections of `salt-radar.toml`
-- Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order). Sorting lasts for the session
+- Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order, Master Config in Salt's load order, Stats families in their fixed order and its breakdown busiest first). Sorting lasts for the session
 - Optional columns beyond the defaults: Live Jobs and Job Cache Started (the JID already holds the start time), Minions Proto/Seen/Fail%/Lag, Events Minion, Alerts Since/Count
 - Columns are as wide as their longest value, not a fixed width, so short columns don't spread a table out and long values aren't cut while there's room; spare room widens the gaps between columns up to 4 spaces. When a panel is too narrow, the least needed text gives way first: Minions' OS, then Salt and Arch before the minion ID; a job's Function and Args before its Target (except a list target over 40 characters); an event's Minion before its Tag
 
@@ -365,7 +365,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Minions | `z` | Collapse/expand timed-out minions into one row |
 | Minions | `i` / `I` | Copy / save the IDs of the minions the list shows, one per line |
 | Minions | `f` | Toggle whether the Fleet Overview breakdown follows the active list filter |
-| Minions, Jobs, Alerts, API | `o` / `O` | Sort by the next column / reverse the sort (also: click a column header) |
+| Minions, Jobs, Alerts, API, Master Config, Stats | `o` / `O` | Sort by the next column / reverse the sort (also: click a column header) |
 | Minions, Events, Jobs, Alerts, API | `v` | Choose which columns the focused table shows, and their order |
 | Jobs (Live) | `x` | Pick the states the list shows: OK, FAILED, RUNNING, STUCK (still waiting after `job_straggler_secs`), UNCOUNTED (no target count: runner and wheel jobs); ticked ones are named in its top border |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
@@ -382,7 +382,6 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Stats | `Enter` | Open the selected family's breakdown full-screen; there, narrow it to a group's minions, or open a minion's detail |
 | Stats | `/` | Filter the open breakdown by minion, version or OS |
 | Stats | `Esc` | In the breakdown: clear the filter, step back to the group it was narrowed from, then back to the families |
-| Stats | `s` | Sort the families by count, or back to the fixed order (the common families first, then by name) |
 | Stats | `g` | Break the selected family down by Salt version × OS, OS, version or single minions |
 | Stats | `X` | Reset the statistics and start a new window (asks first; only `y` confirms) |
 | API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |

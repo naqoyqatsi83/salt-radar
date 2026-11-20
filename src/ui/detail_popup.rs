@@ -1563,7 +1563,7 @@ impl ReturnsTable {
     }
 
     fn header(&self, id_w: usize) -> Line<'static> {
-        let label = Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD);
+        let label = super::table::header_style();
         let mut text = format!("   {:<id_w$}  {:<sw$}", "Minion", "", sw = self.status_w);
         match self.counts {
             Some((ok, chg, fail)) => text.push_str(&format!("  {:>ok$}  {:>chg$}  {:>fail$}", "OK", "Chg", "Fail")),
@@ -2151,10 +2151,10 @@ fn draw_event_sniffer(
 
         // Column header
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:>nw$} ", "#", nw = num_w - 3), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{:<tw$}", "Time", tw = time_w), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{:<jw$}", "JID", jw = jid_w), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{:<tyw$}", "Type", tyw = type_w), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {:>nw$} ", "#", nw = num_w - 3), super::table::header_style()),
+            Span::styled(format!("{:<tw$}", "Time", tw = time_w), super::table::header_style()),
+            Span::styled(format!("{:<jw$}", "JID", jw = jid_w), super::table::header_style()),
+            Span::styled(format!("{:<tyw$}", "Type", tyw = type_w), super::table::header_style()),
         ]));
         lines.push(Line::from(Span::styled(
             format!("  {}", "\u{2500}".repeat((area.width as usize).saturating_sub(2))),

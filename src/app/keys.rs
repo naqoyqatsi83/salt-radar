@@ -1301,9 +1301,6 @@ impl App {
                     self.popup_tab = Some(self.current_tab);
                 }
             }
-            KeyCode::Char('s') | KeyCode::Char('S') if self.current_tab == Tab::Stats => {
-                self.stats_by_count = !self.stats_by_count;
-            }
             KeyCode::Char('s') | KeyCode::Char('S') => {
                 if self.admin_mode && self.current_tab == Tab::Minions {
                     // Reset any stuck scan state and start fresh
@@ -1433,12 +1430,19 @@ impl App {
                 if let Some(table) = self.current_table() {
                     let next = Self::next_sort(self.sort_of(table), &self.columns(table));
                     self.set_sort(table, next);
+                } else if let Some(list) = self.current_list() {
+                    let next = Self::next_sort(self.list_sort(list), &self.list_columns(list));
+                    self.set_list_sort(list, next);
                 }
             }
             KeyCode::Char('O') => {
                 if let Some(table) = self.current_table() {
                     if let Some((col, desc)) = self.sort_of(table) {
                         self.set_sort(table, Some((col, !desc)));
+                    }
+                } else if let Some(list) = self.current_list() {
+                    if let Some((col, desc)) = self.list_sort(list) {
+                        self.set_list_sort(list, Some((col, !desc)));
                     }
                 }
             }
@@ -1669,12 +1673,17 @@ impl App {
         }
 
         if let Some(hit) = self.header_hits.iter().find(|h| h.y == row && col >= h.x0 && col < h.x1).copied() {
-            match hit.table {
-                TableId::LiveJobs => self.cache_focus = false,
-                TableId::JobCache => self.cache_focus = true,
-                _ => {}
+            match hit.target {
+                SortTarget::Table(table, col) => {
+                    match table {
+                        TableId::LiveJobs => self.cache_focus = false,
+                        TableId::JobCache => self.cache_focus = true,
+                        _ => {}
+                    }
+                    self.set_sort(table, Self::click_sort(self.sort_of(table), col));
+                }
+                SortTarget::List(list, col) => self.set_list_sort(list, Self::click_sort(self.list_sort(list), col)),
             }
-            self.set_sort(hit.table, Self::click_sort(self.sort_of(hit.table), hit.col));
             self.last_click_at = None;
             return false;
         }

@@ -5,15 +5,15 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::types::{ConfigSetting, MasterConfig, SettingKind, SourceRelation, Tab};
+use crate::types::{ConfigSetting, HeaderHit, ListCol, ListId, MasterConfig, SettingKind, SourceRelation, Tab};
 
 use super::color;
-use super::table::cell;
+use super::table::{cell, HeaderRow};
 
-pub fn draw_master(f: &mut Frame, area: Rect, app: &App, focused: bool) {
+pub fn draw_master(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hits: &mut Vec<HeaderHit>) {
     let [left, right] = super::split_panes(area, app);
     let rows = app.filtered_master_settings();
-    draw_master_list(f, left, app, focused, &rows);
+    draw_master_list(f, left, app, focused, &rows, header_hits);
     let selected = rows.get(app.master_selected.min(rows.len().saturating_sub(1)));
     let setting = app.master_config.as_ref().zip(selected).map(|(mc, &i)| (mc, &mc.settings[i]));
     draw_setting_source(f, right, setting, app.config.master_wrap);
@@ -244,7 +244,7 @@ fn reload_status(app: &App) -> String {
     }
 }
 
-fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &[usize]) {
+fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &[usize], header_hits: &mut Vec<HeaderHit>) {
     let border_style = Style::default().fg(if focused { color::border_focus() } else { color::border() });
     let total = rows.len();
     let selected = app.master_selected.min(total.saturating_sub(1));
@@ -254,6 +254,7 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
     let hints: Vec<(&str, String)> = vec![
         ("/", "filter".to_string()),
         ("Enter", "value".to_string()),
+        ("o/O", "sort".to_string()),
         ("r", "reload".to_string()),
         ("PgUp/PgDn", "page".to_string()),
     ];
@@ -297,17 +298,16 @@ fn draw_master_list(f: &mut Frame, area: Rect, app: &App, focused: bool, rows: &
     };
 
     let width = (inner.width as usize).saturating_sub(2);
-    let key_w = rows.iter().map(|&i| mc.settings[i].key.chars().count()).max().unwrap_or(3).clamp(3, 26) + 1;
-    let source_w = rows.iter().map(|&i| source_label(mc, &mc.settings[i]).chars().count() + 1).max().unwrap_or(7).clamp(7, 29);
+    let key_w = rows.iter().map(|&i| mc.settings[i].key.chars().count()).max().unwrap_or(4).clamp(4, 26) + 1;
+    let source_w = rows.iter().map(|&i| source_label(mc, &mc.settings[i]).chars().count() + 1).max().unwrap_or(8).clamp(8, 29);
     let value_w = width.saturating_sub(key_w + source_w + 1).max(8);
-    let header = Style::default().fg(color::header_fg()).add_modifier(Modifier::BOLD);
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        cell("Key", key_w, false, header),
-        cell("Value", value_w, false, header),
-        Span::raw(" "),
-        cell("Source", source_w, false, header),
-    ]));
+    let mut head = HeaderRow::new(ListId::MasterConfig, app.list_sort(ListId::MasterConfig), inner.x, inner.y + lines.len() as u16);
+    head.raw(Span::raw("  "));
+    head.col("Key", key_w, false, ListCol::Key, header_hits);
+    head.col("Value", value_w, false, ListCol::Value, header_hits);
+    head.raw(Span::raw(" "));
+    head.col("Source", source_w, false, ListCol::Source, header_hits);
+    lines.push(head.line());
 
     if total == 0 {
         lines.push(Line::from(Span::styled("  No settings match the filter.", Style::default().fg(color::inactive_fg()))));

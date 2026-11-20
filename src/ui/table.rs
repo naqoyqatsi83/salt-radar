@@ -5,7 +5,7 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::types::{Column, HeaderHit, SortSpec, TableId};
+use crate::types::{Column, HeaderHit, ListCol, ListId, ListSort, SortSpec, SortTarget, TableId};
 
 use super::color;
 
@@ -139,18 +139,63 @@ pub fn header_line(table: TableId, cols: &[Column], widths: &[usize], sort: Opti
     let mut spans = vec![Span::raw("  ")];
     let mut cx = x + 2;
     for (&col, &w) in cols.iter().zip(widths) {
-        let (label, style) = match sort {
-            Some((c, desc)) if c == col => (
-                format!("{}{}", col.header(), if desc { "\u{25BC}" } else { "\u{25B2}" }),
-                Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
-            ),
-            _ => (col.header().to_string(), Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-        };
-        spans.push(cell(&label, w, col.right_aligned(), style));
-        hits.push(HeaderHit { y, x0: cx, x1: cx.saturating_add(w as u16), col, table });
+        let desc = sort.filter(|(c, _)| *c == col).map(|(_, d)| d);
+        spans.push(sort_cell(col.header(), w, col.right_aligned(), desc));
+        hits.push(HeaderHit { y, x0: cx, x1: cx.saturating_add(w as u16), target: SortTarget::Table(table, col) });
         cx = cx.saturating_add(w as u16);
     }
     Line::from(spans)
+}
+
+/// A sortable column's header cell; the column sorted by (`desc` set) in
+/// yellow with ▲ or ▼.
+fn sort_cell(label: &str, w: usize, right: bool, desc: Option<bool>) -> Span<'static> {
+    match desc {
+        Some(desc) => cell(
+            &format!("{}{}", label, if desc { "\u{25BC}" } else { "\u{25B2}" }),
+            w,
+            right,
+            Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD),
+        ),
+        None => cell(label, w, right, header_style()),
+    }
+}
+
+/// The header row of a hand-drawn list, built cell by cell: sortable
+/// columns look and click like `header_line`'s, other text (indents, gaps,
+/// columns that don't sort) goes in as it is.
+pub struct HeaderRow {
+    spans: Vec<Span<'static>>,
+    x: u16,
+    y: u16,
+    list: ListId,
+    sort: Option<ListSort>,
+}
+
+impl HeaderRow {
+    pub fn new(list: ListId, sort: Option<ListSort>, x: u16, y: u16) -> Self {
+        Self { spans: Vec::new(), x, y, list, sort }
+    }
+
+    pub fn raw(&mut self, span: Span<'static>) {
+        self.x = self.x.saturating_add(span.width() as u16);
+        self.spans.push(span);
+    }
+
+    pub fn col(&mut self, label: &str, w: usize, right: bool, col: ListCol, hits: &mut Vec<HeaderHit>) {
+        let desc = self.sort.filter(|(c, _)| *c == col).map(|(_, d)| d);
+        hits.push(HeaderHit { y: self.y, x0: self.x, x1: self.x.saturating_add(w as u16), target: SortTarget::List(self.list, col) });
+        self.raw(sort_cell(label, w, right, desc));
+    }
+
+    pub fn line(self) -> Line<'static> {
+        Line::from(self.spans)
+    }
+}
+
+/// A table's column headers, in every table and list of the app.
+pub fn header_style() -> Style {
+    Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)
 }
 
 /// Border hints every configurable table shares.
@@ -248,5 +293,22 @@ mod tests {
         assert_eq!(fit("abc", 2), "ab");
         assert_eq!(pad("ok", 5, false), "ok   ");
         assert_eq!(pad("7", 4, true), "  7 ");
+    }
+
+    #[test]
+    fn hand_drawn_headers_click_and_mark_like_table_headers() {
+        let mut hits = Vec::new();
+        let mut row = HeaderRow::new(ListId::StatsFamilies, Some((ListCol::Count, true)), 10, 4);
+        row.raw(Span::raw("  "));
+        row.col("Family", 8, false, ListCol::Family, &mut hits);
+        row.col("Count", 8, true, ListCol::Count, &mut hits);
+        let text: String = row.line().spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "  Family   Count\u{25BC} ");
+        let spans: Vec<(u16, u16, SortTarget)> = hits.iter().map(|h| (h.x0, h.x1, h.target)).collect();
+        assert_eq!(spans, [
+            (12, 20, SortTarget::List(ListId::StatsFamilies, ListCol::Family)),
+            (20, 28, SortTarget::List(ListId::StatsFamilies, ListCol::Count)),
+        ]);
+        assert!(hits.iter().all(|h| h.y == 4));
     }
 }

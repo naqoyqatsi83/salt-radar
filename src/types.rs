@@ -1066,6 +1066,43 @@ impl Column {
 /// the App side means the table's natural order.
 pub type SortSpec = (Column, bool);
 
+/// A list drawn by hand rather than from configured columns (its columns
+/// follow the panel's width or the breakdown's grouping) that still sorts
+/// like the configurable tables: by header click and `o`/`O`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ListId {
+    StatsFamilies,
+    StatsGroups,
+    MasterConfig,
+}
+
+/// A sortable column of a `ListId` list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListCol {
+    Family,
+    Count,
+    Rate,
+    RatePerMinion,
+    RecentRate,
+    RecentRatePerMinion,
+    Median,
+    Group,
+    Minions,
+    Share,
+    Key,
+    Value,
+    Source,
+}
+
+pub type ListSort = (ListCol, bool);
+
+/// What a click on a column header sorts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortTarget {
+    Table(TableId, Column),
+    List(ListId, ListCol),
+}
+
 /// Screen span of one rendered column header, recorded each frame so a
 /// header click hit-tests against what was actually drawn.
 #[derive(Clone, Copy, Debug)]
@@ -1073,8 +1110,7 @@ pub struct HeaderHit {
     pub y: u16,
     pub x0: u16,
     pub x1: u16,
-    pub col: Column,
-    pub table: TableId,
+    pub target: SortTarget,
 }
 
 /// Where the Job Detail popup's last frame put its returns list (each
