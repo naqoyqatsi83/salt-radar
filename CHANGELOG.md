@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc10] - 2026-11-20
+
+### Added
+
+- Show in the Master health panel how the disk holding the job cache keeps up (request latency, busy time, throughput), found through the mount table so LVM and btrfs work, and the share of TCP segments retransmitted. Neither needs a cloud API: a throttled cloud volume shows as high latency at low throughput, packet loss or a capped link as retransmits
+
+### Changed
+
+- Separate the Master health panel's sections with an empty line; on a short terminal the empty lines go first
+
 ## [0.12.0-rc9] - 2026-11-20
 
 ### Added
