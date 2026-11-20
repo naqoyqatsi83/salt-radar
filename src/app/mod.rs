@@ -559,7 +559,8 @@ pub enum AgentMessage {
     /// timings don't include however long it then waited in the queue for
     /// the main loop to drain it.
     Result { id: u64, cmd: String, ok: bool, data: serde_json::Value, received: Instant },
-    Event { tag: String, data: serde_json::Value, ts: f64, received: Instant },
+    /// `bytes`: the length of the line it came in, for the event bus volume.
+    Event { tag: String, data: serde_json::Value, ts: f64, bytes: u64, received: Instant },
     Error { message: String },
     /// The agent's event bus listener went up (`None`) or down (why).
     EventBus { error: Option<String> },

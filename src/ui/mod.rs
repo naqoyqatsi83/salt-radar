@@ -1416,6 +1416,12 @@ fn stats_help_lines() -> Vec<Line<'static>> {
         row("MWorkers busy", "running, or waiting for a process they started (gpg decrypting pillar),"),
         row("", "  which takes no CPU of their own; the Dashboard and alerts average it over a minute"),
         row("Subprocess CPU", "CPU of the processes the workers ran and waited for, counted when they end"),
+        row("Master health", "Now is the latest poll, or the last whole minute for throughput; Avg the window;"),
+        row("", "  Peak the worst (the lowest for memory available); a dot turns yellow or red past fixed limits"),
+        row("CPU steal", "CPU time the hypervisor gave other guests: a VM starved by its host"),
+        row("Pressure", "share of time some work waited for CPU, memory or I/O (Linux pressure stall)"),
+        row("Worker time", "what the MWorkers spent their time on; needs master_stats: True on the master"),
+        row("Event bus", "the events' size as salt-radar gets them (JSON), a little more than on the bus"),
         row("X", "starts a new window after asking; only y confirms"),
     ]
 }

@@ -298,7 +298,7 @@ def cmd_list_processes(opts, req):
                     elif program == "salt-master" and "ReqServer" in cmdline: role = "ReqServer"
                     else: role = _SALT_DAEMONS[program]
 
-                    processes.append({
+                    proc = {
                         "pid": pid,
                         "role": role,
                         "rss_kb": rss_kb,
@@ -306,7 +306,10 @@ def cmd_list_processes(opts, req):
                         "child_cpu_ticks": child_cpu_ticks,
                         "state": state,
                         "ppid": parents[pid],
-                    })
+                    }
+                    if program == "salt-master":
+                        proc["open_files"], proc["open_files_limit"] = _master_files(pid)
+                    processes.append(proc)
                 except (OSError, IndexError, ValueError):
                     continue
     except OSError:
@@ -321,11 +324,21 @@ def cmd_list_processes(opts, req):
             children[parent] = children.get(parent, 0) + 1
     for proc in processes:
         proc["children"] = children.get(proc["pid"], 0)
-    result(req["id"], "list_processes", data={
+    data = {
         "processes": processes,
         "clk_tck": os.sysconf("SC_CLK_TCK"),
         "gpg_processes": _count_master_gpg(parents, gpg, masters, _gpg_keydir(opts)),
-    })
+    }
+    # The master's own process, the one not started by another salt-master,
+    # sits in the cgroup systemd gives salt-master.service.
+    main = next((pid for pid in sorted(masters) if parents.get(pid) not in masters), None)
+    cgroup = _read("/proc/{}/cgroup".format(main)) if main else None
+    where = _cpu_stat_path(cgroup) if cgroup else None
+    text = _read(where[0]) if where else None
+    throttling = _parse_cpu_stat(text, where[1]) if text else None
+    if throttling:
+        data["cpu_throttling"] = throttling
+    result(req["id"], "list_processes", data=data)
 
 
 def cmd_list_services(opts, req):
@@ -481,6 +494,149 @@ def cmd_list_services(opts, req):
     result(req["id"], "list_services", data={"services": services})
 
 
+def _read(path):
+    """A small /proc or /sys file's text, None if it can't be read."""
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _parse_proc_stat(text):
+    """CPU time spent waiting on I/O and stolen by the hypervisor (jiffies
+    since boot), and how many processes are running and blocked on I/O."""
+    out = {}
+    for line in text.splitlines():
+        words = line.split()
+        if not words:
+            continue
+        if words[0] == "cpu":
+            fields = [int(x) for x in words[1:]]
+            # user nice system idle iowait irq softirq steal ...
+            out["cpu_iowait_jiffies"] = fields[4] if len(fields) > 4 else 0
+            out["cpu_steal_jiffies"] = fields[7] if len(fields) > 7 else 0
+        elif words[0] in ("procs_running", "procs_blocked") and len(words) > 1:
+            out[words[0]] = int(words[1])
+    return out
+
+
+def _parse_psi(text):
+    """Microseconds since boot that some task stalled on the resource, from
+    a /proc/pressure file's `some` line."""
+    for line in text.splitlines():
+        words = line.split()
+        if words and words[0] == "some":
+            for w in words[1:]:
+                if w.startswith("total="):
+                    return int(w[len("total="):])
+    return None
+
+
+def _parse_vmstat(text):
+    """Pages swapped in and out, major page faults and OOM kills since boot."""
+    names = {"pswpin": "swap_in_pages", "pswpout": "swap_out_pages", "pgmajfault": "major_faults", "oom_kill": "oom_kills"}
+    out = {}
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) == 2 and words[0] in names:
+            out[names[words[0]]] = int(words[1])
+    return out
+
+
+def _parse_netstat(text):
+    """Connections the kernel dropped because a listen queue was full, since
+    boot (`TcpExt:` header and value lines of /proc/net/netstat)."""
+    lines = [l.split() for l in text.splitlines()]
+    for head, values in zip(lines, lines[1:]):
+        if head and head[0] == "TcpExt:" and values and values[0] == "TcpExt:":
+            row = dict(zip(head[1:], values[1:]))
+            out = {}
+            for key, name in (("ListenOverflows", "listen_overflows"), ("ListenDrops", "listen_drops")):
+                if key in row:
+                    out[name] = int(row[key])
+            return out
+    return {}
+
+
+def _saturation():
+    """What tells a master starving for a resource from one just busy: CPU
+    stolen by the hypervisor and waiting on I/O, the run queue, pressure
+    stall (where the kernel has it), swapping, OOM kills and dropped
+    connections. Readings it can't make are left out."""
+    out = {}
+    for path, parse in (("/proc/stat", _parse_proc_stat), ("/proc/vmstat", _parse_vmstat), ("/proc/net/netstat", _parse_netstat)):
+        text = _read(path)
+        if text is not None:
+            try:
+                out.update(parse(text))
+            except (ValueError, IndexError):
+                pass
+    psi = {}
+    for resource in ("cpu", "memory", "io"):
+        text = _read("/proc/pressure/" + resource)
+        total = _parse_psi(text) if text else None
+        if total is not None:
+            psi[resource] = total
+    if psi:
+        out["psi_us"] = psi
+    return out
+
+
+def _parse_fd_limit(text):
+    """The soft `Max open files` limit from /proc/<pid>/limits, None if
+    unlimited or missing."""
+    for line in text.splitlines():
+        if line.startswith("Max open files"):
+            soft = line[len("Max open files"):].split()[0]
+            return int(soft) if soft.isdigit() else None
+    return None
+
+
+def _cpu_stat_path(cgroup_text):
+    """Where a process's cgroup keeps its CPU accounting, from
+    /proc/<pid>/cgroup: the unified hierarchy (cgroup v2) or v1's cpu
+    controller."""
+    for line in cgroup_text.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        _, controllers, path = parts
+        if controllers == "":
+            v2 = "/sys/fs/cgroup" + path.rstrip("/") + "/cpu.stat"
+            if os.path.exists(v2):
+                return v2, False
+        elif "cpu" in controllers.split(","):
+            return "/sys/fs/cgroup/" + controllers + path.rstrip("/") + "/cpu.stat", True
+    return None
+
+
+def _parse_cpu_stat(text, v1):
+    """How often a cgroup's CPU quota held it back: periods, throttled
+    periods and the time throttled (microseconds; v1 counts nanoseconds).
+    None when no quota applies: no periods are counted then."""
+    row = {}
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) == 2 and words[1].isdigit():
+            row[words[0]] = int(words[1])
+    if not row.get("nr_periods"):
+        return None
+    usec = row.get("throttled_time", 0) // 1000 if v1 else row.get("throttled_usec", 0)
+    return {"periods": row["nr_periods"], "throttled": row.get("nr_throttled", 0), "throttled_usec": usec}
+
+
+def _master_files(pid):
+    """Open files of a salt-master process and its soft limit, (None, None)
+    when they can't be read (another user's process without root)."""
+    try:
+        fds = len(os.listdir("/proc/{}/fd".format(pid)))
+    except OSError:
+        return None, None
+    text = _read("/proc/{}/limits".format(pid))
+    return fds, _parse_fd_limit(text) if text else None
+
+
 def cmd_get_system_info(opts, req):
     info = {
         "load_1": 0.0, "load_5": 0.0, "load_15": 0.0,
@@ -490,6 +646,7 @@ def cmd_get_system_info(opts, req):
         "network_rx_rate": 0.0, "network_tx_rate": 0.0,
         "cpu_total_jiffies": 0, "cpu_idle_jiffies": 0,
     }
+    info.update(_saturation())
     try:
         # Load
         with open("/proc/loadavg", "r") as f:

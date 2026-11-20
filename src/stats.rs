@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::types::{is_jid, MinionInfo, SaltProcess, SaltProcessRole};
+use crate::types::{is_jid, CpuThrottling, MinionInfo, SaltProcess, SaltProcessRole, SystemInfo};
 
 /// Families every master shows, first and in this order, even with no
 /// events yet, so two salt-radar screens side by side line up row by row.
@@ -114,12 +114,13 @@ impl Family {
     }
 }
 
-/// One sampled figure of the master's load: its latest value, average and
-/// peak over the window.
+/// One sampled figure of the master's load: its latest value, average,
+/// highest and lowest over the window.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Metric {
     pub now: f64,
     pub peak: f64,
+    pub low: f64,
     sum: f64,
     n: u64,
 }
@@ -128,12 +129,259 @@ impl Metric {
     fn add(&mut self, v: f64) {
         self.now = v;
         self.peak = if self.n == 0 { v } else { self.peak.max(v) };
+        self.low = if self.n == 0 { v } else { self.low.min(v) };
         self.sum += v;
         self.n += 1;
     }
 
     pub fn avg(&self) -> Option<f64> {
         (self.n > 0).then(|| self.sum / self.n as f64)
+    }
+}
+
+/// Events (or bytes) counted per minute of the window, for the rate now (the
+/// last whole minute), on average and in the busiest minute.
+#[derive(Clone, Debug, Default)]
+pub struct Throughput {
+    pub total: u64,
+    minute: u64,
+    in_minute: u64,
+    last_minute: u64,
+    peak_minute: u64,
+}
+
+impl Throughput {
+    fn add(&mut self, n: u64, minute: u64) {
+        self.roll(minute);
+        self.total += n;
+        self.in_minute += n;
+        self.peak_minute = self.peak_minute.max(self.in_minute);
+    }
+
+    fn roll(&mut self, minute: u64) {
+        if minute != self.minute {
+            self.last_minute = if minute == self.minute + 1 { self.in_minute } else { 0 };
+            self.minute = minute;
+            self.in_minute = 0;
+        }
+    }
+
+    /// Per hour over the last whole minute; None in the window's first one.
+    pub fn now_per_hour(&self, minute: u64) -> Option<f64> {
+        let last = if minute == self.minute {
+            self.last_minute
+        } else if minute == self.minute + 1 {
+            self.in_minute
+        } else {
+            0
+        };
+        (minute > 0).then_some(last as f64 * 60.0)
+    }
+
+    pub fn peak_per_hour(&self) -> f64 {
+        self.peak_minute as f64 * 60.0
+    }
+}
+
+/// How the MWorkers spent their time, from the `salt/stats/<worker>` events
+/// a master with `master_stats: True` fires: each says how long the worker
+/// ran since its last one and the runs and mean time of each request type.
+#[derive(Clone, Debug, Default)]
+pub struct WorkerTime {
+    /// Seconds the workers ran, summed.
+    pub total_secs: f64,
+    /// Request type (`_pillar`, `_return`, `_auth`, ...): runs and seconds.
+    pub by_request: HashMap<String, (u64, f64)>,
+}
+
+impl WorkerTime {
+    fn record(&mut self, data: &serde_json::Value) {
+        let Some(stats) = data["stats"].as_object() else { return };
+        self.total_secs += data["time"].as_f64().unwrap_or(0.0).max(0.0);
+        for (request, v) in stats {
+            let runs = v["runs"].as_u64().unwrap_or(0);
+            if runs == 0 {
+                continue;
+            }
+            let e = self.by_request.entry(request.clone()).or_default();
+            e.0 += runs;
+            e.1 += runs as f64 * v["mean"].as_f64().unwrap_or(0.0).max(0.0);
+        }
+    }
+
+    /// Request types by their share of the workers' time, largest first.
+    pub fn shares(&self) -> Vec<(&str, f64)> {
+        if self.total_secs <= 0.0 {
+            return Vec::new();
+        }
+        let mut v: Vec<(&str, f64)> = self.by_request.iter().map(|(k, (_, secs))| (k.as_str(), secs / self.total_secs)).collect();
+        v.sort_by(|a, b| b.1.total_cmp(&a.1));
+        v
+    }
+
+    /// Mean seconds one request of this type took.
+    pub fn mean(&self, request: &str) -> Option<f64> {
+        self.by_request.get(request).filter(|(runs, _)| *runs > 0).map(|(runs, secs)| secs / *runs as f64)
+    }
+}
+
+/// The work the master does, per minute of the window.
+#[derive(Clone, Debug, Default)]
+pub struct Flow {
+    pub events: Throughput,
+    /// Size of the events as the agent passes them on (JSON, a little more
+    /// than went over the bus as msgpack).
+    pub bytes: Throughput,
+    pub returns: Throughput,
+    pub failed_returns: u64,
+    pub jobs: Throughput,
+    pub renders: Throughput,
+    /// `salt/auth` by what the master did: accept, pend, reject, denied.
+    pub auth: Throughput,
+    pub auth_by_act: HashMap<String, u64>,
+    pub worker_time: WorkerTime,
+}
+
+impl Flow {
+    pub const AUTH_ACTS: [&'static str; 4] = ["accept", "pend", "reject", "denied"];
+
+    fn record(&mut self, tag: &str, data: &serde_json::Value, bytes: u64, minute: u64) {
+        self.events.add(1, minute);
+        self.bytes.add(bytes, minute);
+        if tag.starts_with("salt/job/") && tag.contains("/ret/") {
+            self.returns.add(1, minute);
+            if !crate::app::return_outcome(data, &data["return"]).0 {
+                self.failed_returns += 1;
+            }
+        } else if tag.starts_with("salt/job/") && tag.ends_with("/new") {
+            self.jobs.add(1, minute);
+        } else if tag.starts_with("minion/refresh/") {
+            self.renders.add(1, minute);
+        } else if tag == "salt/auth" {
+            self.auth.add(1, minute);
+            *self.auth_by_act.entry(data["act"].as_str().unwrap_or("?").to_string()).or_default() += 1;
+        } else if tag.starts_with("salt/stats/") {
+            self.worker_time.record(data);
+        }
+    }
+
+    pub fn failed_share(&self) -> Option<f64> {
+        (self.returns.total > 0).then(|| self.failed_returns as f64 / self.returns.total as f64)
+    }
+}
+
+/// Whether the master is starving for a resource rather than just busy,
+/// from the host's counters between two polls of `get_system_info` and
+/// `list_processes`. A reading the host doesn't give stays empty.
+#[derive(Debug, Default)]
+pub struct Saturation {
+    pub cpu_busy_pct: Metric,
+    pub steal_pct: Metric,
+    pub iowait_pct: Metric,
+    /// Processes ready to run per core.
+    pub run_queue: Metric,
+    pub blocked: Metric,
+    pub psi_cpu_pct: Metric,
+    pub psi_memory_pct: Metric,
+    pub psi_io_pct: Metric,
+    pub mem_avail_pct: Metric,
+    /// Pages swapped in and out per second.
+    pub swap_per_sec: Metric,
+    /// Since the window started.
+    pub oom_kills: Option<u64>,
+    pub listen_drops: Option<u64>,
+    /// The salt-master process closest to its open files limit: its share
+    /// of the limit, and its count and limit at the last poll.
+    pub open_files_pct: Metric,
+    pub open_files: Option<(u64, u64)>,
+    /// Share of the cgroup's CPU periods its quota held it back.
+    pub throttled_pct: Metric,
+    pub quota: bool,
+    prev_system: Option<(Instant, SystemInfo)>,
+    /// Cumulative counters when the window started.
+    base_oom: Option<u64>,
+    base_drops: Option<u64>,
+    prev_throttling: Option<CpuThrottling>,
+}
+
+impl Saturation {
+    pub fn record_system(&mut self, info: &SystemInfo, cpu_count: u32, now: Instant) {
+        let drops = info.listen_overflows.zip(info.listen_drops).map(|(o, d)| o.max(d));
+        self.base_oom = self.base_oom.or(info.oom_kills);
+        self.base_drops = self.base_drops.or(drops);
+        self.oom_kills = info.oom_kills.zip(self.base_oom).map(|(n, b)| n.saturating_sub(b));
+        self.listen_drops = drops.zip(self.base_drops).map(|(n, b)| n.saturating_sub(b));
+        if info.mem_total_kb > 0 {
+            self.mem_avail_pct.add(info.mem_avail_kb as f64 * 100.0 / info.mem_total_kb as f64);
+        }
+        if let Some(running) = info.procs_running {
+            self.run_queue.add(running as f64 / cpu_count.max(1) as f64);
+        }
+        if let Some(blocked) = info.procs_blocked {
+            self.blocked.add(blocked as f64);
+        }
+        let Some((prev_at, prev)) = self.prev_system.replace((now, info.clone())) else { return };
+        let secs = now.saturating_duration_since(prev_at).as_secs_f64();
+        let total = info.cpu_total_jiffies.saturating_sub(prev.cpu_total_jiffies);
+        if secs <= 0.0 || total == 0 {
+            return;
+        }
+        let share = |a: Option<u64>, b: Option<u64>| a.zip(b).map(|(a, b)| a.saturating_sub(b) as f64 * 100.0 / total as f64);
+        let idle = info.cpu_idle_jiffies.saturating_sub(prev.cpu_idle_jiffies);
+        self.cpu_busy_pct.add(total.saturating_sub(idle) as f64 * 100.0 / total as f64);
+        if let Some(v) = share(info.cpu_steal_jiffies, prev.cpu_steal_jiffies) {
+            self.steal_pct.add(v);
+        }
+        if let Some(v) = share(info.cpu_iowait_jiffies, prev.cpu_iowait_jiffies) {
+            self.iowait_pct.add(v);
+        }
+        let stall = |a: Option<u64>, b: Option<u64>| a.zip(b).map(|(a, b)| (a.saturating_sub(b) as f64 / (secs * 1e6) * 100.0).min(100.0));
+        let (psi, prev_psi) = (info.psi_us.unwrap_or_default(), prev.psi_us.unwrap_or_default());
+        for (metric, a, b) in [
+            (&mut self.psi_cpu_pct, psi.cpu, prev_psi.cpu),
+            (&mut self.psi_memory_pct, psi.memory, prev_psi.memory),
+            (&mut self.psi_io_pct, psi.io, prev_psi.io),
+        ] {
+            if let Some(v) = stall(a, b) {
+                metric.add(v);
+            }
+        }
+        let swapped = |i: &SystemInfo| i.swap_in_pages.zip(i.swap_out_pages).map(|(a, b)| a + b);
+        if let (Some(a), Some(b)) = (swapped(info), swapped(&prev)) {
+            self.swap_per_sec.add(a.saturating_sub(b) as f64 / secs);
+        }
+    }
+
+    pub fn record_processes(&mut self, procs: &[SaltProcess], throttling: Option<CpuThrottling>) {
+        let worst = procs.iter()
+            .filter_map(|p| p.open_files.zip(p.open_files_limit).filter(|(_, limit)| *limit > 0))
+            .max_by(|a, b| (a.0 as f64 / a.1 as f64).total_cmp(&(b.0 as f64 / b.1 as f64)));
+        if let Some((n, limit)) = worst {
+            self.open_files = Some((n, limit));
+            self.open_files_pct.add(n as f64 * 100.0 / limit as f64);
+        }
+        self.quota = throttling.is_some();
+        if let (Some(t), Some(prev)) = (throttling, self.prev_throttling) {
+            let periods = t.periods.saturating_sub(prev.periods);
+            if periods > 0 {
+                self.throttled_pct.add(t.throttled.saturating_sub(prev.throttled) as f64 * 100.0 / periods as f64);
+            }
+        }
+        self.prev_throttling = throttling;
+    }
+
+    /// Whether the kernel tracks pressure stall: the PSI rows only show then.
+    pub fn has_psi(&self) -> bool {
+        self.psi_cpu_pct.avg().is_some() || self.psi_io_pct.avg().is_some()
+    }
+
+    /// For a new window: the poll baselines stay, so the next poll counts.
+    fn carry_over(&mut self) -> Self {
+        Self {
+            prev_system: self.prev_system.take(),
+            prev_throttling: self.prev_throttling,
+            ..Self::default()
+        }
     }
 }
 
@@ -151,6 +399,8 @@ pub struct Load {
     pub subprocess_cores: Metric,
     pub gpg: Metric,
     pub zmq_ms: Metric,
+    /// The 95th percentile of how long recent jobs took to complete.
+    pub job_p95_secs: Metric,
     rss_samples: VecDeque<(Instant, f64)>,
     /// Each MWorker's reaped-children CPU ticks at the previous poll.
     prev_children: HashMap<u32, u64>,
@@ -189,6 +439,10 @@ impl Load {
 
     pub fn record_latency(&mut self, ms: f64) {
         self.zmq_ms.add(ms);
+    }
+
+    pub fn record_job_p95(&mut self, secs: f64) {
+        self.job_p95_secs.add(secs);
     }
 
     /// How fast the MWorkers' memory grows, once there are six minutes of
@@ -262,6 +516,8 @@ pub struct Stats {
     pub reset_at: Option<chrono::DateTime<chrono::Local>>,
     families: HashMap<String, Family>,
     pub load: Load,
+    pub flow: Flow,
+    pub saturation: Saturation,
 }
 
 impl Default for Stats {
@@ -277,29 +533,44 @@ impl Stats {
             reset_at: None,
             families: CORE_FAMILIES.iter().map(|f| (f.to_string(), Family::default())).collect(),
             load: Load::default(),
+            flow: Flow::default(),
+            saturation: Saturation::default(),
         }
     }
 
-    /// Starts a new window. The load's poll baseline is kept, so the next
-    /// poll already counts.
+    /// Starts a new window. The polls' baselines are kept, so the next poll
+    /// already counts.
     pub fn reset(&mut self, now: Instant) {
         let load = Load {
             prev_children: std::mem::take(&mut self.load.prev_children),
             prev_at: self.load.prev_at,
             ..Load::default()
         };
-        *self = Self { reset_at: Some(chrono::Local::now()), load, ..Self::new(now) };
+        let saturation = self.saturation.carry_over();
+        *self = Self { reset_at: Some(chrono::Local::now()), load, saturation, ..Self::new(now) };
     }
 
     pub fn observed(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.started)
     }
 
+    /// How many minions sent any event in the window.
+    pub fn minions_heard(&self) -> usize {
+        self.families.values().flat_map(|f| f.minions.keys()).collect::<HashSet<_>>().len()
+    }
+
     pub fn total_events(&self) -> u64 {
         self.families.values().map(|f| f.count).sum()
     }
 
-    fn minute(&self, now: Instant) -> u64 {
+    /// What an event says about the master's work: its size, and for job
+    /// returns, publishes, pillar renders, auth and worker stats, more.
+    pub fn record_flow(&mut self, tag: &str, data: &serde_json::Value, bytes: u64, now: Instant) {
+        let minute = self.minute(now);
+        self.flow.record(tag, data, bytes, minute);
+    }
+
+    pub fn minute(&self, now: Instant) -> u64 {
         self.observed(now).as_secs() / 60
     }
 
@@ -318,8 +589,8 @@ impl Stats {
         self.families.get(name)
     }
 
-    /// The families in display order: the core ones, then the rest by name
-    /// (`OTHER_FAMILY` last), or with `by_count`, the busiest first.
+    /// The families in their fixed order: the core ones, then the rest by
+    /// name (`OTHER_FAMILY` last).
     pub fn rows(&self) -> Vec<(&str, &Family)> {
         let rank = |name: &str| CORE_FAMILIES.iter().position(|c| *c == name).unwrap_or(CORE_FAMILIES.len() + usize::from(name == OTHER_FAMILY));
         let mut rows: Vec<(&str, &Family)> = self.families.iter().map(|(k, v)| (k.as_str(), v)).collect();
@@ -586,7 +857,7 @@ mod tests {
         let t0 = Instant::now();
         let worker = |pid, ticks, cpu, state: &str, children| SaltProcess {
             pid, role: SaltProcessRole::Worker, rss_kb: 1024, cpu_ticks: 0, child_cpu_ticks: ticks,
-            state: state.into(), children, ppid: 1, cpu_percent: cpu,
+            state: state.into(), children, ppid: 1, cpu_percent: cpu, open_files: None, open_files_limit: None,
         };
         let mut load = Load::default();
         load.record_processes(&[worker(7, 100, 0.0, "S", 0)], 2, 100.0, t0);
@@ -599,5 +870,81 @@ mod tests {
         assert_eq!(load.worker_cores.now, 1.5);
         assert_eq!(load.subprocess_cores.now, 1.0);
         assert_eq!(load.gpg.avg(), Some(4.0));
+    }
+
+    #[test]
+    fn throughput_now_is_the_last_whole_minute_and_peak_the_busiest() {
+        let mut t = Throughput::default();
+        t.add(5, 0);
+        assert_eq!(t.now_per_hour(0), None);
+        t.add(20, 1);
+        t.add(2, 2);
+        assert_eq!(t.now_per_hour(2), Some(20.0 * 60.0));
+        assert_eq!(t.now_per_hour(3), Some(2.0 * 60.0));
+        assert_eq!(t.now_per_hour(5), Some(0.0));
+        assert_eq!(t.peak_per_hour(), 20.0 * 60.0);
+        assert_eq!(t.total, 27);
+        t.add(1, 9);
+        assert_eq!(t.now_per_hour(9), Some(0.0));
+    }
+
+    #[test]
+    fn flow_sorts_events_into_the_masters_work() {
+        let mut f = Flow::default();
+        let ok = serde_json::json!({"success": true, "retcode": 0, "return": true});
+        let failed = serde_json::json!({"success": false, "retcode": 1, "return": "boom"});
+        f.record("salt/job/20261120000000000000/ret/web1", &ok, 100, 0);
+        f.record("salt/job/20261120000000000000/ret/web2", &failed, 120, 0);
+        f.record("salt/job/20261120000000000000/new", &serde_json::json!({}), 80, 0);
+        f.record("minion/refresh/web1", &serde_json::json!({}), 50, 0);
+        f.record("salt/auth", &serde_json::json!({"act": "accept", "result": true}), 60, 0);
+        f.record("salt/auth", &serde_json::json!({"act": "reject", "result": false}), 60, 0);
+        f.record("salt/stats/MWorker-0", &serde_json::json!({
+            "time": 60.0, "worker": "MWorker-0",
+            "stats": {"_pillar": {"runs": 3, "mean": 10.0}, "_return": {"runs": 10, "mean": 0.6}, "_auth": {"runs": 0, "mean": 0}},
+        }), 200, 0);
+        assert_eq!((f.events.total, f.bytes.total), (7, 670));
+        assert_eq!((f.returns.total, f.failed_share()), (2, Some(0.5)));
+        assert_eq!((f.jobs.total, f.renders.total, f.auth.total), (1, 1, 2));
+        assert_eq!((f.auth_by_act.get("accept"), f.auth_by_act.get("reject")), (Some(&1), Some(&1)));
+        let shares = f.worker_time.shares();
+        assert_eq!(shares[0].0, "_pillar");
+        assert!((shares[0].1 - 0.5).abs() < 1e-9 && (shares[1].1 - 0.1).abs() < 1e-9);
+        assert_eq!(f.worker_time.mean("_pillar"), Some(10.0));
+        assert_eq!(f.worker_time.mean("_auth"), None);
+    }
+
+    #[test]
+    fn saturation_reads_deltas_between_polls() {
+        let t0 = Instant::now();
+        let info = |total: u64, idle: u64, steal: u64, iowait: u64, psi_io: u64, swap: u64, drops: u64| SystemInfo {
+            cpu_total_jiffies: total, cpu_idle_jiffies: idle, cpu_steal_jiffies: Some(steal), cpu_iowait_jiffies: Some(iowait),
+            mem_total_kb: 1000, mem_avail_kb: 250, procs_running: Some(6), procs_blocked: Some(1),
+            psi_us: Some(crate::types::PressureTotals { cpu: Some(0), memory: None, io: Some(psi_io) }),
+            swap_in_pages: Some(swap), swap_out_pages: Some(0), oom_kills: Some(3), listen_overflows: Some(drops), listen_drops: Some(drops),
+            ..SystemInfo::default()
+        };
+        let mut s = Saturation::default();
+        s.record_system(&info(1000, 500, 0, 0, 0, 0, 10), 4, t0);
+        assert_eq!((s.run_queue.now, s.mem_avail_pct.now), (1.5, 25.0));
+        assert!(s.cpu_busy_pct.avg().is_none());
+        s.record_system(&info(1200, 550, 20, 40, 500_000, 100, 13), 4, t0 + Duration::from_secs(2));
+        assert_eq!((s.cpu_busy_pct.now, s.steal_pct.now, s.iowait_pct.now), (75.0, 10.0, 20.0));
+        assert_eq!((s.psi_io_pct.now, s.swap_per_sec.now), (25.0, 50.0));
+        assert!(s.psi_memory_pct.avg().is_none() && s.has_psi());
+        assert_eq!((s.oom_kills, s.listen_drops), (Some(0), Some(3)));
+
+        let proc = |files, limit| SaltProcess {
+            pid: 1, role: SaltProcessRole::Master, rss_kb: 0, cpu_ticks: 0, child_cpu_ticks: 0, state: "S".into(),
+            children: 0, ppid: 0, cpu_percent: 0.0, open_files: Some(files), open_files_limit: Some(limit),
+        };
+        let quota = |periods, throttled| Some(CpuThrottling { periods, throttled, throttled_usec: 0 });
+        s.record_processes(&[proc(100, 1024), proc(900, 1024), proc(50, 100)], quota(100, 10));
+        assert_eq!((s.open_files, s.open_files_pct.now), (Some((900, 1024)), 900.0 * 100.0 / 1024.0));
+        assert!(s.quota && s.throttled_pct.avg().is_none());
+        s.record_processes(&[], quota(200, 60));
+        assert_eq!(s.throttled_pct.now, 50.0);
+        s.record_processes(&[], None);
+        assert!(!s.quota);
     }
 }

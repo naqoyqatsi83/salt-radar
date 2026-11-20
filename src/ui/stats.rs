@@ -96,17 +96,27 @@ pub struct StatsHits {
     pub groups: Vec<(u16, usize)>,
 }
 
-/// The Stats tab: event families, the selected one's breakdown, the
-/// master's load; or the breakdown alone once `Enter` opened it.
+/// The Stats tab: event families, the selected one's breakdown and the
+/// master's health (beside them on a wide terminal, below otherwise); or
+/// the breakdown alone once `Enter` opened it, still beside the health.
 pub fn draw_stats(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hits: &mut Vec<HeaderHit>) -> StatsHits {
     let groups = app.stats_groups();
+    let beside = area.width >= HEALTH_BESIDE_MIN_WIDTH;
+    let area = if beside {
+        let [main, health] = Layout::horizontal([Constraint::Min(0), Constraint::Length(HEALTH_WIDTH)]).areas(area);
+        draw_health(f, health, app);
+        main
+    } else {
+        area
+    };
     if app.stats_drill {
         return StatsHits { families: Vec::new(), groups: draw_groups(f, area, app, &groups, true, focused, header_hits) };
     }
-    // The families keep at least 8 rows; the breakdown gets what they don't
-    // need, at least 8 rows of its own when there's room.
+    // The families keep at least 8 rows; below them the health keeps its
+    // verdict and most telling rows, and the breakdown gets what's left, at
+    // least 8 rows of its own when there's room.
     let spare = area.height.saturating_sub(8);
-    let load_h = if spare >= 9 { 9 } else { 0 };
+    let load_h = if !beside && spare >= 9 { spare.min(12) } else { 0 };
     let avail = spare.saturating_sub(load_h);
     let families_need = (app.stats_rows().len() as u16 + 4).saturating_sub(8);
     let group_h = (groups.len().max(1) as u16 + 3).min(avail.saturating_sub(families_need).max(8)).min(avail);
@@ -117,7 +127,7 @@ pub fn draw_stats(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hi
         draw_groups(f, breakdown, app, &groups, false, false, header_hits);
     }
     if load_h > 0 {
-        draw_load(f, load, app);
+        draw_health(f, load, app);
     }
     StatsHits { families: hits, groups: Vec::new() }
 }
@@ -338,44 +348,204 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::Gro
     hits
 }
 
-fn draw_load(f: &mut Frame, area: Rect, app: &App) {
-    let load = &app.stats.load;
-    let block = super::titled_block(" Master load ", border(false), color::main_bg());
+/// How a health row reads against its thresholds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Rating {
+    Ok,
+    Busy,
+    Starving,
+}
+
+impl Rating {
+    /// `busy` and `starving` are where the value starts to count as such;
+    /// below `busy` when `lower_worse` (memory available).
+    fn of(v: f64, busy: f64, starving: f64, lower_worse: bool) -> Self {
+        let past = |limit: f64| if lower_worse { v <= limit } else { v >= limit };
+        if past(starving) {
+            Self::Starving
+        } else if past(busy) {
+            Self::Busy
+        } else {
+            Self::Ok
+        }
+    }
+
+    fn color(self) -> ratatui::style::Color {
+        match self {
+            Self::Ok => color::green(),
+            Self::Busy => color::yellow(),
+            Self::Starving => color::red(),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Busy => "busy",
+            Self::Starving => "starving",
+        }
+    }
+}
+
+/// What the verdict line sums the rows up into.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Resource {
+    Cpu,
+    Memory,
+    Disk,
+    Network,
+    Workers,
+}
+
+const RESOURCES: [(Resource, &str); 5] = [
+    (Resource::Cpu, "CPU"),
+    (Resource::Memory, "Memory"),
+    (Resource::Disk, "Disk"),
+    (Resource::Network, "Network"),
+    (Resource::Workers, "Workers"),
+];
+
+/// How much a row matters: when the panel is too short, the least
+/// important rows go first, whole, rather than the panel being cut off.
+type Priority = u8;
+
+struct HealthRows {
+    rows: Vec<(Priority, Line<'static>)>,
+    ratings: Vec<(Resource, Rating)>,
+}
+
+const HEALTH_LABEL_W: usize = 28;
+const HEALTH_COL_W: usize = 10;
+/// Wide enough for the label, Now/Avg/Peak and a short note.
+pub const HEALTH_WIDTH: u16 = 78;
+/// From this width on, the health column sits right of the families.
+pub const HEALTH_BESIDE_MIN_WIDTH: u16 = 160;
+
+impl HealthRows {
+    fn push(&mut self, prio: Priority, line: Line<'static>) {
+        self.rows.push((prio, line));
+    }
+
+    fn section(&mut self, title: &str) {
+        self.push(6, Line::from(Span::styled(format!("  {}", title), header_style())));
+    }
+
+    /// A row of three values; `rated` puts a dot before it by `now` and
+    /// counts it in the verdict.
+    fn values(&mut self, prio: Priority, label: &str, values: [String; 3], rated: Option<(Resource, Rating)>, note: Option<Span<'static>>) {
+        let dot = match rated {
+            Some((_, r)) => Span::styled("\u{25CF} ", Style::default().fg(r.color())),
+            None => Span::raw("  "),
+        };
+        let mut spans = vec![Span::raw("  "), dot, Span::styled(pad(label, HEALTH_LABEL_W - 4, false), Style::default().fg(color::label_fg()))];
+        for v in values {
+            spans.push(Span::styled(pad(&v, HEALTH_COL_W, true), text()));
+        }
+        spans.extend(note);
+        self.ratings.extend(rated);
+        self.push(prio, Line::from(spans));
+    }
+
+    /// A `Metric` row: Now, Avg and Peak, rated by its latest value. Peak is
+    /// the worst value, the lowest where lower is worse.
+    fn metric(&mut self, prio: Priority, label: &str, m: &Metric, fmt: &dyn Fn(f64) -> String, rate: Option<(Resource, f64, f64, bool)>, note: Option<Span<'static>>) {
+        let Some(avg) = m.avg() else { return };
+        let worst = rate.filter(|r| r.3).map_or(m.peak, |_| m.low);
+        let rated = rate.map(|(res, busy, starving, lower)| (res, Rating::of(m.now, busy, starving, lower)));
+        self.values(prio, label, [fmt(m.now), fmt(avg), fmt(worst)], rated, note);
+    }
+
+    /// The panel's lines, dropping the least important rows until they fit
+    /// in `height`.
+    fn fit(mut self, height: usize) -> Vec<Line<'static>> {
+        while self.rows.len() > height {
+            let Some(at) = self.rows.iter().enumerate().max_by_key(|(i, (p, _))| (*p, *i)).map(|(i, _)| i) else { break };
+            self.rows.remove(at);
+        }
+        self.rows.into_iter().map(|(_, l)| l).collect()
+    }
+}
+
+fn pct(v: f64) -> String {
+    if v < 10.0 { format!("{:.1}%", v) } else { format!("{:.0}%", v) }
+}
+
+fn fmt_bytes_per_hour(v: f64) -> String {
+    let mb = v / 1e6;
+    if mb < 1.0 { format!("{:.0}k", v / 1e3) } else if mb < 1000.0 { format!("{:.0}M", mb) } else { format!("{:.1}G", mb / 1e3) }
+}
+
+/// The master's health: whether it's starving for CPU, memory, disk or its
+/// workers, what its workers do, how fast it answers and how much work goes
+/// through it, all as rates or shares so two masters compare.
+fn draw_health(f: &mut Frame, area: Rect, app: &App) {
+    let now = Instant::now();
+    let stats = &app.stats;
+    let sat = &stats.saturation;
+    let load = &stats.load;
+    let flow = &stats.flow;
+    let minute = stats.minute(now);
+    let cores = app.config_snapshot.as_ref().map_or(0, |c| c.cpu_count);
+    let mem_gb = app.system_info.mem_total_kb as f64 / 1024.0 / 1024.0;
+    let title = format!(" Master health \u{00B7} {} cores \u{00B7} {:.1}G ", cores, mem_gb);
+    let block = super::titled_block(title, border(false), color::main_bg());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let label_w = 26;
+    let mut h = HealthRows { rows: Vec::new(), ratings: Vec::new() };
     let none = || "\u{2014}".to_string();
-    let cols = |m: &Metric, fmt: &dyn Fn(f64) -> String| -> [String; 3] {
-        match m.avg() {
-            Some(avg) => [fmt(m.now), fmt(avg), fmt(m.peak)],
-            None => [none(), none(), none()],
-        }
-    };
-    let row = |label: &str, values: [String; 3], note: Option<Span<'static>>| {
-        let mut spans = vec![Span::styled(pad(&format!("  {}", label), label_w, false), Style::default().fg(color::label_fg()))];
-        for v in values {
-            spans.push(Span::styled(pad(&v, 10, true), text()));
-        }
-        spans.extend(note);
-        Line::from(spans)
-    };
+    let int = |v: f64| format!("{:.0}", v);
+    let two = |v: f64| format!("{:.2}", v);
 
+    // Saturation
+    h.section("Saturation");
+    h.metric(1, "CPU busy", &sat.cpu_busy_pct, &pct, Some((Resource::Cpu, 70.0, 90.0, false)), None);
+    h.metric(2, "CPU steal (VM)", &sat.steal_pct, &pct, Some((Resource::Cpu, 2.0, 10.0, false)), None);
+    h.metric(2, "Run queue per core", &sat.run_queue, &two, Some((Resource::Cpu, 1.0, 2.0, false)), None);
+    if sat.quota {
+        h.metric(2, "CPU quota throttled", &sat.throttled_pct, &pct, Some((Resource::Cpu, 5.0, 25.0, false)), None);
+    }
+    h.metric(1, "Memory available", &sat.mem_avail_pct, &pct, Some((Resource::Memory, 20.0, 10.0, true)), None);
+    h.metric(3, "Swap pages /s", &sat.swap_per_sec, &int, Some((Resource::Memory, 10.0, 500.0, false)), None);
+    if let Some(oom) = sat.oom_kills {
+        let rated = Rating::of(oom as f64, 1.0, 1.0, false);
+        h.values(3, "OOM kills", [oom.to_string(), none(), none()], Some((Resource::Memory, rated)), Some(Span::styled("  in window", dim())));
+    }
+    h.metric(2, "I/O wait", &sat.iowait_pct, &pct, Some((Resource::Disk, 10.0, 30.0, false)), None);
+    h.metric(4, "Blocked on I/O", &sat.blocked, &int, None, None);
+    if sat.has_psi() {
+        h.metric(2, "Pressure: CPU", &sat.psi_cpu_pct, &pct, Some((Resource::Cpu, 20.0, 50.0, false)), None);
+        h.metric(2, "Pressure: memory", &sat.psi_memory_pct, &pct, Some((Resource::Memory, 5.0, 20.0, false)), None);
+        h.metric(2, "Pressure: I/O", &sat.psi_io_pct, &pct, Some((Resource::Disk, 10.0, 30.0, false)), None);
+    } else if sat.cpu_busy_pct.avg().is_some() {
+        h.push(5, Line::from(Span::styled("    Pressure stall: not tracked by this kernel", dim())));
+    }
+    if let Some(drops) = sat.listen_drops {
+        let rated = Rating::of(drops as f64, 1.0, 100.0, false);
+        h.values(3, "Connections dropped", [drops.to_string(), none(), none()], Some((Resource::Network, rated)), Some(Span::styled("  in window", dim())));
+    }
+    if let Some((n, limit)) = sat.open_files {
+        let m = &sat.open_files_pct;
+        let rated = Rating::of(m.now, 70.0, 90.0, false);
+        let note = Span::styled(format!("  {} of {}", fmt_count(n), fmt_count(limit)), dim());
+        h.values(3, "Open files (of limit)", [pct(m.now), pct(m.avg().unwrap_or(m.now)), pct(m.peak)], Some((Resource::Network, rated)), Some(note));
+    }
+
+    // Workers
+    h.section("Workers");
     let threads = app.config_snapshot.as_ref().and_then(|c| c.worker_threads).filter(|&t| t > 0);
-    let mut busy = cols(&load.workers_busy, &|v| format!("{:.1}", v));
-    if load.workers_busy.avg().is_some() {
-        busy[0] = format!("{:.0}", load.workers_busy.now);
-        busy[2] = format!("{:.0}", load.workers_busy.peak);
-        if let Some(t) = threads {
-            busy[0] = format!("{}/{}", busy[0], t);
-        }
+    if let Some(avg) = load.workers_busy.avg() {
+        let share = threads.map(|t| load.workers_busy.now / t as f64);
+        let rated = share.map(|s| (Resource::Workers, Rating::of(s, 0.75, 1.0, false)));
+        let now_s = match threads {
+            Some(t) => format!("{:.0}/{}", load.workers_busy.now, t),
+            None => int(load.workers_busy.now),
+        };
+        let all = share.is_some_and(|s| s >= 1.0);
+        let note = all.then(|| Span::styled("  \u{26A0} all busy", Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
+        h.values(1, "MWorkers busy", [now_s, format!("{:.1}", avg), int(load.workers_busy.peak)], rated, note);
     }
-    let all_busy = threads.is_some_and(|t| load.workers_busy.avg().is_some() && load.workers_busy.now >= t as f64);
-    let busy_note = all_busy.then(|| Span::styled("  \u{26A0} all busy", Style::default().fg(color::red()).add_modifier(Modifier::BOLD)));
-    let mut workers = cols(&load.worker_cores, &|v| format!("{:.1}", v));
-    if let (Some(t), Some(_)) = (threads, load.worker_cores.avg()) {
-        workers[0] = format!("{:.1}/{}", load.worker_cores.now, t);
-    }
+    h.metric(3, "MWorker CPU (cores)", &load.worker_cores, &|v| format!("{:.1}", v), None, None);
     let growth = load.rss_growth_mb_per_hour().map(|mb| {
         let (arrow, style) = if mb > 1.0 {
             ("\u{2197}", Style::default().fg(color::yellow()))
@@ -386,21 +556,93 @@ fn draw_load(f: &mut Frame, area: Rect, app: &App) {
         };
         Span::styled(format!("  {} {:+.0}M/h", arrow, mb), style)
     });
-
-    let mut head = vec![Span::raw(" ".repeat(label_w))];
-    for h in ["Now", "Avg", "Peak"] {
-        head.push(Span::styled(pad(h, 10, true), header_style()));
+    h.metric(3, "MWorker memory", &load.worker_rss_kb, &fmt_kb, None, growth);
+    h.metric(4, "Subprocess CPU (cores)", &load.subprocess_cores, &two, None, None);
+    h.metric(4, "gpg processes", &load.gpg, &int, None, None);
+    let shares = flow.worker_time.shares();
+    if shares.is_empty() {
+        h.push(5, Line::from(Span::styled("    Worker time by request: set master_stats: True", dim())));
+    } else {
+        let parts: Vec<String> = shares.iter().take(4).map(|(k, s)| format!("{} {:.0}%", k, s * 100.0)).collect();
+        h.push(4, Line::from(vec![Span::styled("    Worker time  ", Style::default().fg(color::label_fg())), Span::styled(parts.join(" \u{00B7} "), text())]));
     }
-    let lines = vec![
-        Line::from(head),
-        row("MWorkers busy", busy, busy_note),
-        row("MWorker CPU (cores)", workers, None),
-        row("MWorker memory", cols(&load.worker_rss_kb, &fmt_kb), growth),
-        row("Subprocess CPU (cores)", cols(&load.subprocess_cores, &|v| format!("{:.2}", v)), None),
-        row("gpg processes", cols(&load.gpg, &|v| format!("{:.0}", v)), None),
-        row("ZMQ latency", cols(&load.zmq_ms, &fmt_ms), None),
-    ];
+
+    // Responsiveness
+    h.section("Responsiveness");
+    h.metric(2, "ZMQ latency", &load.zmq_ms, &fmt_ms, Some((Resource::Workers, 100.0, 1000.0, false)), None);
+    h.metric(3, "Job completion p95", &load.job_p95_secs, &|v| fmt_ms(v * 1000.0), None, None);
+
+    // Throughput
+    h.section("Throughput /h");
+    let tp = |t: &crate::stats::Throughput, fmt: &dyn Fn(f64) -> String| -> [String; 3] {
+        // Early on the average still counts the minute under way, which a
+        // burst can lift above the busiest whole minute.
+        let avg = stats.per_hour(t.total, now);
+        [t.now_per_hour(minute).map_or_else(none, fmt), fmt(avg), fmt(t.peak_per_hour().max(avg))]
+    };
+    let failed = flow.failed_share().map(|s| Span::styled(format!("  {:.1}% failed", s * 100.0), if s >= 0.1 { Style::default().fg(color::yellow()) } else { dim() }));
+    h.values(2, "Events", tp(&flow.events, &fmt_rate), None, None);
+    h.values(2, "Job returns", tp(&flow.returns, &fmt_rate), None, failed);
+    h.values(3, "Jobs published", tp(&flow.jobs, &fmt_rate), None, None);
+    let render_mean = flow.worker_time.mean("_pillar").map(|s| Span::styled(format!("  mean {}", fmt_ms(s * 1000.0)), dim()));
+    h.values(3, "Pillar renders", tp(&flow.renders, &fmt_rate), None, render_mean);
+    let acts: Vec<String> = crate::stats::Flow::AUTH_ACTS.iter()
+        .filter_map(|a| flow.auth_by_act.get(*a).map(|n| format!("{} {}", a, n)))
+        .collect();
+    let auth_note = (!acts.is_empty()).then(|| Span::styled(format!("  {}", acts.join(" \u{00B7} ")), dim()));
+    h.values(3, "Auth requests", tp(&flow.auth, &fmt_rate), None, auth_note);
+    h.values(3, "Event bus", tp(&flow.bytes, &fmt_bytes_per_hour), None, None);
+
+    // Fleet
+    let accepted = app.minion_count();
+    let up = app.minion_info.iter().filter(|m| m.connected).count();
+    let pending = app.keys.iter().filter(|k| k.status == crate::types::KeyStatus::Pending).count();
+    let heard = stats.minions_heard();
+    let silent = accepted.saturating_sub(heard);
+    h.push(2, Line::from(vec![
+        Span::styled("  Fleet  ", header_style()),
+        Span::styled(format!("{} accepted \u{00B7} {} up \u{00B7} {} silent in window \u{00B7} {} pending", accepted, up, silent, pending), text()),
+    ]));
+
+    // The verdict and the column heads go on top.
+    let verdict = verdict_line(&h.ratings);
+    let mut head = vec![Span::raw(" ".repeat(HEALTH_LABEL_W))];
+    for col in ["Now", "Avg", "Peak"] {
+        head.push(Span::styled(pad(col, HEALTH_COL_W, true), header_style()));
+    }
+    h.rows.insert(0, (0, verdict));
+    h.rows.insert(1, (1, Line::from(head)));
+    let lines = h.fit(inner.height as usize);
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::main_bg())), inner);
+}
+
+/// Each resource's worst rated row as a colored dot (a dash before any
+/// reading), then the ones not ok named in words, worst first.
+fn verdict_line(ratings: &[(Resource, Rating)]) -> Line<'static> {
+    let worst = |res: Resource| ratings.iter().filter(|(r, _)| *r == res).map(|(_, x)| *x).max();
+    let mut spans = vec![Span::raw(" ")];
+    for (res, name) in RESOURCES {
+        let (mark, style) = match worst(res) {
+            Some(r) => ("\u{25CF}", Style::default().fg(r.color())),
+            None => ("\u{2014}", dim()),
+        };
+        spans.push(Span::styled(format!(" {} ", mark), style));
+        spans.push(Span::styled(name, Style::default().fg(color::label_fg())));
+    }
+    let mut problems: Vec<Span<'static>> = Vec::new();
+    for rating in [Rating::Starving, Rating::Busy] {
+        let names: Vec<&str> = RESOURCES.iter().filter(|(res, _)| worst(*res) == Some(rating)).map(|(_, n)| *n).collect();
+        if !names.is_empty() {
+            let sep = if problems.is_empty() { "   " } else { " \u{00B7} " };
+            problems.push(Span::raw(sep));
+            problems.push(Span::styled(format!("{}: {}", rating.label(), names.join(", ")), Style::default().fg(rating.color()).add_modifier(Modifier::BOLD)));
+        }
+    }
+    if problems.is_empty() && ratings.iter().any(|(_, r)| *r == Rating::Ok) {
+        problems.push(Span::styled("   all ok", Style::default().fg(Rating::Ok.color())));
+    }
+    spans.extend(problems);
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -413,5 +655,21 @@ mod tests {
         assert_eq!([fmt_rate(0.0), fmt_rate(0.004), fmt_rate(0.02), fmt_rate(12.04), fmt_rate(286.0), fmt_rate(25_700.0)], ["0", "<0.01", "0.02", "12.0", "286", "25.7k"]);
         assert_eq!([fmt_interval(2.34), fmt_interval(300.0), fmt_interval(3900.0)], ["2.3s", "5m00s", "1h05m"]);
         assert_eq!([fmt_window(Duration::from_secs(45)), fmt_window(Duration::from_secs(31 * 60)), fmt_window(Duration::from_secs(4 * 3600 + 12 * 60))], ["45s", "31m", "4h12m"]);
+    }
+
+    #[test]
+    fn ratings_follow_thresholds_either_way() {
+        assert_eq!([Rating::of(50.0, 70.0, 90.0, false), Rating::of(70.0, 70.0, 90.0, false), Rating::of(95.0, 70.0, 90.0, false)], [Rating::Ok, Rating::Busy, Rating::Starving]);
+        assert_eq!([Rating::of(60.0, 20.0, 10.0, true), Rating::of(15.0, 20.0, 10.0, true), Rating::of(5.0, 20.0, 10.0, true)], [Rating::Ok, Rating::Busy, Rating::Starving]);
+        let line = |s: &str| Line::from(s.to_string());
+        let rows = HealthRows {
+            rows: vec![(0, line("verdict")), (6, line("section")), (1, line("cpu")), (4, line("gpg")), (6, line("section 2")), (2, line("zmq"))],
+            ratings: Vec::new(),
+        };
+        let kept: Vec<String> = rows.fit(4).iter().map(|l| l.to_string()).collect();
+        assert_eq!(kept, ["verdict", "cpu", "gpg", "zmq"]);
+        let text = verdict_line(&[(Resource::Cpu, Rating::Ok), (Resource::Cpu, Rating::Busy), (Resource::Workers, Rating::Starving), (Resource::Disk, Rating::Ok)]).to_string();
+        assert_eq!(text, "  \u{25CF} CPU \u{2014} Memory \u{25CF} Disk \u{2014} Network \u{25CF} Workers   starving: Workers \u{00B7} busy: CPU");
+        assert!(verdict_line(&[(Resource::Disk, Rating::Ok)]).to_string().ends_with("all ok"));
     }
 }

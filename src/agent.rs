@@ -115,6 +115,7 @@ fn run_agent_once(
                     tag: parsed["tag"].as_str().unwrap_or("").to_string(),
                     data: parsed["data"].clone(),
                     ts: parsed["ts"].as_f64().unwrap_or(0.0),
+                    bytes: line.len() as u64,
                     received,
                 },
                 Some("error") => AgentMessage::Error {

@@ -149,6 +149,31 @@ pub struct SaltProcess {
     pub ppid: u32,
     #[serde(default)]
     pub cpu_percent: f32,
+    /// Open files of a salt-master process and its soft limit; absent for
+    /// other daemons and where they can't be read.
+    #[serde(default)]
+    pub open_files: Option<u64>,
+    #[serde(default)]
+    pub open_files_limit: Option<u64>,
+}
+
+/// How often the CPU quota of salt-master's cgroup held it back (cumulative
+/// since the unit started); only sent when a quota applies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct CpuThrottling {
+    pub periods: u64,
+    pub throttled: u64,
+    pub throttled_usec: u64,
+}
+
+/// Microseconds since boot that some task stalled waiting for the resource
+/// (`/proc/pressure`); a resource is missing where the kernel doesn't track
+/// pressure stall.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct PressureTotals {
+    pub cpu: Option<u64>,
+    pub memory: Option<u64>,
+    pub io: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -222,6 +247,29 @@ pub struct SystemInfo {
     pub cpu_idle_jiffies: u64,
     #[serde(default)]
     pub cpu_percent: f64,
+    // What tells a starving master from a busy one (cumulative since boot
+    // unless said otherwise); missing where the agent couldn't read them.
+    #[serde(default)]
+    pub cpu_iowait_jiffies: Option<u64>,
+    #[serde(default)]
+    pub cpu_steal_jiffies: Option<u64>,
+    /// Processes running and blocked on I/O at the poll.
+    #[serde(default)]
+    pub procs_running: Option<u64>,
+    #[serde(default)]
+    pub procs_blocked: Option<u64>,
+    #[serde(default)]
+    pub psi_us: Option<PressureTotals>,
+    #[serde(default)]
+    pub swap_in_pages: Option<u64>,
+    #[serde(default)]
+    pub swap_out_pages: Option<u64>,
+    #[serde(default)]
+    pub oom_kills: Option<u64>,
+    #[serde(default)]
+    pub listen_overflows: Option<u64>,
+    #[serde(default)]
+    pub listen_drops: Option<u64>,
 }
 
 // ─── salt-api stats (rest_cherrypy collect_stats, polled over /stats) ─────
