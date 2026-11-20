@@ -180,6 +180,8 @@ pub struct App {
     pub stats: crate::stats::Stats,
     pub stats_family: String,
     pub stats_grouping: crate::stats::Grouping,
+    /// What the families list and the breakdown measure (`m`).
+    pub stats_measure: crate::stats::Measure,
     /// The "Reset statistics?" prompt `X` opens on the Stats tab.
     pub stats_reset_confirm: bool,
     /// Where the last frame drew each family row (screen y, family), for clicks.
@@ -1094,6 +1096,7 @@ impl App {
             stats: crate::stats::Stats::default(),
             stats_family: crate::stats::CORE_FAMILIES[0].to_string(),
             stats_grouping: crate::stats::Grouping::default(),
+            stats_measure: crate::stats::Measure::default(),
             stats_reset_confirm: false,
             stats_row_hits: Vec::new(),
             stats_drill: false,
@@ -1881,12 +1884,23 @@ impl App {
         let mut rows = self.stats.rows();
         if let Some((col, desc)) = self.list_sort(ListId::StatsFamilies) {
             let now = Instant::now();
-            let minions = self.minion_count().max(1) as f64;
+            let bytes = self.stats_measure == crate::stats::Measure::Bytes;
             let key = |f: &crate::stats::Family| -> f64 {
+                let recent = || {
+                    let (events, b) = self.stats.recent_rates(f, now);
+                    if bytes { b } else { events }
+                };
                 match col {
-                    ListCol::RecentRate => self.stats.recent_per_hour(f, now),
-                    ListCol::RecentRatePerMinion => self.stats.recent_per_hour(f, now) / minions,
+                    ListCol::RecentRate | ListCol::RecentRatePerMinion => recent(),
+                    ListCol::Median if bytes => f.avg_size().unwrap_or(0.0),
                     ListCol::Median => f.median_interval().unwrap_or(f64::INFINITY),
+                    ListCol::Peak => f.per_minute.peak_minute as f64,
+                    ListCol::PeakRatio => self.stats.burst_ratio(f, now).unwrap_or(0.0),
+                    ListCol::PeakAt => f.per_minute.peak_at as f64,
+                    ListCol::Failed => f.failed as f64,
+                    ListCol::FailPct if f.count > 0 => f.failed as f64 / f.count as f64,
+                    ListCol::FailPct => -1.0,
+                    _ if bytes => f.bytes as f64,
                     _ => f.count as f64,
                 }
             };
@@ -1911,13 +1925,19 @@ impl App {
             rows.retain(|g| terms.iter().any(|t| Self::matches_filter(&g.label, t) || Self::matches_filter(&g.detail, t)));
         }
         if let Some((col, desc)) = self.list_sort(ListId::StatsGroups) {
-            let per_minion = |g: &crate::stats::GroupRow| if g.minions > 0 { g.events as f64 / g.minions as f64 } else { -1.0 };
+            let bytes = self.stats_measure == crate::stats::Measure::Bytes;
+            let value = |g: &crate::stats::GroupRow| if bytes { g.bytes } else { g.events };
+            let per_minion = |g: &crate::stats::GroupRow| if g.minions > 0 { value(g) as f64 / g.minions as f64 } else { -1.0 };
+            let fail_pct = |g: &crate::stats::GroupRow| if g.events > 0 { g.failed as f64 / g.events as f64 } else { -1.0 };
             rows.sort_by(|a, b| {
                 let ord = match col {
                     ListCol::Group => a.label.cmp(&b.label).then_with(|| a.detail.cmp(&b.detail)),
                     ListCol::Minions => a.minions.cmp(&b.minions),
                     ListCol::RatePerMinion => per_minion(a).total_cmp(&per_minion(b)),
-                    _ => a.events.cmp(&b.events),
+                    ListCol::Peak => a.peak_minute.cmp(&b.peak_minute),
+                    ListCol::Failed => a.failed.cmp(&b.failed),
+                    ListCol::FailPct => fail_pct(a).total_cmp(&fail_pct(b)),
+                    _ => value(a).cmp(&value(b)),
                 };
                 if desc { ord.reverse() } else { ord }
             });
@@ -1991,6 +2011,19 @@ impl App {
             self.stats_grouping = crate::stats::Grouping::Minion;
             self.stats_filter.clear();
             self.stats_group = None;
+        }
+    }
+
+    /// `m` on the Stats tab: the next measure. A sort on a column the new
+    /// one doesn't show is dropped, rather than ordering the list with no
+    /// header saying why.
+    pub(crate) fn next_stats_measure(&mut self) {
+        self.stats_measure = self.stats_measure.next();
+        let shown = self.stats_measure.columns();
+        for list in [ListId::StatsFamilies, ListId::StatsGroups] {
+            if self.list_sort(list).is_some_and(|(col, _)| !shown.contains(&col)) {
+                self.set_list_sort(list, None);
+            }
         }
     }
 

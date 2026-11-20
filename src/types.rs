@@ -1153,6 +1153,12 @@ pub enum ListCol {
     RecentRate,
     RecentRatePerMinion,
     Median,
+    /// The busiest minute, how many times the average it was, and when.
+    Peak,
+    PeakRatio,
+    PeakAt,
+    Failed,
+    FailPct,
     Group,
     Minions,
     Share,

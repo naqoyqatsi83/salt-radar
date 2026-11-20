@@ -7,7 +7,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::stats::{Grouping, Metric, RECENT_MINUTES};
+use crate::stats::{GroupRow, Grouping, Measure, Metric, RECENT_MINUTES};
 use crate::types::{HeaderHit, ListCol, ListId};
 
 use super::color;
@@ -132,6 +132,105 @@ pub fn draw_stats(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hi
     StatsHits { families: hits, groups: Vec::new() }
 }
 
+/// A number column of the families list or the breakdown: its header,
+/// width, what a click on it sorts by, and its value for a row (a dash
+/// where it doesn't apply).
+struct NumCol<'a, T> {
+    label: &'static str,
+    w: usize,
+    col: ListCol,
+    value: CellValue<'a, T>,
+}
+
+type CellValue<'a, T> = Box<dyn Fn(&T) -> Option<String> + 'a>;
+
+fn num_col<'a, T>(label: &'static str, w: usize, col: ListCol, value: impl Fn(&T) -> Option<String> + 'a) -> NumCol<'a, T> {
+    NumCol { label, w, col, value: Box::new(value) }
+}
+
+/// A count of bytes, short: 512, 34k, 1.2M, 3.4G.
+pub fn fmt_bytes(v: f64) -> String {
+    if v < 1e3 {
+        format!("{:.0}", v)
+    } else if v < 1e4 {
+        format!("{:.1}k", v / 1e3)
+    } else if v < 1e6 {
+        format!("{:.0}k", v / 1e3)
+    } else if v < 1e9 {
+        format!("{:.1}M", v / 1e6)
+    } else {
+        format!("{:.1}G", v / 1e9)
+    }
+}
+
+/// Where the families list's busiest minute is many times its average
+/// rate, which the average alone hides.
+const BURST_RATIO: f64 = 5.0;
+
+type FamilyRow<'a> = (&'a str, &'a crate::stats::Family);
+
+/// The families list's number columns for what `m` measures, and the
+/// headings that group them (text, width).
+fn family_cols<'a>(app: &'a App, now: Instant, recent: bool) -> (Vec<(String, usize)>, Vec<NumCol<'a, FamilyRow<'a>>>) {
+    let stats = &app.stats;
+    let minions = app.minion_count();
+    let per_minion = move |v: f64, fmt: fn(f64) -> String| (minions > 0).then(|| fmt(v / minions as f64));
+    let recent_label = recent.then(|| (format!("Last {}m", RECENT_MINUTES), 20));
+    match app.stats_measure {
+        Measure::Events | Measure::Bytes => {
+            let bytes = app.stats_measure == Measure::Bytes;
+            let fmt: fn(f64) -> String = if bytes { fmt_bytes } else { fmt_rate };
+            let total = move |f: &crate::stats::Family| if bytes { f.bytes } else { f.count };
+            let recent_rate = move |f: &crate::stats::Family| {
+                let (events, b) = stats.recent_rates(f, now);
+                if bytes { b } else { events }
+            };
+            let mut groups = vec![("Since start".to_string(), 28)];
+            groups.extend(recent_label);
+            groups.push((if bytes { "Size" } else { "Interval" }.to_string(), 9));
+            let mut cols: Vec<NumCol<FamilyRow>> = vec![
+                num_col(if bytes { "Bytes" } else { "Count" }, 8, ListCol::Count, move |(_, f): &FamilyRow| Some(if bytes { fmt_bytes(f.bytes as f64) } else { fmt_count(f.count) })),
+                num_col("/h", 9, ListCol::Rate, move |(_, f): &FamilyRow| Some(fmt(stats.per_hour(total(f), now)))),
+                num_col("/h/minion", 11, ListCol::RatePerMinion, move |(_, f): &FamilyRow| per_minion(stats.per_hour(total(f), now), fmt)),
+            ];
+            if recent {
+                cols.push(num_col("/h", 9, ListCol::RecentRate, move |(_, f): &FamilyRow| Some(fmt(recent_rate(f)))));
+                cols.push(num_col("/h/minion", 11, ListCol::RecentRatePerMinion, move |(_, f): &FamilyRow| per_minion(recent_rate(f), fmt)));
+            }
+            cols.push(if bytes {
+                num_col("Avg", 9, ListCol::Median, |(_, f): &FamilyRow| f.avg_size().map(fmt_bytes))
+            } else {
+                num_col("Median", 9, ListCol::Median, |(_, f): &FamilyRow| f.median_interval().map(fmt_interval))
+            });
+            (groups, cols)
+        }
+        Measure::Bursts => (
+            vec![("Since start".to_string(), 17), ("Busiest minute".to_string(), 24)],
+            vec![
+                num_col("Count", 8, ListCol::Count, |(_, f): &FamilyRow| Some(fmt_count(f.count))),
+                num_col("/h", 9, ListCol::Rate, move |(_, f): &FamilyRow| Some(fmt_rate(stats.per_hour(f.count, now)))),
+                // Early on the average still counts the minute under way,
+                // which a burst can lift above the busiest whole minute.
+                num_col("Peak/h", 9, ListCol::Peak, move |(_, f): &FamilyRow| (f.count > 0).then(|| fmt_rate(f.per_minute.peak_per_hour().max(stats.per_hour(f.count, now))))),
+                num_col("\u{00D7}avg", 7, ListCol::PeakRatio, move |(_, f): &FamilyRow| stats.burst_ratio(f, now).map(|r| format!("{:.1}", r))),
+                num_col("At", 8, ListCol::PeakAt, move |(_, f): &FamilyRow| (f.count > 0).then(|| stats.minute_time(f.per_minute.peak_at, now).format("%H:%M").to_string())),
+            ],
+        ),
+        Measure::Failures => {
+            let returns = |name: &str| name == crate::stats::RETURN_FAMILY;
+            (
+                vec![("Job returns".to_string(), 34)],
+                vec![
+                    num_col("Returns", 9, ListCol::Count, move |(n, f): &FamilyRow| returns(n).then(|| fmt_count(f.count))),
+                    num_col("Failed", 8, ListCol::Failed, move |(n, f): &FamilyRow| returns(n).then(|| fmt_count(f.failed))),
+                    num_col("Fail%", 8, ListCol::FailPct, move |(n, f): &FamilyRow| (returns(n) && f.count > 0).then(|| format!("{:.1}%", f.failed as f64 * 100.0 / f.count as f64))),
+                    num_col("Failed/h", 9, ListCol::Rate, move |(n, f): &FamilyRow| returns(n).then(|| fmt_rate(stats.per_hour(f.failed, now)))),
+                ],
+            )
+        }
+    }
+}
+
 fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hits: &mut Vec<HeaderHit>) -> Vec<(u16, String)> {
     let now = Instant::now();
     let stats = &app.stats;
@@ -142,8 +241,8 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hit
     let version = app.config_snapshot.as_ref().map_or("?", |c| c.salt_version.as_str());
     let reset = stats.reset_at.map(|t| format!(" (reset {})", t.format("%H:%M"))).unwrap_or_default();
     let title = format!(
-        " {} \u{00B7} Salt {} \u{00B7} {} minions ({} up) \u{00B7} observed {}{} ",
-        host, version, minions, up, fmt_window(stats.observed(now)), reset,
+        " {} \u{00B7} Salt {} \u{00B7} {} minions ({} up) \u{00B7} observed {}{} \u{00B7} {} ",
+        host, version, minions, up, fmt_window(stats.observed(now)), reset, app.stats_measure.label(),
     );
 
     let selected = rows.iter().position(|(n, _)| *n == app.stats_family).unwrap_or(0);
@@ -152,6 +251,7 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hit
     let hints = [
         ("\u{2191}\u{2193}", "family".to_string()),
         ("Enter", "breakdown".to_string()),
+        ("m", app.stats_measure.next().label().to_string()),
         ("o/O", "sort".to_string()),
         ("g", "group".to_string()),
         ("X", "reset".to_string()),
@@ -162,53 +262,43 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hit
 
     let width = inner.width as usize;
     let recent = width >= RECENT_MIN_WIDTH;
-    let fixed = 2 + 8 + 9 + 11 + if recent { 9 + 11 } else { 0 } + 9 + 7;
-    let longest = rows.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
+    let (groups, cols) = family_cols(app, now, recent);
+    let markers = app.stats_measure == Measure::Events;
+    let fixed = 2 + cols.iter().map(|c| c.w).sum::<usize>() + 7;
+    let label = |name: &str| if name == crate::stats::RENDER_FAMILY { format!("{} (pillar)", name) } else { name.to_string() };
+    let longest = rows.iter().map(|(n, _)| label(n).chars().count()).max().unwrap_or(0);
     let name_w = width.saturating_sub(fixed).min(longest.max(20) + 2).max(8);
-    let per_minion = |per_hour: f64| if minions > 0 { fmt_rate(per_hour / minions as f64) } else { "\u{2014}".to_string() };
 
-    let mut group_line = vec![Span::raw(" ".repeat(2 + name_w)), Span::styled(pad("Since start", 28, false), dim())];
-    if recent {
-        group_line.push(Span::styled(pad(&format!("Last {}m", RECENT_MINUTES), 20, false), dim()));
-    }
-    group_line.push(Span::styled("Interval", dim()));
+    let mut group_line = vec![Span::raw(" ".repeat(2 + name_w))];
+    group_line.extend(groups.iter().map(|(text, w)| Span::styled(pad(text, *w, false), dim())));
     let mut head = HeaderRow::new(ListId::StatsFamilies, app.list_sort(ListId::StatsFamilies), inner.x, inner.y + 1);
     head.raw(Span::raw("  "));
     head.col("Family", name_w, false, ListCol::Family, header_hits);
-    head.col("Count", 8, true, ListCol::Count, header_hits);
-    head.col("/h", 9, true, ListCol::Rate, header_hits);
-    head.col("/h/minion", 11, true, ListCol::RatePerMinion, header_hits);
-    if recent {
-        head.col("/h", 9, true, ListCol::RecentRate, header_hits);
-        head.col("/h/minion", 11, true, ListCol::RecentRatePerMinion, header_hits);
+    for c in &cols {
+        head.col(c.label, c.w, true, c.col, header_hits);
     }
-    head.col("Median", 9, true, ListCol::Median, header_hits);
     let mut lines = vec![Line::from(group_line), head.line()];
 
     let mut hits = Vec::new();
     for (i, (name, fam)) in rows.iter().enumerate().skip(scroll).take(visible) {
-        let per_hour = stats.per_hour(fam.count, now);
         let quiet = fam.count == 0;
         let num = if quiet { dim() } else { text() };
         let mut row = vec![
             Span::raw("  "),
-            Span::styled(pad(name, name_w, false), Style::default().fg(if quiet { color::inactive_fg() } else { color::cyan() })),
-            Span::styled(pad(&fmt_count(fam.count), 8, true), num),
-            Span::styled(pad(&fmt_rate(per_hour), 9, true), num),
-            Span::styled(pad(&per_minion(per_hour), 11, true), num),
+            Span::styled(pad(&label(name), name_w, false), Style::default().fg(if quiet { color::inactive_fg() } else { color::cyan() })),
         ];
-        if recent {
-            let recent_hour = stats.recent_per_hour(fam, now);
-            row.push(Span::styled(pad(&fmt_rate(recent_hour), 9, true), num));
-            row.push(Span::styled(pad(&per_minion(recent_hour), 11, true), num));
+        for c in &cols {
+            let v = (c.value)(&(*name, *fam)).unwrap_or_else(|| "\u{2014}".to_string());
+            row.push(Span::styled(pad(&v, c.w, true), num));
         }
-        let median = fam.median_interval();
-        row.push(Span::styled(pad(&median.map_or("\u{2014}".to_string(), fmt_interval), 9, true), num));
-        if fam.periodic() {
+        if markers && fam.periodic() {
             row.push(Span::styled(" \u{21BB}", Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)));
         }
-        if stats.low_confidence(fam, now) {
+        if markers && stats.low_confidence(fam, now) {
             row.push(Span::styled(" \u{25CC} low", Style::default().fg(color::yellow())));
+        }
+        if app.stats_measure == Measure::Bursts && stats.burst_ratio(fam, now).is_some_and(|r| r >= BURST_RATIO) {
+            row.push(Span::styled(" burst", Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)));
         }
         let line = Line::from(row);
         hits.push((inner.y + lines.len() as u16, name.to_string()));
@@ -218,11 +308,57 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hit
     hits
 }
 
+/// The breakdown's number columns for what `m` measures, and how much of
+/// the bar a row fills (its share of the family, or for failures, of its
+/// own returns).
+type GroupCols<'a> = (Vec<NumCol<'a, GroupRow>>, Box<dyn Fn(&GroupRow) -> f64 + 'a>);
+
+fn group_cols<'a>(app: &'a App, family: Option<&'a crate::stats::Family>, now: Instant) -> GroupCols<'a> {
+    let stats = &app.stats;
+    let by_minion = app.stats_grouping == Grouping::Minion;
+    let (events, bytes) = family.map_or((0, 0), |f| (f.count, f.bytes));
+    let share = move |part: u64, whole: u64| if whole > 0 { part as f64 / whole as f64 } else { 0.0 };
+    let pct = |v: f64| format!("{:.1}%", v * 100.0);
+    let mut cols: Vec<NumCol<GroupRow>> = Vec::new();
+    if !by_minion {
+        cols.push(num_col("Minions", 9, ListCol::Minions, |g: &GroupRow| Some(g.minions.to_string())));
+    }
+    let per_minion = move |v: f64, g: &GroupRow, fmt: fn(f64) -> String| (g.minions > 0).then(|| fmt(v / g.minions as f64));
+    let bar: Box<dyn Fn(&GroupRow) -> f64> = match app.stats_measure {
+        Measure::Events | Measure::Bytes => {
+            let b = app.stats_measure == Measure::Bytes;
+            let fmt: fn(f64) -> String = if b { fmt_bytes } else { fmt_rate };
+            let value = move |g: &GroupRow| if b { g.bytes } else { g.events };
+            cols.push(num_col("/h", 9, ListCol::Rate, move |g: &GroupRow| Some(fmt(stats.per_hour(value(g), now)))));
+            if !by_minion {
+                cols.push(num_col("/h/minion", 11, ListCol::RatePerMinion, move |g: &GroupRow| per_minion(stats.per_hour(value(g), now), g, fmt)));
+            }
+            let whole = if b { bytes } else { events };
+            cols.push(num_col("Share", 8, ListCol::Share, move |g: &GroupRow| Some(pct(share(value(g), whole)))));
+            Box::new(move |g: &GroupRow| share(value(g), whole))
+        }
+        Measure::Bursts => {
+            cols.push(num_col("/h", 9, ListCol::Rate, move |g: &GroupRow| Some(fmt_rate(stats.per_hour(g.events, now)))));
+            let label = if by_minion { "Peak/h" } else { "Top peak/h" };
+            cols.push(num_col(label, 11, ListCol::Peak, |g: &GroupRow| (g.events > 0).then(|| fmt_rate(g.peak_minute as f64 * 60.0))));
+            cols.push(num_col("Share", 8, ListCol::Share, move |g: &GroupRow| Some(pct(share(g.events, events)))));
+            Box::new(move |g: &GroupRow| share(g.events, events))
+        }
+        Measure::Failures => {
+            cols.push(num_col("Returns", 9, ListCol::Count, |g: &GroupRow| Some(fmt_count(g.events))));
+            cols.push(num_col("Failed", 8, ListCol::Failed, |g: &GroupRow| Some(fmt_count(g.failed))));
+            cols.push(num_col("Fail%", 8, ListCol::FailPct, move |g: &GroupRow| (g.events > 0).then(|| pct(share(g.failed, g.events)))));
+            Box::new(move |g: &GroupRow| share(g.failed, g.events))
+        }
+    };
+    (cols, bar)
+}
+
 /// The selected family's breakdown: a preview below the families, cut
 /// short with a row summing up the rest, or (`drill`) the whole tab with a
 /// cursor, a filter and the groups it was narrowed to in the title.
 /// Returns where each group row was drawn.
-fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::GroupRow], drill: bool, focused: bool, header_hits: &mut Vec<HeaderHit>) -> Vec<(u16, usize)> {
+fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[GroupRow], drill: bool, focused: bool, header_hits: &mut Vec<HeaderHit>) -> Vec<(u16, usize)> {
     let now = Instant::now();
     let stats = &app.stats;
     let family = stats.family(&app.stats_family);
@@ -230,8 +366,11 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::Gro
     let by_minion = app.stats_grouping == Grouping::Minion;
     let filter = app.filter_text_for(crate::types::Tab::Stats);
     let filter_bar = if drill { super::filter_bar(filter, app.is_filtering, app.input_cursor, format!("{} rows", groups.len()), true) } else { None };
+    let failures_elsewhere = app.stats_measure == Measure::Failures && app.stats_family != crate::stats::RETURN_FAMILY;
     let note = if total == 0 {
         Some("  No events of this family yet.")
+    } else if failures_elsewhere {
+        Some("  Only job returns fail: pick salt/job/*/ret/* for their failures.")
     } else if groups.is_empty() && !filter.is_empty() {
         Some("  Nothing matches the filter.")
     } else if groups.is_empty() {
@@ -250,7 +389,7 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::Gro
     if drill {
         path.extend(app.stats_scopes.iter().map(|s| s.title()));
     }
-    let mut title = format!(" {} \u{203A} by {} ", path.join(" \u{203A} "), app.stats_grouping.label());
+    let mut title = format!(" {} \u{203A} by {} \u{00B7} {} ", path.join(" \u{203A} "), app.stats_grouping.label(), app.stats_measure.label());
     if drill && app.stats_scopes.is_empty() {
         let sent = family.map_or(0, |fam| fam.minions.len());
         title.push_str(&format!("\u{00B7} {} of {} minions sent it ", sent, app.minion_count()));
@@ -260,6 +399,7 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::Gro
             ("\u{2191}\u{2193}", "row".to_string()),
             ("Enter", if by_minion { "detail" } else { "its minions" }.to_string()),
             ("g", "group".to_string()),
+            ("m", app.stats_measure.next().label().to_string()),
             ("o/O", "sort".to_string()),
             ("/", "filter".to_string()),
             ("i/I", "minion list".to_string()),
@@ -277,72 +417,55 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[crate::stats::Gro
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let (cols, bar) = group_cols(app, family, now);
     let width = inner.width as usize;
     let bar_w = width.saturating_sub(70).min(20);
-    let fixed = 2 + if by_minion { 0 } else { 9 } + 9 + if by_minion { 0 } else { 11 } + 8 + bar_w;
+    let fixed = 2 + cols.iter().map(|c| c.w).sum::<usize>() + bar_w;
     let label_w = groups.iter().map(|g| g.label.chars().count()).max().unwrap_or(0);
     let longest = groups.iter().map(|g| label_w + 1 + g.detail.chars().count()).max().unwrap_or(0);
     let name_w = width.saturating_sub(fixed).min(longest.max(20) + 2).max(8);
     let label_w = label_w.min(name_w / 2);
-    let share_of = |events: u64| if total > 0 { events as f64 / total as f64 } else { 0.0 };
 
     let mut lines: Vec<Line> = filter_bar.into_iter().collect();
     let mut head = HeaderRow::new(ListId::StatsGroups, app.list_sort(ListId::StatsGroups), inner.x, inner.y + lines.len() as u16);
     head.raw(Span::raw("  "));
     head.col(app.stats_grouping.header(), name_w, false, ListCol::Group, header_hits);
-    if !by_minion {
-        head.col("Minions", 9, true, ListCol::Minions, header_hits);
+    for c in &cols {
+        head.col(c.label, c.w, true, c.col, header_hits);
     }
-    head.col("/h", 9, true, ListCol::Rate, header_hits);
-    if !by_minion {
-        head.col("/h/minion", 11, true, ListCol::RatePerMinion, header_hits);
-    }
-    head.col("Share", 8, true, ListCol::Share, header_hits);
     lines.push(head.line());
     lines.extend(note.map(|n| Line::from(Span::styled(n, dim()))));
 
+    let row_spans = |g: &GroupRow, name: &str, name_style: Style, num: Style| -> Vec<Span<'static>> {
+        let mut row = vec![Span::raw("  "), Span::styled(pad(name, name_w, false), name_style)];
+        for c in &cols {
+            let v = (c.value)(g).unwrap_or_else(|| "\u{2014}".to_string());
+            row.push(Span::styled(pad(&v, c.w, true), num));
+        }
+        row
+    };
     // The preview gives its last row to the groups it has no room for.
     let cut = !drill && groups.len() > visible;
     let shown = if cut { visible.saturating_sub(1) } else { visible };
     let mut hits = Vec::new();
     for (i, g) in groups.iter().enumerate().skip(scroll).take(shown) {
-        let per_hour = stats.per_hour(g.events, now);
-        let share = share_of(g.events);
         let num = if g.events == 0 { dim() } else { text() };
         let name = if g.detail.is_empty() { g.label.clone() } else { format!("{:<label_w$} {}", g.label, g.detail) };
-        let mut row = vec![Span::raw("  "), Span::styled(pad(&name, name_w, false), Style::default().fg(color::cyan()))];
-        if !by_minion {
-            row.push(Span::styled(pad(&g.minions.to_string(), 9, true), num));
-        }
-        row.push(Span::styled(pad(&fmt_rate(per_hour), 9, true), num));
-        if !by_minion {
-            let per_minion = if g.minions > 0 { fmt_rate(per_hour / g.minions as f64) } else { "\u{2014}".to_string() };
-            row.push(Span::styled(pad(&per_minion, 11, true), num));
-        }
-        row.push(Span::styled(pad(&format!("{:.1}%", share * 100.0), 8, true), num));
-        if bar_w > 0 && g.events > 0 {
-            let cells = ((share * bar_w as f64).round() as usize).max(1);
-            row.push(Span::styled(format!(" {}", "\u{2588}".repeat(cells)), Style::default().fg(color::gradient(share))));
+        let mut row = row_spans(g, &name, Style::default().fg(color::cyan()), num);
+        let filled = bar(g);
+        if bar_w > 0 && filled > 0.0 {
+            let cells = ((filled * bar_w as f64).round() as usize).max(1);
+            row.push(Span::styled(format!(" {}", "\u{2588}".repeat(cells)), Style::default().fg(color::gradient(filled))));
         }
         let line = Line::from(row);
         hits.push((inner.y + lines.len() as u16, i));
         lines.push(if drill && i == selected { color::selected_row(line) } else { line });
     }
     if cut {
-        let rest = &groups[shown..];
-        let events: u64 = rest.iter().map(|g| g.events).sum();
+        let rest = GroupRow::sum(&groups[shown..]);
         let what = if by_minion { "minions" } else { "groups" };
-        let label = format!("\u{2026} {} more {}", rest.len(), what);
-        let mut row = vec![Span::raw("  "), Span::styled(pad(&label, name_w, false), dim())];
-        if !by_minion {
-            row.push(Span::styled(pad(&rest.iter().map(|g| g.minions).sum::<usize>().to_string(), 9, true), dim()));
-        }
-        row.push(Span::styled(pad(&fmt_rate(stats.per_hour(events, now)), 9, true), dim()));
-        if !by_minion {
-            row.push(Span::raw(" ".repeat(11)));
-        }
-        row.push(Span::styled(pad(&format!("{:.1}%", share_of(events) * 100.0), 8, true), dim()));
-        lines.push(Line::from(row));
+        let label = format!("\u{2026} {} more {}", groups.len() - shown, what);
+        lines.push(Line::from(row_spans(&rest, &label, dim(), dim())));
     }
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(color::main_bg())), inner);
     hits

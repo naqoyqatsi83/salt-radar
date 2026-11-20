@@ -17,6 +17,9 @@ pub const CORE_FAMILIES: &[&str] = &["salt/auth", "minion_start", "salt/minion/*
 const MAX_FAMILIES: usize = 300;
 pub const OTHER_FAMILY: &str = "(other tags)";
 pub const JID_FAMILY: &str = "<jid>";
+pub const RETURN_FAMILY: &str = "salt/job/*/ret/*";
+/// One per pillar render a minion asked for (see #216).
+pub const RENDER_FAMILY: &str = "minion/refresh/*";
 const MAX_MINIONS_PER_FAMILY: usize = 50_000;
 const MAX_INTERVALS: usize = 1000;
 /// The "last 15 minutes" columns.
@@ -24,60 +27,80 @@ pub const RECENT_MINUTES: u64 = 15;
 const RSS_SAMPLE_EVERY: Duration = Duration::from_secs(60);
 const RSS_SAMPLES: usize = 24 * 60;
 
+/// One minion's share of a family (or the events no minion could be named
+/// for): its events, their size, how many of them were failed job returns,
+/// and its busiest minute.
 #[derive(Debug, Default)]
 pub struct PerMinion {
     pub count: u64,
-    last_ts: f64,
+    pub bytes: u64,
+    pub failed: u64,
+    pub per_minute: Throughput,
+    last_ts: Option<f64>,
+}
+
+impl PerMinion {
+    fn merge(&mut self, other: PerMinion) {
+        self.count += other.count;
+        self.bytes += other.bytes;
+        self.failed += other.failed;
+        self.per_minute.merge(&other.per_minute);
+        self.last_ts = match (self.last_ts, other.last_ts) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+    }
+
+    /// Counts an event; returns when the previous one came.
+    fn record(&mut self, ts: f64, minute: u64, bytes: u64, failed: bool) -> Option<f64> {
+        self.count += 1;
+        self.bytes += bytes;
+        self.failed += u64::from(failed);
+        self.per_minute.add(1, minute);
+        self.last_ts.replace(ts)
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct Family {
     pub count: u64,
-    /// (minute of the window, events in it) for the last `RECENT_MINUTES`.
-    minutes: VecDeque<(u64, u64)>,
+    pub bytes: u64,
+    /// Job returns judged failed (only `salt/job/*/ret/*` has any).
+    pub failed: u64,
+    /// Events per minute: the busiest minute and when it was.
+    pub per_minute: Throughput,
+    /// (minute of the window, events, bytes) for the last `RECENT_MINUTES`.
+    minutes: VecDeque<(u64, u64, u64)>,
     pub minions: HashMap<String, PerMinion>,
     /// Events no minion could be named for (`salt/job/*/new`, runners).
-    pub unattributed: u64,
-    last_unattributed_ts: Option<f64>,
+    pub unattributed: PerMinion,
     /// Seconds between two events of the family from the same minion (or
     /// between two unattributed ones), the latest `MAX_INTERVALS`.
     intervals: VecDeque<f64>,
 }
 
 impl Family {
-    fn record(&mut self, minion: Option<String>, ts: f64, minute: u64) {
+    fn record(&mut self, minion: Option<String>, ts: f64, minute: u64, bytes: u64, failed: bool) {
         self.count += 1;
+        self.bytes += bytes;
+        self.failed += u64::from(failed);
+        self.per_minute.add(1, minute);
         match self.minutes.back_mut() {
-            Some((m, n)) if *m == minute => *n += 1,
-            _ => self.minutes.push_back((minute, 1)),
+            Some((m, n, b)) if *m == minute => {
+                *n += 1;
+                *b += bytes;
+            }
+            _ => self.minutes.push_back((minute, 1, bytes)),
         }
-        while self.minutes.front().is_some_and(|(m, _)| m + RECENT_MINUTES <= minute) {
+        while self.minutes.front().is_some_and(|(m, _, _)| m + RECENT_MINUTES <= minute) {
             self.minutes.pop_front();
         }
-        let previous = match minion {
-            Some(id) => {
-                let full = self.minions.len() >= MAX_MINIONS_PER_FAMILY;
-                match self.minions.get_mut(&id) {
-                    Some(m) => {
-                        m.count += 1;
-                        Some(std::mem::replace(&mut m.last_ts, ts))
-                    }
-                    None if full => {
-                        self.unattributed += 1;
-                        None
-                    }
-                    None => {
-                        self.minions.insert(id, PerMinion { count: 1, last_ts: ts });
-                        None
-                    }
-                }
-            }
-            None => {
-                self.unattributed += 1;
-                self.last_unattributed_ts.replace(ts)
-            }
+        let full = self.minions.len() >= MAX_MINIONS_PER_FAMILY;
+        let who = match minion {
+            Some(id) if self.minions.contains_key(&id) || !full => self.minions.entry(id).or_default(),
+            _ => &mut self.unattributed,
         };
-        if let Some(prev) = previous.filter(|&prev| ts > prev) {
+        if let Some(prev) = who.record(ts, minute, bytes, failed).filter(|&prev| ts > prev) {
             self.intervals.push_back(ts - prev);
             if self.intervals.len() > MAX_INTERVALS {
                 self.intervals.pop_front();
@@ -85,9 +108,47 @@ impl Family {
         }
     }
 
-    /// Events in the last `RECENT_MINUTES` minutes, the current one included.
-    fn recent(&self, minute: u64) -> u64 {
-        self.minutes.iter().filter(|(m, _)| m + RECENT_MINUTES > minute).map(|(_, n)| n).sum()
+    /// Events and bytes in the last `RECENT_MINUTES` minutes, the current
+    /// one included.
+    fn recent(&self, minute: u64) -> (u64, u64) {
+        self.minutes.iter()
+            .filter(|(m, _, _)| m + RECENT_MINUTES > minute)
+            .fold((0, 0), |(n, b), (_, en, eb)| (n + en, b + eb))
+    }
+
+    /// Average size of its events, in bytes.
+    pub fn avg_size(&self) -> Option<f64> {
+        (self.count > 0).then(|| self.bytes as f64 / self.count as f64)
+    }
+
+    /// Takes in a family recorded under another name: its events go to
+    /// `minion` when the old name was that minion's tag.
+    fn merge(&mut self, other: Family, minion: Option<String>) {
+        self.count += other.count;
+        self.bytes += other.bytes;
+        self.failed += other.failed;
+        self.per_minute.merge(&other.per_minute);
+        for (minute, n, b) in other.minutes {
+            match self.minutes.iter_mut().find(|(m, _, _)| *m == minute) {
+                Some((_, sn, sb)) => {
+                    *sn += n;
+                    *sb += b;
+                }
+                None => self.minutes.push_back((minute, n, b)),
+            }
+        }
+        self.minutes.make_contiguous().sort_by_key(|(m, _, _)| *m);
+        for (id, pm) in other.minions {
+            self.minions.entry(id).or_default().merge(pm);
+        }
+        match minion {
+            Some(id) => self.minions.entry(id).or_default().merge(other.unattributed),
+            None => self.unattributed.merge(other.unattributed),
+        }
+        self.intervals.extend(other.intervals);
+        while self.intervals.len() > MAX_INTERVALS {
+            self.intervals.pop_front();
+        }
     }
 
     fn sorted_intervals(&self) -> Vec<f64> {
@@ -147,15 +208,40 @@ pub struct Throughput {
     minute: u64,
     in_minute: u64,
     last_minute: u64,
-    peak_minute: u64,
+    /// Events (or bytes) in the busiest minute.
+    pub peak_minute: u64,
+    /// Which minute of the window was the busiest.
+    pub peak_at: u64,
 }
 
 impl Throughput {
+    /// Adds another count kept over the same window. Of earlier minutes
+    /// only the busiest of each is known, so the busier of the two stands
+    /// for both; the minute under way adds up.
+    fn merge(&mut self, other: &Throughput) {
+        self.total += other.total;
+        if other.peak_minute > self.peak_minute {
+            self.peak_minute = other.peak_minute;
+            self.peak_at = other.peak_at;
+        }
+        if other.minute == self.minute {
+            self.in_minute += other.in_minute;
+            self.last_minute += other.last_minute;
+            if self.in_minute > self.peak_minute {
+                self.peak_minute = self.in_minute;
+                self.peak_at = self.minute;
+            }
+        }
+    }
+
     fn add(&mut self, n: u64, minute: u64) {
         self.roll(minute);
         self.total += n;
         self.in_minute += n;
-        self.peak_minute = self.peak_minute.max(self.in_minute);
+        if self.in_minute > self.peak_minute {
+            self.peak_minute = self.in_minute;
+            self.peak_at = minute;
+        }
     }
 
     fn roll(&mut self, minute: u64) {
@@ -245,14 +331,15 @@ pub struct Flow {
 impl Flow {
     pub const AUTH_ACTS: [&'static str; 4] = ["accept", "pend", "reject", "denied"];
 
-    fn record(&mut self, tag: &str, data: &serde_json::Value, bytes: u64, minute: u64) {
+    /// Counts an event; returns whether it was a failed job return.
+    fn record(&mut self, tag: &str, data: &serde_json::Value, bytes: u64, minute: u64) -> bool {
         self.events.add(1, minute);
         self.bytes.add(bytes, minute);
         if tag.starts_with("salt/job/") && tag.contains("/ret/") {
             self.returns.add(1, minute);
-            if !crate::app::return_outcome(data, &data["return"]).0 {
-                self.failed_returns += 1;
-            }
+            let failed = !crate::app::return_outcome(data, &data["return"]).0;
+            self.failed_returns += u64::from(failed);
+            return failed;
         } else if tag.starts_with("salt/job/") && tag.ends_with("/new") {
             self.jobs.add(1, minute);
         } else if tag.starts_with("minion/refresh/") {
@@ -263,6 +350,7 @@ impl Flow {
         } else if tag.starts_with("salt/stats/") {
             self.worker_time.record(data);
         }
+        false
     }
 
     pub fn failed_share(&self) -> Option<f64> {
@@ -585,6 +673,25 @@ impl Stats {
         now.saturating_duration_since(self.started)
     }
 
+    /// Families named before the minions were known: until the agent has
+    /// listed the accepted keys, a minion's ID in a tag can't be told from
+    /// a fixed part of it (`minion/refresh/web1`). Once it has, they join
+    /// the family they belong to, credited to that minion.
+    pub fn rekey(&mut self, accepted: &HashSet<String>) {
+        let moved: Vec<(String, String, Option<String>)> = self.families.keys()
+            .filter(|name| name.as_str() != OTHER_FAMILY && name.as_str() != JID_FAMILY)
+            .filter_map(|name| {
+                let (family, minion) = family_of(name, None, accepted);
+                (family != *name).then(|| (name.clone(), family, minion))
+            })
+            .collect();
+        for (old, new, minion) in moved {
+            if let Some(family) = self.families.remove(&old) {
+                self.families.entry(new).or_default().merge(family, minion);
+            }
+        }
+    }
+
     /// How many minions sent any event in the window.
     pub fn minions_heard(&self) -> usize {
         self.families.values().flat_map(|f| f.minions.keys()).collect::<HashSet<_>>().len()
@@ -594,26 +701,22 @@ impl Stats {
         self.families.values().map(|f| f.count).sum()
     }
 
-    /// What an event says about the master's work: its size, and for job
-    /// returns, publishes, pillar renders, auth and worker stats, more.
-    pub fn record_flow(&mut self, tag: &str, data: &serde_json::Value, bytes: u64, now: Instant) {
-        let minute = self.minute(now);
-        self.flow.record(tag, data, bytes, minute);
-    }
-
     pub fn minute(&self, now: Instant) -> u64 {
         self.observed(now).as_secs() / 60
     }
 
-    pub fn record_event(&mut self, tag: &str, id: Option<&str>, ts: f64, accepted: &HashSet<String>, now: Instant) {
-        let (family, minion) = family_of(tag, id, accepted);
+    /// Counts an event: in its family (for its minion), and in what it says
+    /// about the master's work. `bytes` is its size as the agent sent it.
+    pub fn record_event(&mut self, tag: &str, data: &serde_json::Value, bytes: u64, ts: f64, accepted: &HashSet<String>, now: Instant) {
+        let minute = self.minute(now);
+        let failed = self.flow.record(tag, data, bytes, minute);
+        let (family, minion) = family_of(tag, data["id"].as_str(), accepted);
         let family = if self.families.len() >= MAX_FAMILIES && !self.families.contains_key(&family) {
             OTHER_FAMILY.to_string()
         } else {
             family
         };
-        let minute = self.minute(now);
-        self.families.entry(family).or_default().record(minion, ts, minute);
+        self.families.entry(family).or_default().record(minion, ts, minute, bytes, failed);
     }
 
     pub fn family(&self, name: &str) -> Option<&Family> {
@@ -634,19 +737,74 @@ impl Stats {
         count as f64 * 3600.0 / self.observed(now).as_secs_f64().max(1.0)
     }
 
-    /// Events per hour over the last `RECENT_MINUTES` minutes (the whole
-    /// window while it's shorter).
-    pub fn recent_per_hour(&self, family: &Family, now: Instant) -> f64 {
+    /// Events and bytes per hour over the last `RECENT_MINUTES` minutes
+    /// (the whole window while it's shorter).
+    pub fn recent_rates(&self, family: &Family, now: Instant) -> (f64, f64) {
         let secs = self.observed(now).as_secs();
         let minute = secs / 60;
-        let span = if minute + 1 >= RECENT_MINUTES { (RECENT_MINUTES - 1) * 60 + secs % 60 } else { secs };
-        family.recent(minute) as f64 * 3600.0 / (span as f64).max(1.0)
+        let span = (if minute + 1 >= RECENT_MINUTES { (RECENT_MINUTES - 1) * 60 + secs % 60 } else { secs } as f64).max(1.0);
+        let (n, b) = family.recent(minute);
+        (n as f64 * 3600.0 / span, b as f64 * 3600.0 / span)
+    }
+
+    /// How many times its average rate the family's busiest minute was;
+    /// only after ten minutes, before which the average is too short to
+    /// compare with.
+    pub fn burst_ratio(&self, family: &Family, now: Instant) -> Option<f64> {
+        let avg = self.per_hour(family.count, now);
+        (self.observed(now) >= Duration::from_secs(600) && avg > 0.0).then(|| family.per_minute.peak_per_hour() / avg)
+    }
+
+    /// The wall-clock time a minute of the window started.
+    pub fn minute_time(&self, minute: u64, now: Instant) -> chrono::DateTime<chrono::Local> {
+        let ago = self.observed(now).saturating_sub(Duration::from_secs(minute * 60));
+        chrono::Local::now() - chrono::Duration::from_std(ago).unwrap_or_default()
     }
 
     /// The window is shorter than twice the family's interval: a few more
     /// or fewer events still move its rate a lot.
     pub fn low_confidence(&self, family: &Family, now: Instant) -> bool {
         family.median_interval().is_some_and(|i| self.observed(now).as_secs_f64() < 2.0 * i)
+    }
+}
+
+/// What the Stats tab's number columns measure (`m`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Measure {
+    #[default]
+    Events,
+    Bytes,
+    Bursts,
+    Failures,
+}
+
+impl Measure {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Events => Self::Bytes,
+            Self::Bytes => Self::Bursts,
+            Self::Bursts => Self::Failures,
+            Self::Failures => Self::Events,
+        }
+    }
+
+    /// The columns the families list and the breakdown can show for it.
+    pub fn columns(self) -> &'static [crate::types::ListCol] {
+        use crate::types::ListCol::*;
+        match self {
+            Self::Events | Self::Bytes => &[Family, Group, Minions, Count, Rate, RatePerMinion, RecentRate, RecentRatePerMinion, Median, Share],
+            Self::Bursts => &[Family, Group, Minions, Count, Rate, Peak, PeakRatio, PeakAt, Share],
+            Self::Failures => &[Family, Group, Minions, Count, Rate, Failed, FailPct],
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Events => "events",
+            Self::Bytes => "bytes",
+            Self::Bursts => "bursts",
+            Self::Failures => "failures",
+        }
     }
 }
 
@@ -698,6 +856,36 @@ pub struct GroupRow {
     pub detail: String,
     pub minions: usize,
     pub events: u64,
+    pub bytes: u64,
+    pub failed: u64,
+    /// The busiest minute of its busiest minion, in events.
+    pub peak_minute: u64,
+}
+
+impl GroupRow {
+    /// The groups a preview has no room for, as one row.
+    pub fn sum(rows: &[GroupRow]) -> Self {
+        let mut sum = Self::new(String::new(), String::new(), 0);
+        for r in rows {
+            sum.minions += r.minions;
+            sum.events += r.events;
+            sum.bytes += r.bytes;
+            sum.failed += r.failed;
+            sum.peak_minute = sum.peak_minute.max(r.peak_minute);
+        }
+        sum
+    }
+
+    fn new(label: String, detail: String, minions: usize) -> Self {
+        Self { label, detail, minions, events: 0, bytes: 0, failed: 0, peak_minute: 0 }
+    }
+
+    fn add(&mut self, m: &PerMinion) {
+        self.events += m.count;
+        self.bytes += m.bytes;
+        self.failed += m.failed;
+        self.peak_minute = self.peak_minute.max(m.per_minute.peak_minute);
+    }
 }
 
 pub const NO_MINION: &str = "(no minion)";
@@ -748,20 +936,23 @@ pub fn group_rows(family: &Family, grouping: Grouping, scopes: &[Scope], minions
     let cached = |id: &str| index.get(id).and_then(|&i| minions.get(i));
     let mut rows: Vec<GroupRow> = Vec::new();
     if grouping == Grouping::Minion {
-        rows = minions.iter().filter(|m| in_scope(Some(m))).map(|m| GroupRow {
-            label: m.id.clone(),
-            detail: group_key(m, grouping).1,
-            minions: 1,
-            events: family.minions.get(&m.id).map_or(0, |pm| pm.count),
+        rows = minions.iter().filter(|m| in_scope(Some(m))).map(|m| {
+            let mut row = GroupRow::new(m.id.clone(), group_key(m, grouping).1, 1);
+            if let Some(pm) = family.minions.get(&m.id) {
+                row.add(pm);
+            }
+            row
         }).collect();
         rows.extend(family.minions.iter().filter(|(id, _)| cached(id).is_none() && in_scope(None)).map(|(id, pm)| {
-            GroupRow { label: id.clone(), detail: UNKNOWN_MINION.to_string(), minions: 1, events: pm.count }
+            let mut row = GroupRow::new(id.clone(), UNKNOWN_MINION.to_string(), 1);
+            row.add(pm);
+            row
         }));
     } else {
         let mut at: HashMap<(String, String), usize> = HashMap::new();
         let mut slot = |rows: &mut Vec<GroupRow>, k: (String, String)| -> usize {
             *at.entry(k.clone()).or_insert_with(|| {
-                rows.push(GroupRow { label: k.0, detail: k.1, minions: 0, events: 0 });
+                rows.push(GroupRow::new(k.0, k.1, 0));
                 rows.len() - 1
             })
         };
@@ -771,11 +962,13 @@ pub fn group_rows(family: &Family, grouping: Grouping, scopes: &[Scope], minions
         }
         for (id, pm) in family.minions.iter().filter(|(id, _)| in_scope(cached(id))) {
             let i = slot(&mut rows, cached(id).map_or_else(unknown, |m| group_key(m, grouping)));
-            rows[i].events += pm.count;
+            rows[i].add(pm);
         }
     }
-    if family.unattributed > 0 && scopes.is_empty() {
-        rows.push(GroupRow { label: NO_MINION.to_string(), detail: String::new(), minions: 0, events: family.unattributed });
+    if family.unattributed.count > 0 && scopes.is_empty() {
+        let mut row = GroupRow::new(NO_MINION.to_string(), String::new(), 0);
+        row.add(&family.unattributed);
+        rows.push(row);
     }
     rows.sort_by(|a, b| b.events.cmp(&a.events).then(b.minions.cmp(&a.minions)).then_with(|| a.label.cmp(&b.label)));
     rows
@@ -812,13 +1005,14 @@ mod tests {
         let acc = accepted(&[]);
         for i in 0..30u64 {
             let at = t0 + Duration::from_secs(i * 60);
-            s.record_event("minion_start", Some("w"), (i * 60) as f64, &acc, at);
+            s.record_event("minion_start", &serde_json::json!({"id": "w"}), 100, (i * 60) as f64, &acc, at);
         }
         let now = t0 + Duration::from_secs(30 * 60);
         let fam = s.family("minion_start").unwrap();
         assert_eq!(fam.count, 30);
         assert!((s.per_hour(fam.count, now) - 60.0).abs() < 0.01);
-        assert!((s.recent_per_hour(fam, now) - 60.0).abs() < 5.0);
+        let (events, bytes) = s.recent_rates(fam, now);
+        assert!((events - 60.0).abs() < 5.0 && (bytes - 6000.0).abs() < 500.0);
         assert_eq!(fam.median_interval(), Some(60.0));
         assert!(fam.periodic());
         assert!(!s.low_confidence(fam, now));
@@ -831,9 +1025,30 @@ mod tests {
         let mut ts = 0.0;
         for i in 0..40 {
             ts += [5.0, 50.0, 300.0, 17.0][i % 4];
-            f.record(Some("w".into()), ts, 0);
+            f.record(Some("w".into()), ts, 0, 0, false);
         }
         assert!(!f.periodic());
+    }
+
+    #[test]
+    fn families_named_before_the_keys_were_known_join_their_own() {
+        let t0 = Instant::now();
+        let mut s = Stats::new(t0);
+        let none = accepted(&[]);
+        s.record_event("minion/refresh/web1", &serde_json::Value::Null, 50, 1.0, &none, t0);
+        s.record_event("minion/refresh/web1", &serde_json::Value::Null, 50, 2.0, &none, t0);
+        s.record_event("minion/refresh/db1", &serde_json::Value::Null, 70, 1.0, &none, t0);
+        s.record_event("salt/job/20261120000000000000/ret/web1", &serde_json::json!({"id": "web1", "success": true}), 90, 1.0, &none, t0);
+        assert!(s.family("minion/refresh/web1").is_some());
+        let keys = accepted(&["web1", "db1"]);
+        s.record_event("minion/refresh/web1", &serde_json::Value::Null, 50, 3.0, &keys, t0);
+        s.rekey(&keys);
+        assert!(s.family("minion/refresh/web1").is_none() && s.family("minion/refresh/db1").is_none());
+        let renders = s.family(RENDER_FAMILY).unwrap();
+        assert_eq!((renders.count, renders.bytes, renders.unattributed.count), (4, 220, 0));
+        assert_eq!((renders.minions["web1"].count, renders.minions["db1"].count), (3, 1));
+        assert_eq!(renders.per_minute.peak_minute, 4);
+        assert_eq!(s.family(RETURN_FAMILY).unwrap().count, 1);
     }
 
     #[test]
@@ -842,9 +1057,9 @@ mod tests {
         let mut s = Stats::new(t0);
         let acc = accepted(&[]);
         for _ in 0..5 {
-            s.record_event("aaa/custom", None, 1.0, &acc, t0);
+            s.record_event("aaa/custom", &serde_json::Value::Null, 10, 1.0, &acc, t0);
         }
-        s.record_event("zzz/custom", None, 1.0, &acc, t0);
+        s.record_event("zzz/custom", &serde_json::Value::Null, 10, 1.0, &acc, t0);
         let names: Vec<&str> = s.rows().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, [CORE_FAMILIES, &["aaa/custom", "zzz/custom"]].concat());
     }
@@ -857,30 +1072,32 @@ mod tests {
         let mut f = Family::default();
         for (id, n) in [("a", 3), ("b", 2), ("ghost", 1)] {
             for k in 0..n {
-                f.record(Some(id.into()), k as f64, 0);
+                f.record(Some(id.into()), k as f64, k, 100, id == "b");
             }
         }
-        f.record(None, 1.0, 0);
+        f.record(None, 1.0, 0, 10, false);
         let rows = group_rows(&f, Grouping::VersionOs, &[], &minions, &index);
-        let row = |label: &str, detail: &str, minions, events| GroupRow { label: label.into(), detail: detail.into(), minions, events };
-        assert_eq!(rows, vec![
+        let row = |label: &str, detail: &str, minions, events| (label.to_string(), detail.to_string(), minions, events);
+        let brief = |rows: Vec<GroupRow>| -> Vec<(String, String, usize, u64)> { rows.into_iter().map(|r| (r.label, r.detail, r.minions, r.events)).collect() };
+        assert_eq!((rows[0].bytes, rows[0].failed, rows[0].peak_minute), (500, 2, 1));
+        assert_eq!(brief(rows.clone()), vec![
             row("3006.9", "Windows-2022", 2, 5),
             row(NO_MINION, "", 0, 1),
             row(UNKNOWN_MINION, "", 0, 1),
             row("3007.1", "Rocky-9", 1, 0),
         ]);
         let by_minion = group_rows(&f, Grouping::Minion, &[], &minions, &index);
-        assert_eq!(by_minion[0], row("a", "3006.9 Windows-2022", 1, 3));
+        assert_eq!(brief(by_minion.clone())[0], row("a", "3006.9 Windows-2022", 1, 3));
         let windows = Scope::of(Grouping::VersionOs, &rows[0]);
         let scoped: Vec<String> = group_rows(&f, Grouping::Minion, std::slice::from_ref(&windows), &minions, &index).into_iter().map(|r| r.label).collect();
         assert_eq!(scoped.len(), 2);
         assert!(scoped.contains(&"a".to_string()) && scoped.contains(&"b".to_string()));
-        assert_eq!(group_rows(&f, Grouping::Os, std::slice::from_ref(&windows), &minions, &index), vec![row("Windows-2022", "", 2, 5)]);
+        assert_eq!(brief(group_rows(&f, Grouping::Os, std::slice::from_ref(&windows), &minions, &index)), vec![row("Windows-2022", "", 2, 5)]);
         let ghosts = Scope::of(Grouping::VersionOs, &rows[2]);
-        assert_eq!(group_rows(&f, Grouping::Minion, &[ghosts], &minions, &index), vec![row("ghost", UNKNOWN_MINION, 1, 1)]);
+        assert_eq!(brief(group_rows(&f, Grouping::Minion, &[ghosts], &minions, &index)), vec![row("ghost", UNKNOWN_MINION, 1, 1)]);
         assert_eq!(by_minion.len(), 5);
         let quiet = Scope::of(Grouping::VersionOs, &rows[3]);
-        assert_eq!(group_rows(&f, Grouping::Minion, &[quiet], &minions, &index), vec![row("c", "3007.1 Rocky-9", 1, 0)]);
+        assert_eq!(brief(group_rows(&f, Grouping::Minion, &[quiet], &minions, &index)), vec![row("c", "3007.1 Rocky-9", 1, 0)]);
     }
 
     #[test]

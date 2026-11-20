@@ -101,6 +101,7 @@ impl App {
                                     .filter(|k| k.status == KeyStatus::Accepted)
                                     .map(|k| k.id.clone())
                                     .collect();
+                                self.stats.rekey(&self.accepted_id_set);
                                 if !self.applied_filter.is_empty() {
                                     self.refresh_events_matcher();
                                 }
@@ -426,8 +427,7 @@ impl App {
                 AgentMessage::Event { tag, data, ts, bytes, received } => {
                     // Track event breakdown
                     self.event_breakdown.record(&tag);
-                    self.stats.record_event(&tag, data["id"].as_str(), ts, &self.accepted_id_set, Instant::now());
-                    self.stats.record_flow(&tag, &data, bytes, Instant::now());
+                    self.stats.record_event(&tag, &data, bytes, ts, &self.accepted_id_set, Instant::now());
                     if tag.starts_with("salt/auth") {
                         self.auth_events_this_sec += 1;
                     }

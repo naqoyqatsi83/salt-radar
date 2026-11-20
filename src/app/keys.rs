@@ -1340,6 +1340,7 @@ impl App {
                     self.stats_reset_confirm = true;
                 }
             }
+            KeyCode::Char('m') | KeyCode::Char('M') if self.current_tab == Tab::Stats => self.next_stats_measure(),
             KeyCode::Char('g') | KeyCode::Char('G') if self.current_tab == Tab::Stats => {
                 self.stats_grouping = self.stats_grouping.next();
                 self.stats_group = None;
