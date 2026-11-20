@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc11] - 2026-11-20
+
+### Added
+
+- Switch what the Stats tab's families list and breakdown measure with `m`: events, bytes (the events' size per hour and per minion, and their average size, to see what fills the event bus), bursts (each family's busiest minute, how many times its average and when; for a group, its busiest minion's) and failures (the job returns that failed, by version, OS or minion). Sorting by a column works in each (#219)
+
+### Changed
+
+- Mark the `minion/refresh/*` family as pillar renders in the Stats tab's list, not only in the Guide
+
+### Fixed
+
+- Count a tag that names a minion (`minion/refresh/web1`) in its family on the Stats tab also when it came in the first seconds, before the accepted keys were read: it showed as a family of its own until the window was reset
+
 ## [0.12.0-rc10] - 2026-11-20
 
 ### Added
