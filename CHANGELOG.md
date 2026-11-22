@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0-rc13] - 2026-11-23
+
 ### Added
 
 - Open a minion's events and returns from the Stats tab's breakdown by minion with `r`, as in the Minions tab
