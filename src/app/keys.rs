@@ -1186,6 +1186,16 @@ impl App {
             return false;
         }
 
+        if let Some((picker, mut cursor)) = self.stats_picker.filter(|_| self.current_tab == Tab::Stats) {
+            let own = if picker == crate::app::StatsPicker::Grouping { 'g' } else { 'm' };
+            match crate::app::choice_key(code, &mut cursor, self.stats_picker_len(picker), own) {
+                crate::app::PickerKey::Toggle(i) => self.pick_stats(picker, i),
+                crate::app::PickerKey::Close => self.stats_picker = None,
+                crate::app::PickerKey::Stay => self.stats_picker = Some((picker, cursor)),
+            }
+            return false;
+        }
+
         if let Some(cursor) = self.job_picker.as_mut().filter(|_| self.current_tab == Tab::Jobs) {
             match crate::app::picker_key(code, cursor, JobState::ALL.len()) {
                 crate::app::PickerKey::Toggle(i) => {
@@ -1340,8 +1350,8 @@ impl App {
                     self.stats_reset_confirm = true;
                 }
             }
-            KeyCode::Char('m') | KeyCode::Char('M') if self.current_tab == Tab::Stats => self.next_stats_measure(),
-            KeyCode::Char('g') | KeyCode::Char('G') if self.current_tab == Tab::Stats => self.next_stats_grouping(),
+            KeyCode::Char('m') | KeyCode::Char('M') if self.current_tab == Tab::Stats => self.open_stats_picker(crate::app::StatsPicker::Measure),
+            KeyCode::Char('g') | KeyCode::Char('G') if self.current_tab == Tab::Stats => self.open_stats_picker(crate::app::StatsPicker::Grouping),
             KeyCode::Esc if self.current_tab == Tab::Stats => self.stats_back(true),
             KeyCode::Char('z') | KeyCode::Char('Z') => {
                 if self.current_tab == Tab::Minions {
@@ -1383,15 +1393,10 @@ impl App {
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 if self.current_tab == Tab::Minions {
                     if let Some(minion) = self.get_filtered_minion(self.minion_selected) {
-                        self.detail_popup = Some(DetailPopup::MinionEvents {
-                            minion_id: minion.id.clone(),
-                            selected: 0,
-                        });
-                        self.popup_tab = Some(self.current_tab);
-                        if !self.cache_loaded {
-                            self.send_cache_jobs_list(None, false);
-                        }
+                        self.open_minion_events(minion.id.clone());
                     }
+                } else if self.current_tab == Tab::Stats && self.stats_drill {
+                    self.stats_events();
                 } else if self.current_tab == Tab::Jobs && !self.cache_loading {
                     let ft = self.cache_server_filter.clone();
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
@@ -1650,6 +1655,15 @@ impl App {
         // content area starts at row 3, status bar is the last row (h-1).
         let r = row as usize;
         if r < 3 || r >= h.saturating_sub(1) {
+            return false;
+        }
+
+        if let Some((picker, _)) = self.stats_picker.filter(|_| self.current_tab == Tab::Stats) {
+            match crate::app::picker_click(&self.stats_picker_hits, col, row) {
+                crate::app::PickerClick::Toggle(i) => self.pick_stats(picker, i),
+                crate::app::PickerClick::Outside => self.stats_picker = None,
+                crate::app::PickerClick::Inside => {}
+            }
             return false;
         }
 

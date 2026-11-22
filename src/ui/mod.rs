@@ -511,6 +511,47 @@ pub fn draw_status_picker(f: &mut Frame, panel: Rect, rows: &[PickerRow], cursor
     }
 }
 
+/// A single-choice picker (`g`, `m` on the Stats tab): a box rising from
+/// `panel`'s bottom edge with every option and what it does, `current`
+/// marked, so the choice is made from all of them rather than by cycling.
+pub fn draw_choice_picker(f: &mut Frame, panel: Rect, title: &str, rows: &[(&str, &str)], current: usize, cursor: usize) -> crate::types::PickerHits {
+    let label_w = rows.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+    let desc_w = rows.iter().map(|(_, d)| d.chars().count()).max().unwrap_or(0);
+    let inner_w = 3 + 2 + label_w + 2 + desc_w + 1;
+    let w = ((inner_w + 2) as u16).min(panel.width.saturating_sub(2));
+    let h = (rows.len() as u16 + 2).min(panel.height);
+    let area = Rect { x: panel.x + 1, y: panel.bottom().saturating_sub(h), width: w, height: h };
+    let hints = [("Enter", "pick".to_string()), ("Esc", "close".to_string())];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::border_focus()))
+        .title(Line::from(bracket_title(vec![Span::styled(title.to_string(), Style::default().fg(color::title()).add_modifier(Modifier::BOLD))], color::border_focus())))
+        .title_bottom(border_hints(&hints, color::border_focus()))
+        .style(Style::default().bg(color::popup_bg()));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let lines: Vec<Line<'static>> = rows.iter().enumerate().map(|(i, (label, desc))| {
+        let at = i == cursor;
+        let picked = i == current;
+        let line = Line::from(vec![
+            Span::styled(format!(" {} ", if at { "\u{25b6}" } else { " " }), Style::default().fg(color::cyan())),
+            Span::styled(if picked { "\u{25cf} " } else { "  " }, Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<label_w$}", label), Style::default().fg(if picked { color::title() } else { color::main_fg() }).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {}", desc), Style::default().fg(color::label_fg())),
+        ]);
+        if at { color::selected_row(line) } else { line }
+    }).collect();
+    if cursor < inner.height as usize {
+        f.buffer_mut().set_style(Rect { y: inner.y + cursor as u16, height: 1, ..inner }, color::select_bg());
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+    crate::types::PickerHits {
+        area,
+        rows: (0..rows.len().min(inner.height as usize)).map(|i| (inner.y + i as u16, i)).collect(),
+    }
+}
+
 /// What a picker left ticked, each in its own color, for the list's top
 /// border; `None` while everything is ticked.
 pub fn ticked_spans(rows: &[PickerRow]) -> Option<Vec<Span<'static>>> {
@@ -706,6 +747,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let rows = stats::draw_stats(f, main_layout[1], app, tab_focused, &mut hits);
             app.stats_row_hits = rows.families;
             app.stats_group_hits = rows.groups;
+            app.stats_picker_hits = rows.picker;
         }
     }
     app.header_hits = hits;
@@ -1141,11 +1183,12 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Master Config", key: "`w`", action: "Wrap the long lines of the file and of a ↻ setting's changed lines in the right panel, or cut them at its edge (`master_wrap`)" },
         Shortcut { tab: "Stats", key: "`↑`/`↓`", action: "Select an event family; the breakdown below follows it" },
         Shortcut { tab: "Stats", key: "`Enter`", action: "Open the selected family's breakdown full-screen; there, narrow it to a group's minions, or open a minion's detail" },
+        Shortcut { tab: "Stats", key: "`r`", action: "In the breakdown by minion: the selected minion's event/return history popup, as in Minions" },
         Shortcut { tab: "Stats", key: "`/`", action: "Filter the open breakdown by minion, version or OS" },
         Shortcut { tab: "Stats", key: "`i` / `I`", action: "In the breakdown: copy / save the IDs of the minions it lists, or of the group under the cursor, one per line" },
         Shortcut { tab: "Stats", key: "`Esc` / `q`", action: "In the breakdown: step back to the group it was narrowed from, then to the families; with a filter applied, `Esc` clears it first" },
-        Shortcut { tab: "Stats", key: "`g`", action: "Break the selected family down by Salt version × OS, OS, version or single minions, and for job publishes and returns by function, publishes by user, `salt/auth` by outcome" },
-        Shortcut { tab: "Stats", key: "`m`", action: "Switch what the families list and the breakdown measure: events, bytes, bursts (the busiest minute), failures (of job returns)" },
+        Shortcut { tab: "Stats", key: "`g`", action: "Pick from a list how to break the selected family down: by Salt version × OS, OS, version or single minions, and for job publishes and returns by function, publishes by user, `salt/auth` by outcome" },
+        Shortcut { tab: "Stats", key: "`m`", action: "Pick from a list what the families list and the breakdown measure: events, bytes, bursts (the busiest minute), failures (of job returns)" },
         Shortcut { tab: "Stats", key: "`X`", action: "Reset the statistics and start a new window (asks first; only `y` confirms)" },
         Shortcut { tab: "API", key: "`x`", action: "Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`)" },
     ]),
@@ -1413,7 +1456,11 @@ fn stats_help_lines() -> Vec<Line<'static>> {
         row("\u{21BB}", "the events come at regular intervals: most within 10% of the median"),
         row("\u{25CC} low", "the window is shorter than twice the interval: the rate can still move a lot"),
         row("<jid>", "the event Salt fires with a new job's bare JID as its tag"),
-        row("minion/refresh/*", "(pillar): one per pillar render a minion asked for (start, refresh, state run)"),
+        row("minion/refresh/*", "(pillar requests): one per pillar a minion asked the master for (start,"),
+        row("", "  saltutil.refresh_pillar, every state run), fired after the master renders it and stores it"),
+        row("", "  with the grains in its minion data cache; with pillar_cache: True it may come from that cache"),
+        row("", "  unrendered; none with minion_data_cache or minion_data_cache_events off, and none for"),
+        row("", "  pillars the master compiles unasked (salt-run pillar.show_pillar, salt-ssh)"),
         row("m", "what the numbers measure: events, bytes, bursts or failures (of job returns)"),
         row("Sent", "how many of the group's minions sent the family: the rest stayed quiet"),
         row("bursts", "the busiest minute as a rate and how many times the average; burst marks 5x or more"),
@@ -1422,9 +1469,11 @@ fn stats_help_lines() -> Vec<Line<'static>> {
         row("Subprocess CPU", "CPU of the processes the workers ran and waited for, counted when they end"),
         row("Master health", "Now is the latest poll, or the last whole minute for throughput; Avg the window;"),
         row("", "  Peak the worst (the lowest for memory available); a dot turns yellow or red past fixed limits"),
+        row("Key management", "keys in each state now, and the auth requests in the window answered that way"),
         row("CPU steal", "CPU time the hypervisor gave other guests: a VM starved by its host"),
         row("Pressure", "share of time some work waited for CPU, memory or I/O (Linux pressure stall)"),
-        row("Worker time", "what the MWorkers spent their time on; needs master_stats: True on the master"),
+        row("Time in _pillar", "share of the MWorkers' time a request type took, and one request's mean;"),
+        row("", "  the four that take the most; needs master_stats: True on the master"),
         row("Event bus", "the events' size as salt-radar gets them (JSON), a little more than on the bus"),
         row("Disk latency", "average time a request took on the disk holding the job cache; high at low"),
         row("", "  throughput means a throttled volume (cloud disk IOPS or bandwidth cap)"),

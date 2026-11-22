@@ -6,9 +6,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, StatsPicker};
 use crate::stats::{GroupRow, Grouping, Measure, Metric, RECENT_MINUTES};
-use crate::types::{HeaderHit, ListCol, ListId};
+use crate::types::{HeaderHit, ListCol, ListId, PickerHits};
 
 use super::color;
 use super::table::{header_style, pad, HeaderRow};
@@ -91,9 +91,11 @@ fn border(focused: bool) -> Style {
 
 /// Where the Stats tab drew its rows, for clicks: the families, or the
 /// breakdown's groups while it's open full-screen.
+#[derive(Default)]
 pub struct StatsHits {
     pub families: Vec<(u16, String)>,
     pub groups: Vec<(u16, usize)>,
+    pub picker: PickerHits,
 }
 
 /// The Stats tab: event families, the selected one's breakdown and the
@@ -109,9 +111,42 @@ pub fn draw_stats(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hi
     } else {
         area
     };
-    if app.stats_drill {
-        return StatsHits { families: Vec::new(), groups: draw_groups(f, area, app, &groups, true, focused, header_hits) };
+    let (mut hits, panels) = if app.stats_drill {
+        (StatsHits { groups: draw_groups(f, area, app, &groups, true, focused, header_hits), ..Default::default() }, Panels { families: area, breakdown: area })
+    } else {
+        draw_overview(f, area, app, &groups, beside, focused, header_hits)
+    };
+    if let Some((picker, cursor)) = app.stats_picker {
+        let from = if picker == StatsPicker::Grouping { panels.breakdown } else { panels.families };
+        hits.picker = draw_picker(f, from, app, picker, cursor);
     }
+    hits
+}
+
+fn draw_picker(f: &mut Frame, area: Rect, app: &App, picker: StatsPicker, cursor: usize) -> PickerHits {
+    let (title, rows, current): (_, Vec<(&str, &str)>, _) = match picker {
+        StatsPicker::Grouping => {
+            let all = app.stats_groupings();
+            ("Group by", all.iter().map(|g| (g.label(), g.description())).collect(), all.iter().position(|g| *g == app.stats_grouping()))
+        }
+        StatsPicker::Measure => {
+            let all = Measure::ALL;
+            ("Measure", all.iter().map(|m| (m.label(), m.description())).collect(), all.iter().position(|m| *m == app.stats_measure))
+        }
+    };
+    super::draw_choice_picker(f, area, title, &rows, current.unwrap_or(0), cursor)
+}
+
+/// Where the panels the pickers open from went: `m` changes the families
+/// list and the breakdown, `g` only the breakdown.
+struct Panels {
+    families: Rect,
+    breakdown: Rect,
+}
+
+/// The families list, with the selected one's breakdown and the health
+/// below it when they fit.
+fn draw_overview(f: &mut Frame, area: Rect, app: &App, groups: &[GroupRow], beside: bool, focused: bool, header_hits: &mut Vec<HeaderHit>) -> (StatsHits, Panels) {
     // The families keep at least 8 rows; below them the health keeps its
     // verdict and most telling rows, and the breakdown gets what's left, at
     // least 8 rows of its own when there's room.
@@ -122,14 +157,15 @@ pub fn draw_stats(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hi
     let group_h = (groups.len().max(1) as u16 + 3).min(avail.saturating_sub(families_need).max(8)).min(avail);
     let group_h = if group_h < 5 { 0 } else { group_h };
     let [families, breakdown, load] = Layout::vertical([Constraint::Min(0), Constraint::Length(group_h), Constraint::Length(load_h)]).areas(area);
-    let hits = draw_families(f, families, app, focused, header_hits);
+    let hits = draw_families(f, families, app, focused, group_h == 0, header_hits);
     if group_h > 0 {
-        draw_groups(f, breakdown, app, &groups, false, false, header_hits);
+        draw_groups(f, breakdown, app, groups, false, false, header_hits);
     }
     if load_h > 0 {
         draw_health(f, load, app);
     }
-    StatsHits { families: hits, groups: Vec::new() }
+    let breakdown = if group_h > 0 { breakdown } else { families };
+    (StatsHits { families: hits, ..Default::default() }, Panels { families, breakdown })
 }
 
 /// A number column of the families list or the breakdown: its header,
@@ -231,7 +267,8 @@ fn family_cols<'a>(app: &'a App, now: Instant, recent: bool) -> (Vec<(String, us
     }
 }
 
-fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hits: &mut Vec<HeaderHit>) -> Vec<(u16, String)> {
+/// The families list; it hints `g` only when no breakdown below it does.
+fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool, no_breakdown: bool, header_hits: &mut Vec<HeaderHit>) -> Vec<(u16, String)> {
     let now = Instant::now();
     let stats = &app.stats;
     let rows = app.stats_rows();
@@ -248,14 +285,16 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hit
     let selected = rows.iter().position(|(n, _)| *n == app.stats_family).unwrap_or(0);
     let visible = (area.height as usize).saturating_sub(4);
     let (scroll, more_above, more_below) = super::scroll_window(selected, visible, rows.len());
-    let hints = [
+    let mut hints = vec![
         ("\u{2191}\u{2193}", "family".to_string()),
         ("Enter", "breakdown".to_string()),
-        ("m", app.stats_measure.next().label().to_string()),
+        ("m", "measure".to_string()),
         ("o/O", "sort".to_string()),
-        ("g", "group".to_string()),
-        ("X", "reset".to_string()),
     ];
+    if no_breakdown {
+        hints.push(("g", "group".to_string()));
+    }
+    hints.push(("X", "reset".to_string()));
     let block = super::list_block_hinted(title, border(focused), color::main_bg(), more_above, more_below, &hints, area.width);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -265,7 +304,7 @@ fn draw_families(f: &mut Frame, area: Rect, app: &App, focused: bool, header_hit
     let (groups, cols) = family_cols(app, now, recent);
     let markers = app.stats_measure == Measure::Events;
     let fixed = 2 + cols.iter().map(|c| c.w).sum::<usize>() + 7;
-    let label = |name: &str| if name == crate::stats::RENDER_FAMILY { format!("{} (pillar)", name) } else { name.to_string() };
+    let label = |name: &str| if name == crate::stats::PILLAR_FAMILY { format!("{} (pillar requests)", name) } else { name.to_string() };
     let longest = rows.iter().map(|(n, _)| label(n).chars().count()).max().unwrap_or(0);
     let name_w = width.saturating_sub(fixed).min(longest.max(20) + 2).max(8);
 
@@ -407,12 +446,17 @@ fn draw_groups(f: &mut Frame, area: Rect, app: &App, groups: &[GroupRow], drill:
         let mut h = vec![
             ("\u{2191}\u{2193}", "row".to_string()),
             ("Enter", if by_minion { "detail" } else { "its minions" }.to_string()),
+        ];
+        if by_minion {
+            h.push(("r", "events".to_string()));
+        }
+        h.extend([
             ("g", "group".to_string()),
-            ("m", app.stats_measure.next().label().to_string()),
+            ("m", "measure".to_string()),
             ("o/O", "sort".to_string()),
             ("/", "filter".to_string()),
             ("i/I", "minion list".to_string()),
-        ];
+        ]);
         if filter.is_empty() {
             h.push(("Esc/q", "back".to_string()));
         } else {
@@ -584,6 +628,15 @@ impl HealthRows {
         self.push(prio, Line::from(spans));
     }
 
+    /// A row with one value, a state rather than a rate: Avg and Peak would
+    /// say nothing.
+    fn single(&mut self, prio: Priority, label: &str, value: String, note: Option<Span<'static>>) {
+        let mut spans = vec![Span::raw("    "), Span::styled(pad(label, HEALTH_LABEL_W - 4, false), Style::default().fg(color::label_fg()))];
+        spans.push(Span::styled(pad(&value, HEALTH_COL_W, true), text()));
+        spans.extend(note);
+        self.push(prio, Line::from(spans));
+    }
+
     /// A `Metric` row: Now, Avg and Peak, rated by its latest value. Peak is
     /// the worst value, the lowest where lower is worse.
     fn metric(&mut self, prio: Priority, label: &str, m: &Metric, fmt: &dyn Fn(f64) -> String, rate: Option<(Resource, f64, f64, bool)>, note: Option<Span<'static>>) {
@@ -707,9 +760,16 @@ fn draw_health(f: &mut Frame, area: Rect, app: &App) {
     let shares = flow.worker_time.shares();
     if shares.is_empty() {
         h.push(5, Line::from(Span::styled("    Worker time by request: set master_stats: True", dim())));
-    } else {
-        let parts: Vec<String> = shares.iter().take(4).map(|(k, s)| format!("{} {:.0}%", k, s * 100.0)).collect();
-        h.push(4, Line::from(vec![Span::styled("    Worker time  ", Style::default().fg(color::label_fg())), Span::styled(parts.join(" \u{00B7} "), text())]));
+    }
+    // The request types that take the most of the workers' time, each with
+    // how long one took.
+    for (request, avg) in shares.iter().take(4) {
+        let minutes = flow.worker_time.minute_share(request);
+        let share = |v: f64| pct(v * 100.0);
+        let now = minutes.map_or_else(none, |m| share(m.now));
+        let peak = minutes.map_or_else(none, |m| share(m.peak.max(*avg)));
+        let note = flow.worker_time.mean(request).map(|s| Span::styled(format!("  {} each", fmt_ms(s * 1000.0)), dim()));
+        h.values(4, &format!("Time in {}", request), [now, share(*avg), peak], None, note);
     }
 
     // Responsiveness
@@ -729,25 +789,38 @@ fn draw_health(f: &mut Frame, area: Rect, app: &App) {
     h.values(2, "Events", tp(&flow.events, &fmt_rate), None, None);
     h.values(2, "Job returns", tp(&flow.returns, &fmt_rate), None, failed);
     h.values(3, "Jobs published", tp(&flow.jobs, &fmt_rate), None, None);
-    let render_mean = flow.worker_time.mean("_pillar").map(|s| Span::styled(format!("  mean {}", fmt_ms(s * 1000.0)), dim()));
-    h.values(3, "Pillar renders", tp(&flow.renders, &fmt_rate), None, render_mean);
-    let acts: Vec<String> = crate::stats::Flow::AUTH_ACTS.iter()
-        .filter_map(|a| flow.auth_by_act.get(*a).map(|n| format!("{} {}", a, n)))
-        .collect();
-    let auth_note = (!acts.is_empty()).then(|| Span::styled(format!("  {}", acts.join(" \u{00B7} ")), dim()));
-    h.values(3, "Auth requests", tp(&flow.auth, &fmt_rate), None, auth_note);
+    h.values(3, "Pillar requests", tp(&flow.pillar_requests, &fmt_rate), None, None);
+    h.values(3, "Auth requests", tp(&flow.auth, &fmt_rate), None, None);
     h.values(3, "Event bus", tp(&flow.bytes, &fmt_bytes_per_hour), None, None);
+
+    // Key management: how many keys are in each state now, and how many
+    // auth requests in the window the master answered that way.
+    h.section("Key management");
+    use crate::types::KeyStatus;
+    let accepted = app.minion_count();
+    let with_status = |status| app.keys.iter().filter(|k| k.status == status).count();
+    for (prio, label, act, count) in [
+        (3, "Accepted", "accept", accepted),
+        (2, "Pending", "pend", with_status(KeyStatus::Pending)),
+        (3, "Rejected", "reject", with_status(KeyStatus::Rejected)),
+        (3, "Denied", "denied", with_status(KeyStatus::Denied)),
+    ] {
+        let requests = flow.auth_by_act.get(act).copied().unwrap_or(0);
+        let note = (requests > 0).then(|| {
+            // Anything but an accept is a minion that can't get in.
+            let style = if act == "accept" { dim() } else { Style::default().fg(color::yellow()) };
+            Span::styled(format!("  {} auth request{} in window", fmt_count(requests), if requests == 1 { "" } else { "s" }), style)
+        });
+        h.single(prio, label, fmt_count(count as u64), note);
+    }
 
     // Fleet
     h.gap();
-    let accepted = app.minion_count();
     let up = app.minion_info.iter().filter(|m| m.connected).count();
-    let pending = app.keys.iter().filter(|k| k.status == crate::types::KeyStatus::Pending).count();
-    let heard = stats.minions_heard();
-    let silent = accepted.saturating_sub(heard);
+    let silent = accepted.saturating_sub(stats.minions_heard());
     h.push(2, Line::from(vec![
         Span::styled("  Fleet  ", header_style()),
-        Span::styled(format!("{} accepted \u{00B7} {} up \u{00B7} {} silent in window \u{00B7} {} pending", accepted, up, silent, pending), text()),
+        Span::styled(format!("{} of {} up \u{00B7} {} silent in window", up, accepted, silent), text()),
     ]));
 
     // The verdict and the column heads go on top.

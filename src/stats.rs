@@ -24,8 +24,9 @@ pub const AUTH_FAMILY: &str = "salt/auth";
 /// Distinct values a field is counted for per family; the rest share one.
 const MAX_VALUES: usize = 200;
 pub const OTHER_VALUE: &str = "(other)";
-/// One per pillar render a minion asked for (see #216).
-pub const RENDER_FAMILY: &str = "minion/refresh/*";
+/// One per pillar a minion asked the master for, fired once the master
+/// stored it in its minion data cache (see #216).
+pub const PILLAR_FAMILY: &str = "minion/refresh/*";
 const MAX_MINIONS_PER_FAMILY: usize = 50_000;
 const MAX_INTERVALS: usize = 1000;
 /// The "last 15 minutes" columns.
@@ -303,24 +304,51 @@ pub struct WorkerTime {
     pub total_secs: f64,
     /// Request type (`_pillar`, `_return`, `_auth`, ...): runs and seconds.
     pub by_request: HashMap<String, (u64, f64)>,
+    /// Each request type's share of the workers' time per whole minute.
+    per_minute: HashMap<String, Metric>,
+    minute: u64,
+    /// The minute under way: the workers' seconds, and each type's.
+    in_minute: (f64, HashMap<String, f64>),
 }
 
 impl WorkerTime {
-    fn record(&mut self, data: &serde_json::Value) {
+    fn record(&mut self, data: &serde_json::Value, minute: u64) {
         let Some(stats) = data["stats"].as_object() else { return };
-        self.total_secs += data["time"].as_f64().unwrap_or(0.0).max(0.0);
+        if minute != self.minute {
+            self.roll();
+            self.minute = minute;
+        }
+        let time = data["time"].as_f64().unwrap_or(0.0).max(0.0);
+        self.total_secs += time;
+        self.in_minute.0 += time;
         for (request, v) in stats {
             let runs = v["runs"].as_u64().unwrap_or(0);
             if runs == 0 {
                 continue;
             }
+            let secs = runs as f64 * v["mean"].as_f64().unwrap_or(0.0).max(0.0);
             let e = self.by_request.entry(request.clone()).or_default();
             e.0 += runs;
-            e.1 += runs as f64 * v["mean"].as_f64().unwrap_or(0.0).max(0.0);
+            e.1 += secs;
+            *self.in_minute.1.entry(request.clone()).or_default() += secs;
         }
     }
 
-    /// Request types by their share of the workers' time, largest first.
+    /// Closes the minute under way: every request type seen so far gets its
+    /// share of it, none at all included.
+    fn roll(&mut self) {
+        let (total, secs) = std::mem::take(&mut self.in_minute);
+        if total <= 0.0 {
+            return;
+        }
+        for request in self.by_request.keys() {
+            let share = secs.get(request).copied().unwrap_or(0.0) / total;
+            self.per_minute.entry(request.clone()).or_default().add(share);
+        }
+    }
+
+    /// Request types by their share of the workers' time over the window,
+    /// largest first.
     pub fn shares(&self) -> Vec<(&str, f64)> {
         if self.total_secs <= 0.0 {
             return Vec::new();
@@ -328,6 +356,12 @@ impl WorkerTime {
         let mut v: Vec<(&str, f64)> = self.by_request.iter().map(|(k, (_, secs))| (k.as_str(), secs / self.total_secs)).collect();
         v.sort_by(|a, b| b.1.total_cmp(&a.1));
         v
+    }
+
+    /// A request type's share in the last whole minute and its largest in
+    /// one minute, once a minute has passed.
+    pub fn minute_share(&self, request: &str) -> Option<&Metric> {
+        self.per_minute.get(request)
     }
 
     /// Mean seconds one request of this type took.
@@ -346,7 +380,7 @@ pub struct Flow {
     pub returns: Throughput,
     pub failed_returns: u64,
     pub jobs: Throughput,
-    pub renders: Throughput,
+    pub pillar_requests: Throughput,
     /// `salt/auth` by what the master did: accept, pend, reject, denied.
     pub auth: Throughput,
     pub auth_by_act: HashMap<String, u64>,
@@ -354,8 +388,6 @@ pub struct Flow {
 }
 
 impl Flow {
-    pub const AUTH_ACTS: [&'static str; 4] = ["accept", "pend", "reject", "denied"];
-
     /// Counts an event; returns whether it was a failed job return.
     fn record(&mut self, tag: &str, data: &serde_json::Value, bytes: u64, minute: u64) -> bool {
         self.events.add(1, minute);
@@ -368,12 +400,12 @@ impl Flow {
         } else if tag.starts_with("salt/job/") && tag.ends_with("/new") {
             self.jobs.add(1, minute);
         } else if tag.starts_with("minion/refresh/") {
-            self.renders.add(1, minute);
+            self.pillar_requests.add(1, minute);
         } else if tag == "salt/auth" {
             self.auth.add(1, minute);
             *self.auth_by_act.entry(data["act"].as_str().unwrap_or("?").to_string()).or_default() += 1;
         } else if tag.starts_with("salt/stats/") {
-            self.worker_time.record(data);
+            self.worker_time.record(data, minute);
         }
         false
     }
@@ -805,14 +837,7 @@ pub enum Measure {
 }
 
 impl Measure {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Events => Self::Bytes,
-            Self::Bytes => Self::Bursts,
-            Self::Bursts => Self::Failures,
-            Self::Failures => Self::Events,
-        }
-    }
+    pub const ALL: [Measure; 4] = [Self::Events, Self::Bytes, Self::Bursts, Self::Failures];
 
     /// The columns the families list and the breakdown can show for it.
     pub fn columns(self) -> &'static [crate::types::ListCol] {
@@ -830,6 +855,15 @@ impl Measure {
             Self::Bytes => "bytes",
             Self::Bursts => "bursts",
             Self::Failures => "failures",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Events => "how many events, per hour and per minion",
+            Self::Bytes => "their size, to see what fills the event bus",
+            Self::Bursts => "the busiest minute against the average",
+            Self::Failures => "the job returns that failed",
         }
     }
 }
@@ -873,11 +907,6 @@ impl Grouping {
         if all.contains(&self) { self } else { all[0] }
     }
 
-    pub fn next_within(self, family: &str, narrowed: bool) -> Self {
-        let all = Self::for_family(family, narrowed);
-        all.iter().position(|g| *g == self).map_or(all[0], |i| all[(i + 1) % all.len()])
-    }
-
     /// The event field a grouping by what the events say reads.
     pub fn field(self) -> Option<&'static str> {
         match self {
@@ -897,6 +926,18 @@ impl Grouping {
             Self::Function => "function",
             Self::User => "user",
             Self::Outcome => "outcome",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::VersionOs => "Salt version and OS together",
+            Self::Os => "the minions' OS",
+            Self::Version => "the minions' Salt version",
+            Self::Minion => "each minion on its own",
+            Self::Function => "the job's function",
+            Self::User => "who sent it",
+            Self::Outcome => "what the master did: accept, pend, reject, denied",
         }
     }
 
@@ -1204,8 +1245,7 @@ mod tests {
         assert_eq!(Grouping::VersionOs.within(JOB_NEW_FAMILY, false), Grouping::Function);
         assert_eq!(Grouping::Outcome.within("minion_start", false), Grouping::VersionOs);
         assert_eq!(Grouping::Outcome.within(AUTH_FAMILY, true), Grouping::VersionOs);
-        assert_eq!(Grouping::Minion.next_within(AUTH_FAMILY, false), Grouping::Outcome);
-        assert_eq!(Grouping::Outcome.next_within(AUTH_FAMILY, false), Grouping::VersionOs);
+        assert_eq!(Grouping::for_family(AUTH_FAMILY, true), BY_MINIONS);
     }
 
     #[test]
@@ -1222,10 +1262,10 @@ mod tests {
         s.record_event("minion/refresh/web1", &serde_json::Value::Null, 50, 3.0, &keys, t0);
         s.rekey(&keys);
         assert!(s.family("minion/refresh/web1").is_none() && s.family("minion/refresh/db1").is_none());
-        let renders = s.family(RENDER_FAMILY).unwrap();
-        assert_eq!((renders.count, renders.bytes, renders.unattributed.count), (4, 220, 0));
-        assert_eq!((renders.minions["web1"].count, renders.minions["db1"].count), (3, 1));
-        assert_eq!(renders.per_minute.peak_minute, 4);
+        let pillar = s.family(PILLAR_FAMILY).unwrap();
+        assert_eq!((pillar.count, pillar.bytes, pillar.unattributed.count), (4, 220, 0));
+        assert_eq!((pillar.minions["web1"].count, pillar.minions["db1"].count), (3, 1));
+        assert_eq!(pillar.per_minute.peak_minute, 4);
         assert_eq!(s.family(RETURN_FAMILY).unwrap().count, 1);
     }
 
@@ -1331,13 +1371,20 @@ mod tests {
         }), 200, 0);
         assert_eq!((f.events.total, f.bytes.total), (7, 670));
         assert_eq!((f.returns.total, f.failed_share()), (2, Some(0.5)));
-        assert_eq!((f.jobs.total, f.renders.total, f.auth.total), (1, 1, 2));
+        assert_eq!((f.jobs.total, f.pillar_requests.total, f.auth.total), (1, 1, 2));
         assert_eq!((f.auth_by_act.get("accept"), f.auth_by_act.get("reject")), (Some(&1), Some(&1)));
         let shares = f.worker_time.shares();
         assert_eq!(shares[0].0, "_pillar");
         assert!((shares[0].1 - 0.5).abs() < 1e-9 && (shares[1].1 - 0.1).abs() < 1e-9);
         assert_eq!(f.worker_time.mean("_pillar"), Some(10.0));
         assert_eq!(f.worker_time.mean("_auth"), None);
+        assert!(f.worker_time.minute_share("_pillar").is_none());
+        let stats = |pillar: u64| serde_json::json!({"time": 60.0, "stats": {"_pillar": {"runs": pillar, "mean": 6.0}, "_return": {"runs": 10, "mean": 0.6}}});
+        f.record("salt/stats/MWorker-0", &stats(0), 200, 1);
+        f.record("salt/stats/MWorker-0", &stats(1), 200, 2);
+        let pillar = f.worker_time.minute_share("_pillar").unwrap();
+        assert!((pillar.peak - 0.5).abs() < 1e-9 && pillar.now.abs() < 1e-9);
+        assert!((f.worker_time.minute_share("_return").unwrap().now - 0.1).abs() < 1e-9);
     }
 
     #[test]

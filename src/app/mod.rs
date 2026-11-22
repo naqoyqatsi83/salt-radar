@@ -186,6 +186,10 @@ pub struct App {
     pub stats_measure: crate::stats::Measure,
     /// The "Reset statistics?" prompt `X` opens on the Stats tab.
     pub stats_reset_confirm: bool,
+    /// The grouping (`g`) or measure (`m`) picker open on the Stats tab:
+    /// which, and the row under its cursor.
+    pub stats_picker: Option<(StatsPicker, usize)>,
+    pub stats_picker_hits: PickerHits,
     /// Where the last frame drew each family row (screen y, family), for clicks.
     pub stats_row_hits: Vec<(u16, String)>,
     /// The breakdown opened full-screen (`Enter` on a family): the group
@@ -840,6 +844,23 @@ pub fn picker_key(code: KeyCode, cursor: &mut usize, n: usize) -> PickerKey {
     }
 }
 
+/// A key pressed in an open single-choice picker of `n` rows, opened with
+/// `own`, which closes it again: `Enter` picks the row under the cursor.
+pub fn choice_key(code: KeyCode, cursor: &mut usize, n: usize, own: char) -> PickerKey {
+    match code {
+        KeyCode::Enter => PickerKey::Toggle(*cursor),
+        KeyCode::Char(c) if c.eq_ignore_ascii_case(&own) => PickerKey::Close,
+        _ => picker_key(code, cursor, n),
+    }
+}
+
+/// The Stats tab's single-choice pickers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatsPicker {
+    Grouping,
+    Measure,
+}
+
 /// What a click does while a status picker is open: tick a row, nothing (on
 /// its border), or close it (outside).
 pub enum PickerClick {
@@ -1100,6 +1121,8 @@ impl App {
             stats_grouping_choice: crate::stats::Grouping::default(),
             stats_measure: crate::stats::Measure::default(),
             stats_reset_confirm: false,
+            stats_picker: None,
+            stats_picker_hits: PickerHits::default(),
             stats_row_hits: Vec::new(),
             stats_drill: false,
             stats_group: None,
@@ -1923,9 +1946,46 @@ impl App {
         self.stats_grouping_choice.within(&self.stats_family, !self.stats_scopes.is_empty())
     }
 
-    pub(crate) fn next_stats_grouping(&mut self) {
-        self.stats_grouping_choice = self.stats_grouping().next_within(&self.stats_family, !self.stats_scopes.is_empty());
-        self.stats_group = None;
+    /// The groupings the selected family offers, in the `g` picker's order.
+    pub fn stats_groupings(&self) -> &'static [crate::stats::Grouping] {
+        crate::stats::Grouping::for_family(&self.stats_family, !self.stats_scopes.is_empty())
+    }
+
+    /// `g` or `m` on the Stats tab: the picker, its cursor on the current
+    /// choice.
+    pub(crate) fn open_stats_picker(&mut self, picker: StatsPicker) {
+        let at = match picker {
+            StatsPicker::Grouping => self.stats_groupings().iter().position(|g| *g == self.stats_grouping()),
+            StatsPicker::Measure => crate::stats::Measure::ALL.iter().position(|m| *m == self.stats_measure),
+        };
+        self.stats_picker = Some((picker, at.unwrap_or(0)));
+    }
+
+    pub(crate) fn stats_picker_len(&self, picker: StatsPicker) -> usize {
+        match picker {
+            StatsPicker::Grouping => self.stats_groupings().len(),
+            StatsPicker::Measure => crate::stats::Measure::ALL.len(),
+        }
+    }
+
+    /// Row `i` picked in the open Stats picker: apply it and close.
+    pub(crate) fn pick_stats(&mut self, picker: StatsPicker, i: usize) {
+        self.stats_picker = None;
+        match picker {
+            StatsPicker::Grouping => {
+                if let Some(&g) = self.stats_groupings().get(i) {
+                    if g != self.stats_grouping() {
+                        self.stats_grouping_choice = g;
+                        self.stats_group = None;
+                    }
+                }
+            }
+            StatsPicker::Measure => {
+                if let Some(&m) = crate::stats::Measure::ALL.get(i) {
+                    self.set_stats_measure(m);
+                }
+            }
+        }
     }
 
     /// The selected family broken down as `g` chose, narrowed to the
@@ -2030,11 +2090,32 @@ impl App {
         }
     }
 
-    /// `m` on the Stats tab: the next measure. A sort on a column the new
-    /// one doesn't show is dropped, rather than ordering the list with no
-    /// header saying why.
-    pub(crate) fn next_stats_measure(&mut self) {
-        self.stats_measure = self.stats_measure.next();
+    /// `r` in the Stats tab's breakdown by minion: the selected minion's
+    /// events and returns, as `r` opens them in the Minions tab.
+    pub(crate) fn stats_events(&mut self) {
+        if self.stats_grouping() != crate::stats::Grouping::Minion {
+            return;
+        }
+        let groups = self.stats_groups();
+        let at = self.stats_group_index(&groups);
+        if let Some(row) = groups.into_iter().nth(at).filter(|r| self.minion_index.contains_key(&r.label)) {
+            self.open_minion_events(row.label);
+        }
+    }
+
+    pub(crate) fn open_minion_events(&mut self, minion_id: String) {
+        self.detail_popup = Some(DetailPopup::MinionEvents { minion_id, selected: 0 });
+        self.popup_tab = Some(self.current_tab);
+        if !self.cache_loaded {
+            self.send_cache_jobs_list(None, false);
+        }
+    }
+
+    /// The measure picked with `m`. A sort on a column the new one doesn't
+    /// show is dropped, rather than ordering the list with no header saying
+    /// why.
+    pub(crate) fn set_stats_measure(&mut self, measure: crate::stats::Measure) {
+        self.stats_measure = measure;
         let shown = self.stats_measure.columns();
         for list in [ListId::StatsFamilies, ListId::StatsGroups] {
             if self.list_sort(list).is_some_and(|(col, _)| !shown.contains(&col)) {
@@ -4675,6 +4756,16 @@ mod tests {
         let mut states = MinionFilter::default();
         states.toggle(MinionState::Responsive);
         assert_eq!(view_file_tag("", states), "view-timed-out-not-scanned-pending-rejected-denied");
+    }
+
+    #[test]
+    fn choice_picker_picks_on_enter_and_closes_on_its_own_key() {
+        let mut cursor = 0;
+        assert!(matches!(choice_key(KeyCode::Down, &mut cursor, 4, 'm'), PickerKey::Stay));
+        assert!(matches!(choice_key(KeyCode::Enter, &mut cursor, 4, 'm'), PickerKey::Toggle(1)));
+        assert!(matches!(choice_key(KeyCode::Char('4'), &mut cursor, 4, 'm'), PickerKey::Toggle(3)));
+        assert!(matches!(choice_key(KeyCode::Char('M'), &mut cursor, 4, 'm'), PickerKey::Close));
+        assert!(matches!(choice_key(KeyCode::Esc, &mut cursor, 4, 'm'), PickerKey::Close));
     }
 
     fn mixed_lookup() -> JidLookup {

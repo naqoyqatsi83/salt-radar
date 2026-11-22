@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Open a minion's events and returns from the Stats tab's breakdown by minion with `r`, as in the Minions tab
+
+### Changed
+
+- Call `minion/refresh/*` pillar requests on the Stats tab (the family's label and the Master health row), not pillar renders: the master fires it for every pillar a minion asks for, also when `pillar_cache` serves it without rendering. The Guide says when it isn't fired at all
+- Pick the Stats tab's grouping (`g`) and measure (`m`) from a small list that shows every option, what it shows and which one is on, instead of stepping through them one key press at a time
+- Move the auth outcomes on the Stats tab's Master health panel out of the Auth requests row into a Key management section: how many keys are accepted, pending, rejected and denied, each with how many auth requests in the window the master answered that way, in yellow when it wasn't an accept. The Fleet line keeps how many minions are up and silent
+- Show the MWorkers' time by request type on the Master health panel as rows in its columns, one per type (`Time in _pillar`), with the share in the last whole minute, over the window and in the busiest minute, and how long one request takes, instead of a line of whole percents that read 0% on a quiet master. The pillar render time moves there from the Pillar renders row
+
 ## [0.12.0-rc12] - 2026-11-20
 
 ### Added
