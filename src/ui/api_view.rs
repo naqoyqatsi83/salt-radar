@@ -225,7 +225,7 @@ fn draw_endpoint_breakdown(f: &mut Frame, area: Rect, app: &App) {
     } else {
         lines.push(Line::from(Span::styled(
             format!(" {:<7}{:<20}{:<6}{:<7}{:<7}{}", "Method", "Path", "Cnt", "Avg", "p95", "Err%"),
-            Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD),
+            super::table::header_style(),
         )));
         let max_rows = (inner.height as usize).saturating_sub(3);
         for ep in breakdown.iter().take(max_rows) {

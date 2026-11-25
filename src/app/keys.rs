@@ -94,6 +94,15 @@ impl App {
             return matches!(code, KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y'));
         }
 
+        // Not Enter: it moves around the Stats tab, and the reset can't be undone.
+        if self.stats_reset_confirm {
+            self.stats_reset_confirm = false;
+            if matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                self.stats.reset(Instant::now());
+            }
+            return false;
+        }
+
         // Help overlay handles its own dismiss
         if self.show_help {
             self.handle_help_key(code);
@@ -180,14 +189,10 @@ impl App {
                 match code {
                     KeyCode::Tab => { self.current_tab = self.current_tab.next(); return false; }
                     KeyCode::BackTab => { self.current_tab = self.current_tab.prev(); return false; }
-                    KeyCode::Char('1') => { self.current_tab = Tab::Dashboard; return false; }
-                    KeyCode::Char('2') => { self.current_tab = Tab::Minions; return false; }
-                    KeyCode::Char('3') => { self.current_tab = Tab::Events; return false; }
-                    KeyCode::Char('4') => { self.current_tab = Tab::Jobs; return false; }
-                    KeyCode::Char('5') => { self.current_tab = Tab::Alerts; return false; }
-                    KeyCode::Char('6') => { self.current_tab = Tab::Api; return false; }
-                    KeyCode::Char('7') => { self.current_tab = Tab::Master; return false; }
-                    KeyCode::Char('8') => { self.current_tab = Tab::Pulse; return false; }
+                    KeyCode::Char(c) if Tab::from_digit(c).is_some() => {
+                        self.current_tab = Tab::from_digit(c).unwrap_or(self.current_tab);
+                        return false;
+                    }
                     KeyCode::F(3) => { self.open_config_editor(); return false; }
                     KeyCode::F(2) => {
                         self.config.mouse = !self.config.mouse;
@@ -1181,6 +1186,16 @@ impl App {
             return false;
         }
 
+        if let Some((picker, mut cursor)) = self.stats_picker.filter(|_| self.current_tab == Tab::Stats) {
+            let own = if picker == crate::app::StatsPicker::Grouping { 'g' } else { 'm' };
+            match crate::app::choice_key(code, &mut cursor, self.stats_picker_len(picker), own) {
+                crate::app::PickerKey::Toggle(i) => self.pick_stats(picker, i),
+                crate::app::PickerKey::Close => self.stats_picker = None,
+                crate::app::PickerKey::Stay => self.stats_picker = Some((picker, cursor)),
+            }
+            return false;
+        }
+
         if let Some(cursor) = self.job_picker.as_mut().filter(|_| self.current_tab == Tab::Jobs) {
             match crate::app::picker_key(code, cursor, JobState::ALL.len()) {
                 crate::app::PickerKey::Toggle(i) => {
@@ -1273,6 +1288,7 @@ impl App {
         }
 
         match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') if self.current_tab == Tab::Stats && self.stats_drill => self.stats_back(false),
             KeyCode::Char('q') | KeyCode::Char('Q') => {
                 if !self.config.confirm_quit {
                     return true;
@@ -1330,12 +1346,25 @@ impl App {
                     self.save_toggles();
                 } else if self.current_tab == Tab::Jobs && !self.cache_focus {
                     self.job_picker = Some(0);
+                } else if self.current_tab == Tab::Stats && code == KeyCode::Char('X') {
+                    self.stats_reset_confirm = true;
                 }
             }
+            KeyCode::Char('m') | KeyCode::Char('M') if self.current_tab == Tab::Stats => self.open_stats_picker(crate::app::StatsPicker::Measure),
+            KeyCode::Char('g') | KeyCode::Char('G') if self.current_tab == Tab::Stats => self.open_stats_picker(crate::app::StatsPicker::Grouping),
+            KeyCode::Esc if self.current_tab == Tab::Stats => self.stats_back(true),
             KeyCode::Char('z') | KeyCode::Char('Z') => {
                 if self.current_tab == Tab::Minions {
                     self.timed_out_collapsed = !self.timed_out_collapsed;
                     self.clamp_selection();
+                }
+            }
+            KeyCode::Char('i') | KeyCode::Char('I') if self.current_tab == Tab::Stats && self.stats_drill => {
+                let (ids, hint) = self.stats_minion_ids();
+                if !ids.is_empty() && code == KeyCode::Char('i') {
+                    self.copy_to_clipboard(&ids);
+                } else if !ids.is_empty() {
+                    self.open_save_prompt(ids, &hint, "txt");
                 }
             }
             KeyCode::Char('i') | KeyCode::Char('I') if self.current_tab == Tab::Minions => {
@@ -1364,15 +1393,10 @@ impl App {
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 if self.current_tab == Tab::Minions {
                     if let Some(minion) = self.get_filtered_minion(self.minion_selected) {
-                        self.detail_popup = Some(DetailPopup::MinionEvents {
-                            minion_id: minion.id.clone(),
-                            selected: 0,
-                        });
-                        self.popup_tab = Some(self.current_tab);
-                        if !self.cache_loaded {
-                            self.send_cache_jobs_list(None, false);
-                        }
+                        self.open_minion_events(minion.id.clone());
                     }
+                } else if self.current_tab == Tab::Stats && self.stats_drill {
+                    self.stats_events();
                 } else if self.current_tab == Tab::Jobs && !self.cache_loading {
                     let ft = self.cache_server_filter.clone();
                     self.send_cache_jobs_list(if ft.is_empty() { None } else { Some(&ft) }, false);
@@ -1418,12 +1442,19 @@ impl App {
                 if let Some(table) = self.current_table() {
                     let next = Self::next_sort(self.sort_of(table), &self.columns(table));
                     self.set_sort(table, next);
+                } else if let Some(list) = self.current_list() {
+                    let next = Self::next_sort(self.list_sort(list), &self.list_columns(list));
+                    self.set_list_sort(list, next);
                 }
             }
             KeyCode::Char('O') => {
                 if let Some(table) = self.current_table() {
                     if let Some((col, desc)) = self.sort_of(table) {
                         self.set_sort(table, Some((col, !desc)));
+                    }
+                } else if let Some(list) = self.current_list() {
+                    if let Some((col, desc)) = self.list_sort(list) {
+                        self.set_list_sort(list, Some((col, !desc)));
                     }
                 }
             }
@@ -1443,7 +1474,7 @@ impl App {
                 self.save_toggles();
             }
             KeyCode::Char('/') => {
-                if matches!(self.current_tab, Tab::Dashboard | Tab::Pulse) {
+                if matches!(self.current_tab, Tab::Dashboard | Tab::Pulse) || (self.current_tab == Tab::Stats && !self.stats_drill) {
                     // Nothing to filter on these tabs
                 } else if self.current_tab == Tab::Jobs {
                     if self.cache_focus {
@@ -1488,14 +1519,9 @@ impl App {
                     self.pulse_right();
                 }
             }
-            KeyCode::Char('1') => self.current_tab = Tab::Dashboard,
-            KeyCode::Char('2') => self.current_tab = Tab::Minions,
-            KeyCode::Char('3') => self.current_tab = Tab::Events,
-            KeyCode::Char('4') => self.current_tab = Tab::Jobs,
-            KeyCode::Char('5') => self.current_tab = Tab::Alerts,
-            KeyCode::Char('6') => self.current_tab = Tab::Api,
-            KeyCode::Char('7') => self.current_tab = Tab::Master,
-            KeyCode::Char('8') => self.current_tab = Tab::Pulse,
+            KeyCode::Char(c) if Tab::from_digit(c).is_some() => {
+                self.current_tab = Tab::from_digit(c).unwrap_or(self.current_tab);
+            }
             KeyCode::Up => {
                 if self.current_tab == Tab::Pulse && !had_popup {
                     self.pulse_up();
@@ -1554,7 +1580,7 @@ impl App {
     /// or an overlay or popup in front), so the key acts as a plain arrow.
     pub fn move_split(&mut self, right: bool) -> bool {
         let popup_here = self.detail_popup.is_some() && self.popup_tab == Some(self.current_tab);
-        if self.quit_confirm || self.show_help || self.config_editor.is_some() || self.save_prompt.is_some() || popup_here {
+        if self.quit_confirm || self.stats_reset_confirm || self.show_help || self.config_editor.is_some() || self.save_prompt.is_some() || popup_here {
             return false;
         }
         let Some(pct) = self.config.split_pct_mut(self.current_tab) else { return false };
@@ -1572,8 +1598,9 @@ impl App {
     pub fn handle_mouse_click(&mut self, col: u16, row: u16, frame_size: Rect) -> bool {
         let h = frame_size.height as usize;
 
-        if self.quit_confirm {
+        if self.quit_confirm || self.stats_reset_confirm {
             self.quit_confirm = false;
+            self.stats_reset_confirm = false;
             return false;
         }
         if self.config_editor.is_some() || self.save_prompt.is_some() {
@@ -1631,6 +1658,15 @@ impl App {
             return false;
         }
 
+        if let Some((picker, _)) = self.stats_picker.filter(|_| self.current_tab == Tab::Stats) {
+            match crate::app::picker_click(&self.stats_picker_hits, col, row) {
+                crate::app::PickerClick::Toggle(i) => self.pick_stats(picker, i),
+                crate::app::PickerClick::Outside => self.stats_picker = None,
+                crate::app::PickerClick::Inside => {}
+            }
+            return false;
+        }
+
         if self.current_tab == Tab::Jobs && self.job_picker.is_some() {
             match crate::app::picker_click(&self.job_picker_hits, col, row) {
                 crate::app::PickerClick::Toggle(i) => {
@@ -1658,12 +1694,17 @@ impl App {
         }
 
         if let Some(hit) = self.header_hits.iter().find(|h| h.y == row && col >= h.x0 && col < h.x1).copied() {
-            match hit.table {
-                TableId::LiveJobs => self.cache_focus = false,
-                TableId::JobCache => self.cache_focus = true,
-                _ => {}
+            match hit.target {
+                SortTarget::Table(table, col) => {
+                    match table {
+                        TableId::LiveJobs => self.cache_focus = false,
+                        TableId::JobCache => self.cache_focus = true,
+                        _ => {}
+                    }
+                    self.set_sort(table, Self::click_sort(self.sort_of(table), col));
+                }
+                SortTarget::List(list, col) => self.set_list_sort(list, Self::click_sort(self.list_sort(list), col)),
             }
-            self.set_sort(hit.table, Self::click_sort(self.sort_of(hit.table), hit.col));
             self.last_click_at = None;
             return false;
         }
@@ -1671,6 +1712,7 @@ impl App {
         // Content area height = h-4 (title/tab frame + status bar).
         // Inner panel height = (h-4) - 2 (block top/bottom borders) = h-6.
         let inner_h = h.saturating_sub(6);
+        let mut clicked_row = true;
 
         match self.current_tab {
             Tab::Minions => {
@@ -1854,10 +1896,23 @@ impl App {
                     }
                 }
             }
+            Tab::Stats => {
+                if self.stats_drill {
+                    match self.stats_group_hits.iter().find(|(y, _)| *y == row) {
+                        Some(&(_, i)) => self.select_stats_group(i),
+                        None => clicked_row = false,
+                    }
+                } else {
+                    match self.stats_row_hits.iter().find(|(y, _)| *y == row).map(|(_, n)| n.clone()) {
+                        Some(name) => self.stats_family = name,
+                        None => clicked_row = false,
+                    }
+                }
+            }
             Tab::Dashboard => {}
         }
 
-        if self.current_tab != Tab::Dashboard && self.current_tab != Tab::Pulse {
+        if !matches!(self.current_tab, Tab::Dashboard | Tab::Pulse) && clicked_row {
             if self.register_click(col, row) {
                 self.open_detail();
             }
@@ -2098,6 +2153,7 @@ impl App {
             Tab::Alerts => self.alert_selected = self.alert_selected.saturating_sub(1),
             Tab::Api => self.api_log_selected = self.api_log_selected.saturating_sub(1),
             Tab::Master => self.master_selected = self.master_selected.saturating_sub(1),
+            Tab::Stats => self.move_stats(-1),
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_sub(1).min(max);
@@ -2127,6 +2183,7 @@ impl App {
                 let max = self.filtered_master_settings().len().saturating_sub(1);
                 self.master_selected = (self.master_selected + 1).min(max);
             }
+            Tab::Stats => self.move_stats(1),
             Tab::Pulse => {
                 let max = self.pulse_minions_count().saturating_sub(1);
                 self.pulse_selected = self.pulse_selected.saturating_add(1).min(max);
@@ -2153,6 +2210,7 @@ impl App {
             Tab::Alerts => self.alert_selected = 0,
             Tab::Api => self.api_log_selected = 0,
             Tab::Master => self.master_selected = 0,
+            Tab::Stats => self.move_stats(isize::MIN),
             Tab::Pulse => self.pulse_selected = 0,
             _ => {}
         }
@@ -2177,12 +2235,22 @@ impl App {
             Tab::Api => self.api_log_selected = self.filtered_api_log_len().saturating_sub(1),
             Tab::Master => self.master_selected = self.filtered_master_settings().len().saturating_sub(1),
             Tab::Pulse => self.pulse_selected = self.pulse_minions_count().saturating_sub(1),
+            Tab::Stats => self.move_stats(isize::MAX),
             _ => {}
+        }
+    }
+
+    fn move_stats(&mut self, by: isize) {
+        if self.stats_drill {
+            self.move_stats_group(by);
+        } else {
+            self.move_stats_family(by);
         }
     }
 
     pub(crate) fn open_detail(&mut self) {
         match self.current_tab {
+            Tab::Stats => self.stats_enter(),
             Tab::Events => {
                 self.return_to_minion_events = None;
                 if let Some(evt) = self.get_filtered_event(self.event_selected) {

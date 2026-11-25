@@ -216,7 +216,7 @@ pub fn draw_minion_events(f: &mut Frame, area: Rect, app: &App, minion_id: &str,
         Line::from(Span::styled(
             format!("  {:<time_w$}  {:<type_w$}  {:<fun_w$}  {:<args_w$}  {:<result_w$}  {}",
                 "Time", "Type", "Function", "Args", "Result", "JID / Source"),
-            Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD),
+            super::table::header_style(),
         )),
         rule,
     ];

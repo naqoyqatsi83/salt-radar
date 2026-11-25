@@ -51,7 +51,7 @@ No database, no web server, no JavaScript. Just a single binary and a Python age
 </td>
 <td width="50%">
 
-**Alerts** — 17 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
+**Alerts** — 18 rules covering minion staleness, keys, service health, memory, disk, jobs, auth, and API latency
 <img src="docs/screenshots/alerts.png" alt="Alerts tab">
 
 </td>
@@ -155,7 +155,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - Always shows full per-state detail (`--state-output=full --state-verbose=True`), regardless of the master's own `state_output`/`state_verbose` defaults — opening the popup is an explicit request to see everything about that one job, even a "terse"/"changes" master would otherwise hide unchanged/no-op states here
 
 ### Alerts
-17 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries). `Enter` opens an alert's detail: severity, rule and the description (wrapped) stay at the top, the affected items (minions, units, jobs) scroll below them, and `/` searches them:
+18 rules, evaluated every tick and de-duplicated (repeat firings bump a counter instead of spamming new entries). `Enter` opens an alert's detail: severity, rule and the description (wrapped) stay at the top, the affected items (minions, units, jobs) scroll below them, and `/` searches them:
 
 - **Stale minion** — not seen within `stale_minion_secs`
 - **Pending key** — pending longer than `pending_key_secs`
@@ -170,6 +170,7 @@ Live overview of your Salt Master with real-time sparkline panels:
 - **Auth failure** — failed authentication on the ZMQ bus
 - **Stuck job** — dispatched but not fully returned within `job_straggler_secs`
 - **Reauth storm** — auth rate and worker-pool saturation elevated together (`auth_storm_rate_per_sec`, `worker_saturation_pct`)
+- **Workers saturated** — the MWorkers were at least `worker_saturation_pct` busy over the last minute, so minions' requests queue for a free one; critical when all of them were busy the whole minute. A worker counts as busy while it runs or waits for a process it started (gpg decrypting GPG-encrypted pillar), not by its CPU, which stays low while it waits
 - **Pending key churn** — new pending keys arriving faster than `pending_key_churn_per_min`
 - **Service flapping** — a unit restarted more than `service_flap_threshold_24h` times in 24h
 - **Service memory growth** — sustained upward memory slope past `service_mem_growth_mb_per_hour`, independent of flapping
@@ -203,6 +204,23 @@ The master's configuration, as its files set it:
 - Credentials are redacted by the agent before they reach the TUI, in the list, the files, the popup and copies: values of keys like `*pass*`, `*password*`, `*secret*`, `*token`, `*_key` — nested ones too (as in `ext_pillar`), every item of a list or mapping under such a key, values in an inline `{...}` mapping, every line of a multi-line or block (`|`) value, and commented-out ones — except flags and what only says where the secret is (a path to an existing file or directory, an `sdb://` reference), and the password or token in any URL, wherever it is (`https://deploy:<redacted>@github.com/...` in `gitfs_remotes`, `ext_pillar` or a comment). The file's lines keep their numbers
 - Read from the files at start, with the config refresh (`config_secs`) and on `r`
 
+### Stats
+Event rates and the master's load, to see which minions make it work and how hard, and to compare two masters side by side (two SSH sessions, one salt-radar on each):
+
+- Everything is a **rate**: events per hour, and per hour per minion, over the window salt-radar has been watching (the header says how long), so a master watched for 4 hours compares with one watched for 30 minutes. The same rates over the last 15 minutes show what's happening now (left out in a narrow terminal)
+- **Event families** — tags with job IDs, minion IDs and numbers collapsed (`salt/job/*/ret/*`, `salt/minion/*/start`, `minion_start`, `salt/auth`, `minion/refresh/*`, …). The common ones come first in a fixed order, even with no events yet, so two screens line up row by row; sorting by a column (see [Columns and sorting](#columns-and-sorting)) shows the busiest instead. Each row has the median interval between two events of the family from the same minion: `↻` marks a family whose events come at regular intervals (a minion restarting every 5 minutes, a schedule), `◌ low` one whose interval is over half the window, so its rate can still move a lot
+- **What the numbers measure** (`m` opens a list of them, each with what it shows), in the families list and the breakdown alike, the title saying which: **events** (the counts and rates above); **bytes**, the events' size (as JSON, a little more than went over the bus) per hour and per hour per minion, and their average size, to see what fills the event bus and the job cache; **bursts**, each family's busiest minute as a rate, how many times its average that was (after ten minutes; `burst` marks five times or more) and when, since 600 events an hour spread out and 600 in one minute look alike on average; and **failures**, the job returns that failed, by version, OS or minion
+- **Breakdown** of the selected family by Salt version × OS, OS, version or single minions (`g` opens a list of the groupings the family has): how many minions the master has in each group and how many of them sent the family (`Sent`), the rate per minion and the group's share. Some families can also be broken down by what their events say: job and runner publishes by **function** and by **user** (an automation account or a schedule hammering the master stands out; these come from the master, so they only have these two), job returns also by function, and `salt/auth` by **outcome** (accept, pend, reject, denied), where `Enter` on `reject` lists the minions stuck in a rejected-key loop. Groups that send none of it are listed too, so a version that stays quiet is part of the comparison. Below the families it's a preview; `Enter` opens it full-screen to scroll through every group, filter it (`/`) and narrow it to a group's minions (`Enter` again, e.g. the Windows minions on 3006.9), and open a minion's detail from there (`r` its events and returns, as in Minions); `i`/`I` copy or save the IDs of the minions it lists, or of the group under the cursor; `Esc` steps back
+- **Master health**, beside the families from 160 columns on (below them, cut to its most telling rows, on a narrower terminal), to see whether a master is starving for a resource and not just busy, and to compare masters: each row now (the latest poll, or the last whole minute for throughput), on average and at its worst over the window, most with a dot that turns yellow or red past fixed thresholds, and a verdict line naming the resources that are busy or starving:
+  - **Saturation**: CPU busy, CPU stolen by the hypervisor (a VM starved by its host, which load average doesn't show), processes ready to run per core, the time a CPU quota on `salt-master.service` held it back (when it has one), memory available, swapping, OOM kills, I/O wait, processes blocked on I/O, the latency, busy time and throughput of the disk holding the job cache (a slow disk at low throughput is a throttled cloud volume; found through the mount table, so LVM and btrfs work, and left out when the job cache isn't on a block device), pressure stall for CPU, memory and I/O (the share of time work waited for the resource; where the kernel tracks it, e.g. not on RHEL 8 unless booted with `psi=1`), connections dropped because the listen queue was full, the share of TCP segments sent again (loss between minions and master), and how close a salt-master process is to its open files limit
+  - **Workers**: how many MWorkers are tied up out of `worker_threads` (running, or waiting for a process they started, like gpg: a worker waiting on gpg uses no CPU, so it's counted here rather than read from CPU; `⚠ all busy` when none is free), their CPU, their memory and how fast it grows, the CPU of the processes they run and wait for (gpg decrypting GPG-encrypted pillar, `cmd` renderers) and how many gpg processes work for the master. With `master_stats: True` in the master config, the four kinds of request that take the most of the workers' time (`_pillar`, `_return`, `_auth`, …), each with its share now (the last whole minute), on average and in its busiest minute, and how long one request takes
+  - **Responsiveness**: the ZMQ latency the Dashboard shows and how long jobs take to complete (95th percentile)
+  - **Throughput** per hour: events, job returns and the share that failed, jobs published, pillar requests (`minion/refresh/*`: one per pillar a minion asked the master for, rendered unless `pillar_cache` served it), auth requests and the event bus volume (the events' size as JSON, a little more than went over the bus); the busiest minute shows a burst that the average hides
+  - **Key management**: how many keys are accepted, pending, rejected and denied, each with one number, as a count of keys says nothing over time; next to it, how many auth requests in the window the master answered that way, in yellow for all but accepted (a minion that can't get in, like one retrying with a rejected key)
+  - **Fleet**: how many of the accepted minions are up, and how many sent nothing in the window
+- `X` resets the statistics and starts a new window, after a dialog saying what it discards; only `y` confirms
+- The statistics cover the time this salt-radar has been running; nothing is kept across sessions
+
 ### Pulse
 - Per-minion return activity at a glance: every minion as a dot in a wrapped grid, color- *and* shape-tiered by recency (`●` bright green flash → `•` green → `·` orange → `·` grey → `·` red for timed out) so adjacent tiers stay distinguishable even at a glance
 - Scales from a handful of minions to 4,000+ without layout changes
@@ -214,7 +232,7 @@ The master's configuration, as its files set it:
 
 ### Columns and sorting
 - The Minions, Events, Jobs (both tables), Alerts and API request log tables let you choose which columns are shown and in what order: `v` opens a picker for the focused table (`+`/`-` move a column, `Space` shows/hides it, `Enter` saves), also editable in the Config Editor — `minion_columns`, `event_columns`, `live_columns`/`cache_columns`, `alert_columns` and `request_columns` in their sections of `salt-radar.toml`
-- Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order). Sorting lasts for the session
+- Every table except Events (a live tail that follows the newest event) sorts by any column: click its header, or `o` to step through columns and `O` to reverse — ascending, descending, then back to the default order (Minions by ID, Live Jobs oldest-to-newest and Job Cache newest-first by JID, Alerts and the API log in arrival order, Master Config in Salt's load order, Stats families in their fixed order and its breakdown busiest first). Sorting lasts for the session
 - Optional columns beyond the defaults: Live Jobs and Job Cache Started (the JID already holds the start time), Minions Proto/Seen/Fail%/Lag, Events Minion, Alerts Since/Count
 - Columns are as wide as their longest value, not a fixed width, so short columns don't spread a table out and long values aren't cut while there's room; spare room widens the gaps between columns up to 4 spaces. When a panel is too narrow, the least needed text gives way first: Minions' OS, then Salt and Arch before the minion ID; a job's Function and Args before its Target (except a list target over 40 characters); an event's Minion before its Tag
 
@@ -324,7 +342,7 @@ Colors come from a theme, picked with `color_theme` in the `[ui]` section (or in
 |-----|--------|
 | `q` | Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once) |
 | `Tab` / `Shift+Tab` | Next / previous tab |
-| `1`–`8` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Pulse) |
+| `1`–`9` | Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Stats/Pulse) |
 | `↑`/`↓` | Scroll / navigate |
 | `PgUp`/`PgDn` | Page scroll |
 | `Home`/`End` | First/last row |
@@ -354,7 +372,7 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Minions | `z` | Collapse/expand timed-out minions into one row |
 | Minions | `i` / `I` | Copy / save the IDs of the minions the list shows, one per line |
 | Minions | `f` | Toggle whether the Fleet Overview breakdown follows the active list filter |
-| Minions, Jobs, Alerts, API | `o` / `O` | Sort by the next column / reverse the sort (also: click a column header) |
+| Minions, Jobs, Alerts, API, Master Config, Stats | `o` / `O` | Sort by the next column / reverse the sort (also: click a column header) |
 | Minions, Events, Jobs, Alerts, API | `v` | Choose which columns the focused table shows, and their order |
 | Jobs (Live) | `x` | Pick the states the list shows: OK, FAILED, RUNNING, STUCK (still waiting after `job_straggler_secs`), UNCOUNTED (no target count: runner and wheel jobs); ticked ones are named in its top border |
 | Jobs (Cache) | `/` | Filter cache entries (server-side) |
@@ -367,6 +385,15 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 | Master Config (popup) | `d` / `n`/`N` / `z` | Full values or the difference / next or previous change / show the unchanged lines |
 | Master Config | `r` | Read the configuration files again |
 | Master Config | `w` | Wrap the long lines of the file and of a ↻ setting's changed lines in the right panel, or cut them at its edge (`master_wrap`) |
+| Stats | `↑`/`↓` | Select an event family; the breakdown below follows it |
+| Stats | `Enter` | Open the selected family's breakdown full-screen; there, narrow it to a group's minions, or open a minion's detail |
+| Stats | `r` | In the breakdown by minion: the selected minion's event/return history popup, as in Minions |
+| Stats | `/` | Filter the open breakdown by minion, version or OS |
+| Stats | `i` / `I` | In the breakdown: copy / save the IDs of the minions it lists, or of the group under the cursor, one per line |
+| Stats | `Esc` / `q` | In the breakdown: step back to the group it was narrowed from, then to the families; with a filter applied, `Esc` clears it first |
+| Stats | `g` | Pick from a list how to break the selected family down: by Salt version × OS, OS, version or single minions, and for job publishes and returns by function, publishes by user, `salt/auth` by outcome |
+| Stats | `m` | Pick from a list what the families list and the breakdown measure: events, bytes, bursts (the busiest minute), failures (of job returns) |
+| Stats | `X` | Reset the statistics and start a new window (asks first; only `y` confirms) |
 | API | `x` | Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`) |
 
 ### Config Editor
@@ -418,9 +445,9 @@ Most of these are also shown live, btop-style, in the border of the panel they a
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                       salt-radar (Rust TUI)                        │
-├──────────┬────────┬───────┬─────┬───────┬────┬──────────────┬──────┤
-│ Dashboard│ Minions│ Events│ Jobs│ Alerts│ API│ Master Config│ Pulse│
-├──────────┴────────┴───────┴─────┴───────┴────┴──────────────┴──────┤
+├──────────┬────────┬──────┬────┬──────┬───┬─────────────┬─────┬─────┤
+│ Dashboard│ Minions│Events│Jobs│Alerts│API│Master Config│Stats│Pulse│
+├──────────┴────────┴──────┴────┴──────┴───┴─────────────┴─────┴─────┤
 │ detail popups · Config Editor · themes · alert engine              │
 │ collectors: /proc · systemctl · /proc/net/tcp · PKI key dir        │
 └───────────────┬─────────────────────────────────┴──────────────────┘
@@ -495,7 +522,8 @@ src/
 ├── config.rs            # TOML config loading, theme discovery and parsing
 ├── agent.rs             # Python agent subprocess management
 ├── sniff.rs             # Filter and search terms: minion IDs, globs, keywords, /regex/
-├── alerts/              # Alert engine (17 rules: staleness, keys, services, memory, disk, jobs, auth, api)
+├── stats.rs             # Stats tab numbers: event families, rates, master load
+├── alerts/              # Alert engine (18 rules: staleness, keys, services, memory, disk, jobs, auth, api)
 ├── collectors/          # OS-level data collection
 │   ├── keys.rs          # PKI key file parsing
 │   ├── processes.rs     # /proc scanning for salt processes
@@ -511,6 +539,7 @@ src/
     ├── alerts_view.rs   # Alerts tab
     ├── api_view.rs      # API tab
     ├── master_config.rs # Master Config tab
+    ├── stats.rs         # Stats tab
     ├── pulse.rs         # Pulse tab
     ├── table.rs         # Shared table layout: column widths, headers, sort markers
     ├── minion_events.rs # Per-minion event/return history popup

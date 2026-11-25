@@ -7,6 +7,7 @@ mod pulse;
 mod master_config;
 mod minion_events;
 mod api_view;
+mod stats;
 mod table;
 mod whats_new;
 
@@ -70,7 +71,6 @@ pub mod color {
         label_fg: 90, 105, 135;
         title: 200, 220, 255;
         hi_fg: 200, 210, 230;
-        header_fg: 100, 140, 180;
         subtitle_fg: 130, 150, 190;
         version_fg: 90, 150, 210;
         hint_fg: 95, 108, 135;
@@ -511,6 +511,47 @@ pub fn draw_status_picker(f: &mut Frame, panel: Rect, rows: &[PickerRow], cursor
     }
 }
 
+/// A single-choice picker (`g`, `m` on the Stats tab): a box rising from
+/// `panel`'s bottom edge with every option and what it does, `current`
+/// marked, so the choice is made from all of them rather than by cycling.
+pub fn draw_choice_picker(f: &mut Frame, panel: Rect, title: &str, rows: &[(&str, &str)], current: usize, cursor: usize) -> crate::types::PickerHits {
+    let label_w = rows.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+    let desc_w = rows.iter().map(|(_, d)| d.chars().count()).max().unwrap_or(0);
+    let inner_w = 3 + 2 + label_w + 2 + desc_w + 1;
+    let w = ((inner_w + 2) as u16).min(panel.width.saturating_sub(2));
+    let h = (rows.len() as u16 + 2).min(panel.height);
+    let area = Rect { x: panel.x + 1, y: panel.bottom().saturating_sub(h), width: w, height: h };
+    let hints = [("Enter", "pick".to_string()), ("Esc", "close".to_string())];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color::border_focus()))
+        .title(Line::from(bracket_title(vec![Span::styled(title.to_string(), Style::default().fg(color::title()).add_modifier(Modifier::BOLD))], color::border_focus())))
+        .title_bottom(border_hints(&hints, color::border_focus()))
+        .style(Style::default().bg(color::popup_bg()));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let lines: Vec<Line<'static>> = rows.iter().enumerate().map(|(i, (label, desc))| {
+        let at = i == cursor;
+        let picked = i == current;
+        let line = Line::from(vec![
+            Span::styled(format!(" {} ", if at { "\u{25b6}" } else { " " }), Style::default().fg(color::cyan())),
+            Span::styled(if picked { "\u{25cf} " } else { "  " }, Style::default().fg(color::cyan()).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<label_w$}", label), Style::default().fg(if picked { color::title() } else { color::main_fg() }).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {}", desc), Style::default().fg(color::label_fg())),
+        ]);
+        if at { color::selected_row(line) } else { line }
+    }).collect();
+    if cursor < inner.height as usize {
+        f.buffer_mut().set_style(Rect { y: inner.y + cursor as u16, height: 1, ..inner }, color::select_bg());
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+    crate::types::PickerHits {
+        area,
+        rows: (0..rows.len().min(inner.height as usize)).map(|i| (inner.y + i as u16, i)).collect(),
+    }
+}
+
 /// What a picker left ticked, each in its own color, for the list's top
 /// border; `None` while everything is ticked.
 pub fn ticked_spans(rows: &[PickerRow]) -> Option<Vec<Span<'static>>> {
@@ -690,7 +731,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // still overlays/steals focus from the Events tab whenever it's the
     // thing on screen there (i.e. no other Events-tab popup on top of it).
     let sniffer_active = !popup_active && app.current_tab == Tab::Events && app.sniffer.is_some();
-    let tab_focused = !popup_active && !sniffer_active && !app.show_help && app.config_editor.is_none();
+    let tab_focused = !popup_active && !sniffer_active && !app.show_help && app.config_editor.is_none() && !app.stats_reset_confirm;
 
     let mut hits = Vec::new();
     match app.current_tab {
@@ -701,7 +742,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Alerts => alerts_view::draw_alerts(f, main_layout[1], app, tab_focused, &mut hits),
         Tab::Pulse => pulse::draw_pulse(f, main_layout[1], app, tab_focused),
         Tab::Api => api_view::draw_api(f, main_layout[1], app, tab_focused, &mut hits),
-        Tab::Master => master_config::draw_master(f, main_layout[1], app, tab_focused),
+        Tab::Master => master_config::draw_master(f, main_layout[1], app, tab_focused, &mut hits),
+        Tab::Stats => {
+            let rows = stats::draw_stats(f, main_layout[1], app, tab_focused, &mut hits);
+            app.stats_row_hits = rows.families;
+            app.stats_group_hits = rows.groups;
+            app.stats_picker_hits = rows.picker;
+        }
     }
     app.header_hits = hits;
 
@@ -736,6 +783,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.quit_confirm {
         dim_background(f, dim);
         detail_popup::draw_quit_confirm(f);
+    }
+
+    if app.stats_reset_confirm {
+        dim_background(f, dim);
+        let observed = stats::fmt_window(app.stats.observed(std::time::Instant::now()));
+        detail_popup::draw_stats_reset_confirm(f, &observed, &stats::fmt_count(app.stats.total_events()));
     }
 }
 
@@ -1044,6 +1097,14 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
                 Tab::Pulse => (app.pulse_selected + 1, app.pulse_minions_count()),
                 Tab::Api => (app.api_log_selected + 1, app.filtered_api_log_len()),
                 Tab::Master => (app.master_selected + 1, app.filtered_master_settings().len()),
+                Tab::Stats if app.stats_drill => {
+                    let groups = app.stats_groups();
+                    (app.stats_group_index(&groups) + 1, groups.len())
+                }
+                Tab::Stats => {
+                    let rows = app.stats_rows();
+                    (rows.iter().position(|(n, _)| *n == app.stats_family).unwrap_or(0) + 1, rows.len())
+                }
                 _ => (0, 0),
             };
             if total > 0 {
@@ -1051,7 +1112,7 @@ fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             }
             let active_filter = match app.current_tab {
                 Tab::Events => app.applied_filter.as_str(),
-                Tab::Minions | Tab::Alerts | Tab::Api | Tab::Master => app.filter_text_for(app.current_tab),
+                Tab::Minions | Tab::Alerts | Tab::Api | Tab::Master | Tab::Stats => app.filter_text_for(app.current_tab),
                 _ => "",
             };
             if !active_filter.is_empty() {
@@ -1082,7 +1143,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
     ("General", &[
         Shortcut { tab: "", key: "`q`", action: "Quit (asks first unless `confirm_quit = false`; `Ctrl+C` quits at once)" },
         Shortcut { tab: "", key: "`Tab` / `Shift+Tab`", action: "Next / previous tab" },
-        Shortcut { tab: "", key: "`1`–`8`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Pulse)" },
+        Shortcut { tab: "", key: "`1`–`9`", action: "Jump to tab (Dashboard/Minions/Events/Jobs/Alerts/API/Master Config/Stats/Pulse)" },
         Shortcut { tab: "", key: "`↑`/`↓`", action: "Scroll / navigate" },
         Shortcut { tab: "", key: "`PgUp`/`PgDn`", action: "Page scroll" },
         Shortcut { tab: "", key: "`Home`/`End`", action: "First/last row" },
@@ -1107,7 +1168,7 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Minions", key: "`z`", action: "Collapse/expand timed-out minions into one row" },
         Shortcut { tab: "Minions", key: "`i` / `I`", action: "Copy / save the IDs of the minions the list shows, one per line" },
         Shortcut { tab: "Minions", key: "`f`", action: "Toggle whether the Fleet Overview breakdown follows the active list filter" },
-        Shortcut { tab: "Minions, Jobs, Alerts, API", key: "`o` / `O`", action: "Sort by the next column / reverse the sort (also: click a column header)" },
+        Shortcut { tab: "Minions, Jobs, Alerts, API, Master Config, Stats", key: "`o` / `O`", action: "Sort by the next column / reverse the sort (also: click a column header)" },
         Shortcut { tab: "Minions, Events, Jobs, Alerts, API", key: "`v`", action: "Choose which columns the focused table shows, and their order" },
         Shortcut { tab: "Jobs (Live)", key: "`x`", action: "Pick the states the list shows: OK, FAILED, RUNNING, STUCK (still waiting after `job_straggler_secs`), UNCOUNTED (no target count: runner and wheel jobs); ticked ones are named in its top border" },
         Shortcut { tab: "Jobs (Cache)", key: "`/`", action: "Filter cache entries (server-side)" },
@@ -1120,6 +1181,15 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
         Shortcut { tab: "Master Config (popup)", key: "`d` / `n`/`N` / `z`", action: "Full values or the difference / next or previous change / show the unchanged lines" },
         Shortcut { tab: "Master Config", key: "`r`", action: "Read the configuration files again" },
         Shortcut { tab: "Master Config", key: "`w`", action: "Wrap the long lines of the file and of a ↻ setting's changed lines in the right panel, or cut them at its edge (`master_wrap`)" },
+        Shortcut { tab: "Stats", key: "`↑`/`↓`", action: "Select an event family; the breakdown below follows it" },
+        Shortcut { tab: "Stats", key: "`Enter`", action: "Open the selected family's breakdown full-screen; there, narrow it to a group's minions, or open a minion's detail" },
+        Shortcut { tab: "Stats", key: "`r`", action: "In the breakdown by minion: the selected minion's event/return history popup, as in Minions" },
+        Shortcut { tab: "Stats", key: "`/`", action: "Filter the open breakdown by minion, version or OS" },
+        Shortcut { tab: "Stats", key: "`i` / `I`", action: "In the breakdown: copy / save the IDs of the minions it lists, or of the group under the cursor, one per line" },
+        Shortcut { tab: "Stats", key: "`Esc` / `q`", action: "In the breakdown: step back to the group it was narrowed from, then to the families; with a filter applied, `Esc` clears it first" },
+        Shortcut { tab: "Stats", key: "`g`", action: "Pick from a list how to break the selected family down: by Salt version × OS, OS, version or single minions, and for job publishes and returns by function, publishes by user, `salt/auth` by outcome" },
+        Shortcut { tab: "Stats", key: "`m`", action: "Pick from a list what the families list and the breakdown measure: events, bytes, bursts (the busiest minute), failures (of job returns)" },
+        Shortcut { tab: "Stats", key: "`X`", action: "Reset the statistics and start a new window (asks first; only `y` confirms)" },
         Shortcut { tab: "API", key: "`x`", action: "Hide/show salt-radar's own `GET /stats` poll in the request log (hidden by default — see `hide_stats_polls`)" },
     ]),
     ("Config Editor", &[
@@ -1371,6 +1441,47 @@ fn keys_help_lines() -> Vec<Line<'static>> {
 
 /// The help Guide page: the syntax of filters, searches and the sniffer,
 /// then notes on what some panels show.
+fn stats_help_lines() -> Vec<Line<'static>> {
+    let row = |term: &'static str, text: &'static str| Line::from(vec![
+        Span::styled(format!("  {}", term), Style::default().fg(color::yellow()).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  {}", text), Style::default().fg(color::main_fg())),
+    ]);
+    vec![
+        Line::from(""),
+        Line::from(Span::styled("  Stats tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
+        row("window", "rates since salt-radar started or the last X reset; the header says how long"),
+        row("/h/minion", "events per hour per minion (accepted keys), to compare masters of any size"),
+        row("last 15m", "the same rates over the last 15 minutes, what's happening now (when wide enough)"),
+        row("median", "time between two events of the family from the same minion"),
+        row("\u{21BB}", "the events come at regular intervals: most within 10% of the median"),
+        row("\u{25CC} low", "the window is shorter than twice the interval: the rate can still move a lot"),
+        row("<jid>", "the event Salt fires with a new job's bare JID as its tag"),
+        row("minion/refresh/*", "(pillar requests): one per pillar a minion asked the master for (start,"),
+        row("", "  saltutil.refresh_pillar, every state run), fired after the master renders it and stores it"),
+        row("", "  with the grains in its minion data cache; with pillar_cache: True it may come from that cache"),
+        row("", "  unrendered; none with minion_data_cache or minion_data_cache_events off, and none for"),
+        row("", "  pillars the master compiles unasked (salt-run pillar.show_pillar, salt-ssh)"),
+        row("m", "what the numbers measure: events, bytes, bursts or failures (of job returns)"),
+        row("Sent", "how many of the group's minions sent the family: the rest stayed quiet"),
+        row("bursts", "the busiest minute as a rate and how many times the average; burst marks 5x or more"),
+        row("MWorkers busy", "running, or waiting for a process they started (gpg decrypting pillar),"),
+        row("", "  which takes no CPU of their own; the Dashboard and alerts average it over a minute"),
+        row("Subprocess CPU", "CPU of the processes the workers ran and waited for, counted when they end"),
+        row("Master health", "Now is the latest poll, or the last whole minute for throughput; Avg the window;"),
+        row("", "  Peak the worst (the lowest for memory available); a dot turns yellow or red past fixed limits"),
+        row("Key management", "keys in each state now, and the auth requests in the window answered that way"),
+        row("CPU steal", "CPU time the hypervisor gave other guests: a VM starved by its host"),
+        row("Pressure", "share of time some work waited for CPU, memory or I/O (Linux pressure stall)"),
+        row("Time in _pillar", "share of the MWorkers' time a request type took, and one request's mean;"),
+        row("", "  the four that take the most; needs master_stats: True on the master"),
+        row("Event bus", "the events' size as salt-radar gets them (JSON), a little more than on the bus"),
+        row("Disk latency", "average time a request took on the disk holding the job cache; high at low"),
+        row("", "  throughput means a throttled volume (cloud disk IOPS or bandwidth cap)"),
+        row("TCP retransmits", "share of TCP segments sent again: packet loss or a capped link to the minions"),
+        row("X", "starts a new window after asking; only y confirms"),
+    ]
+}
+
 fn guide_help_lines() -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled("  Guide", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
@@ -1404,6 +1515,9 @@ fn guide_help_lines() -> Vec<Line<'static>> {
             Span::styled("  Timed out", Style::default().fg(color::red()).add_modifier(Modifier::BOLD)),
             Span::styled("  flagged unresponsive by fleet-scan/staleness tracking", Style::default().fg(color::main_fg())),
         ]),
+    ]);
+    lines.extend(stats_help_lines());
+    lines.extend([
         Line::from(""),
         Line::from(Span::styled("  API tab", Style::default().fg(color::title()).add_modifier(Modifier::BOLD))),
         Line::from(vec![

@@ -578,13 +578,13 @@ fn draw_proc_row(f: &mut Frame, area: Rect, app: &App) {
     let mut service_lines: Vec<Line<'static>> = vec![];
 
     service_lines.push(Line::from(vec![
-        Span::styled("Unit                    ", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-        Span::styled("Status", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-        Span::styled(" State      ", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-        Span::styled(" Flp", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-        Span::styled(" Memory   ", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-        Span::styled(" T", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
-        Span::styled(" Uptime", Style::default().fg(color::label_fg()).add_modifier(Modifier::BOLD)),
+        Span::styled("Unit                    ", super::table::header_style()),
+        Span::styled("Status", super::table::header_style()),
+        Span::styled(" State      ", super::table::header_style()),
+        Span::styled(" Flp", super::table::header_style()),
+        Span::styled(" Memory   ", super::table::header_style()),
+        Span::styled(" T", super::table::header_style()),
+        Span::styled(" Uptime", super::table::header_style()),
     ]));
 
     for service in &app.services {

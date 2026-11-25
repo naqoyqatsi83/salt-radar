@@ -244,6 +244,8 @@ impl AlertEngine {
             });
         }
 
+        active.extend(saturation_alert(worker_busy_pct, worker_saturation_pct));
+
         // Rule 10: Pending-key churn — new pending keys arriving too fast
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -431,6 +433,19 @@ fn version_alerts(minion_info: &[MinionInfo], master_salt_version: &str, minimum
     alerts
 }
 
+/// Rule 9b: Workers saturated, on its own: a load that ties the workers up
+/// (pillar renders waiting on gpg) needn't come with an auth storm.
+fn saturation_alert(worker_busy_pct: Option<f64>, threshold: f64) -> Option<ActiveAlert> {
+    let pct = worker_busy_pct.filter(|&p| p >= threshold)?;
+    Some(ActiveAlert {
+        key: "workers-saturated".to_string(),
+        rule: "Workers saturated",
+        severity: if pct >= 100.0 { AlertSeverity::Crit } else { AlertSeverity::Warn },
+        description: format!("MWorkers {:.0}% busy over the last minute: minions' requests wait for a free one", pct),
+        details: Vec::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +469,14 @@ mod tests {
         let mixed: Vec<_> = version_alerts(&fleet, "3006.27", 2).iter().map(|a| (a.key.clone(), a.severity)).collect();
         assert_eq!(mixed, [("salt:auth_v0".to_string(), AlertSeverity::Crit), ("salt:auth_v2".to_string(), AlertSeverity::Warn)]);
         assert!(version_alerts(&fleet[3..], "3006.16", 3).is_empty());
+    }
+
+    #[test]
+    fn busy_workers_alert_without_an_auth_storm() {
+        assert!(saturation_alert(None, 85.0).is_none());
+        assert!(saturation_alert(Some(60.0), 85.0).is_none());
+        assert_eq!(saturation_alert(Some(90.0), 85.0).map(|a| a.severity), Some(AlertSeverity::Warn));
+        assert_eq!(saturation_alert(Some(100.0), 85.0).map(|a| a.severity), Some(AlertSeverity::Crit));
     }
 
     #[test]

@@ -577,7 +577,7 @@ impl AppConfig {
             Tab::Api => Some(&mut self.api_split_pct),
             Tab::Pulse => Some(&mut self.pulse_split_pct),
             Tab::Master => Some(&mut self.master_split_pct),
-            Tab::Dashboard | Tab::Alerts => None,
+            Tab::Dashboard | Tab::Alerts | Tab::Stats => None,
         }
     }
 
@@ -589,7 +589,7 @@ impl AppConfig {
             Tab::Api => self.api_split_pct,
             Tab::Pulse => self.pulse_split_pct,
             Tab::Master => self.master_split_pct,
-            Tab::Dashboard | Tab::Alerts => 100,
+            Tab::Dashboard | Tab::Alerts | Tab::Stats => 100,
         };
         pct.min(100) as u16
     }

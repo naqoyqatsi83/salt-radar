@@ -101,6 +101,7 @@ impl App {
                                     .filter(|k| k.status == KeyStatus::Accepted)
                                     .map(|k| k.id.clone())
                                     .collect();
+                                self.stats.rekey(&self.accepted_id_set);
                                 if !self.applied_filter.is_empty() {
                                     self.refresh_events_matcher();
                                 }
@@ -126,6 +127,11 @@ impl App {
                                     self.prev_proc_cpu.insert(p.pid, (p.cpu_ticks, now));
                                 }
                                 self.prev_proc_cpu.retain(|pid, _| seen_pids.contains(pid));
+                                let gpg = data["gpg_processes"].as_u64().unwrap_or(0);
+                                self.stats.load.record_processes(&self.processes, gpg, self.clk_tck, now);
+                                let throttling = serde_json::from_value(data["cpu_throttling"].clone()).ok();
+                                self.stats.saturation.record_processes(&self.processes, throttling);
+                                self.record_worker_busy(now);
                             }
                         }
                         "list_services" => {
@@ -150,6 +156,11 @@ impl App {
                                 self.prev_cpu_total_jiffies = self.system_info.cpu_total_jiffies;
                                 self.prev_cpu_idle_jiffies = self.system_info.cpu_idle_jiffies;
                                 self.prev_cpu_time = Some(now);
+                                let cores = self.config_snapshot.as_ref().map_or(1, |c| c.cpu_count);
+                                self.stats.saturation.record_system(&self.system_info, cores, now);
+                                if let Some((_, p95)) = self.job_completion_latency_p50_p95() {
+                                    self.stats.load.record_job_p95(p95);
+                                }
                             }
                         }
                         "get_zmq_connections" => {
@@ -413,9 +424,10 @@ impl App {
                         }
                     }
                 }
-                AgentMessage::Event { tag, data, ts, received } => {
+                AgentMessage::Event { tag, data, ts, bytes, received } => {
                     // Track event breakdown
                     self.event_breakdown.record(&tag);
+                    self.stats.record_event(&tag, &data, bytes, ts, &self.accepted_id_set, Instant::now());
                     if tag.starts_with("salt/auth") {
                         self.auth_events_this_sec += 1;
                     }

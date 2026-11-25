@@ -28,6 +28,9 @@ use crate::types::*;
 const JOB_STATS_WINDOW: usize = 500;
 /// How long a job stays in Live Jobs after it was published.
 const LIVE_JOB_RETENTION_SECS: u64 = 3600;
+/// What `worker_busy_pct` averages over: one poll is a snapshot, and a gpg
+/// call is over in a moment.
+const WORKER_BUSY_WINDOW: Duration = Duration::from_secs(60);
 /// How often the `job_ping` latency source sends its `test.ping`.
 const JOB_PING_EVERY: Duration = Duration::from_secs(15);
 
@@ -171,6 +174,34 @@ pub struct App {
     /// overlay rather than a `detail_popup`, which may hold a popup parked on
     /// another tab.
     pub quit_confirm: bool,
+
+    /// The Stats tab: its numbers, the family selected (by name, so the
+    /// cursor stays on it when the list is sorted) and the breakdown.
+    pub stats: crate::stats::Stats,
+    pub stats_family: String,
+    /// The grouping `g` last chose; `stats_grouping()` is the one the
+    /// selected family has.
+    pub stats_grouping_choice: crate::stats::Grouping,
+    /// What the families list and the breakdown measure (`m`).
+    pub stats_measure: crate::stats::Measure,
+    /// The "Reset statistics?" prompt `X` opens on the Stats tab.
+    pub stats_reset_confirm: bool,
+    /// The grouping (`g`) or measure (`m`) picker open on the Stats tab:
+    /// which, and the row under its cursor.
+    pub stats_picker: Option<(StatsPicker, usize)>,
+    pub stats_picker_hits: PickerHits,
+    /// Where the last frame drew each family row (screen y, family), for clicks.
+    pub stats_row_hits: Vec<(u16, String)>,
+    /// The breakdown opened full-screen (`Enter` on a family): the group
+    /// under its cursor (by label and detail, so it stays on it as the rates
+    /// reorder the rows; the first one when unset), the groups it was
+    /// narrowed to (`Enter` on a group, `Esc` steps back), its filter and
+    /// where the last frame drew its rows.
+    pub stats_drill: bool,
+    pub stats_group: Option<(String, String)>,
+    pub stats_scopes: Vec<crate::stats::Scope>,
+    pub stats_filter: String,
+    pub stats_group_hits: Vec<(u16, usize)>,
 
     // Admin mode
     pub admin_mode: bool,
@@ -354,6 +385,9 @@ pub struct App {
     /// Where each change starts in the setting popup's difference, for `n`/`N`.
     pub master_popup_changes: Vec<usize>,
 
+    /// Busy MWorkers out of `worker_threads` at each `list_processes` poll of
+    /// the last `WORKER_BUSY_WINDOW` (see `worker_busy_pct`).
+    worker_busy_samples: VecDeque<(Instant, f64)>,
     /// Per-pid (cpu_ticks, sampled_at) from the previous list_processes poll,
     /// used to compute cpu_percent from the delta between polls.
     prev_proc_cpu: HashMap<u32, (u64, Instant)>,
@@ -507,6 +541,8 @@ pub struct App {
     /// natural order. The Job Cache is sorted by the agent across the whole
     /// job cache, not just the page on screen.
     pub table_sorts: HashMap<TableId, SortSpec>,
+    /// The same for the hand-drawn lists (Stats, Master Config).
+    pub list_sorts: HashMap<ListId, ListSort>,
     pub header_hits: Vec<HeaderHit>,
     pub cache_loading: bool,
     pub cache_loaded: bool,
@@ -531,7 +567,8 @@ pub enum AgentMessage {
     /// timings don't include however long it then waited in the queue for
     /// the main loop to drain it.
     Result { id: u64, cmd: String, ok: bool, data: serde_json::Value, received: Instant },
-    Event { tag: String, data: serde_json::Value, ts: f64, received: Instant },
+    /// `bytes`: the length of the line it came in, for the event bus volume.
+    Event { tag: String, data: serde_json::Value, ts: f64, bytes: u64, received: Instant },
     Error { message: String },
     /// The agent's event bus listener went up (`None`) or down (why).
     EventBus { error: Option<String> },
@@ -807,6 +844,23 @@ pub fn picker_key(code: KeyCode, cursor: &mut usize, n: usize) -> PickerKey {
     }
 }
 
+/// A key pressed in an open single-choice picker of `n` rows, opened with
+/// `own`, which closes it again: `Enter` picks the row under the cursor.
+pub fn choice_key(code: KeyCode, cursor: &mut usize, n: usize, own: char) -> PickerKey {
+    match code {
+        KeyCode::Enter => PickerKey::Toggle(*cursor),
+        KeyCode::Char(c) if c.eq_ignore_ascii_case(&own) => PickerKey::Close,
+        _ => picker_key(code, cursor, n),
+    }
+}
+
+/// The Stats tab's single-choice pickers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatsPicker {
+    Grouping,
+    Measure,
+}
+
 /// What a click does while a status picker is open: tick a row, nothing (on
 /// its border), or close it (outside).
 pub enum PickerClick {
@@ -1048,6 +1102,7 @@ impl App {
             cache_is_filtering: false,
             cache_focus: false,
             table_sorts: HashMap::new(),
+            list_sorts: HashMap::new(),
             header_hits: Vec::new(),
             cache_loading: false,
             cache_loaded: false,
@@ -1061,6 +1116,19 @@ impl App {
 
             admin_mode: false,
             quit_confirm: false,
+            stats: crate::stats::Stats::default(),
+            stats_family: crate::stats::CORE_FAMILIES[0].to_string(),
+            stats_grouping_choice: crate::stats::Grouping::default(),
+            stats_measure: crate::stats::Measure::default(),
+            stats_reset_confirm: false,
+            stats_picker: None,
+            stats_picker_hits: PickerHits::default(),
+            stats_row_hits: Vec::new(),
+            stats_drill: false,
+            stats_group: None,
+            stats_scopes: Vec::new(),
+            stats_filter: String::new(),
+            stats_group_hits: Vec::new(),
             admin_mode_pending: false,
             fleet_scanning: false,
             fleet_scan_completed: false,
@@ -1137,6 +1205,7 @@ impl App {
             master_popup_scroll_max: 0,
             master_popup_changes: Vec::new(),
             job_outcome_window: VecDeque::new(),
+            worker_busy_samples: VecDeque::new(),
             prev_proc_cpu: HashMap::new(),
             clk_tck: 100.0,
             auth_events_this_sec: 0,
@@ -1531,6 +1600,7 @@ impl App {
             Tab::Alerts => &self.alerts_filter,
             Tab::Api => &self.api_filter,
             Tab::Master => &self.master_filter,
+            Tab::Stats => &self.stats_filter,
             _ => &self.filter_text,
         }
     }
@@ -1546,6 +1616,7 @@ impl App {
             Tab::Alerts => self.alerts_filter = text.to_string(),
             Tab::Api => self.api_filter = text.to_string(),
             Tab::Master => self.master_filter = text.to_string(),
+            Tab::Stats => self.stats_filter = text.to_string(),
             _ => {}
         }
     }
@@ -1827,14 +1898,275 @@ impl App {
     /// Worker pool saturation: sum of Worker-role process CPU%, normalized
     /// against the configured worker_threads count. None until both the
     /// worker_threads config and at least one CPU sample are available.
+    /// Minions the master has: accepted keys, or while those aren't known,
+    /// the minions in its cache. The Stats tab's per-minion rates divide by it.
+    pub fn minion_count(&self) -> usize {
+        if self.accepted_id_set.is_empty() { self.minion_info.len() } else { self.accepted_id_set.len() }
+    }
+
+    /// The Stats tab's families in display order.
+    pub fn stats_rows(&self) -> Vec<(&str, &crate::stats::Family)> {
+        let mut rows = self.stats.rows();
+        if let Some((col, desc)) = self.list_sort(ListId::StatsFamilies) {
+            let now = Instant::now();
+            let bytes = self.stats_measure == crate::stats::Measure::Bytes;
+            let key = |f: &crate::stats::Family| -> f64 {
+                let recent = || {
+                    let (events, b) = self.stats.recent_rates(f, now);
+                    if bytes { b } else { events }
+                };
+                match col {
+                    ListCol::RecentRate | ListCol::RecentRatePerMinion => recent(),
+                    ListCol::Median if bytes => f.avg_size().unwrap_or(0.0),
+                    ListCol::Median => f.median_interval().unwrap_or(f64::INFINITY),
+                    ListCol::Peak => f.per_minute.peak_minute as f64,
+                    ListCol::PeakRatio => self.stats.burst_ratio(f, now).unwrap_or(0.0),
+                    ListCol::PeakAt => f.per_minute.peak_at as f64,
+                    ListCol::Failed => f.failed as f64,
+                    ListCol::FailPct if f.count > 0 => f.failed as f64 / f.count as f64,
+                    ListCol::FailPct => -1.0,
+                    _ if bytes => f.bytes as f64,
+                    _ => f.count as f64,
+                }
+            };
+            rows.sort_by(|a, b| {
+                let ord = match col {
+                    ListCol::Family => a.0.cmp(b.0),
+                    _ => key(a.1).total_cmp(&key(b.1)),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
+        }
+        rows
+    }
+
+    /// How the breakdown groups the selected family: as `g` chose, if the
+    /// family has that grouping.
+    pub fn stats_grouping(&self) -> crate::stats::Grouping {
+        self.stats_grouping_choice.within(&self.stats_family, !self.stats_scopes.is_empty())
+    }
+
+    /// The groupings the selected family offers, in the `g` picker's order.
+    pub fn stats_groupings(&self) -> &'static [crate::stats::Grouping] {
+        crate::stats::Grouping::for_family(&self.stats_family, !self.stats_scopes.is_empty())
+    }
+
+    /// `g` or `m` on the Stats tab: the picker, its cursor on the current
+    /// choice.
+    pub(crate) fn open_stats_picker(&mut self, picker: StatsPicker) {
+        let at = match picker {
+            StatsPicker::Grouping => self.stats_groupings().iter().position(|g| *g == self.stats_grouping()),
+            StatsPicker::Measure => crate::stats::Measure::ALL.iter().position(|m| *m == self.stats_measure),
+        };
+        self.stats_picker = Some((picker, at.unwrap_or(0)));
+    }
+
+    pub(crate) fn stats_picker_len(&self, picker: StatsPicker) -> usize {
+        match picker {
+            StatsPicker::Grouping => self.stats_groupings().len(),
+            StatsPicker::Measure => crate::stats::Measure::ALL.len(),
+        }
+    }
+
+    /// Row `i` picked in the open Stats picker: apply it and close.
+    pub(crate) fn pick_stats(&mut self, picker: StatsPicker, i: usize) {
+        self.stats_picker = None;
+        match picker {
+            StatsPicker::Grouping => {
+                if let Some(&g) = self.stats_groupings().get(i) {
+                    if g != self.stats_grouping() {
+                        self.stats_grouping_choice = g;
+                        self.stats_group = None;
+                    }
+                }
+            }
+            StatsPicker::Measure => {
+                if let Some(&m) = crate::stats::Measure::ALL.get(i) {
+                    self.set_stats_measure(m);
+                }
+            }
+        }
+    }
+
+    /// The selected family broken down as `g` chose, narrowed to the
+    /// breakdown's groups and filter.
+    pub fn stats_groups(&self) -> Vec<crate::stats::GroupRow> {
+        let Some(family) = self.stats.family(&self.stats_family) else { return Vec::new() };
+        let mut rows = crate::stats::group_rows(family, self.stats_grouping(), &self.stats_scopes, &self.minion_info, &self.minion_index);
+        let terms = Self::filter_terms(self.filter_text_for(Tab::Stats));
+        if !terms.is_empty() {
+            rows.retain(|g| terms.iter().any(|t| Self::matches_filter(&g.label, t) || Self::matches_filter(&g.detail, t)));
+        }
+        if let Some((col, desc)) = self.list_sort(ListId::StatsGroups) {
+            let bytes = self.stats_measure == crate::stats::Measure::Bytes;
+            let value = |g: &crate::stats::GroupRow| if bytes { g.bytes } else { g.events };
+            let per_minion = |g: &crate::stats::GroupRow| if g.minions > 0 { value(g) as f64 / g.minions as f64 } else { -1.0 };
+            let fail_pct = |g: &crate::stats::GroupRow| if g.events > 0 { g.failed as f64 / g.events as f64 } else { -1.0 };
+            rows.sort_by(|a, b| {
+                let ord = match col {
+                    ListCol::Group => a.label.cmp(&b.label).then_with(|| a.detail.cmp(&b.detail)),
+                    ListCol::Minions => a.minions.cmp(&b.minions),
+                    ListCol::Sent => a.sent.cmp(&b.sent),
+                    ListCol::RatePerMinion => per_minion(a).total_cmp(&per_minion(b)),
+                    ListCol::Peak => a.peak_minute.cmp(&b.peak_minute),
+                    ListCol::Failed => a.failed.cmp(&b.failed),
+                    ListCol::FailPct => fail_pct(a).total_cmp(&fail_pct(b)),
+                    _ => value(a).cmp(&value(b)),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
+        }
+        rows
+    }
+
+    /// Where the breakdown's cursor is among `groups`.
+    pub fn stats_group_index(&self, groups: &[crate::stats::GroupRow]) -> usize {
+        self.stats_group.as_ref()
+            .and_then(|(label, detail)| groups.iter().position(|g| &g.label == label && &g.detail == detail))
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn select_stats_group(&mut self, row: usize) {
+        self.stats_group = self.stats_groups().get(row).map(|g| (g.label.clone(), g.detail.clone()));
+    }
+
+    pub(crate) fn move_stats_group(&mut self, by: isize) {
+        let groups = self.stats_groups();
+        let Some(last) = groups.len().checked_sub(1) else { return };
+        let to = self.stats_group_index(&groups).saturating_add_signed(by).min(last);
+        self.stats_group = Some((groups[to].label.clone(), groups[to].detail.clone()));
+    }
+
+    /// `i`/`I` in the Stats tab's breakdown: the IDs of the minions it shows
+    /// when broken down by minion, else those of the group under the cursor,
+    /// one per line, with a file name hint naming the family and the groups.
+    pub(crate) fn stats_minion_ids(&self) -> (String, String) {
+        let groups = self.stats_groups();
+        let mut path = vec!["stats".to_string(), self.stats_family.clone()];
+        path.extend(self.stats_scopes.iter().map(|s| s.title()));
+        let grouping = self.stats_grouping();
+        let ids: Vec<String> = if grouping == crate::stats::Grouping::Minion {
+            groups.into_iter().map(|g| g.label).filter(|l| l != crate::stats::NO_MINION).collect()
+        } else {
+            let at = self.stats_group_index(&groups);
+            let Some(row) = groups.into_iter().nth(at) else { return Default::default() };
+            let Some(family) = self.stats.family(&self.stats_family) else { return Default::default() };
+            if row.label == crate::stats::NO_MINION {
+                return Default::default();
+            }
+            let scope = crate::stats::Scope::of(grouping, &row);
+            path.push(scope.title());
+            let mut scopes = self.stats_scopes.clone();
+            scopes.push(scope);
+            crate::stats::group_rows(family, crate::stats::Grouping::Minion, &scopes, &self.minion_info, &self.minion_index)
+                .into_iter().map(|g| g.label).collect()
+        };
+        let hint = path.join(" ").split(|c: char| !c.is_ascii_alphanumeric() && c != '.').filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-");
+        (ids.iter().map(|id| format!("{}\n", id)).collect(), hint)
+    }
+
+    /// `Enter` on the Stats tab: a family opens its breakdown, a group of
+    /// minions narrows the breakdown to them, a minion opens its detail.
+    pub(crate) fn stats_enter(&mut self) {
+        if !self.stats_drill {
+            self.stats_drill = true;
+            self.stats_group = None;
+            return;
+        }
+        let groups = self.stats_groups();
+        let at = self.stats_group_index(&groups);
+        let Some(row) = groups.into_iter().nth(at) else { return };
+        let grouping = self.stats_grouping();
+        if grouping == crate::stats::Grouping::Minion {
+            if self.minion_index.contains_key(&row.label) {
+                self.detail_popup = Some(DetailPopup::Minion(row.label, PingState::Idle, None, 0));
+                self.popup_tab = Some(Tab::Stats);
+            }
+        } else if row.label != crate::stats::NO_MINION {
+            self.stats_scopes.push(crate::stats::Scope::of(grouping, &row));
+            self.stats_grouping_choice = crate::stats::Grouping::Minion;
+            self.stats_filter.clear();
+            self.stats_group = None;
+        }
+    }
+
+    /// `r` in the Stats tab's breakdown by minion: the selected minion's
+    /// events and returns, as `r` opens them in the Minions tab.
+    pub(crate) fn stats_events(&mut self) {
+        if self.stats_grouping() != crate::stats::Grouping::Minion {
+            return;
+        }
+        let groups = self.stats_groups();
+        let at = self.stats_group_index(&groups);
+        if let Some(row) = groups.into_iter().nth(at).filter(|r| self.minion_index.contains_key(&r.label)) {
+            self.open_minion_events(row.label);
+        }
+    }
+
+    pub(crate) fn open_minion_events(&mut self, minion_id: String) {
+        self.detail_popup = Some(DetailPopup::MinionEvents { minion_id, selected: 0 });
+        self.popup_tab = Some(self.current_tab);
+        if !self.cache_loaded {
+            self.send_cache_jobs_list(None, false);
+        }
+    }
+
+    /// The measure picked with `m`. A sort on a column the new one doesn't
+    /// show is dropped, rather than ordering the list with no header saying
+    /// why.
+    pub(crate) fn set_stats_measure(&mut self, measure: crate::stats::Measure) {
+        self.stats_measure = measure;
+        let shown = self.stats_measure.columns();
+        for list in [ListId::StatsFamilies, ListId::StatsGroups] {
+            if self.list_sort(list).is_some_and(|(col, _)| !shown.contains(&col)) {
+                self.set_list_sort(list, None);
+            }
+        }
+    }
+
+    /// `Esc` or `q` in the Stats tab's breakdown: back to the group it was
+    /// narrowed from, then to the families. `Esc` first clears a filter, as
+    /// in Job Detail; `q` leaves the level filter and all.
+    pub(crate) fn stats_back(&mut self, filter_first: bool) {
+        if filter_first && !self.stats_filter.is_empty() {
+            self.stats_filter.clear();
+            return;
+        }
+        self.stats_filter.clear();
+        if let Some(scope) = self.stats_scopes.pop() {
+            self.stats_grouping_choice = scope.grouping;
+            self.stats_group = Some((scope.label, scope.detail));
+        } else {
+            self.stats_drill = false;
+        }
+    }
+
+    /// Moves the Stats cursor `by` rows, clamped to the list.
+    pub(crate) fn move_stats_family(&mut self, by: isize) {
+        let rows = self.stats_rows();
+        let Some(last) = rows.len().checked_sub(1) else { return };
+        let at = rows.iter().position(|(n, _)| *n == self.stats_family).unwrap_or(0);
+        let to = at.saturating_add_signed(by).min(last);
+        self.stats_family = rows[to].0.to_string();
+    }
+
+    /// How busy the MWorkers were over the last minute: the share of
+    /// `worker_threads` tied up, averaged over the polls. Counted from the
+    /// workers' state rather than their CPU, which stays low while they wait
+    /// for gpg to decrypt pillar.
     pub fn worker_busy_pct(&self) -> Option<f64> {
-        let worker_threads = self.config_snapshot.as_ref()?.worker_threads?;
-        if worker_threads <= 0 { return None; }
-        let total_cpu: f64 = self.processes.iter()
-            .filter(|p| p.role == SaltProcessRole::Worker)
-            .map(|p| p.cpu_percent as f64)
-            .sum();
-        Some((total_cpu / (worker_threads as f64 * 100.0) * 100.0).clamp(0.0, 100.0))
+        if self.worker_busy_samples.is_empty() { return None; }
+        let sum: f64 = self.worker_busy_samples.iter().map(|(_, f)| f).sum();
+        Some((sum / self.worker_busy_samples.len() as f64 * 100.0).clamp(0.0, 100.0))
+    }
+
+    pub(crate) fn record_worker_busy(&mut self, now: Instant) {
+        let Some(threads) = self.config_snapshot.as_ref().and_then(|c| c.worker_threads).filter(|&t| t > 0) else { return };
+        let busy = crate::stats::busy_workers(&self.processes);
+        self.worker_busy_samples.push_back((now, busy as f64 / threads as f64));
+        while self.worker_busy_samples.front().is_some_and(|(t, _)| now.saturating_duration_since(*t) > WORKER_BUSY_WINDOW) {
+            self.worker_busy_samples.pop_front();
+        }
     }
 
     /// Count of pending keys whose PKI file mtime is within the last minute.
@@ -1995,12 +2327,45 @@ impl App {
             Tab::Events => Some(TableId::Events),
             Tab::Alerts => Some(TableId::Alerts),
             Tab::Api => Some(TableId::ApiLog),
-            Tab::Dashboard | Tab::Pulse | Tab::Master => None,
+            Tab::Dashboard | Tab::Pulse | Tab::Master | Tab::Stats => None,
+        }
+    }
+
+    pub fn list_sort(&self, list: ListId) -> Option<ListSort> {
+        self.list_sorts.get(&list).copied()
+    }
+
+    /// The hand-drawn list the keyboard is on, if any.
+    fn current_list(&self) -> Option<ListId> {
+        match self.current_tab {
+            Tab::Stats if self.stats_drill => Some(ListId::StatsGroups),
+            Tab::Stats => Some(ListId::StatsFamilies),
+            Tab::Master => Some(ListId::MasterConfig),
+            _ => None,
+        }
+    }
+
+    /// The columns `list` showed in the last frame, left to right: which
+    /// ones it has depends on the panel's width and the grouping.
+    fn list_columns(&self, list: ListId) -> Vec<ListCol> {
+        self.header_hits.iter().filter_map(|h| match h.target {
+            SortTarget::List(l, col) if l == list => Some(col),
+            _ => None,
+        }).collect()
+    }
+
+    fn set_list_sort(&mut self, list: ListId, sort: Option<ListSort>) {
+        match sort {
+            Some(s) => { self.list_sorts.insert(list, s); }
+            None => { self.list_sorts.remove(&list); }
+        }
+        if list == ListId::MasterConfig {
+            self.master_selected = 0;
         }
     }
 
     /// Header click: ascending, then descending, then back to natural order.
-    fn click_sort(sort: Option<SortSpec>, col: Column) -> Option<SortSpec> {
+    fn click_sort<C: PartialEq + Copy>(sort: Option<(C, bool)>, col: C) -> Option<(C, bool)> {
         match sort {
             Some((c, false)) if c == col => Some((col, true)),
             Some((c, true)) if c == col => None,
@@ -2010,7 +2375,7 @@ impl App {
 
     /// `o`: step the sort to the next shown column (ascending), and past the
     /// last one back to natural order.
-    fn next_sort(sort: Option<SortSpec>, cols: &[Column]) -> Option<SortSpec> {
+    fn next_sort<C: PartialEq + Copy>(sort: Option<(C, bool)>, cols: &[C]) -> Option<(C, bool)> {
         let next = match sort.and_then(|(c, _)| cols.iter().position(|x| *x == c)) {
             Some(i) => cols.get(i + 1),
             None => cols.first(),
@@ -2084,6 +2449,17 @@ impl App {
             let group = if s.sources.is_empty() { s.kind } else { SettingKind::Explicit };
             (group, set_in(i), s.key.clone())
         });
+        if let Some((col, desc)) = self.list_sort(ListId::MasterConfig) {
+            rows.sort_by(|&a, &b| {
+                let (sa, sb) = (&mc.settings[a], &mc.settings[b]);
+                let ord = match col {
+                    ListCol::Value => sa.line.cmp(&sb.line),
+                    ListCol::Source => set_in(a).cmp(&set_in(b)),
+                    _ => sa.key.cmp(&sb.key),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
+        }
         rows
     }
 
@@ -2855,6 +3231,10 @@ impl App {
                 self.cpu_mem_samples = self.cpu_mem_samples.saturating_add(1);
             }
 
+            if self.zmq_latency_seen {
+                self.stats.load.record_latency(self.zmq_latency_ms);
+            }
+
             // Header radar animation cycle
             self.header_radar_frame = (self.header_radar_frame + 1) % 4;
         }
@@ -3264,7 +3644,7 @@ fn update_service_trends(trends: &mut HashMap<String, ServiceTrend>, services: &
 
 /// Least-squares slope (units of y per unit of x) over a set of points.
 /// Returns 0.0 for fewer than 2 points or a degenerate (zero-variance) x range.
-fn linreg_slope_per_sec(points: &[(f64, f64)]) -> f64 {
+pub(crate) fn linreg_slope_per_sec(points: &[(f64, f64)]) -> f64 {
     let n = points.len() as f64;
     if n < 2.0 { return 0.0; }
     let sum_x: f64 = points.iter().map(|(x, _)| *x).sum();
@@ -4019,11 +4399,20 @@ mod tests {
     #[test]
     fn tab_bar_clicks_land_on_the_drawn_labels() {
         // As drawn at 160 columns: " 1 Dashboard " at 1..=13, " 6 API " at
-        // 68..=74, " 7 Master Config " at 78..=94, " 8 Pulse " at 98..=106.
+        // 68..=74, " 7 Master Config " at 78..=94, " 8 Stats " at 98..=106,
+        // " 9 Pulse " at 110..=118.
         let at = App::tab_at_col;
         assert_eq!([at(0), at(1), at(13), at(14)], [None, Some(Tab::Dashboard), Some(Tab::Dashboard), None]);
         assert_eq!([at(68), at(74), at(78), at(94), at(98), at(106), at(107)],
-            [Some(Tab::Api), Some(Tab::Api), Some(Tab::Master), Some(Tab::Master), Some(Tab::Pulse), Some(Tab::Pulse), None]);
+            [Some(Tab::Api), Some(Tab::Api), Some(Tab::Master), Some(Tab::Master), Some(Tab::Stats), Some(Tab::Stats), None]);
+        assert_eq!([at(110), at(118), at(119)], [Some(Tab::Pulse), Some(Tab::Pulse), None]);
+    }
+
+    #[test]
+    fn digits_and_tab_follow_the_tab_bar() {
+        assert_eq!([Tab::from_digit('7'), Tab::from_digit('8'), Tab::from_digit('9'), Tab::from_digit('0')],
+            [Some(Tab::Master), Some(Tab::Stats), Some(Tab::Pulse), None]);
+        assert_eq!([Tab::Stats.next(), Tab::Pulse.next(), Tab::Dashboard.prev()], [Tab::Pulse, Tab::Dashboard, Tab::Pulse]);
     }
 
     #[test]
@@ -4367,6 +4756,16 @@ mod tests {
         let mut states = MinionFilter::default();
         states.toggle(MinionState::Responsive);
         assert_eq!(view_file_tag("", states), "view-timed-out-not-scanned-pending-rejected-denied");
+    }
+
+    #[test]
+    fn choice_picker_picks_on_enter_and_closes_on_its_own_key() {
+        let mut cursor = 0;
+        assert!(matches!(choice_key(KeyCode::Down, &mut cursor, 4, 'm'), PickerKey::Stay));
+        assert!(matches!(choice_key(KeyCode::Enter, &mut cursor, 4, 'm'), PickerKey::Toggle(1)));
+        assert!(matches!(choice_key(KeyCode::Char('4'), &mut cursor, 4, 'm'), PickerKey::Toggle(3)));
+        assert!(matches!(choice_key(KeyCode::Char('M'), &mut cursor, 4, 'm'), PickerKey::Close));
+        assert!(matches!(choice_key(KeyCode::Esc, &mut cursor, 4, 'm'), PickerKey::Close));
     }
 
     fn mixed_lookup() -> JidLookup {

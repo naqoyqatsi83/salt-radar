@@ -13,6 +13,7 @@ pub enum Tab {
     Pulse,
     Api,
     Master,
+    Stats,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,41 +26,32 @@ pub enum SparklineStyle {
 
 
 impl Tab {
-    /// The tab bar, left to right; `1`–`8` follow it.
-    pub const ORDER: [Tab; 8] = [
-        Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Master, Tab::Pulse,
+    /// The tab bar, left to right; `1`–`9` follow it. Pulse stays last.
+    pub const ORDER: [Tab; 9] = [
+        Tab::Dashboard, Tab::Minions, Tab::Events, Tab::Jobs, Tab::Alerts, Tab::Api, Tab::Master, Tab::Stats, Tab::Pulse,
     ];
+
+    fn position(self) -> usize {
+        Self::ORDER.iter().position(|&t| t == self).unwrap_or(0)
+    }
 
     /// Its label in the tab bar, number included (` 7 Master Config `).
     pub fn bar_label(self) -> String {
-        let n = Self::ORDER.iter().position(|&t| t == self).unwrap_or(0) + 1;
-        format!(" {} {} ", n, self.label())
+        format!(" {} {} ", self.position() + 1, self.label())
+    }
+
+    /// The tab a digit key jumps to.
+    pub fn from_digit(c: char) -> Option<Self> {
+        let n = c.to_digit(10)? as usize;
+        Self::ORDER.get(n.checked_sub(1)?).copied()
     }
 
     pub fn next(&self) -> Self {
-        match self {
-            Self::Dashboard => Self::Minions,
-            Self::Minions => Self::Events,
-            Self::Events => Self::Jobs,
-            Self::Jobs => Self::Alerts,
-            Self::Alerts => Self::Api,
-            Self::Api => Self::Master,
-            Self::Master => Self::Pulse,
-            Self::Pulse => Self::Dashboard,
-        }
+        Self::ORDER[(self.position() + 1) % Self::ORDER.len()]
     }
 
     pub fn prev(&self) -> Self {
-        match self {
-            Self::Dashboard => Self::Pulse,
-            Self::Pulse => Self::Master,
-            Self::Minions => Self::Dashboard,
-            Self::Events => Self::Minions,
-            Self::Jobs => Self::Events,
-            Self::Alerts => Self::Jobs,
-            Self::Api => Self::Alerts,
-            Self::Master => Self::Api,
-        }
+        Self::ORDER[(self.position() + Self::ORDER.len() - 1) % Self::ORDER.len()]
     }
 
     pub fn label(&self) -> &str {
@@ -72,6 +64,7 @@ impl Tab {
             Self::Pulse => "Pulse",
             Self::Api => "API",
             Self::Master => "Master Config",
+            Self::Stats => "Stats",
         }
     }
 }
@@ -143,8 +136,57 @@ pub struct SaltProcess {
     /// Rust-side from the delta between consecutive polls (see App::prev_proc_cpu).
     #[serde(default)]
     pub cpu_ticks: u64,
+    /// CPU ticks of the children it ran and waited for (cutime+cstime).
+    #[serde(default)]
+    pub child_cpu_ticks: u64,
+    /// Its state letter from /proc (`R` running, `S` sleeping, `D` waiting on I/O).
+    #[serde(default)]
+    pub state: String,
+    /// How many processes it has started that still exist, Salt's own aside.
+    #[serde(default)]
+    pub children: u32,
+    #[serde(default)]
+    pub ppid: u32,
     #[serde(default)]
     pub cpu_percent: f32,
+    /// Open files of a salt-master process and its soft limit; absent for
+    /// other daemons and where they can't be read.
+    #[serde(default)]
+    pub open_files: Option<u64>,
+    #[serde(default)]
+    pub open_files_limit: Option<u64>,
+}
+
+/// How often the CPU quota of salt-master's cgroup held it back (cumulative
+/// since the unit started); only sent when a quota applies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct CpuThrottling {
+    pub periods: u64,
+    pub throttled: u64,
+    pub throttled_usec: u64,
+}
+
+/// I/O counters since boot of the block device holding the job cache.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct DiskCounters {
+    pub device: String,
+    /// Reads and writes completed, and the milliseconds they took.
+    pub ios: u64,
+    pub io_ms: u64,
+    /// Milliseconds the device had requests in flight.
+    pub busy_ms: u64,
+    /// 512-byte sectors read and written.
+    pub sectors: u64,
+}
+
+/// Microseconds since boot that some task stalled waiting for the resource
+/// (`/proc/pressure`); a resource is missing where the kernel doesn't track
+/// pressure stall.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct PressureTotals {
+    pub cpu: Option<u64>,
+    pub memory: Option<u64>,
+    pub io: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -218,6 +260,35 @@ pub struct SystemInfo {
     pub cpu_idle_jiffies: u64,
     #[serde(default)]
     pub cpu_percent: f64,
+    // What tells a starving master from a busy one (cumulative since boot
+    // unless said otherwise); missing where the agent couldn't read them.
+    #[serde(default)]
+    pub cpu_iowait_jiffies: Option<u64>,
+    #[serde(default)]
+    pub cpu_steal_jiffies: Option<u64>,
+    /// Processes running and blocked on I/O at the poll.
+    #[serde(default)]
+    pub procs_running: Option<u64>,
+    #[serde(default)]
+    pub procs_blocked: Option<u64>,
+    #[serde(default)]
+    pub psi_us: Option<PressureTotals>,
+    #[serde(default)]
+    pub swap_in_pages: Option<u64>,
+    #[serde(default)]
+    pub swap_out_pages: Option<u64>,
+    #[serde(default)]
+    pub oom_kills: Option<u64>,
+    #[serde(default)]
+    pub listen_overflows: Option<u64>,
+    #[serde(default)]
+    pub listen_drops: Option<u64>,
+    #[serde(default)]
+    pub tcp_out_segs: Option<u64>,
+    #[serde(default)]
+    pub tcp_retrans_segs: Option<u64>,
+    #[serde(default)]
+    pub disk: Option<DiskCounters>,
 }
 
 // ─── salt-api stats (rest_cherrypy collect_stats, polled over /stats) ─────
@@ -1062,6 +1133,51 @@ impl Column {
 /// the App side means the table's natural order.
 pub type SortSpec = (Column, bool);
 
+/// A list drawn by hand rather than from configured columns (its columns
+/// follow the panel's width or the breakdown's grouping) that still sorts
+/// like the configurable tables: by header click and `o`/`O`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ListId {
+    StatsFamilies,
+    StatsGroups,
+    MasterConfig,
+}
+
+/// A sortable column of a `ListId` list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListCol {
+    Family,
+    Count,
+    Rate,
+    RatePerMinion,
+    RecentRate,
+    RecentRatePerMinion,
+    Median,
+    /// The busiest minute, how many times the average it was, and when.
+    Peak,
+    PeakRatio,
+    PeakAt,
+    Failed,
+    FailPct,
+    Group,
+    Minions,
+    /// How many of a group's minions sent the family.
+    Sent,
+    Share,
+    Key,
+    Value,
+    Source,
+}
+
+pub type ListSort = (ListCol, bool);
+
+/// What a click on a column header sorts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortTarget {
+    Table(TableId, Column),
+    List(ListId, ListCol),
+}
+
 /// Screen span of one rendered column header, recorded each frame so a
 /// header click hit-tests against what was actually drawn.
 #[derive(Clone, Copy, Debug)]
@@ -1069,8 +1185,7 @@ pub struct HeaderHit {
     pub y: u16,
     pub x0: u16,
     pub x1: u16,
-    pub col: Column,
-    pub table: TableId,
+    pub target: SortTarget,
 }
 
 /// Where the Job Detail popup's last frame put its returns list (each
