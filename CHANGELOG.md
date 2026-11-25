@@ -7,119 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.12.0-rc13] - 2026-11-23
+## [0.12.0] - 2026-11-25
 
 ### Added
 
-- Open a minion's events and returns from the Stats tab's breakdown by minion with `r`, as in the Minions tab
-
-### Changed
-
-- Call `minion/refresh/*` pillar requests on the Stats tab (the family's label and the Master health row), not pillar renders: the master fires it for every pillar a minion asks for, also when `pillar_cache` serves it without rendering. The Guide says when it isn't fired at all
-- Pick the Stats tab's grouping (`g`) and measure (`m`) from a small list that shows every option, what it shows and which one is on, instead of stepping through them one key press at a time
-- Move the auth outcomes on the Stats tab's Master health panel out of the Auth requests row into a Key management section: how many keys are accepted, pending, rejected and denied, each with how many auth requests in the window the master answered that way, in yellow when it wasn't an accept. The Fleet line keeps how many minions are up and silent
-- Show the MWorkers' time by request type on the Master health panel as rows in its columns, one per type (`Time in _pillar`), with the share in the last whole minute, over the window and in the busiest minute, and how long one request takes, instead of a line of whole percents that read 0% on a quiet master. The pillar render time moves there from the Pillar renders row
-
-## [0.12.0-rc12] - 2026-11-20
-
-### Added
-
-- Break some families down on the Stats tab by what their events say (`g`): job and runner publishes by function and by user, job returns by function, `salt/auth` by outcome (accept, pend, reject, denied). `Enter` on a value lists the minions that sent it, so the ones stuck in a rejected-key loop, or the minions whose `state.apply` returns fail, stand out (#219)
-- Show next to how many minions a breakdown group has how many of them sent the family (`Sent`), so the quiet ones show per group (#219)
-
-## [0.12.0-rc11] - 2026-11-20
-
-### Added
-
-- Switch what the Stats tab's families list and breakdown measure with `m`: events, bytes (the events' size per hour and per minion, and their average size, to see what fills the event bus), bursts (each family's busiest minute, how many times its average and when; for a group, its busiest minion's) and failures (the job returns that failed, by version, OS or minion). Sorting by a column works in each (#219)
-
-### Changed
-
-- Mark the `minion/refresh/*` family as pillar renders in the Stats tab's list, not only in the Guide
-
-### Fixed
-
-- Count a tag that names a minion (`minion/refresh/web1`) in its family on the Stats tab also when it came in the first seconds, before the accepted keys were read: it showed as a family of its own until the window was reset
-
-## [0.12.0-rc10] - 2026-11-20
-
-### Added
-
-- Show in the Master health panel how the disk holding the job cache keeps up (request latency, busy time, throughput), found through the mount table so LVM and btrfs work, and the share of TCP segments retransmitted. Neither needs a cloud API: a throttled cloud volume shows as high latency at low throughput, packet loss or a capped link as retransmits
-
-### Changed
-
-- Separate the Master health panel's sections with an empty line; on a short terminal the empty lines go first
-
-## [0.12.0-rc9] - 2026-11-20
-
-### Added
-
-- Add a Master health panel to the Stats tab, beside the families on a terminal 160 columns wide or more and below them otherwise, to see whether a master is starving for a resource and not just busy, and to compare masters. A verdict line names the resources (CPU, memory, disk, network, workers) that are busy or starving, from rows rated against fixed thresholds: CPU busy, stolen by the hypervisor and throttled by a CPU quota on `salt-master.service`; the run queue per core; memory available, swapping and OOM kills; I/O wait and processes blocked on it; pressure stall for CPU, memory and I/O where the kernel tracks it; connections dropped by a full listen queue; and how close the master is to its open files limit. It also shows the MWorkers (today's Master load, which it replaces), the share of their time each kind of request takes and the pillar render time with `master_stats: True`, the ZMQ latency and job completion time, the throughput per hour (events, job returns and the share that failed, jobs, pillar renders, auth requests by outcome, the event bus volume) now, on average and in the busiest minute, and how many minions sent nothing in the window (#218)
-
-## [0.12.0-rc8] - 2026-11-20
-
-### Added
-
-- Copy (`i`) or save (`I`) the IDs of the minions the Stats tab's breakdown lists, or of the group under its cursor (all the Windows minions on 3006.9, say), one per line, as `i`/`I` do on the Minions tab
-
-### Fixed
-
-- List every minion in the Stats tab's breakdown by minion, those that sent none of the family with 0, as the other groupings list their quiet groups: narrowed to a group whose minions sent nothing it said "Nothing matches the filter." with no filter set. A family the master fires itself (`salt/job/*/new`, runner events) now says so above its breakdown
-
-## [0.12.0-rc7] - 2026-11-20
-
-### Fixed
-
-- Step back out of the Stats tab's breakdown with `q` as with `Esc`, the way `q` closes popups, instead of asking to quit; with a filter applied, `Esc` clears it first and `q` leaves at once, as in Job Detail. The reset prompt's hints now say `q` cancels it too
-
-## [0.12.0-rc6] - 2026-11-20
-
-### Changed
-
-- Sort the Stats tab's families and breakdown and the Master Config tab by any column the way the other tables sort: click a column header, or `o` to step through the columns and `O` to reverse. This replaces the Stats tab's `s`, which sorted the families by count; clicking `Count` twice does that now
-- Draw the Stats and Master Config tabs' column headers like every other table's, grey and in Title Case, instead of blue; the `header_fg` theme key nothing else used is gone from the bundled themes, and a custom theme that sets it is still read
-
-## [0.12.0-rc5] - 2026-11-20
-
-### Added
-
-- Open the Stats tab's breakdown full-screen with `Enter` on a family, to go through all of its groups however many minions the master has: move with `↑`/`↓`, `PgUp`/`PgDn`, `Home`/`End` or the mouse, filter with `/`, narrow it to a group's minions with `Enter` (e.g. which Windows minions on 3006.9 send the start events) and open a minion's detail from there; `Esc` steps back. Its title says how many minions sent the family at all
-
-### Changed
-
-- End the Stats tab's breakdown preview with a row summing up the groups it has no room for (how many, their rate and share) instead of a "more below" marker that nothing could scroll to
-
-## [0.12.0-rc4] - 2026-11-20
-
-### Fixed
-
-- Mark the Stats tab's periodic families with `↻` instead of `⟳`, which Windows terminals such as MobaXterm showed as a box: neither Consolas nor the fonts Windows falls back to for it have the character
-
-## [0.12.0-rc3] - 2026-11-19
-
-### Changed
-
-- Head the Stats tab's per-minion columns `/h/minion` instead of `/h/min`, which read like per minute
-
-## [0.12.0-rc2] - 2026-11-19
-
-### Added
-
-- Explain the Stats tab's columns and markers in the help's Guide page (`?`, then `Tab`): the window, per-minion rates, the median interval, `⟳` and `◌ low`, which events count pillar renders, and how busy MWorkers are counted
-
-## [0.12.0-rc1] - 2026-11-19
-
-### Added
-
-- Add a Stats tab (`8`) to see which minions make the master work and how hard, and to compare two masters side by side however long salt-radar has run on each: event families (`salt/job/*/ret/*`, `minion_start`, `salt/auth`, …) with their count, rate per hour and per hour per minion since the window started and over the last 15 minutes, and the median interval between two events from the same minion, `⟳` marking a family that arrives at regular intervals; the selected family broken down by Salt version × OS, OS, version or minion (`g`); and the master's load (how many MWorkers are busy, counting those waiting on gpg though they use no CPU, their CPU and memory with its trend, the CPU of the processes they run such as gpg for encrypted pillar, the gpg processes and the ZMQ latency), now, on average and at peak. `X` starts a new window after asking (#211)
-
+- Add a Stats tab (`8`) to see which minions make the master work and how hard, and to compare two masters side by side however long salt-radar has run on each. It lists the event families (`salt/job/*/ret/*`, `minion_start`, `salt/auth`, …; a tag that names a minion, such as `minion/refresh/web1`, counts in its family) with their count, rate per hour and per hour per minion (`/h/minion`) since the window started and over the last 15 minutes, and the median interval between two events from the same minion, `↻` marking a family that arrives at regular intervals. Its tables sort by any column the way the other tables sort (click a header, or `o`/`O`), and `X` starts a new window after asking (#211)
+- Break the selected family down on the Stats tab, picking the grouping from a list with `g`: by Salt version × OS, OS, version or minion, and by what the events say: job and runner publishes by function and by user, job returns by function, `salt/auth` by outcome (accept, pend, reject, denied). Next to how many minions a group has, `Sent` says how many of them sent the family, so the quiet ones show per group (#219)
+- Pick what the Stats tab's families and breakdown measure from a list with `m`: events, bytes (the events' size per hour and per minion, and their average size, to see what fills the event bus), bursts (each family's busiest minute, how many times its average and when; for a group, its busiest minion's) and failures (the job returns that failed, by version, OS or minion) (#219)
+- Open the Stats tab's breakdown full-screen with `Enter` on a family, to go through all of its groups however many minions the master has: move with `↑`/`↓`, `PgUp`/`PgDn`, `Home`/`End` or the mouse, filter with `/`, narrow it to a group's minions with `Enter` (the Windows minions on 3006.9 that send the start events, the ones stuck in a rejected-key loop, those whose `state.apply` returns fail), open a minion's detail, or its events and returns with `r`, and copy (`i`) or save (`I`) the minions' IDs, one per line, as on the Minions tab; `Esc` or `q` steps back. Every minion is listed, those that sent none of the family with 0, and a family the master fires itself (`salt/job/*/new`, runner events) says so. Below the families, a preview of the breakdown ends with a row summing up the groups it has no room for
+- Add a Master health panel to the Stats tab, beside the families on a terminal 160 columns wide or more and below them otherwise, to see whether a master is starving for a resource and not just busy, and to compare masters. A verdict line names the resources (CPU, memory, disk, network, workers) that are busy or starving, from rows rated against fixed thresholds, now, on average and in the busiest minute: CPU busy, stolen by the hypervisor and throttled by a CPU quota on `salt-master.service`; the run queue per core; memory available, swapping and OOM kills; I/O wait and processes blocked on it; pressure stall for CPU, memory and I/O where the kernel tracks it; how the disk holding the job cache keeps up (request latency, busy time, throughput), found through the mount table so LVM and btrfs work; the share of TCP segments retransmitted; connections dropped by a full listen queue; and how close the master is to its open files limit. None of it needs a cloud API: a throttled cloud volume shows as high latency at low throughput, packet loss or a capped link as retransmits (#218)
+- Show Salt's side in the Master health panel: how many MWorkers are busy, counting those waiting on gpg though they use no CPU, their CPU and memory and the CPU of the processes they run (gpg for encrypted pillar); with `master_stats: True`, the MWorkers' time by request type (`Time in _pillar`), its share in the last whole minute, over the window and in the busiest minute, and how long one request takes; the ZMQ latency and job completion time; the throughput per hour (events, job returns and the share that failed, jobs, `minion/refresh/*` pillar requests, auth requests, the event bus volume); and a Key management section with how many keys are accepted, pending, rejected and denied, each with how many auth requests in the window the master answered that way, in yellow when it wasn't an accept, and how many minions are up and how many sent nothing in the window (#218)
+- Explain the Stats tab's columns, markers and Master health rows in the help's Guide page (`?`, then `Tab`)
 - Add the "Workers saturated" alert: the MWorkers were at least `worker_saturation_pct` busy over the last minute, critical when all of them were. A load that ties them up needn't come with an auth storm, which the reauth-storm alert also needs
 
 ### Changed
 
 - Move Pulse to `9`, so it stays the last tab
 - Count how busy the MWorkers are (the Dashboard's "Workers % busy", `worker_saturation_pct` for the reauth-storm alert) from how many of them are tied up over the last minute instead of from their CPU: a worker waiting for gpg to decrypt pillar uses no CPU, so all of them could be stuck while the figure stayed low. `worker_saturation_pct` now means that share, and also sets when "Workers saturated" fires: if it was lowered with CPU in mind, or a master normally runs that busy, the new alert may show up after upgrading; the Stats tab's "MWorkers busy" row shows the usual level to set it by
+- Sort the Master Config tab by any column the way the other tables sort: click a column header, or `o` to step through the columns and `O` to reverse
+- Draw the Master Config tab's column headers like every other table's, grey and in Title Case, instead of blue; the `header_fg` theme key nothing else used is gone from the bundled themes, and a custom theme that sets it is still read
 
 ## [0.11.0] - 2026-11-17
 
